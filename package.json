@@ -1,0 +1,27 @@
+{
+  "name": "nexo-produccion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nexo Producción — Sistema inteligente de producción alimenticia, inventarios, pedidos, simulación y reportes (datos desde Profit Plus vía vistas SQL)",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:generate": "pnpm --filter @nexo/api db:generate",
+    "db:push": "pnpm --filter @nexo/api db:push",
+    "db:migrate": "pnpm --filter @nexo/api db:migrate",
+    "db:seed": "pnpm --filter @nexo/api db:seed",
+    "clean": "turbo run clean"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@11.24.0",
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+
+<html lang="es"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/><link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/><link href="https://fonts.googleapis.com/css2?family=Rubik:ital,wght@0,300..900;1,300..900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "on-error": "#ffffff", "on-surface-variant": "#43474f", "primary": "#001e40", "inverse-surface": "#1f3242", "on-secondary-container": "#4f6c00", "surface-container-high": "#d6ebff", "secondary-container": "#bbf23d", "surface": "#f6f9ff", "secondary-fixed": "#bef440", "on-surface": "#081d2c", "surface-variant": "#d0e5f9", "primary-fixed": "#d5e3ff", "inverse-on-surface": "#e6f2ff", "tertiary-fixed": "#6ffbbe", "on-primary-container": "#799dd6", "primary-fixed-dim": "#a7c8ff", "on-background": "#081d2c", "secondary-fixed-dim": "#a3d71f", "tertiary": "#002416", "tertiary-fixed-dim": "#4edea3", "surface-dim": "#c8dcf0", "outline-variant": "#c3c6d1", "surface-container-highest": "#d0e5f9", "on-primary-fixed": "#001b3c", "outline": "#737780", "secondary": "#4b6700", "error": "#ba1a1a", "surface-tint": "#3a5f94", "on-primary-fixed-variant": "#1f477b", "inverse-primary": "#a7c8ff", "on-tertiary-fixed": "#002113", "primary-container": "#003366", "on-secondary": "#ffffff", "on-tertiary": "#ffffff", "on-error-container": "#93000a", "on-secondary-fixed": "#141f00", "surface-container-lowest": "#ffffff", "background": "#f6f9ff", "on-secondary-fixed-variant": "#384e00", "tertiary-container": "#003c27", "surface-container": "#e1f0ff", "on-tertiary-container": "#00b27b", "on-primary": "#ffffff", "on-tertiary-fixed-variant": "#005236", "error-container": "#ffdad6", "surface-container-low": "#ecf5ff", "surface-bright": "#f6f9ff" }, "borderRadius": { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" }, "spacing": { "margin": "1rem", "margin-desktop": "2rem", "space-md": "0.75rem", "space-2xl": "2rem", "gutter-desktop": "1.5rem", "space-xl": "1.5rem", "space-lg": "1rem", "space-xs": "0.25rem", "space-2xs": "0.125rem", "gutter": "1rem", "space-sm": "0.5rem" }, "fontFamily": { "display-lg": ["Rubik"], "body-md": ["Rubik"], "label-sm": ["Rubik"], "title-md": ["Rubik"], "headline-md": ["Rubik"], "label-md": ["Rubik"], "data-tabular-lg": ["Rubik"], "body-lg": ["Rubik"], "headline-lg": ["Rubik"], "data-tabular-md": ["Rubik"] }, "fontSize": { "display-lg": ["2.25rem", { "lineHeight": "2.75rem", "letterSpacing": "-0.02em", "fontWeight": "800" }], "body-md": ["0.875rem", { "lineHeight": "1.25rem", "fontWeight": "400" }], "label-sm": ["0.6875rem", { "lineHeight": "0.875rem", "fontWeight": "500" }], "title-md": ["1.125rem", { "lineHeight": "1.5rem", "fontWeight": "600" }], "headline-md": ["1.375rem", { "lineHeight": "1.875rem", "letterSpacing": "-0.01em", "fontWeight": "800" }], "label-md": ["0.75rem", { "lineHeight": "1rem", "letterSpacing": "0.04em", "fontWeight": "600" }], "data-tabular-lg": ["1.125rem", { "lineHeight": "1.5rem", "letterSpacing": "0.01em", "fontWeight": "600" }], "body-lg": ["1rem", { "lineHeight": "1.5rem", "fontWeight": "400" }], "headline-lg": ["1.75rem", { "lineHeight": "2.25rem", "letterSpacing": "-0.01em", "fontWeight": "800" }], "data-tabular-md": ["0.875rem", { "lineHeight": "1.25rem", "letterSpacing": "0.01em", "fontWeight": "500" }] } } } };</script></head><body class="bg-background font-body-md text-on-surface antialiased"><aside class="fixed left-0 top-0 h-full w-72 bg-primary-container text-on-primary z-50 flex flex-col justify-between select-none"><div class="flex flex-col flex-1 min-h-0"><div class="h-16 flex items-center gap-space-md px-space-xl border-b border-outline-variant/20 bg-primary"><img alt="San Luis Logo" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1Vh9Z3bI2gqN4dFuaC3OOaSmtxFoXu2tlRymG0AGPrKNVHsN0O_pLoOc9LIWcMxhw32qpjO5u1utrmkPb-D_D5s2VM8p2_PQv8rFsjC9Z_dIuKaykR284OnpTqWQrcBlrZqGONaxxesQvpLtSdR2PrArl_QcuKauY2LITchyO-i0I6mIKLFLAVy5193llAbOHPPSZE8muyQQXM1vpwGwBlWF4NGGoDK10L2BgmJHhtRF4iLXYRdGXkjikQ"/><div class="flex flex-col"><span class="font-title-md text-title-md tracking-tight text-on-primary leading-tight">Nexo Producción</span><span class="font-label-sm text-label-sm text-primary-fixed-dim uppercase tracking-wider">Molinos San Luis</span></div></div><nav class="flex-1 px-space-sm py-space-md overflow-y-auto space-y-space-2xs" data-active-classes="bg-secondary-container text-on-secondary-container font-semibold"><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="resumen-ejecutivo" href="#"><span class="material-symbols-outlined text-[20px]">dashboard</span><span>Resumen ejecutivo</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="disponibilidad-por-producto" href="#"><span class="material-symbols-outlined text-[20px]">inventory_2</span><span>Disponibilidad por producto</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="cumplimiento-por-cliente" href="#"><span class="material-symbols-outlined text-[20px]">verified</span><span>Cumplimiento por cliente</span></a><a class="flex items-center justify-between px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="simulador-de-pedidos" href="#"><div class="flex items-center gap-space-md"><span class="material-symbols-outlined text-[20px]">tune</span><span>Simulador de pedidos</span></div><span class="font-label-sm text-label-sm px-space-xs py-space-2xs bg-secondary-fixed text-on-secondary-fixed rounded uppercase font-semibold">Simulador</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="plan-de-produccion" href="#"><span class="material-symbols-outlined text-[20px]">factory</span><span>Plan de producción</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="analisis-de-demanda" href="#"><span class="material-symbols-outlined text-[20px]">query_stats</span><span>Análisis de demanda</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="capacidad-de-produccion" href="#"><span class="material-symbols-outlined text-[20px]">precision_manufacturing</span><span>Capacidad de producción</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="reportes-e-indicadores" href="#"><span class="material-symbols-outlined text-[20px]">bar_chart</span><span>Reportes e indicadores</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="historial-de-simulaciones" href="#"><span class="material-symbols-outlined text-[20px]">history</span><span>Historial de simulaciones</span></a><div class="my-space-sm border-t border-outline-variant/15"></div><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="sincronizacion-con-profit" href="#"><span class="material-symbols-outlined text-[20px]">sync_alt</span><span>Sincronización con Profit</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="configuracion" href="#"><span class="material-symbols-outlined text-[20px]">settings</span><span>Configuración</span></a></nav></div><div class="p-space-md m-space-sm bg-primary rounded-lg border border-outline-variant/20 flex items-center justify-between"><div class="flex items-center gap-space-sm"><span class="relative flex h-2.5 w-2.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary-fixed-dim opacity-75"></span><span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-secondary-fixed"></span></span><div class="flex flex-col"><span class="font-label-sm text-label-sm text-on-primary font-medium leading-none">Vistas SQL Profit</span><span class="font-label-sm text-[0.625rem] text-primary-fixed-dim mt-0.5 leading-none">Conectadas (En Línea)</span></div></div><span class="material-symbols-outlined text-[16px] text-secondary-fixed">database</span></div></aside><div class="pl-72"><header class="fixed top-0 left-72 right-0 h-16 bg-surface-container-lowest border-b border-outline-variant/40 z-40 flex items-center justify-between px-space-xl"><div class="flex items-center gap-space-md min-w-0"><div class="flex items-center gap-space-xs font-label-md text-label-md text-on-surface-variant"><span class="material-symbols-outlined text-[18px]">home</span><span>/</span><span class="text-on-surface font-semibold truncate">Nexo Producción</span></div></div><div class="flex items-center gap-space-md"><div class="hidden xl:flex items-center gap-space-sm px-space-md py-space-xs bg-surface-container-low border border-outline-variant/40 rounded-lg"><span class="flex h-2 w-2 rounded-full bg-secondary-fixed-dim"></span><span class="font-body-md text-body-md text-on-surface">Sincronizado: <strong class="font-semibold">Hoy 08:32 AM</strong> <span class="text-on-surface-variant font-label-sm text-label-sm">(hace 14 min)</span></span><button class="ml-space-xs flex items-center gap-space-2xs text-primary font-label-sm text-label-sm font-semibold hover:underline cursor-pointer" type="button"><span class="material-symbols-outlined text-[14px]">refresh</span>Actualizar</button></div><div class="flex items-center gap-space-xs border border-outline-variant/40 rounded-lg px-space-sm py-space-xs bg-surface-container-lowest text-on-surface"><span class="material-symbols-outlined text-[18px] text-on-surface-variant">calendar_today</span><select class="bg-transparent font-label-md text-label-md font-medium text-on-surface focus:outline-none cursor-pointer pr-space-xs"><option selected="" value="w16">Esta semana - W16</option><option value="current_month">Mes actual</option><option value="next_w">Próxima semana - W17</option><option value="quarter">Q2 2024</option></select></div><button class="relative p-space-xs rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors cursor-pointer" type="button"><span class="material-symbols-outlined text-[22px]">notifications</span><span class="absolute top-1 right-1 flex h-4 w-4 items-center justify-center rounded-full bg-error text-on-error font-label-sm text-[0.625rem] font-bold">3</span></button><div class="h-6 w-px bg-outline-variant/40"></div><div class="flex items-center gap-space-sm cursor-pointer py-space-2xs px-space-xs rounded-lg hover:bg-surface-container-low transition-colors"><img alt="Profile" class="w-8 h-8 rounded-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBVRe2mNO8PfBQqSn1V_Y083ouqgl2IeokncaMLtvBuqTxgYLEjl9P2PSFjtZO2ffPmM2lkV_x0bms6_O3BSwGIUgt7d1P8YqnujHTPeofp6DpMNMpBKo8epHoOMA6Virs6TwyLkGtaUVqQzqs3B_o0S3ZDk5pdKV9kGhLbG81O7IuN6wqDuMT8NmQbDAVbk-oAmWr4YvJkgJjVkLQY_evN-n-wXEEAXq_BvDmttFdhZmQTWMTTOxLL8w"/><div class="hidden md:flex flex-col text-left"><span class="font-label-md text-label-md font-semibold text-on-surface leading-tight">Carlos Mendoza</span><span class="font-label-sm text-label-sm text-on-surface-variant leading-tight">Jefe de Operaciones y Demanda</span></div><span class="material-symbols-outlined text-[18px] text-on-surface-variant">expand_more</span></div></div></header><main class="relative pt-16 bg-surface min-h-screen"><div class="flex flex-col w-full">
+<!-- Top Command & Context Section -->
+<div class="p-space-xl bg-surface-container-low shadow-sm">
+<div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-space-lg">
+<div class="flex flex-col gap-space-xs">
+<div class="flex items-center gap-space-sm">
+<span class="px-space-xs py-space-2xs bg-primary text-on-primary font-label-sm text-label-sm uppercase tracking-wider rounded">Módulo MES-Plan</span>
+<span class="text-on-surface-variant font-label-sm text-label-sm">Versión de Cálculo: v4.8.2-Agro</span>
+<span class="text-on-surface-variant font-label-sm text-label-sm">•</span>
+<span class="font-label-sm text-label-sm text-secondary font-semibold flex items-center gap-space-2xs">
+<span class="inline-block w-1.5 h-1.5 rounded-full bg-secondary"></span>
+            Algoritmo Heurístico Activo
+          </span>
+</div>
+<h1 class="font-headline-lg text-headline-lg italic text-primary leading-tight font-black tracking-tight">
+          Plan de Producción y Requerimientos de Manufactura
+        </h1>
+<p class="font-body-md text-body-md text-on-surface-variant max-w-4xl">
+          Cálculo de necesidades netas de molienda y empaque ajustadas por lote mínimo, mermas teóricas y capacidad de líneas.
+        </p>
+</div>
+<div class="flex flex-wrap items-center gap-space-sm self-start lg:self-center">
+<!-- Scenario Switcher -->
+<div class="flex items-center gap-space-xs bg-surface-container-lowest px-space-sm py-space-xs rounded-lg shadow-sm">
+<span class="material-symbols-outlined text-[18px] text-primary">layers</span>
+<label class="font-label-sm text-label-sm text-on-surface-variant whitespace-nowrap" for="scenario-select">Fuente:</label>
+<select class="bg-transparent font-label-md text-label-md text-primary font-semibold focus:outline-none cursor-pointer pr-space-xs" id="scenario-select">
+<option value="profit">Basado en: Todos los Pedidos Pendientes Profit</option>
+<option selected="" value="sim">Basado en: Escenario Simulado Activo (Semana 16)</option>
+<option value="forecast">Basado en: Demanda Proyectada (IA + Tendencia)</option>
+</select>
+</div>
+<button class="flex items-center gap-space-xs px-space-md py-space-xs bg-surface-container-lowest text-primary font-title-md text-body-md font-semibold rounded-lg hover:bg-surface-container transition-all shadow-sm" type="button">
+<span class="material-symbols-outlined text-[18px]">file_download</span>
+<span>Exportar Orden</span>
+</button>
+<button class="flex items-center gap-space-xs px-space-lg py-space-xs bg-secondary-fixed text-on-secondary-fixed font-title-md text-body-md font-bold rounded-lg hover:bg-secondary-fixed-dim transition-all shadow-md" type="button">
+<span class="material-symbols-outlined text-[18px]">verified</span>
+<span>Aprobar y Enviar a Planta</span>
+</button>
+</div>
+</div>
+</div>
+<div class="p-space-xl flex flex-col gap-space-xl">
+<!-- Production Summary Metric Bento -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-space-md">
+<!-- KPI 1 -->
+<div class="bg-surface-container-lowest p-space-lg rounded-xl shadow-sm flex flex-col justify-between">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">Volumen Neto Requerido</span>
+<span class="material-symbols-outlined text-primary text-[20px]">scale</span>
+</div>
+<div class="mt-space-md flex items-baseline gap-space-xs">
+<span class="font-display-lg text-display-lg font-extrabold text-primary tabular-nums">42.8</span>
+<span class="font-title-md text-title-md font-semibold text-on-surface-variant">Ton</span>
+</div>
+<div class="mt-space-xs flex items-center gap-space-2xs text-on-surface-variant font-label-sm text-label-sm">
+<span class="text-secondary font-bold">12 órdenes</span> consolidadas
+        </div>
+</div>
+<!-- KPI 2 -->
+<div class="bg-surface-container-lowest p-space-lg rounded-xl shadow-sm flex flex-col justify-between">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">Volumen Ajustado Lote/Merma</span>
+<span class="material-symbols-outlined text-secondary text-[20px]">tune</span>
+</div>
+<div class="mt-space-md flex items-baseline gap-space-xs">
+<span class="font-display-lg text-display-lg font-extrabold text-on-surface tabular-nums">45.2</span>
+<span class="font-title-md text-title-md font-semibold text-on-surface-variant">Ton</span>
+</div>
+<div class="mt-space-xs flex items-center gap-space-2xs font-label-sm text-label-sm text-on-surface-variant">
+<span class="px-space-2xs py-space-2xs bg-surface-container text-on-surface rounded font-semibold">+2.4 Ton</span>
+<span>(Merma media: 3.5%)</span>
+</div>
+</div>
+<!-- KPI 3 -->
+<div class="bg-surface-container-lowest p-space-lg rounded-xl shadow-sm flex flex-col justify-between">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">Horas de Línea Estimadas</span>
+<span class="material-symbols-outlined text-primary text-[20px]">schedule</span>
+</div>
+<div class="mt-space-md flex items-baseline gap-space-xs">
+<span class="font-display-lg text-display-lg font-extrabold text-primary tabular-nums">68.0</span>
+<span class="font-title-md text-title-md font-semibold text-on-surface-variant">Horas</span>
+</div>
+<div class="mt-space-xs flex items-center gap-space-2xs font-label-sm text-label-sm text-on-surface-variant">
+<span>8.5 turnos laborales estándar</span>
+</div>
+</div>
+<!-- KPI 4 -->
+<div class="bg-surface-container-lowest p-space-lg rounded-xl shadow-sm flex flex-col justify-between">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">Capacidad Instalada</span>
+<span class="material-symbols-outlined text-secondary text-[20px]">donut_large</span>
+</div>
+<div class="mt-space-md flex items-baseline justify-between">
+<div class="flex items-baseline gap-space-2xs">
+<span class="font-display-lg text-display-lg font-extrabold text-primary tabular-nums">78.4</span>
+<span class="font-title-md text-title-md font-semibold text-primary">%</span>
+</div>
+<span class="font-label-sm text-label-sm text-secondary font-bold px-space-xs py-space-2xs bg-secondary-container text-on-secondary-container rounded">Óptimo</span>
+</div>
+<div class="mt-space-xs w-full bg-surface-container rounded-full h-2 overflow-hidden flex">
+<div class="bg-secondary-fixed h-full" style="width: 78.4%;"></div>
+<div class="bg-error-container h-full" style="width: 0%;"></div>
+</div>
+</div>
+<!-- KPI 5 -->
+<div class="bg-surface-container-lowest p-space-lg rounded-xl shadow-sm flex flex-col justify-between">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">Líneas Involucradas</span>
+<span class="material-symbols-outlined text-primary text-[20px]">precision_manufacturing</span>
+</div>
+<div class="mt-space-md flex items-baseline gap-space-xs">
+<span class="font-display-lg text-display-lg font-extrabold text-primary tabular-nums">3</span>
+<span class="font-title-md text-title-md font-semibold text-on-surface-variant">/ 4 Disponibles</span>
+</div>
+<div class="mt-space-xs flex items-center gap-space-xs font-label-sm text-label-sm text-on-surface-variant truncate">
+<span class="w-2 h-2 rounded-full bg-secondary-fixed-dim"></span> Mol. A
+          <span class="w-2 h-2 rounded-full bg-secondary-fixed-dim"></span> Ext. B
+          <span class="w-2 h-2 rounded-full bg-secondary-fixed-dim"></span> Ens. C
+        </div>
+</div>
+</div>
+<!-- Active Production Facility Snapshot Strip -->
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex flex-col lg:flex-row items-center justify-between gap-space-md">
+<div class="flex items-center gap-space-md">
+<div class="w-16 h-16 rounded-lg bg-cover bg-center shrink-0" data-alt="Close up of automated industrial flour mill machinery with steel hoppers and clean pipes in an ultra modern food manufacturing facility with cool blue industrial lighting." style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuBOeIOQN75a7V9JiXBI_nJqBMQpu_PU5ejB_AwL8HhVdPisSh-wwRKxbhnF-gXVjS9q_IDfcwaswdPIbJsvCnqjN39e00-tT6FI68Pc3NidaNITbQWzKG6oAZxz3Wzekx-hOBLLt8aQOSi3wUjBd1FbAkvozktpPXOM04JPl16aw0EMg1wDxFLLkFOGj4F47Bgr2qO8ssyQdoBEB5WBTnWIay8PagZfE-N7n-6GbF5kshKAxbHv-R9_0Q')"></div>
+<div class="flex flex-col">
+<span class="font-title-md text-title-md font-bold text-primary">Planta Molinera Central - San Luis</span>
+<span class="font-body-md text-body-md text-on-surface-variant">Cálculo de balances de masa basado en recetas estándar de molienda y densidades de empaque.</span>
+</div>
+</div>
+<div class="flex items-center gap-space-lg self-stretch lg:self-auto justify-between lg:justify-end">
+<div class="text-right">
+<span class="font-label-sm text-label-sm uppercase text-on-surface-variant block font-semibold">Tiempo Total Setup / Limpieza</span>
+<span class="font-data-tabular-lg text-data-tabular-lg font-bold text-primary">4h 15m teóricos</span>
+</div>
+<div class="h-8 w-px bg-surface-container"></div>
+<div class="text-right">
+<span class="font-label-sm text-label-sm uppercase text-on-surface-variant block font-semibold">Tasa Despacho Proyectada</span>
+<span class="font-data-tabular-lg text-data-tabular-lg font-bold text-secondary">99.1% On-Time</span>
+</div>
+</div>
+</div>
+<!-- Filter & View Controls Toolbar -->
+<div class="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-space-md">
+<!-- Tabs -->
+<div class="inline-flex bg-surface-container p-space-2xs rounded-lg">
+<button class="px-space-md py-space-xs rounded-md bg-surface-container-lowest text-primary font-label-md text-label-md font-bold shadow-sm transition-all flex items-center gap-space-xs" type="button">
+<span class="material-symbols-outlined text-[16px]">table_rows</span>
+<span>Vista de Tabla Detallada</span>
+</button>
+<button class="px-space-md py-space-xs rounded-md text-on-surface-variant hover:text-on-surface font-label-md text-label-md font-semibold transition-all flex items-center gap-space-xs" type="button">
+<span class="material-symbols-outlined text-[16px]">calendar_view_week</span>
+<span>Cronograma / Gantt Semanal</span>
+</button>
+<button class="px-space-md py-space-xs rounded-md text-on-surface-variant hover:text-on-surface font-label-md text-label-md font-semibold transition-all flex items-center gap-space-xs" type="button">
+<span class="material-symbols-outlined text-[16px]">analytics</span>
+<span>Capacidad por Línea</span>
+</button>
+</div>
+<!-- Group By & Tools -->
+<div class="flex items-center gap-space-sm flex-wrap">
+<div class="flex items-center gap-space-xs bg-surface-container-lowest px-space-sm py-space-xs rounded-lg shadow-sm">
+<span class="material-symbols-outlined text-[16px] text-on-surface-variant">account_tree</span>
+<label class="font-label-sm text-label-sm text-on-surface-variant" for="group-by-select">Agrupar por:</label>
+<select class="bg-transparent font-label-md text-label-md text-on-surface font-semibold focus:outline-none cursor-pointer" id="group-by-select">
+<option selected="">Línea de Producción</option>
+<option>Fecha de Entrega Requerida</option>
+<option>Familia de Producto</option>
+</select>
+</div>
+<button class="flex items-center gap-space-2xs bg-surface-container-lowest px-space-sm py-space-xs rounded-lg text-on-surface-variant hover:text-on-surface shadow-sm font-label-md text-label-md" type="button">
+<span class="material-symbols-outlined text-[16px]">filter_list</span>
+<span>Filtros</span>
+</button>
+<button class="flex items-center gap-space-2xs bg-surface-container-lowest px-space-sm py-space-xs rounded-lg text-on-surface-variant hover:text-on-surface shadow-sm font-label-md text-label-md" type="button">
+<span class="material-symbols-outlined text-[16px]">settings</span>
+<span>Parámetros de Cálculo</span>
+</button>
+</div>
+</div>
+<!-- Main Production Schedule Table Container -->
+<div class="bg-surface-container-lowest rounded-xl shadow-sm overflow-hidden">
+<!-- Group Header Strip -->
+<div class="bg-primary px-space-lg py-space-sm flex items-center justify-between text-on-primary">
+<div class="flex items-center gap-space-md">
+<span class="material-symbols-outlined text-[20px] text-secondary-fixed">precision_manufacturing</span>
+<span class="font-title-md text-title-md font-bold tracking-wide uppercase">Línea Molienda A &amp; Ensacado Industrial (Capacidad: 2.2 Ton/Hora)</span>
+</div>
+<div class="flex items-center gap-space-lg font-label-sm text-label-sm">
+<span>Carga Planificada: <strong class="text-secondary-fixed font-bold">29.0 Ton</strong></span>
+<span>Ocupación: <strong class="text-secondary-fixed font-bold">13.2 Horas</strong></span>
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-surface-container text-on-surface font-label-md text-label-md uppercase tracking-wider">
+<th class="py-space-sm px-space-md font-bold">Código &amp; Producto</th>
+<th class="py-space-sm px-space-sm font-bold text-center">Línea</th>
+<th class="py-space-sm px-space-sm font-bold text-right">Demanda Pend.</th>
+<th class="py-space-sm px-space-sm font-bold text-right">Stock Utiliz.</th>
+<th class="py-space-sm px-space-sm font-bold text-right text-primary">Req. Neto</th>
+<th class="py-space-sm px-space-sm font-bold text-right">Lote Mín.</th>
+<th class="py-space-sm px-space-sm font-bold text-right">Merma</th>
+<th class="py-space-sm px-space-sm font-bold text-right text-primary">Prog. Final</th>
+<th class="py-space-sm px-space-sm font-bold text-right">Tiempo Est.</th>
+<th class="py-space-sm px-space-sm font-bold text-center">Deadline Despacho</th>
+<th class="py-space-sm px-space-sm font-bold text-center">Prioridad</th>
+<th class="py-space-sm px-space-md font-bold text-center">Estado del Plan</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-surface-container font-body-md text-body-md">
+<!-- Row 1 -->
+<tr class="hover:bg-surface-container-low transition-colors">
+<td class="py-space-sm px-space-md font-medium text-on-surface">
+<div class="flex items-center gap-space-sm">
+<div class="w-8 h-8 rounded bg-surface-container flex items-center justify-center font-bold text-primary font-label-sm text-label-sm shrink-0">
+                    HP50
+                  </div>
+<div class="flex flex-col">
+<span class="font-semibold text-primary">Harina Panadera Especial 50kg</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant font-mono">SKU: HPN-050-PREM</span>
+</div>
+</div>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-space-2xs bg-surface-container font-label-sm text-label-sm font-bold rounded text-primary">L-Mol-A</span>
+</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface">18.50 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">2.50 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums font-bold text-primary">16.00 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">5.00 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">3.5%</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums font-extrabold text-secondary">
+                20.00 T
+              </td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface">
+<span class="font-semibold">9h 05m</span>
+<span class="text-on-surface-variant text-[0.7rem] block">1.1 Turnos</span>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="inline-flex items-center gap-space-2xs text-error font-semibold font-label-sm text-label-sm">
+<span class="material-symbols-outlined text-[14px]">event_busy</span>
+                  Jue 17 Abr 14:00
+                </span>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-space-2xs bg-error-container text-on-error-container font-label-sm text-label-sm font-bold rounded">
+                  ALTA
+                </span>
+</td>
+<td class="py-space-sm px-space-md text-center">
+<span class="px-space-sm py-space-2xs bg-secondary-container text-on-secondary-container font-label-sm text-label-sm font-bold rounded inline-flex items-center gap-space-2xs">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+                  Programado Turno 1
+                </span>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="hover:bg-surface-container-low transition-colors bg-surface-container-lowest">
+<td class="py-space-sm px-space-md font-medium text-on-surface">
+<div class="flex items-center gap-space-sm">
+<div class="w-8 h-8 rounded bg-surface-container flex items-center justify-center font-bold text-primary font-label-sm text-label-sm shrink-0">
+                    HI25
+                  </div>
+<div class="flex flex-col">
+<span class="font-semibold text-primary">Harina Integral Fina 25kg</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant font-mono">SKU: HIN-025-NAT</span>
+</div>
+</div>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-space-2xs bg-surface-container font-label-sm text-label-sm font-bold rounded text-primary">L-Mol-A</span>
+</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface">8.20 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">0.80 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums font-bold text-primary">7.40 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">4.00 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">4.0%</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums font-extrabold text-secondary">
+                9.00 T
+              </td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface">
+<span class="font-semibold">4h 05m</span>
+<span class="text-on-surface-variant text-[0.7rem] block">0.5 Turnos</span>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="inline-flex items-center gap-space-2xs text-on-surface font-medium font-label-sm text-label-sm">
+<span class="material-symbols-outlined text-[14px] text-on-surface-variant">calendar_today</span>
+                  Vie 18 Abr 10:00
+                </span>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-space-2xs bg-surface-container-high text-on-surface font-label-sm text-label-sm font-bold rounded">
+                  MEDIA
+                </span>
+</td>
+<td class="py-space-sm px-space-md text-center">
+<span class="px-space-sm py-space-2xs bg-surface-container text-on-surface-variant font-label-sm text-label-sm font-semibold rounded inline-flex items-center gap-space-2xs">
+<span class="material-symbols-outlined text-[12px]">schedule</span>
+                  Sugerido Sistema
+                </span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Second Group: Extrusion & Pellets -->
+<div class="bg-primary-container px-space-lg py-space-sm flex items-center justify-between text-on-primary">
+<div class="flex items-center gap-space-md">
+<span class="material-symbols-outlined text-[20px] text-secondary-fixed">scatter_plot</span>
+<span class="font-title-md text-title-md font-bold tracking-wide uppercase">Línea Extrusión B &amp; Alimentos Balanceados (Capacidad: 1.5 Ton/Hora)</span>
+</div>
+<div class="flex items-center gap-space-lg font-label-sm text-label-sm">
+<span>Carga Planificada: <strong class="text-secondary-fixed font-bold">16.2 Ton</strong></span>
+<span>Ocupación: <strong class="text-secondary-fixed font-bold">10.8 Horas</strong></span>
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<tbody class="divide-y divide-surface-container font-body-md text-body-md">
+<!-- Row 3 -->
+<tr class="hover:bg-surface-container-low transition-colors">
+<td class="py-space-sm px-space-md font-medium text-on-surface w-1/4">
+<div class="flex items-center gap-space-sm">
+<div class="w-8 h-8 rounded bg-surface-container flex items-center justify-center font-bold text-primary font-label-sm text-label-sm shrink-0">
+                    AIA
+                  </div>
+<div class="flex flex-col">
+<span class="font-semibold text-primary">Alimento Iniciador Aves Polvo</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant font-mono">SKU: BAL-AVI-001</span>
+</div>
+</div>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-space-2xs bg-surface-container font-label-sm text-label-sm font-bold rounded text-primary">L-Ext-B</span>
+</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface">11.40 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">1.20 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums font-bold text-primary">10.20 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">5.00 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">3.0%</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums font-extrabold text-secondary">
+                11.00 T
+              </td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface">
+<span class="font-semibold">7h 20m</span>
+<span class="text-on-surface-variant text-[0.7rem] block">0.9 Turnos</span>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="inline-flex items-center gap-space-2xs text-on-surface font-medium font-label-sm text-label-sm">
+<span class="material-symbols-outlined text-[14px] text-on-surface-variant">calendar_today</span>
+                  Vie 18 Abr 18:00
+                </span>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-space-2xs bg-error-container text-on-error-container font-label-sm text-label-sm font-bold rounded">
+                  ALTA
+                </span>
+</td>
+<td class="py-space-sm px-space-md text-center">
+<span class="px-space-sm py-space-2xs bg-primary-container text-primary-fixed-dim font-label-sm text-label-sm font-semibold rounded inline-flex items-center gap-space-2xs">
+<span class="material-symbols-outlined text-[12px]">rate_review</span>
+                  En Revisión Almacén
+                </span>
+</td>
+</tr>
+<!-- Row 4 -->
+<tr class="hover:bg-surface-container-low transition-colors bg-surface-container-lowest">
+<td class="py-space-sm px-space-md font-medium text-on-surface">
+<div class="flex items-center gap-space-sm">
+<div class="w-8 h-8 rounded bg-surface-container flex items-center justify-center font-bold text-primary font-label-sm text-label-sm shrink-0">
+                    PAL
+                  </div>
+<div class="flex flex-col">
+<span class="font-semibold text-primary">Pelets de Alfalfa Concentrada</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant font-mono">SKU: PEL-ALF-400</span>
+</div>
+</div>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-space-2xs bg-surface-container font-label-sm text-label-sm font-bold rounded text-primary">L-Ext-B</span>
+</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface">4.70 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">0.00 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums font-bold text-primary">4.70 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">5.00 T</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface-variant">5.0%</td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums font-extrabold text-secondary">
+                5.20 T
+              </td>
+<td class="py-space-sm px-space-sm text-right font-data-tabular-md text-data-tabular-md tabular-nums text-on-surface">
+<span class="font-semibold">3h 28m</span>
+<span class="text-on-surface-variant text-[0.7rem] block">0.4 Turnos</span>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="inline-flex items-center gap-space-2xs text-on-surface font-medium font-label-sm text-label-sm">
+<span class="material-symbols-outlined text-[14px] text-on-surface-variant">calendar_today</span>
+                  Sáb 19 Abr 12:00
+                </span>
+</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-space-2xs bg-surface-container text-on-surface-variant font-label-sm text-label-sm font-semibold rounded">
+                  BAJA
+                </span>
+</td>
+<td class="py-space-sm px-space-md text-center">
+<span class="px-space-sm py-space-2xs bg-surface-container text-on-surface-variant font-label-sm text-label-sm font-semibold rounded inline-flex items-center gap-space-2xs">
+<span class="material-symbols-outlined text-[12px]">schedule</span>
+                  Sugerido Sistema
+                </span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Action Footer for Table -->
+<div class="p-space-md bg-surface-container-low flex flex-col sm:flex-row items-center justify-between gap-space-sm">
+<div class="flex items-center gap-space-sm font-label-md text-label-md text-on-surface-variant">
+<span>Mostrando 4 órdenes consolidadas de producción requerida</span>
+<span class="text-outline">•</span>
+<span class="text-primary font-semibold">Todas las restricciones de lote mínimo fueron satisfechas</span>
+</div>
+<div class="flex items-center gap-space-sm">
+<button class="px-space-md py-space-xs text-primary font-label-md text-label-md font-semibold hover:underline" type="button">
+            Recalcular con Merma Cero
+          </button>
+<button class="px-space-md py-space-xs bg-primary text-on-primary rounded font-label-md text-label-md font-semibold hover:bg-primary-container shadow-sm" type="button">
+            Guardar Borrador de Turnos
+          </button>
+</div>
+</div>
+</div>
+<!-- Capacity Constraints & Bottlenecks Panel -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-space-lg">
+<!-- Critical Bottleneck Alert Card -->
+<div class="lg:col-span-2 bg-surface-container-lowest p-space-lg rounded-xl shadow-sm flex flex-col justify-between">
+<div>
+<div class="flex items-start justify-between gap-space-md">
+<div class="flex items-center gap-space-sm">
+<div class="w-10 h-10 rounded-lg bg-error-container text-error flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-[24px]">warning</span>
+</div>
+<div>
+<h2 class="font-title-md text-title-md font-bold text-primary">Restricción de Capacidad Detectada</h2>
+<span class="font-label-sm text-label-sm text-error font-semibold uppercase">Cuello de Botella: Día Jueves 17 de Abril</span>
+</div>
+</div>
+<span class="px-space-xs py-space-2xs bg-surface-container font-label-sm text-label-sm text-on-surface-variant rounded">ID Alerta: CAP-9281</span>
+</div>
+<div class="mt-space-md p-space-md bg-surface-container-low rounded-lg text-body-md font-body-md text-on-surface leading-relaxed">
+<p>
+<strong class="text-primary font-semibold">Línea Molienda A supera el 92% de capacidad operativa</strong> proyectada para el turno vespertino del Jueves 17 debido al requerimiento concentrado de Harina Panadera 50kg.
+            </p>
+<div class="mt-space-sm flex flex-col sm:flex-row gap-space-sm">
+<div class="flex-1 p-space-sm bg-surface-container-lowest rounded shadow-sm">
+<span class="font-label-sm text-label-sm text-on-surface-variant block uppercase font-bold">Opción A (Recomendada)</span>
+<span class="font-body-md text-body-md text-primary font-semibold">Adelantar 4 horas al turno de noche Miércoles 16.</span>
+</div>
+<div class="flex-1 p-space-sm bg-surface-container-lowest rounded shadow-sm">
+<span class="font-label-sm text-label-sm text-on-surface-variant block uppercase font-bold">Opción B</span>
+<span class="font-body-md text-body-md text-primary font-semibold">Reasignar 5 Toneladas netas a Línea Molienda B.</span>
+</div>
+</div>
+</div>
+</div>
+<div class="mt-space-lg flex items-center justify-between pt-space-md">
+<div class="flex items-center gap-space-xs text-on-surface-variant font-label-sm text-label-sm">
+<span class="material-symbols-outlined text-[16px] text-secondary">tune</span>
+<span>Rendimientos y tiempos son configurables desde parámetros de planta.</span>
+</div>
+<button class="px-space-md py-space-xs bg-primary text-on-primary font-label-md text-label-md font-semibold rounded hover:bg-primary-container transition-all" type="button">
+            Aplicar Ajuste de Turno Automático
+          </button>
+</div>
+</div>
+<!-- Quick Parameters & Assumptions Box -->
+<div class="bg-surface-container-lowest p-space-lg rounded-xl shadow-sm flex flex-col justify-between">
+<div class="flex flex-col gap-space-md">
+<div class="flex items-center justify-between">
+<h3 class="font-title-md text-title-md font-bold text-primary">Parámetros de Simulación</h3>
+<span class="material-symbols-outlined text-primary text-[20px]">tune</span>
+</div>
+<div class="space-y-space-sm text-body-md font-body-md">
+<div class="flex items-center justify-between py-space-xs">
+<span class="text-on-surface-variant font-label-sm text-label-sm">Merma Industrial Estándar:</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary">3.50%</span>
+</div>
+<div class="flex items-center justify-between py-space-xs">
+<span class="text-on-surface-variant font-label-sm text-label-sm">Lote Mínimo de Corrida:</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary">5.00 Ton</span>
+</div>
+<div class="flex items-center justify-between py-space-xs">
+<span class="text-on-surface-variant font-label-sm text-label-sm">Tiempo Setup Entre Productos:</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary">45 min</span>
+</div>
+<div class="flex items-center justify-between py-space-xs">
+<span class="text-on-surface-variant font-label-sm text-label-sm">Margen de Seguridad de Entrega:</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-secondary">+12 Horas</span>
+</div>
+</div>
+</div>
+<div class="mt-space-lg p-space-sm bg-surface-container-low rounded-lg">
+<span class="font-label-sm text-label-sm text-on-surface-variant block mb-space-2xs">Estado de Enlace con Molino:</span>
+<div class="flex items-center gap-space-xs">
+<span class="w-2.5 h-2.5 rounded-full bg-secondary-fixed-dim animate-pulse"></span>
+<span class="font-label-md text-label-md font-bold text-primary">SCADA Molinos Conectado (PLC 04)</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<script>
+  // Simple micro-interaction for scenario switching feedback
+  const scenarioSelect = document.getElementById('scenario-select');
+  if (scenarioSelect) {
+    scenarioSelect.addEventListener('change', (e) => {
+      const selectedText = e.target.options[e.target.selectedIndex].text;
+      console.log('Escenario recalculado:', selectedText);
+    });
+  }
+</script></main></div></body></html>

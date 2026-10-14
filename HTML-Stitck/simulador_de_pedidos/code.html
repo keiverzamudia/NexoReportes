@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+
+<html lang="es"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/><link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/><link href="https://fonts.googleapis.com/css2?family=Rubik:ital,wght@0,300..900;1,300..900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "on-error": "#ffffff", "on-surface-variant": "#43474f", "primary": "#001e40", "inverse-surface": "#1f3242", "on-secondary-container": "#4f6c00", "surface-container-high": "#d6ebff", "secondary-container": "#bbf23d", "surface": "#f6f9ff", "secondary-fixed": "#bef440", "on-surface": "#081d2c", "surface-variant": "#d0e5f9", "primary-fixed": "#d5e3ff", "inverse-on-surface": "#e6f2ff", "tertiary-fixed": "#6ffbbe", "on-primary-container": "#799dd6", "primary-fixed-dim": "#a7c8ff", "on-background": "#081d2c", "secondary-fixed-dim": "#a3d71f", "tertiary": "#002416", "tertiary-fixed-dim": "#4edea3", "surface-dim": "#c8dcf0", "outline-variant": "#c3c6d1", "surface-container-highest": "#d0e5f9", "on-primary-fixed": "#001b3c", "outline": "#737780", "secondary": "#4b6700", "error": "#ba1a1a", "surface-tint": "#3a5f94", "on-primary-fixed-variant": "#1f477b", "inverse-primary": "#a7c8ff", "on-tertiary-fixed": "#002113", "primary-container": "#003366", "on-secondary": "#ffffff", "on-tertiary": "#ffffff", "on-error-container": "#93000a", "on-secondary-fixed": "#141f00", "surface-container-lowest": "#ffffff", "background": "#f6f9ff", "on-secondary-fixed-variant": "#384e00", "tertiary-container": "#003c27", "surface-container": "#e1f0ff", "on-tertiary-container": "#00b27b", "on-primary": "#ffffff", "on-tertiary-fixed-variant": "#005236", "error-container": "#ffdad6", "surface-container-low": "#ecf5ff", "surface-bright": "#f6f9ff" }, "borderRadius": { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" }, "spacing": { "margin": "1rem", "margin-desktop": "2rem", "space-md": "0.75rem", "space-2xl": "2rem", "gutter-desktop": "1.5rem", "space-xl": "1.5rem", "space-lg": "1rem", "space-xs": "0.25rem", "space-2xs": "0.125rem", "gutter": "1rem", "space-sm": "0.5rem" }, "fontFamily": { "display-lg": ["Rubik"], "body-md": ["Rubik"], "label-sm": ["Rubik"], "title-md": ["Rubik"], "headline-md": ["Rubik"], "label-md": ["Rubik"], "data-tabular-lg": ["Rubik"], "body-lg": ["Rubik"], "headline-lg": ["Rubik"], "data-tabular-md": ["Rubik"] }, "fontSize": { "display-lg": ["2.25rem", { "lineHeight": "2.75rem", "letterSpacing": "-0.02em", "fontWeight": "800" }], "body-md": ["0.875rem", { "lineHeight": "1.25rem", "fontWeight": "400" }], "label-sm": ["0.6875rem", { "lineHeight": "0.875rem", "fontWeight": "500" }], "title-md": ["1.125rem", { "lineHeight": "1.5rem", "fontWeight": "600" }], "headline-md": ["1.375rem", { "lineHeight": "1.875rem", "letterSpacing": "-0.01em", "fontWeight": "800" }], "label-md": ["0.75rem", { "lineHeight": "1rem", "letterSpacing": "0.04em", "fontWeight": "600" }], "data-tabular-lg": ["1.125rem", { "lineHeight": "1.5rem", "letterSpacing": "0.01em", "fontWeight": "600" }], "body-lg": ["1rem", { "lineHeight": "1.5rem", "fontWeight": "400" }], "headline-lg": ["1.75rem", { "lineHeight": "2.25rem", "letterSpacing": "-0.01em", "fontWeight": "800" }], "data-tabular-md": ["0.875rem", { "lineHeight": "1.25rem", "letterSpacing": "0.01em", "fontWeight": "500" }] } } } };</script></head><body class="bg-background font-body-md text-on-surface antialiased"><aside class="fixed left-0 top-0 h-full w-72 bg-primary-container text-on-primary z-50 flex flex-col justify-between select-none"><div class="flex flex-col flex-1 min-h-0"><div class="h-16 flex items-center gap-space-md px-space-xl border-b border-outline-variant/20 bg-primary"><img alt="San Luis Logo" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1Vh9Z3bI2gqN4dFuaC3OOaSmtxFoXu2tlRymG0AGPrKNVHsN0O_pLoOc9LIWcMxhw32qpjO5u1utrmkPb-D_D5s2VM8p2_PQv8rFsjC9Z_dIuKaykR284OnpTqWQrcBlrZqGONaxxesQvpLtSdR2PrArl_QcuKauY2LITchyO-i0I6mIKLFLAVy5193llAbOHPPSZE8muyQQXM1vpwGwBlWF4NGGoDK10L2BgmJHhtRF4iLXYRdGXkjikQ"/><div class="flex flex-col"><span class="font-title-md text-title-md tracking-tight text-on-primary leading-tight">Nexo Producción</span><span class="font-label-sm text-label-sm text-primary-fixed-dim uppercase tracking-wider">Molinos San Luis</span></div></div><nav class="flex-1 px-space-sm py-space-md overflow-y-auto space-y-space-2xs" data-active-classes="bg-secondary-container text-on-secondary-container font-semibold"><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="resumen-ejecutivo" href="#"><span class="material-symbols-outlined text-[20px]">dashboard</span><span>Resumen ejecutivo</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="disponibilidad-por-producto" href="#"><span class="material-symbols-outlined text-[20px]">inventory_2</span><span>Disponibilidad por producto</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="cumplimiento-por-cliente" href="#"><span class="material-symbols-outlined text-[20px]">verified</span><span>Cumplimiento por cliente</span></a><a aria-current="page" class="flex items-center justify-between px-space-md py-space-sm rounded-lg transition-colors bg-secondary-container text-on-secondary-container font-semibold" data-path="simulador-de-pedidos" href="#"><div class="flex items-center gap-space-md"><span class="material-symbols-outlined text-[20px]">tune</span><span>Simulador de pedidos</span></div><span class="font-label-sm text-label-sm px-space-xs py-space-2xs bg-secondary-fixed text-on-secondary-fixed rounded uppercase font-semibold">Simulador</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="plan-de-produccion" href="#"><span class="material-symbols-outlined text-[20px]">factory</span><span>Plan de producción</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="analisis-de-demanda" href="#"><span class="material-symbols-outlined text-[20px]">query_stats</span><span>Análisis de demanda</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="capacidad-de-produccion" href="#"><span class="material-symbols-outlined text-[20px]">precision_manufacturing</span><span>Capacidad de producción</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="reportes-e-indicadores" href="#"><span class="material-symbols-outlined text-[20px]">bar_chart</span><span>Reportes e indicadores</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="historial-de-simulaciones" href="#"><span class="material-symbols-outlined text-[20px]">history</span><span>Historial de simulaciones</span></a><div class="my-space-sm border-t border-outline-variant/15"></div><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="sincronizacion-con-profit" href="#"><span class="material-symbols-outlined text-[20px]">sync_alt</span><span>Sincronización con Profit</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="configuracion" href="#"><span class="material-symbols-outlined text-[20px]">settings</span><span>Configuración</span></a></nav></div><div class="p-space-md m-space-sm bg-primary rounded-lg border border-outline-variant/20 flex items-center justify-between"><div class="flex items-center gap-space-sm"><span class="relative flex h-2.5 w-2.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary-fixed-dim opacity-75"></span><span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-secondary-fixed"></span></span><div class="flex flex-col"><span class="font-label-sm text-label-sm text-on-primary font-medium leading-none">Vistas SQL Profit</span><span class="font-label-sm text-[0.625rem] text-primary-fixed-dim mt-0.5 leading-none">Conectadas (En Línea)</span></div></div><span class="material-symbols-outlined text-[16px] text-secondary-fixed">database</span></div></aside><div class="pl-72"><header class="fixed top-0 left-72 right-0 h-16 bg-surface-container-lowest border-b border-outline-variant/40 z-40 flex items-center justify-between px-space-xl"><div class="flex items-center gap-space-md min-w-0"><div class="flex items-center gap-space-xs font-label-md text-label-md text-on-surface-variant"><span class="material-symbols-outlined text-[18px]">home</span><span>/</span><span class="text-on-surface font-semibold truncate">Nexo Producción</span></div></div><div class="flex items-center gap-space-md"><div class="hidden xl:flex items-center gap-space-sm px-space-md py-space-xs bg-surface-container-low border border-outline-variant/40 rounded-lg"><span class="flex h-2 w-2 rounded-full bg-secondary-fixed-dim"></span><span class="font-body-md text-body-md text-on-surface">Sincronizado: <strong class="font-semibold">Hoy 08:32 AM</strong> <span class="text-on-surface-variant font-label-sm text-label-sm">(hace 14 min)</span></span><button class="ml-space-xs flex items-center gap-space-2xs text-primary font-label-sm text-label-sm font-semibold hover:underline cursor-pointer" type="button"><span class="material-symbols-outlined text-[14px]">refresh</span>Actualizar</button></div><div class="flex items-center gap-space-xs border border-outline-variant/40 rounded-lg px-space-sm py-space-xs bg-surface-container-lowest text-on-surface"><span class="material-symbols-outlined text-[18px] text-on-surface-variant">calendar_today</span><select class="bg-transparent font-label-md text-label-md font-medium text-on-surface focus:outline-none cursor-pointer pr-space-xs"><option selected="" value="w16">Esta semana - W16</option><option value="current_month">Mes actual</option><option value="next_w">Próxima semana - W17</option><option value="quarter">Q2 2024</option></select></div><button class="relative p-space-xs rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors cursor-pointer" type="button"><span class="material-symbols-outlined text-[22px]">notifications</span><span class="absolute top-1 right-1 flex h-4 w-4 items-center justify-center rounded-full bg-error text-on-error font-label-sm text-[0.625rem] font-bold">3</span></button><div class="h-6 w-px bg-outline-variant/40"></div><div class="flex items-center gap-space-sm cursor-pointer py-space-2xs px-space-xs rounded-lg hover:bg-surface-container-low transition-colors"><img alt="Profile" class="w-8 h-8 rounded-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBVRe2mNO8PfBQqSn1V_Y083ouqgl2IeokncaMLtvBuqTxgYLEjl9P2PSFjtZO2ffPmM2lkV_x0bms6_O3BSwGIUgt7d1P8YqnujHTPeofp6DpMNMpBKo8epHoOMA6Virs6TwyLkGtaUVqQzqs3B_o0S3ZDk5pdKV9kGhLbG81O7IuN6wqDuMT8NmQbDAVbk-oAmWr4YvJkgJjVkLQY_evN-n-wXEEAXq_BvDmttFdhZmQTWMTTOxLL8w"/><div class="hidden md:flex flex-col text-left"><span class="font-label-md text-label-md font-semibold text-on-surface leading-tight">Carlos Mendoza</span><span class="font-label-sm text-label-sm text-on-surface-variant leading-tight">Jefe de Operaciones y Demanda</span></div><span class="material-symbols-outlined text-[18px] text-on-surface-variant">expand_more</span></div></div></header><main class="relative pt-16 bg-surface min-h-screen"><div class="flex flex-col w-full">
+<!-- Status Banner: Simulation Mode Active -->
+<div class="w-full bg-surface-container-high px-space-xl py-space-sm flex items-center justify-between shadow-sm">
+<div class="flex items-center gap-space-md">
+<div class="flex items-center justify-center w-8 h-8 rounded-full bg-secondary-fixed text-on-secondary-fixed">
+<span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 1;">science</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-space-sm">
+<span class="font-label-md text-label-md uppercase tracking-wider text-primary font-bold">Modo Simulación Activo</span>
+<span class="px-space-xs py-space-2xs bg-secondary-container text-on-secondary-container font-label-sm text-label-sm rounded uppercase font-semibold">Memoria Volátil Sandbox</span>
+</div>
+<p class="font-body-md text-body-md text-on-surface-variant">Escenario no confirmado. Los consumos virtuales no modifican el stock físico en Profit Plus ERP hasta su aprobación ejecutiva.</p>
+</div>
+</div>
+<div class="flex items-center gap-space-md">
+<span class="font-data-tabular-md text-data-tabular-md text-on-surface-variant flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-tertiary">check_circle</span>
+        Snapshot base: 08:32 AM (Hoy)
+      </span>
+<button class="px-space-md py-space-xs bg-surface-container-lowest text-primary font-label-md text-label-md rounded shadow-sm hover:bg-surface-container transition-colors flex items-center gap-space-xs cursor-pointer" type="button">
+<span class="material-symbols-outlined text-[16px]">restart_alt</span>
+        Descartar Cambios
+      </button>
+</div>
+</div>
+<div class="p-space-xl flex flex-col gap-space-xl">
+<!-- Header Section -->
+<div class="flex flex-col lg:flex-row lg:items-end justify-between gap-space-md">
+<div class="space-y-space-xs max-w-4xl">
+<div class="flex items-center gap-space-sm">
+<span class="font-label-sm text-label-sm uppercase tracking-wider bg-primary text-on-primary px-space-sm py-space-2xs rounded">Motor de Asignación v3.4</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant font-medium">Planta Principal Cagua • Almacén A01</span>
+</div>
+<h1 class="font-display-lg text-display-lg italic tracking-tight text-primary font-extrabold leading-none">
+          Simulador de Pedidos y Asignación de Inventario
+        </h1>
+<p class="font-body-lg text-body-lg text-on-surface-variant">
+          Entorno de simulación virtual. Asigne existencias en tiempo real y evalúe el impacto en el plan de fabricación sin modificar los datos de Profit.
+        </p>
+</div>
+<div class="flex flex-wrap items-center gap-space-sm self-start lg:self-auto">
+<button class="px-space-lg py-space-sm bg-surface-container text-on-surface font-label-md text-label-md rounded shadow-sm hover:bg-surface-container-high transition-colors flex items-center gap-space-xs cursor-pointer" id="btn-reset" type="button">
+<span class="material-symbols-outlined text-[18px]">rotate_left</span>
+          Reiniciar Simulación
+        </button>
+<button class="px-space-lg py-space-sm bg-secondary-fixed text-on-secondary-fixed font-title-md text-title-md rounded shadow-sm hover:bg-secondary-fixed-dim transition-all flex items-center gap-space-xs font-bold cursor-pointer" id="btn-save-scenario" type="button">
+<span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 1;">save</span>
+          Guardar Escenario...
+        </button>
+<button class="px-space-lg py-space-sm bg-primary-container text-on-primary font-label-md text-label-md rounded shadow-sm hover:bg-primary transition-all flex items-center gap-space-xs cursor-pointer" type="button">
+<span class="material-symbols-outlined text-[18px]">precision_manufacturing</span>
+          Generar Plan de Producción
+        </button>
+</div>
+</div>
+<!-- Control Bar: Mode Toggle + Filters -->
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-space-lg">
+<!-- Mode Toggle Switch -->
+<div class="flex items-center gap-space-md bg-surface-container-low p-space-xs rounded-lg">
+<button class="flex items-center gap-space-sm px-space-md py-space-xs rounded-md bg-primary text-on-primary shadow-sm font-label-md text-label-md transition-all cursor-pointer" id="toggle-mode-auto" type="button">
+<span class="material-symbols-outlined text-[18px]">bolt</span>
+<span>Asignación Automática por Prioridad</span>
+</button>
+<button class="flex items-center gap-space-sm px-space-md py-space-xs rounded-md text-on-surface-variant hover:text-on-surface font-label-md text-label-md transition-all cursor-pointer" id="toggle-mode-manual" type="button">
+<span class="material-symbols-outlined text-[18px]">tune</span>
+<span>Asignación Manual Asistida</span>
+</button>
+</div>
+<!-- Filters Row -->
+<div class="flex flex-wrap items-center gap-space-md flex-1 xl:justify-end">
+<div class="flex items-center gap-space-xs bg-surface-container-low px-space-md py-space-xs rounded-lg flex-1 min-w-[200px] max-w-xs">
+<span class="material-symbols-outlined text-on-surface-variant text-[18px]">search</span>
+<input class="bg-transparent font-body-md text-body-md text-on-surface w-full focus:outline-none placeholder:text-on-surface-variant/60" placeholder="Filtrar cliente o N° pedido..." type="text"/>
+</div>
+<div class="flex items-center gap-space-xs bg-surface-container-low px-space-md py-space-xs rounded-lg">
+<span class="material-symbols-outlined text-on-surface-variant text-[18px]">calendar_month</span>
+<select class="bg-transparent font-label-md text-label-md text-on-surface focus:outline-none cursor-pointer">
+<option>Entrega: Próximos 7 días</option>
+<option selected="">Entrega: Semana 16 (Actual)</option>
+<option>Entrega: Semana 17</option>
+<option>Todos los pedidos vencidos</option>
+</select>
+</div>
+<div class="flex items-center gap-space-xs bg-surface-container-low px-space-md py-space-xs rounded-lg">
+<span class="material-symbols-outlined text-on-surface-variant text-[18px]">warehouse</span>
+<select class="bg-transparent font-label-md text-label-md text-on-surface focus:outline-none cursor-pointer">
+<option selected="">Almacén Cagua Principal (A01)</option>
+<option>Almacén Valencia Buffer (A02)</option>
+<option>Almacén Puerto Cabello (A05)</option>
+</select>
+</div>
+<div class="flex items-center gap-space-xs bg-surface-container-low px-space-md py-space-xs rounded-lg">
+<span class="material-symbols-outlined text-on-surface-variant text-[18px]">grade</span>
+<select class="bg-transparent font-label-md text-label-md text-on-surface focus:outline-none cursor-pointer">
+<option selected="">Todas las prioridades</option>
+<option>Solo Tier 1 (Corporativo)</option>
+<option>Tier 1 + Tier 2</option>
+</select>
+</div>
+</div>
+</div>
+<!-- Main Two-Column Layout (70% Grid / 30% Impact Panel) -->
+<div class="grid grid-cols-1 xl:grid-cols-12 gap-space-xl items-start">
+<!-- Left Column: 70% Interactive Orders Table (approx 8.4 cols -> 8 cols or 8.5 cols) -->
+<div class="xl:col-span-8 flex flex-col gap-space-lg">
+<!-- Table Header Context Bar -->
+<div class="flex items-center justify-between bg-surface-container-low px-space-lg py-space-sm rounded-t-xl">
+<div class="flex items-center gap-space-md">
+<label class="flex items-center gap-space-xs cursor-pointer select-none">
+<input checked="" class="w-4 h-4 rounded text-primary focus:ring-0 cursor-pointer" id="master-select" type="checkbox"/>
+<span class="font-label-md text-label-md text-primary font-bold">Seleccionar Todo el Lote</span>
+</label>
+<span class="h-4 w-px bg-outline-variant/40"></span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">Mostrando <strong class="text-on-surface">6 pedidos prioritarios</strong> (4 simulados actualmente)</span>
+</div>
+<div class="flex items-center gap-space-md">
+<span class="font-label-sm text-label-sm text-on-surface-variant flex items-center gap-space-2xs">
+<span class="inline-block w-2.5 h-2.5 rounded-full bg-secondary-fixed"></span> Asignado Virtual
+            </span>
+<span class="font-label-sm text-label-sm text-on-surface-variant flex items-center gap-space-2xs">
+<span class="inline-block w-2.5 h-2.5 rounded-full bg-error"></span> Déficit
+            </span>
+</div>
+</div>
+<!-- Orders Table Container -->
+<div class="overflow-x-auto bg-surface-container-lowest rounded-b-xl shadow-sm">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-primary-container text-on-primary font-label-md text-label-md uppercase tracking-wider">
+<th class="py-space-md px-space-md w-10 text-center">
+<span class="material-symbols-outlined text-[18px]">checklist</span>
+</th>
+<th class="py-space-md px-space-md font-semibold">N° Pedido &amp; Entrega</th>
+<th class="py-space-md px-space-md font-semibold">Cliente B2B &amp; Prioridad</th>
+<th class="py-space-md px-space-md font-semibold">Productos Solicitados</th>
+<th class="py-space-md px-space-md font-semibold text-right">Exist. Orig / Rest.</th>
+<th class="py-space-md px-space-md font-semibold text-center w-36">Asig. Virtual (TM)</th>
+<th class="py-space-md px-space-md font-semibold text-right">Déficit</th>
+<th class="py-space-md px-space-md font-semibold text-center">Estado Factibilidad</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline-variant/15 font-body-md text-body-md text-on-surface">
+<!-- ROW 1 (Tier 1 - 100% Factible) -->
+<tr class="bg-surface-container-lowest hover:bg-surface-container-low transition-colors group">
+<td class="py-space-md px-space-md text-center">
+<input checked="" class="order-chk w-4 h-4 rounded text-primary focus:ring-0 cursor-pointer" data-assigned="6.0" data-deficit="0.0" data-pedido="PED-88412" data-qty="6.0" type="checkbox"/>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary">PED-88412</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant flex items-center gap-space-2xs mt-0.5">
+<span class="material-symbols-outlined text-[13px] text-tertiary">event_available</span>
+                      18 Abr 2024 (Mañana)
+                    </span>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-title-md text-title-md font-semibold text-on-surface">Alimentos Polar C.A.</span>
+<div class="flex items-center gap-space-xs mt-1">
+<span class="px-space-xs py-space-2xs bg-primary text-on-primary rounded font-label-sm text-label-sm font-semibold tracking-wide uppercase">Tier 1 Corp</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">SLA: 24h</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between text-xs bg-surface-container-low px-space-xs py-space-2xs rounded">
+<span class="font-medium truncate max-w-[120px]" title="Harina Industrial Panadera 50kg">H-Ind. Panadera</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary ml-2">4.0 TM</span>
+</div>
+<div class="flex items-center justify-between text-xs bg-surface-container-low px-space-xs py-space-2xs rounded">
+<span class="font-medium truncate max-w-[120px]" title="Sémola Trigo Durum Especial">Sémola Durum</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary ml-2">2.0 TM</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<div class="flex flex-col items-end">
+<span class="text-on-surface-variant">Disp: 28.5 TM</span>
+<span class="font-bold text-primary">Rest: 22.5 TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-center">
+<div class="flex items-center justify-center gap-1">
+<input class="w-20 px-space-xs py-space-2xs bg-surface-container-low border border-primary/30 rounded text-center font-data-tabular-md text-data-tabular-md font-bold text-primary focus:outline-none focus:ring-1 focus:ring-primary" max="6.0" step="0.5" type="number" value="6.0"/>
+<span class="font-label-sm text-label-sm text-on-surface-variant">TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<span class="text-tertiary font-bold">0.0 TM</span>
+</td>
+<td class="py-space-md px-space-md text-center">
+<span class="inline-flex items-center gap-space-2xs px-space-sm py-space-2xs rounded bg-surface-container-high text-on-tertiary-container font-label-md text-label-md font-bold">
+<span class="material-symbols-outlined text-[16px]">check_circle</span>
+                    Factible 100%
+                  </span>
+</td>
+</tr>
+<!-- ROW 2 (Tier 1 - 100% Factible) -->
+<tr class="bg-surface-container-low/40 hover:bg-surface-container-low transition-colors group">
+<td class="py-space-md px-space-md text-center">
+<input checked="" class="order-chk w-4 h-4 rounded text-primary focus:ring-0 cursor-pointer" data-assigned="4.5" data-deficit="0.0" data-pedido="PED-88415" data-qty="4.5" type="checkbox"/>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary">PED-88415</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant flex items-center gap-space-2xs mt-0.5">
+<span class="material-symbols-outlined text-[13px] text-tertiary">event_available</span>
+                      19 Abr 2024
+                    </span>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-title-md text-title-md font-semibold text-on-surface">Monaca Molinos Nac.</span>
+<div class="flex items-center gap-space-xs mt-1">
+<span class="px-space-xs py-space-2xs bg-primary text-on-primary rounded font-label-sm text-label-sm font-semibold tracking-wide uppercase">Tier 1 Corp</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">SLA: 48h</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between text-xs bg-surface-container-low px-space-xs py-space-2xs rounded">
+<span class="font-medium truncate max-w-[120px]" title="Harina Todo Uso Extra 45kg">H-Todo Uso Extra</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary ml-2">4.5 TM</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<div class="flex flex-col items-end">
+<span class="text-on-surface-variant">Disp: 18.0 TM</span>
+<span class="font-bold text-primary">Rest: 13.5 TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-center">
+<div class="flex items-center justify-center gap-1">
+<input class="w-20 px-space-xs py-space-2xs bg-surface-container-low border border-primary/30 rounded text-center font-data-tabular-md text-data-tabular-md font-bold text-primary focus:outline-none focus:ring-1 focus:ring-primary" max="4.5" step="0.5" type="number" value="4.5"/>
+<span class="font-label-sm text-label-sm text-on-surface-variant">TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<span class="text-tertiary font-bold">0.0 TM</span>
+</td>
+<td class="py-space-md px-space-md text-center">
+<span class="inline-flex items-center gap-space-2xs px-space-sm py-space-2xs rounded bg-surface-container-high text-on-tertiary-container font-label-md text-label-md font-bold">
+<span class="material-symbols-outlined text-[16px]">check_circle</span>
+                    Factible 100%
+                  </span>
+</td>
+</tr>
+<!-- ROW 3 (Tier 2 - Parcial 65%) -->
+<tr class="bg-surface-container-lowest hover:bg-surface-container-low transition-colors group">
+<td class="py-space-md px-space-md text-center">
+<input checked="" class="order-chk w-4 h-4 rounded text-primary focus:ring-0 cursor-pointer" data-assigned="3.25" data-deficit="1.75" data-pedido="PED-88420" data-qty="5.0" type="checkbox"/>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary">PED-88420</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant flex items-center gap-space-2xs mt-0.5">
+<span class="material-symbols-outlined text-[13px] text-on-surface-variant">event</span>
+                      20 Abr 2024
+                    </span>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-title-md text-title-md font-semibold text-on-surface">Distribuidora La Gran Señora</span>
+<div class="flex items-center gap-space-xs mt-1">
+<span class="px-space-xs py-space-2xs bg-secondary-fixed text-on-secondary-fixed rounded font-label-sm text-label-sm font-semibold tracking-wide uppercase">Tier 2 Mayorista</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">SLA: 72h</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between text-xs bg-surface-container-low px-space-xs py-space-2xs rounded">
+<span class="font-medium truncate max-w-[120px]" title="Harina Industrial Panadera 50kg">H-Ind. Panadera</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary ml-2">3.0 TM</span>
+</div>
+<div class="flex items-center justify-between text-xs bg-surface-container-low px-space-xs py-space-2xs rounded">
+<span class="font-medium truncate max-w-[120px]" title="Afrecho Purificado Micro">Afrecho Micro</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary ml-2">2.0 TM</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<div class="flex flex-col items-end">
+<span class="text-on-surface-variant">Disp: 3.25 TM</span>
+<span class="font-bold text-error">Rest: 0.0 TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-center">
+<div class="flex items-center justify-center gap-1">
+<input class="w-20 px-space-xs py-space-2xs bg-surface-container-low border border-primary/30 rounded text-center font-data-tabular-md text-data-tabular-md font-bold text-primary focus:outline-none focus:ring-1 focus:ring-primary" max="5.0" step="0.25" type="number" value="3.25"/>
+<span class="font-label-sm text-label-sm text-on-surface-variant">TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<div class="flex flex-col items-end">
+<span class="text-error font-bold">-1.75 TM</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">Lote en Fab: 0.8 TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-center">
+<span class="inline-flex items-center gap-space-2xs px-space-sm py-space-2xs rounded bg-surface-container text-on-surface font-label-md text-label-md font-bold">
+<span class="material-symbols-outlined text-[16px] text-secondary">donut_large</span>
+                    Parcial 65%
+                  </span>
+</td>
+</tr>
+<!-- ROW 4 (Tier 2 - 100% Factible) -->
+<tr class="bg-surface-container-low/40 hover:bg-surface-container-low transition-colors group">
+<td class="py-space-md px-space-md text-center">
+<input checked="" class="order-chk w-4 h-4 rounded text-primary focus:ring-0 cursor-pointer" data-assigned="4.65" data-deficit="0.0" data-pedido="PED-88428" data-qty="4.65" type="checkbox"/>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary">PED-88428</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant flex items-center gap-space-2xs mt-0.5">
+<span class="material-symbols-outlined text-[13px] text-tertiary">event_available</span>
+                      21 Abr 2024
+                    </span>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-title-md text-title-md font-semibold text-on-surface">Pastas Capri S.A.</span>
+<div class="flex items-center gap-space-xs mt-1">
+<span class="px-space-xs py-space-2xs bg-secondary-fixed text-on-secondary-fixed rounded font-label-sm text-label-sm font-semibold tracking-wide uppercase">Tier 2 Mayorista</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">SLA: 48h</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between text-xs bg-surface-container-low px-space-xs py-space-2xs rounded">
+<span class="font-medium truncate max-w-[120px]" title="Sémola Durum Gruesa">Sémola Durum G.</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary ml-2">4.65 TM</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<div class="flex flex-col items-end">
+<span class="text-on-surface-variant">Disp: 10.2 TM</span>
+<span class="font-bold text-primary">Rest: 5.55 TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-center">
+<div class="flex items-center justify-center gap-1">
+<input class="w-20 px-space-xs py-space-2xs bg-surface-container-low border border-primary/30 rounded text-center font-data-tabular-md text-data-tabular-md font-bold text-primary focus:outline-none focus:ring-1 focus:ring-primary" max="4.65" step="0.05" type="number" value="4.65"/>
+<span class="font-label-sm text-label-sm text-on-surface-variant">TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<span class="text-tertiary font-bold">0.0 TM</span>
+</td>
+<td class="py-space-md px-space-md text-center">
+<span class="inline-flex items-center gap-space-2xs px-space-sm py-space-2xs rounded bg-surface-container-high text-on-tertiary-container font-label-md text-label-md font-bold">
+<span class="material-symbols-outlined text-[16px]">check_circle</span>
+                    Factible 100%
+                  </span>
+</td>
+</tr>
+<!-- ROW 5 (Tier 3 - Inviable sin Producción, Sin Chequear aún) -->
+<tr class="bg-surface-container-lowest hover:bg-surface-container-low transition-colors opacity-90 group">
+<td class="py-space-md px-space-md text-center">
+<input class="order-chk w-4 h-4 rounded text-primary focus:ring-0 cursor-pointer" data-assigned="0.0" data-deficit="7.5" data-pedido="PED-88433" data-qty="7.5" type="checkbox"/>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-on-surface-variant">PED-88433</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant flex items-center gap-space-2xs mt-0.5">
+<span class="material-symbols-outlined text-[13px] text-error">warning</span>
+                      22 Abr 2024
+                    </span>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-title-md text-title-md font-semibold text-on-surface">Inversiones San Carlos C.A.</span>
+<div class="flex items-center gap-space-xs mt-1">
+<span class="px-space-xs py-space-2xs bg-surface-container-high text-on-surface-variant rounded font-label-sm text-label-sm font-semibold tracking-wide uppercase">Tier 3 Distribuidor</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">SLA: 96h</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between text-xs bg-surface-container-low px-space-xs py-space-2xs rounded">
+<span class="font-medium truncate max-w-[120px]" title="Harina Galletera Especial 50kg">H-Galletera Esp.</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary ml-2">7.5 TM</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<div class="flex flex-col items-end">
+<span class="text-error font-bold">Disp: 0.0 TM</span>
+<span class="font-bold text-error">Rest: 0.0 TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-center">
+<div class="flex items-center justify-center gap-1">
+<input class="w-20 px-space-xs py-space-2xs bg-surface-container text-outline rounded text-center font-data-tabular-md text-data-tabular-md font-bold cursor-not-allowed" disabled="" max="7.5" step="0.5" type="number" value="0.0"/>
+<span class="font-label-sm text-label-sm text-on-surface-variant">TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<div class="flex flex-col items-end">
+<span class="text-error font-bold">-7.5 TM</span>
+<span class="font-label-sm text-label-sm text-error">Planificar Molienda</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-center">
+<span class="inline-flex items-center gap-space-2xs px-space-sm py-space-2xs rounded bg-error-container text-on-error-container font-label-md text-label-md font-bold">
+<span class="material-symbols-outlined text-[16px]">block</span>
+                    Inviable sin Prod.
+                  </span>
+</td>
+</tr>
+<!-- ROW 6 (Tier 2 - Desabastecido por Conflicto con Polar) -->
+<tr class="bg-surface-container-low/40 hover:bg-surface-container-low transition-colors group">
+<td class="py-space-md px-space-md text-center">
+<input class="order-chk w-4 h-4 rounded text-primary focus:ring-0 cursor-pointer" data-assigned="0.0" data-deficit="3.8" data-pedido="PED-88441" data-qty="3.8" type="checkbox"/>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary">PED-88441</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant flex items-center gap-space-2xs mt-0.5">
+<span class="material-symbols-outlined text-[13px] text-on-surface-variant">event</span>
+                      23 Abr 2024
+                    </span>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col">
+<span class="font-title-md text-title-md font-semibold text-on-surface">Panadería Central Los Altos</span>
+<div class="flex items-center gap-space-xs mt-1">
+<span class="px-space-xs py-space-2xs bg-secondary-fixed text-on-secondary-fixed rounded font-label-sm text-label-sm font-semibold tracking-wide uppercase">Tier 2 Mayorista</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">SLA: 48h</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md">
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between text-xs bg-surface-container-low px-space-xs py-space-2xs rounded">
+<span class="font-medium truncate max-w-[120px]" title="Harina Industrial Panadera 50kg">H-Ind. Panadera</span>
+<span class="font-data-tabular-md text-data-tabular-md font-bold text-primary ml-2">3.8 TM</span>
+</div>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<div class="flex flex-col items-end">
+<span class="text-on-surface-variant line-through">Disp: 3.8 TM</span>
+<span class="font-bold text-error">Rest: 0.0 TM (Absorbido)</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-center">
+<div class="flex items-center justify-center gap-1">
+<input class="w-20 px-space-xs py-space-2xs bg-surface-container-low border border-primary/30 rounded text-center font-data-tabular-md text-data-tabular-md font-bold text-primary focus:outline-none focus:ring-1 focus:ring-primary" max="3.8" step="0.1" type="number" value="0.0"/>
+<span class="font-label-sm text-label-sm text-on-surface-variant">TM</span>
+</div>
+</td>
+<td class="py-space-md px-space-md text-right font-data-tabular-md text-data-tabular-md">
+<span class="text-error font-bold">-3.8 TM</span>
+</td>
+<td class="py-space-md px-space-md text-center">
+<span class="inline-flex items-center gap-space-2xs px-space-sm py-space-2xs rounded bg-error-container text-on-error-container font-label-md text-label-md font-bold">
+<span class="material-symbols-outlined text-[16px]">priority_high</span>
+                    Conflicto Stock
+                  </span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Inline Visual: Production Matrix vs Simulated Demand Distribution -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-space-md">
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex items-center justify-between">
+<div class="flex flex-col">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-bold tracking-wider">Línea Molienda 1 (Harinas)</span>
+<span class="font-data-tabular-lg text-data-tabular-lg font-bold text-primary mt-1">94.2% Capacidad</span>
+<span class="font-label-sm text-label-sm text-tertiary font-semibold mt-0.5">Turnos A y B asignados</span>
+</div>
+<!-- Progress Arc SVG -->
+<svg class="w-14 h-14 text-primary" viewbox="0 0 36 36">
+<path class="text-surface-container-high" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="3.5"></path>
+<path class="text-secondary-fixed-dim" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-dasharray="94.2, 100" stroke-linecap="round" stroke-width="3.5"></path>
+</svg>
+</div>
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex items-center justify-between">
+<div class="flex flex-col">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-bold tracking-wider">Línea Sémolas (Durum)</span>
+<span class="font-data-tabular-lg text-data-tabular-lg font-bold text-primary mt-1">78.0% Capacidad</span>
+<span class="font-label-sm text-label-sm text-secondary font-semibold mt-0.5">Ventana disponible: 6.2 TM</span>
+</div>
+<svg class="w-14 h-14 text-primary" viewbox="0 0 36 36">
+<path class="text-surface-container-high" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-width="3.5"></path>
+<path class="text-primary-container" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" stroke-dasharray="78, 100" stroke-linecap="round" stroke-width="3.5"></path>
+</svg>
+</div>
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex items-center justify-between">
+<div class="flex flex-col">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-bold tracking-wider">Tiempo Estimado Fabricación</span>
+<span class="font-data-tabular-lg text-data-tabular-lg font-bold text-error mt-1">+18.5 Horas</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant mt-0.5">Para cubrir déficits del lote</span>
+</div>
+<div class="w-12 h-12 rounded-full bg-error-container text-on-error-container flex items-center justify-center font-bold">
+<span class="material-symbols-outlined text-[24px]">timelapse</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Column: 30% Fixed Impact Sidebar -->
+<div class="xl:col-span-4 flex flex-col gap-space-lg">
+<!-- Live Impact Metric Card -->
+<div class="bg-surface-container-lowest rounded-xl shadow-md p-space-lg flex flex-col gap-space-lg relative overflow-hidden">
+<div class="absolute top-0 left-0 right-0 h-1.5 bg-primary"></div>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-primary text-[22px]">analytics</span>
+<h2 class="font-headline-md text-headline-md text-primary font-bold">Resumen del Escenario</h2>
+</div>
+<span class="px-space-xs py-space-2xs rounded bg-secondary-fixed text-on-secondary-fixed font-label-sm text-label-sm font-bold uppercase">En Vivo</span>
+</div>
+<!-- Key Metrics Grid -->
+<div class="grid grid-cols-2 gap-space-sm">
+<div class="bg-surface-container-low p-space-md rounded-lg">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold block">Pedidos Simulados</span>
+<div class="flex items-baseline gap-space-xs mt-1">
+<span class="font-display-lg text-display-lg font-extrabold text-primary" id="kpi-orders-selected">4</span>
+<span class="font-body-md text-body-md text-on-surface-variant font-medium">/ 142 tot</span>
+</div>
+<span class="font-label-sm text-label-sm text-on-surface-variant mt-0.5 block">Pendientes en Profit</span>
+</div>
+<div class="bg-surface-container-low p-space-md rounded-lg">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold block">Volumen Comprometido</span>
+<div class="flex items-baseline gap-space-xs mt-1">
+<span class="font-display-lg text-display-lg font-extrabold text-primary" id="kpi-vol-committed">18.4</span>
+<span class="font-body-md text-body-md text-primary font-semibold">TM</span>
+</div>
+<span class="font-label-sm text-label-sm text-secondary font-medium mt-0.5 block">61.5% del stock útil</span>
+</div>
+<div class="bg-surface-container-low p-space-md rounded-lg">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold block">Inventario Virtual Restante</span>
+<div class="flex items-baseline gap-space-xs mt-1">
+<span class="font-headline-lg text-headline-lg font-bold text-on-surface" id="kpi-vol-remaining">32.1</span>
+<span class="font-body-md text-body-md text-on-surface-variant">TM</span>
+</div>
+<span class="font-label-sm text-label-sm text-on-surface-variant mt-0.5 block">Silos y Almacén A01</span>
+</div>
+<div class="bg-error-container/30 p-space-md rounded-lg">
+<span class="font-label-sm text-label-sm text-error uppercase font-bold block">Déficit Neto a Fabricar</span>
+<div class="flex items-baseline gap-space-xs mt-1">
+<span class="font-headline-lg text-headline-lg font-extrabold text-error" id="kpi-deficit">11.2</span>
+<span class="font-body-md text-body-md text-error font-bold">TM</span>
+</div>
+<span class="font-label-sm text-label-sm text-on-error-container font-semibold mt-0.5 block">Requiere Orden Prod.</span>
+</div>
+</div>
+<!-- Dispatch Ratio Breakdown -->
+<div class="space-y-space-xs pt-space-xs">
+<div class="flex items-center justify-between font-label-md text-label-md">
+<span class="text-on-surface font-semibold">Tasa de Despacho Inmediato</span>
+<span class="font-bold text-primary">66.7% (4 de 6 pedidos)</span>
+</div>
+<!-- Stacked bar -->
+<div class="w-full h-3 bg-surface-container rounded-full overflow-hidden flex">
+<div class="h-full bg-secondary-fixed" style="width: 66.7%;" title="Despacho 100%"></div>
+<div class="h-full bg-surface-container-high" style="width: 20%;" title="Despacho Parcial"></div>
+<div class="h-full bg-error" style="width: 13.3%;" title="Inviable"></div>
+</div>
+<div class="flex items-center justify-between font-label-sm text-label-sm text-on-surface-variant mt-1">
+<span class="flex items-center gap-space-2xs">
+<span class="w-2 h-2 rounded-full bg-secondary-fixed"></span> 4 Despacho 100%
+              </span>
+<span class="flex items-center gap-space-2xs">
+<span class="w-2 h-2 rounded-full bg-surface-container-high"></span> 2 Cumplimiento Parcial
+              </span>
+<span class="flex items-center gap-space-2xs">
+<span class="w-2 h-2 rounded-full bg-error"></span> 1 Sin existencias
+              </span>
+</div>
+</div>
+<!-- Cross-Stock Depletion Warning Box -->
+<div class="bg-surface-container p-space-md rounded-lg flex flex-col gap-space-xs">
+<div class="flex items-center gap-space-xs text-error">
+<span class="material-symbols-outlined text-[20px]">crisis_alert</span>
+<span class="font-label-md text-label-md font-bold uppercase tracking-wide">Riesgo Desabastecimiento Cruzado</span>
+</div>
+<p class="font-body-md text-body-md text-on-surface leading-tight">
+              Al asignar <strong>4.0 TM de Harina Industrial</strong> al pedido <span class="font-semibold text-primary">PED-88412 (Polar)</span>, el pedido <span class="font-semibold text-primary">PED-88441 (Panadería Los Altos)</span> cae a disponibilidad cero.
+            </p>
+<div class="flex items-center justify-between pt-space-xs">
+<span class="font-label-sm text-label-sm text-on-surface-variant">Conflicto de prioridad: Tier 1 vs Tier 2</span>
+<button class="font-label-sm text-label-sm text-primary font-bold hover:underline cursor-pointer" type="button">Ver Alternativa</button>
+</div>
+</div>
+<!-- Scenario Save / Formulation Form -->
+<div class="border-t border-outline-variant/30 pt-space-md flex flex-col gap-space-md">
+<span class="font-title-md text-title-md text-primary font-bold">Guardar este Escenario Simulado</span>
+<div class="space-y-space-xs">
+<label class="font-label-sm text-label-sm text-on-surface-variant font-medium uppercase tracking-wider block">Nombre del Escenario</label>
+<input class="w-full px-space-md py-space-xs bg-surface-container-low rounded font-body-md text-body-md text-on-surface font-semibold focus:outline-none focus:ring-1 focus:ring-primary" id="scenario-name-input" type="text" value="Escenario Entrega Semana 16 - Prioridad Tier 1"/>
+</div>
+<div class="space-y-space-xs">
+<label class="font-label-sm text-label-sm text-on-surface-variant font-medium uppercase tracking-wider block">Responsable de Planificación</label>
+<div class="flex items-center gap-space-sm px-space-md py-space-xs bg-surface-container-low rounded">
+<span class="material-symbols-outlined text-primary text-[18px]">badge</span>
+<span class="font-body-md text-body-md font-semibold text-on-surface">Carlos Mendoza (Jefe de Demanda)</span>
+</div>
+</div>
+<div class="space-y-space-xs">
+<label class="font-label-sm text-label-sm text-on-surface-variant font-medium uppercase tracking-wider block">Observaciones Operativas</label>
+<textarea class="w-full px-space-md py-space-xs bg-surface-container-low rounded font-body-md text-body-md text-on-surface focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-on-surface-variant/50 resize-none" placeholder="Ej: Se reserva lote de molienda continua para atender clientes clave antes del fin de semana..." rows="2">Prioridad exclusiva concedida a cuentas Tier 1 según acuerdo comercial Q2. Se derivó faltante de Harina Panadera a orden extraordinaria OP-2024-89.</textarea>
+</div>
+<div class="flex flex-col gap-space-xs pt-space-xs">
+<button class="w-full py-space-sm bg-secondary-fixed text-on-secondary-fixed font-title-md text-title-md font-bold rounded shadow-sm hover:bg-secondary-fixed-dim transition-colors flex items-center justify-center gap-space-xs cursor-pointer" type="button">
+<span class="material-symbols-outlined text-[20px]">assignment_turned_in</span>
+                Confirmar y Registrar Escenario
+              </button>
+<button class="w-full py-space-xs text-primary font-label-md text-label-md font-semibold hover:underline cursor-pointer text-center" type="button">
+                Exportar Reporte Ejecutivo de Simulación (PDF)
+              </button>
+</div>
+</div>
+</div>
+<!-- Profit Synchronization Feed Microcard -->
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<span class="flex h-3 w-3 relative">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary-fixed-dim opacity-75"></span>
+<span class="relative inline-flex rounded-full h-3 w-3 bg-secondary"></span>
+</span>
+<div class="flex flex-col">
+<span class="font-label-md text-label-md font-bold text-on-surface">SQL Profit Plus: Solo Lectura</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">Conexión aislada a tabla saPedidoVenta</span>
+</div>
+</div>
+<span class="font-data-tabular-md text-data-tabular-md text-tertiary font-bold">100% Protegido</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<script>
+  // Simple micro-interactions for simulation toggles and selection
+  (function initSimulator() {
+    const autoBtn = document.getElementById('toggle-mode-auto');
+    const manualBtn = document.getElementById('toggle-mode-manual');
+    const chks = document.querySelectorAll('.order-chk');
+    const masterChk = document.getElementById('master-select');
+    const kpiOrdersSelected = document.getElementById('kpi-orders-selected');
+
+    if (autoBtn && manualBtn) {
+      autoBtn.addEventListener('click', () => {
+        autoBtn.className = "flex items-center gap-space-sm px-space-md py-space-xs rounded-md bg-primary text-on-primary shadow-sm font-label-md text-label-md transition-all cursor-pointer";
+        manualBtn.className = "flex items-center gap-space-sm px-space-md py-space-xs rounded-md text-on-surface-variant hover:text-on-surface font-label-md text-label-md transition-all cursor-pointer";
+      });
+
+      manualBtn.addEventListener('click', () => {
+        manualBtn.className = "flex items-center gap-space-sm px-space-md py-space-xs rounded-md bg-primary text-on-primary shadow-sm font-label-md text-label-md transition-all cursor-pointer";
+        autoBtn.className = "flex items-center gap-space-sm px-space-md py-space-xs rounded-md text-on-surface-variant hover:text-on-surface font-label-md text-label-md transition-all cursor-pointer";
+      });
+    }
+
+    function updateMetrics() {
+      let selectedCount = 0;
+      chks.forEach(chk => {
+        if (chk.checked) selectedCount++;
+      });
+      if (kpiOrdersSelected) {
+        kpiOrdersSelected.textContent = selectedCount;
+      }
+    }
+
+    if (masterChk) {
+      masterChk.addEventListener('change', () => {
+        chks.forEach(chk => {
+          chk.checked = masterChk.checked;
+        });
+        updateMetrics();
+      });
+    }
+
+    chks.forEach(chk => {
+      chk.addEventListener('change', updateMetrics);
+    });
+
+    const resetBtn = document.getElementById('btn-reset');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        chks.forEach((chk, idx) => {
+          chk.checked = idx < 4;
+        });
+        if (masterChk) masterChk.checked = false;
+        updateMetrics();
+      });
+    }
+  })();
+</script></main></div></body></html>

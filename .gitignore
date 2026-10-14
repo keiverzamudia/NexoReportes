@@ -1,0 +1,26 @@
+# Dependencias y build
+node_modules/
+dist/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# Entorno y secretos
+.env
+.env.local
+.env.*.local
+
+# Bases de datos locales (desarrollo)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-*
+prisma/*.db
+
+# Sistema
+Thumbs.db
+.DS_Store
+
+# Reportes/exportaciones generadas
+exports/
+uploads/

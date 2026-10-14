@@ -1,0 +1,106 @@
+// ============================================================
+// Nexo Producción — Esquema Prisma
+//
+// Desarrollo: SQLite  (provider = "sqlite", DATABASE_URL="file:./nexo.db")
+// Producción: PostgreSQL (cambiar provider a "postgresql" y DATABASE_URL)
+//
+// Decisiones de portabilidad SQLite <-> PostgreSQL:
+//  - NO se usan `enum` de Prisma (no soportados en SQLite): los estados
+//    se modelan como String validados con @nexo/contracts (Zod) en la frontera.
+//  - NO se usa `Json` (no soportado en SQLite): los contextos de auditoría se
+//    guardan como String con JSON serializado.
+//  - Cantidades: se usarán Decimal (NUMERIC en PostgreSQL) en los modelos de
+//    dominio de las fases siguientes.
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Autenticación y usuarios ----------
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  // Roles: ADMIN | GERENCIA | PLANIFICADOR | ALMACEN | CONSULTA (validados en contracts)
+  role         String   @default("CONSULTA")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  refreshTokens RefreshToken[]
+  auditEvents   AuditEvent[]  @relation("AuditActor")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ---------- Auditoría (inmutable desde operaciones ordinarias) ----------
+model AuditEvent {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorEmail String?
+  action     String
+  entityType String
+  entityId   String?
+  context    String? // JSON serializado (portabilidad SQLite/PostgreSQL)
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+// ---------- Configuración del sistema ----------
+model SystemSetting {
+  key         String   @id
+  value       String
+  description String?
+  updatedAt   DateTime @updatedAt
+}
+
+// ---------- Sincronización con Profit ----------
+model SyncRun {
+  id              String    @id @default(cuid())
+  // Domain: PRODUCTOS | CLIENTES | PEDIDOS | EXISTENCIAS | ALMACENES
+  domain          String
+  // Status: EN_CURSO | EXITOSA | PARCIAL | ERROR
+  status          String    @default("EN_CURSO")
+  startedAt       DateTime  @default(now())
+  finishedAt      DateTime?
+  recordsRead     Int       @default(0)
+  recordsUpserted Int       @default(0)
+  errorsCount     Int       @default(0)
+  errorDetail     String?
+  sourceRef       String? // referencia a la vista/consulta de origen usada
+
+  errors SyncError[]
+}
+
+model SyncError {
+  id         String   @id @default(cuid())
+  runId      String
+  run        SyncRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  entity     String?
+  externalId String?
+  message    String
+  raw        String?
+  createdAt  DateTime @default(now())
+
+  @@index([runId])
+}

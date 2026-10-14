@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+
+<html lang="es"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/><link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/><link href="https://fonts.googleapis.com/css2?family=Rubik:ital,wght@0,300..900;1,300..900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "on-error": "#ffffff", "on-surface-variant": "#43474f", "primary": "#001e40", "inverse-surface": "#1f3242", "on-secondary-container": "#4f6c00", "surface-container-high": "#d6ebff", "secondary-container": "#bbf23d", "surface": "#f6f9ff", "secondary-fixed": "#bef440", "on-surface": "#081d2c", "surface-variant": "#d0e5f9", "primary-fixed": "#d5e3ff", "inverse-on-surface": "#e6f2ff", "tertiary-fixed": "#6ffbbe", "on-primary-container": "#799dd6", "primary-fixed-dim": "#a7c8ff", "on-background": "#081d2c", "secondary-fixed-dim": "#a3d71f", "tertiary": "#002416", "tertiary-fixed-dim": "#4edea3", "surface-dim": "#c8dcf0", "outline-variant": "#c3c6d1", "surface-container-highest": "#d0e5f9", "on-primary-fixed": "#001b3c", "outline": "#737780", "secondary": "#4b6700", "error": "#ba1a1a", "surface-tint": "#3a5f94", "on-primary-fixed-variant": "#1f477b", "inverse-primary": "#a7c8ff", "on-tertiary-fixed": "#002113", "primary-container": "#003366", "on-secondary": "#ffffff", "on-tertiary": "#ffffff", "on-error-container": "#93000a", "on-secondary-fixed": "#141f00", "surface-container-lowest": "#ffffff", "background": "#f6f9ff", "on-secondary-fixed-variant": "#384e00", "tertiary-container": "#003c27", "surface-container": "#e1f0ff", "on-tertiary-container": "#00b27b", "on-primary": "#ffffff", "on-tertiary-fixed-variant": "#005236", "error-container": "#ffdad6", "surface-container-low": "#ecf5ff", "surface-bright": "#f6f9ff" }, "borderRadius": { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" }, "spacing": { "margin": "1rem", "margin-desktop": "2rem", "space-md": "0.75rem", "space-2xl": "2rem", "gutter-desktop": "1.5rem", "space-xl": "1.5rem", "space-lg": "1rem", "space-xs": "0.25rem", "space-2xs": "0.125rem", "gutter": "1rem", "space-sm": "0.5rem" }, "fontFamily": { "display-lg": ["Rubik"], "body-md": ["Rubik"], "label-sm": ["Rubik"], "title-md": ["Rubik"], "headline-md": ["Rubik"], "label-md": ["Rubik"], "data-tabular-lg": ["Rubik"], "body-lg": ["Rubik"], "headline-lg": ["Rubik"], "data-tabular-md": ["Rubik"] }, "fontSize": { "display-lg": ["2.25rem", { "lineHeight": "2.75rem", "letterSpacing": "-0.02em", "fontWeight": "800" }], "body-md": ["0.875rem", { "lineHeight": "1.25rem", "fontWeight": "400" }], "label-sm": ["0.6875rem", { "lineHeight": "0.875rem", "fontWeight": "500" }], "title-md": ["1.125rem", { "lineHeight": "1.5rem", "fontWeight": "600" }], "headline-md": ["1.375rem", { "lineHeight": "1.875rem", "letterSpacing": "-0.01em", "fontWeight": "800" }], "label-md": ["0.75rem", { "lineHeight": "1rem", "letterSpacing": "0.04em", "fontWeight": "600" }], "data-tabular-lg": ["1.125rem", { "lineHeight": "1.5rem", "letterSpacing": "0.01em", "fontWeight": "600" }], "body-lg": ["1rem", { "lineHeight": "1.5rem", "fontWeight": "400" }], "headline-lg": ["1.75rem", { "lineHeight": "2.25rem", "letterSpacing": "-0.01em", "fontWeight": "800" }], "data-tabular-md": ["0.875rem", { "lineHeight": "1.25rem", "letterSpacing": "0.01em", "fontWeight": "500" }] } } } };</script></head><body class="bg-background font-body-md text-on-surface antialiased"><aside class="fixed left-0 top-0 h-full w-72 bg-primary-container text-on-primary z-50 flex flex-col justify-between select-none"><div class="flex flex-col flex-1 min-h-0"><div class="h-16 flex items-center gap-space-md px-space-xl border-b border-outline-variant/20 bg-primary"><img alt="San Luis Logo" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1Vh9Z3bI2gqN4dFuaC3OOaSmtxFoXu2tlRymG0AGPrKNVHsN0O_pLoOc9LIWcMxhw32qpjO5u1utrmkPb-D_D5s2VM8p2_PQv8rFsjC9Z_dIuKaykR284OnpTqWQrcBlrZqGONaxxesQvpLtSdR2PrArl_QcuKauY2LITchyO-i0I6mIKLFLAVy5193llAbOHPPSZE8muyQQXM1vpwGwBlWF4NGGoDK10L2BgmJHhtRF4iLXYRdGXkjikQ"/><div class="flex flex-col"><span class="font-title-md text-title-md tracking-tight text-on-primary leading-tight">Nexo Producción</span><span class="font-label-sm text-label-sm text-primary-fixed-dim uppercase tracking-wider">Molinos San Luis</span></div></div><nav class="flex-1 px-space-sm py-space-md overflow-y-auto space-y-space-2xs" data-active-classes="bg-secondary-container text-on-secondary-container font-semibold"><a aria-current="page" class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg transition-colors bg-secondary-container text-on-secondary-container font-semibold" data-path="resumen-ejecutivo" href="#"><span class="material-symbols-outlined text-[20px]">dashboard</span><span>Resumen ejecutivo</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="disponibilidad-por-producto" href="#"><span class="material-symbols-outlined text-[20px]">inventory_2</span><span>Disponibilidad por producto</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="cumplimiento-por-cliente" href="#"><span class="material-symbols-outlined text-[20px]">verified</span><span>Cumplimiento por cliente</span></a><a class="flex items-center justify-between px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="simulador-de-pedidos" href="#"><div class="flex items-center gap-space-md"><span class="material-symbols-outlined text-[20px]">tune</span><span>Simulador de pedidos</span></div><span class="font-label-sm text-label-sm px-space-xs py-space-2xs bg-secondary-fixed text-on-secondary-fixed rounded uppercase font-semibold">Simulador</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="plan-de-produccion" href="#"><span class="material-symbols-outlined text-[20px]">factory</span><span>Plan de producción</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="analisis-de-demanda" href="#"><span class="material-symbols-outlined text-[20px]">query_stats</span><span>Análisis de demanda</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="capacidad-de-produccion" href="#"><span class="material-symbols-outlined text-[20px]">precision_manufacturing</span><span>Capacidad de producción</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="reportes-e-indicadores" href="#"><span class="material-symbols-outlined text-[20px]">bar_chart</span><span>Reportes e indicadores</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="historial-de-simulaciones" href="#"><span class="material-symbols-outlined text-[20px]">history</span><span>Historial de simulaciones</span></a><div class="my-space-sm border-t border-outline-variant/15"></div><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="sincronizacion-con-profit" href="#"><span class="material-symbols-outlined text-[20px]">sync_alt</span><span>Sincronización con Profit</span></a><a class="flex items-center gap-space-md px-space-md py-space-sm rounded-lg text-primary-fixed hover:bg-primary hover:text-on-primary transition-colors font-body-md text-body-md" data-path="configuracion" href="#"><span class="material-symbols-outlined text-[20px]">settings</span><span>Configuración</span></a></nav></div><div class="p-space-md m-space-sm bg-primary rounded-lg border border-outline-variant/20 flex items-center justify-between"><div class="flex items-center gap-space-sm"><span class="relative flex h-2.5 w-2.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary-fixed-dim opacity-75"></span><span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-secondary-fixed"></span></span><div class="flex flex-col"><span class="font-label-sm text-label-sm text-on-primary font-medium leading-none">Vistas SQL Profit</span><span class="font-label-sm text-[0.625rem] text-primary-fixed-dim mt-0.5 leading-none">Conectadas (En Línea)</span></div></div><span class="material-symbols-outlined text-[16px] text-secondary-fixed">database</span></div></aside><div class="pl-72"><header class="fixed top-0 left-72 right-0 h-16 bg-surface-container-lowest border-b border-outline-variant/40 z-40 flex items-center justify-between px-space-xl"><div class="flex items-center gap-space-md min-w-0"><div class="flex items-center gap-space-xs font-label-md text-label-md text-on-surface-variant"><span class="material-symbols-outlined text-[18px]">home</span><span>/</span><span class="text-on-surface font-semibold truncate">Nexo Producción</span></div></div><div class="flex items-center gap-space-md"><div class="hidden xl:flex items-center gap-space-sm px-space-md py-space-xs bg-surface-container-low border border-outline-variant/40 rounded-lg"><span class="flex h-2 w-2 rounded-full bg-secondary-fixed-dim"></span><span class="font-body-md text-body-md text-on-surface">Sincronizado: <strong class="font-semibold">Hoy 08:32 AM</strong> <span class="text-on-surface-variant font-label-sm text-label-sm">(hace 14 min)</span></span><button class="ml-space-xs flex items-center gap-space-2xs text-primary font-label-sm text-label-sm font-semibold hover:underline cursor-pointer" type="button"><span class="material-symbols-outlined text-[14px]">refresh</span>Actualizar</button></div><div class="flex items-center gap-space-xs border border-outline-variant/40 rounded-lg px-space-sm py-space-xs bg-surface-container-lowest text-on-surface"><span class="material-symbols-outlined text-[18px] text-on-surface-variant">calendar_today</span><select class="bg-transparent font-label-md text-label-md font-medium text-on-surface focus:outline-none cursor-pointer pr-space-xs"><option selected="" value="w16">Esta semana - W16</option><option value="current_month">Mes actual</option><option value="next_w">Próxima semana - W17</option><option value="quarter">Q2 2024</option></select></div><button class="relative p-space-xs rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-colors cursor-pointer" type="button"><span class="material-symbols-outlined text-[22px]">notifications</span><span class="absolute top-1 right-1 flex h-4 w-4 items-center justify-center rounded-full bg-error text-on-error font-label-sm text-[0.625rem] font-bold">3</span></button><div class="h-6 w-px bg-outline-variant/40"></div><div class="flex items-center gap-space-sm cursor-pointer py-space-2xs px-space-xs rounded-lg hover:bg-surface-container-low transition-colors"><img alt="Profile" class="w-8 h-8 rounded-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBVRe2mNO8PfBQqSn1V_Y083ouqgl2IeokncaMLtvBuqTxgYLEjl9P2PSFjtZO2ffPmM2lkV_x0bms6_O3BSwGIUgt7d1P8YqnujHTPeofp6DpMNMpBKo8epHoOMA6Virs6TwyLkGtaUVqQzqs3B_o0S3ZDk5pdKV9kGhLbG81O7IuN6wqDuMT8NmQbDAVbk-oAmWr4YvJkgJjVkLQY_evN-n-wXEEAXq_BvDmttFdhZmQTWMTTOxLL8w"/><div class="hidden md:flex flex-col text-left"><span class="font-label-md text-label-md font-semibold text-on-surface leading-tight">Carlos Mendoza</span><span class="font-label-sm text-label-sm text-on-surface-variant leading-tight">Jefe de Operaciones y Demanda</span></div><span class="material-symbols-outlined text-[18px] text-on-surface-variant">expand_more</span></div></div></header><main class="relative pt-16 bg-surface min-h-screen"><div class="flex flex-col w-full">
+<div class="p-space-lg md:p-space-xl flex flex-col gap-space-lg w-full max-w-[1680px] mx-auto">
+<!-- Encabezado de la página -->
+<div class="flex flex-col lg:flex-row lg:items-center justify-between gap-space-md bg-surface-container-lowest p-space-lg rounded-xl shadow-sm">
+<div class="flex flex-col gap-space-2xs min-w-0">
+<div class="flex items-center gap-space-sm flex-wrap">
+<span class="px-space-xs py-space-2xs bg-primary text-on-primary font-label-sm text-label-sm uppercase rounded tracking-wider font-semibold">Molinos San Luis S.A.</span>
+<span class="flex items-center gap-space-2xs font-label-sm text-label-sm text-secondary font-semibold">
+<span class="inline-block w-2 h-2 rounded-full bg-secondary-fixed"></span>
+            Planta Industrial Turmero
+          </span>
+</div>
+<h1 class="font-display-lg text-display-lg text-primary italic font-black tracking-tight leading-none mt-space-2xs">
+          Resumen Ejecutivo
+        </h1>
+<p class="font-body-md text-body-md text-on-surface-variant max-w-3xl">
+          Monitoreo en tiempo real de demanda, inventario disponible y requerimientos de producción sincronizados desde Profit.
+        </p>
+</div>
+<div class="flex items-center gap-space-sm flex-wrap self-start lg:self-center">
+<!-- Selector Rápido de Rango -->
+<div class="flex items-center p-space-2xs bg-surface-container-low rounded-lg shadow-inner">
+<button class="px-space-md py-space-xs rounded font-label-md text-label-md text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer" type="button">
+            Hoy
+          </button>
+<button class="px-space-md py-space-xs rounded bg-surface-container-lowest shadow-sm font-label-md text-label-md text-primary font-semibold transition-all cursor-pointer" type="button">
+            Esta Semana
+          </button>
+<button class="px-space-md py-space-xs rounded font-label-md text-label-md text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer" type="button">
+            Mes en Curso
+          </button>
+</div>
+<button class="flex items-center gap-space-xs bg-primary text-on-primary hover:bg-primary-container px-space-md py-space-sm rounded-lg font-label-md text-label-md font-semibold transition-colors shadow-sm cursor-pointer" type="button">
+<span class="material-symbols-outlined text-[18px]">sim_card_download</span>
+<span>Exportar Informe Ejecutivo</span>
+</button>
+</div>
+</div>
+<!-- Fila de KPIs Principales (8 Tarjetas Operacionales en Grid Fluid) -->
+<div class="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-space-sm">
+<!-- KPI 1 -->
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex flex-col justify-between hover:translate-y-[-2px] transition-transform">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">Pedidos Pend.</span>
+<span class="material-symbols-outlined text-[18px] text-primary">receipt_long</span>
+</div>
+<div class="my-space-xs">
+<div class="font-headline-lg text-headline-lg text-on-surface tabular-nums font-black leading-none">142</div>
+<div class="font-label-sm text-label-sm text-on-surface-variant mt-space-2xs">$184,250 USD</div>
+</div>
+<div class="font-label-sm text-label-sm text-primary font-medium flex items-center gap-space-2xs">
+<span class="material-symbols-outlined text-[14px]">trending_up</span> +8.4% vs W15
+        </div>
+</div>
+<!-- KPI 2 -->
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex flex-col justify-between hover:translate-y-[-2px] transition-transform">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">Clientes B2B</span>
+<span class="material-symbols-outlined text-[18px] text-primary">groups</span>
+</div>
+<div class="my-space-xs">
+<div class="font-headline-lg text-headline-lg text-on-surface tabular-nums font-black leading-none">38</div>
+<div class="font-label-sm text-label-sm text-on-surface-variant mt-space-2xs">Comprometidos</div>
+</div>
+<div class="font-label-sm text-label-sm text-on-surface-variant flex items-center gap-space-2xs">
+<span>14 Grandes Cuentas</span>
+</div>
+</div>
+<!-- KPI 3: Verde Cumplimiento Completo -->
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex flex-col justify-between hover:translate-y-[-2px] transition-transform">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-secondary uppercase font-bold">Completo</span>
+<span class="material-symbols-outlined text-[18px] text-secondary">check_circle</span>
+</div>
+<div class="my-space-xs">
+<div class="font-headline-lg text-headline-lg text-secondary tabular-nums font-black leading-none">68</div>
+<div class="font-label-sm text-label-sm text-on-surface-variant mt-space-2xs font-semibold">47.9% de demanda</div>
+</div>
+<div class="w-full bg-surface-container-low h-1.5 rounded-full overflow-hidden">
+<div class="bg-secondary-fixed h-full rounded-full" style="width: 48%"></div>
+</div>
+</div>
+<!-- KPI 4: Parcial -->
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex flex-col justify-between hover:translate-y-[-2px] transition-transform">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">Parcial</span>
+<span class="material-symbols-outlined text-[18px] text-on-surface-variant">hourglass_bottom</span>
+</div>
+<div class="my-space-xs">
+<div class="font-headline-lg text-headline-lg text-on-surface tabular-nums font-black leading-none">46</div>
+<div class="font-label-sm text-label-sm text-on-surface-variant mt-space-2xs">32.4% del volumen</div>
+</div>
+<div class="w-full bg-surface-container-low h-1.5 rounded-full overflow-hidden">
+<div class="bg-primary-fixed-dim h-full rounded-full" style="width: 32%"></div>
+</div>
+</div>
+<!-- KPI 5: Requiere Producción (Crítico) -->
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex flex-col justify-between hover:translate-y-[-2px] transition-transform">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-error uppercase font-bold">Req. Planta</span>
+<span class="material-symbols-outlined text-[18px] text-error">priority_high</span>
+</div>
+<div class="my-space-xs">
+<div class="font-headline-lg text-headline-lg text-error tabular-nums font-black leading-none">28</div>
+<div class="font-label-sm text-label-sm text-error mt-space-2xs font-semibold">19.7% con déficit</div>
+</div>
+<div class="w-full bg-surface-container-low h-1.5 rounded-full overflow-hidden">
+<div class="bg-error h-full rounded-full" style="width: 20%"></div>
+</div>
+</div>
+<!-- KPI 6: Déficit SKUs -->
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex flex-col justify-between hover:translate-y-[-2px] transition-transform">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">SKUs Déficit</span>
+<span class="material-symbols-outlined text-[18px] text-error">inventory</span>
+</div>
+<div class="my-space-xs">
+<div class="font-headline-lg text-headline-lg text-on-surface tabular-nums font-black leading-none">12</div>
+<div class="font-label-sm text-label-sm text-on-surface-variant mt-space-2xs">de 64 productos</div>
+</div>
+<div class="font-label-sm text-label-sm text-error font-medium">
+          Harinas Especiales
+        </div>
+</div>
+<!-- KPI 7: Por Producir Total -->
+<div class="bg-surface-container-lowest p-space-md rounded-xl shadow-sm flex flex-col justify-between hover:translate-y-[-2px] transition-transform">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">Por Producir</span>
+<span class="material-symbols-outlined text-[18px] text-primary">precision_manufacturing</span>
+</div>
+<div class="my-space-xs">
+<div class="font-headline-lg text-headline-lg text-primary tabular-nums font-black leading-none">42.8 <span class="font-label-md text-label-md font-medium text-on-surface-variant">Ton</span></div>
+<div class="font-label-sm text-label-sm text-on-surface-variant mt-space-2xs">856 Sacos (50Kg)</div>
+</div>
+<div class="font-label-sm text-label-sm text-secondary font-medium">
+          Capacidad: 65.0 Ton
+        </div>
+</div>
+<!-- KPI 8: Entregas en Riesgo (<48h) -->
+<div class="bg-surface-container-high p-space-md rounded-xl shadow-sm flex flex-col justify-between hover:translate-y-[-2px] transition-transform">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-error uppercase font-extrabold tracking-wider">Riesgo &lt;48h</span>
+<span class="material-symbols-outlined text-[18px] text-error">alarm_on</span>
+</div>
+<div class="my-space-xs">
+<div class="font-headline-lg text-headline-lg text-error tabular-nums font-black leading-none">7</div>
+<div class="font-label-sm text-label-sm text-on-surface-variant mt-space-2xs font-semibold">Despachos clave</div>
+</div>
+<div class="font-label-sm text-label-sm text-error font-bold flex items-center gap-space-2xs">
+<span class="material-symbols-outlined text-[14px]">flag</span> Atención Urgente
+        </div>
+</div>
+</div>
+<!-- Fila de Gráficas y Visualización Operacional -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-space-lg">
+<!-- Gráfico 1: Demanda Total vs. Disponible por Familia (7 Cols) -->
+<div class="lg:col-span-7 bg-surface-container-lowest p-space-lg rounded-xl shadow-sm flex flex-col justify-between">
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-space-xs mb-space-md">
+<div>
+<h2 class="font-title-md text-title-md text-primary font-bold">Demanda vs. Inventario Disponible por Familia</h2>
+<p class="font-label-sm text-label-sm text-on-surface-variant">Balance de masa en Toneladas Métricas sincronizado de almacenes centrales</p>
+</div>
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-space-xs font-label-sm text-label-sm">
+<span class="w-3 h-3 rounded bg-primary"></span>
+<span class="text-on-surface">Demanda (Ton)</span>
+</div>
+<div class="flex items-center gap-space-xs font-label-sm text-label-sm">
+<span class="w-3 h-3 rounded bg-secondary-fixed"></span>
+<span class="text-on-surface">Stock Disp. (Ton)</span>
+</div>
+</div>
+</div>
+<!-- Render de Barras Horizontales con Gráficos Integrados -->
+<div class="space-y-space-md py-space-xs">
+<!-- Familia 1: Harinas Industriales -->
+<div class="flex flex-col gap-space-2xs">
+<div class="flex justify-between items-center font-label-md text-label-md">
+<span class="font-bold text-on-surface flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-primary">bakery_dining</span>
+                Harinas Industriales (Trigo Panadero)
+              </span>
+<span class="text-error font-bold tabular-nums">Déficit: -18.4 Ton</span>
+</div>
+<div class="grid grid-cols-12 gap-space-sm items-center">
+<div class="col-span-12 flex flex-col gap-1">
+<div class="flex items-center w-full gap-space-xs text-[11px] tabular-nums font-semibold">
+<div class="bg-primary text-on-primary px-space-xs py-0.5 rounded flex justify-between items-center" style="width: 82%;">
+<span>Demanda: 92.5 Ton</span>
+</div>
+</div>
+<div class="flex items-center w-full gap-space-xs text-[11px] tabular-nums font-semibold">
+<div class="bg-secondary text-on-secondary px-space-xs py-0.5 rounded flex justify-between items-center" style="width: 66%;">
+<span>Disponible: 74.1 Ton</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Familia 2: Alimentos Balanceados (ABA) -->
+<div class="flex flex-col gap-space-2xs">
+<div class="flex justify-between items-center font-label-md text-label-md">
+<span class="font-bold text-on-surface flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-primary">pets</span>
+                Alimentos Balanceados (ABA Animal)
+              </span>
+<span class="text-secondary font-bold tabular-nums">Excedente: +12.3 Ton</span>
+</div>
+<div class="grid grid-cols-12 gap-space-sm items-center">
+<div class="col-span-12 flex flex-col gap-1">
+<div class="flex items-center w-full gap-space-xs text-[11px] tabular-nums font-semibold">
+<div class="bg-primary text-on-primary px-space-xs py-0.5 rounded flex justify-between items-center" style="width: 58%;">
+<span>Demanda: 64.0 Ton</span>
+</div>
+</div>
+<div class="flex items-center w-full gap-space-xs text-[11px] tabular-nums font-semibold">
+<div class="bg-secondary-fixed text-on-secondary-fixed px-space-xs py-0.5 rounded flex justify-between items-center" style="width: 69%;">
+<span>Disponible: 76.3 Ton</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Familia 3: Pastas Alimenticias -->
+<div class="flex flex-col gap-space-2xs">
+<div class="flex justify-between items-center font-label-md text-label-md">
+<span class="font-bold text-on-surface flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-primary">dinner_dining</span>
+                Pastas Alimenticias (Corta y Larga)
+              </span>
+<span class="text-error font-bold tabular-nums">Déficit: -14.1 Ton</span>
+</div>
+<div class="grid grid-cols-12 gap-space-sm items-center">
+<div class="col-span-12 flex flex-col gap-1">
+<div class="flex items-center w-full gap-space-xs text-[11px] tabular-nums font-semibold">
+<div class="bg-primary text-on-primary px-space-xs py-0.5 rounded flex justify-between items-center" style="width: 51%;">
+<span>Demanda: 56.8 Ton</span>
+</div>
+</div>
+<div class="flex items-center w-full gap-space-xs text-[11px] tabular-nums font-semibold">
+<div class="bg-secondary-fixed text-on-secondary-fixed px-space-xs py-0.5 rounded flex justify-between items-center" style="width: 38%;">
+<span>Disponible: 42.7 Ton</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Familia 4: Cereales Procesados -->
+<div class="flex flex-col gap-space-2xs">
+<div class="flex justify-between items-center font-label-md text-label-md">
+<span class="font-bold text-on-surface flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-primary">grain</span>
+                Cereales y Sémolas de Maíz
+              </span>
+<span class="text-secondary font-bold tabular-nums">Cubierto (100%)</span>
+</div>
+<div class="grid grid-cols-12 gap-space-sm items-center">
+<div class="col-span-12 flex flex-col gap-1">
+<div class="flex items-center w-full gap-space-xs text-[11px] tabular-nums font-semibold">
+<div class="bg-primary text-on-primary px-space-xs py-0.5 rounded flex justify-between items-center" style="width: 44%;">
+<span>Demanda: 48.0 Ton</span>
+</div>
+</div>
+<div class="flex items-center w-full gap-space-xs text-[11px] tabular-nums font-semibold">
+<div class="bg-secondary-fixed text-on-secondary-fixed px-space-xs py-0.5 rounded flex justify-between items-center" style="width: 47%;">
+<span>Disponible: 51.5 Ton</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Familia 5: Premezclas & Especiales -->
+<div class="flex flex-col gap-space-2xs">
+<div class="flex justify-between items-center font-label-md text-label-md">
+<span class="font-bold text-on-surface flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-primary">scatter_plot</span>
+                Premezclas &amp; Aditivos
+              </span>
+<span class="text-error font-bold tabular-nums">Déficit: -10.3 Ton</span>
+</div>
+<div class="grid grid-cols-12 gap-space-sm items-center">
+<div class="col-span-12 flex flex-col gap-1">
+<div class="flex items-center w-full gap-space-xs text-[11px] tabular-nums font-semibold">
+<div class="bg-primary text-on-primary px-space-xs py-0.5 rounded flex justify-between items-center" style="width: 32%;">
+<span>Demanda: 34.2 Ton</span>
+</div>
+</div>
+<div class="flex items-center w-full gap-space-xs text-[11px] tabular-nums font-semibold">
+<div class="bg-secondary-fixed text-on-secondary-fixed px-space-xs py-0.5 rounded flex justify-between items-center" style="width: 22%;">
+<span>Disponible: 23.9 Ton</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="pt-space-sm border-t border-surface-container flex items-center justify-between text-on-surface-variant font-label-sm text-label-sm">
+<span>Total Demandado: <strong class="text-on-surface">295.5 Ton</strong></span>
+<span>Total en Silos / Bodega: <strong class="text-on-surface">268.5 Ton</strong></span>
+<span class="text-error font-bold">Déficit Neto: 42.8 Ton</span>
+</div>
+</div>
+<!-- Gráfico 2: Factibilidad de Pedidos (Donut SVG) (5 Cols) -->
+<div class="lg:col-span-5 bg-surface-container-lowest p-space-lg rounded-xl shadow-sm flex flex-col justify-between">
+<div class="flex items-center justify-between mb-space-sm">
+<div>
+<h2 class="font-title-md text-title-md text-primary font-bold">Estado de Factibilidad</h2>
+<p class="font-label-sm text-label-sm text-on-surface-variant">Capacidad de entrega inmediata vs. programación</p>
+</div>
+<span class="material-symbols-outlined text-primary text-[20px]">pie_chart</span>
+</div>
+<!-- SVG Donut Chart Minimalista y Nítido -->
+<div class="flex items-center justify-center relative my-space-xs">
+<svg class="w-48 h-48 transform -rotate-90" viewbox="0 0 100 100">
+<!-- Circulo Base Gris -->
+<circle class="text-surface-container-high" cx="50" cy="50" fill="transparent" r="40" stroke="currentColor" stroke-width="14"></circle>
+<!-- Segmento 1: Completo 48% (Color Verde/Secondary-fixed) -->
+<!-- Circunferencia = 2 * PI * 40 ≈ 251.32 -->
+<!-- 48% = 120.6 stroke-dasharray -->
+<circle class="text-secondary-fixed transition-all duration-700" cx="50" cy="50" fill="transparent" r="40" stroke="currentColor" stroke-dasharray="120.6 251.32" stroke-dashoffset="0" stroke-width="14"></circle>
+<!-- Segmento 2: Parcial 32% (Color Azul / Primary-fixed-dim) -->
+<!-- 32% = 80.4 stroke-dasharray. Offset = -120.6 -->
+<circle class="text-primary-fixed-dim transition-all duration-700" cx="50" cy="50" fill="transparent" r="40" stroke="currentColor" stroke-dasharray="80.4 251.32" stroke-dashoffset="-120.6" stroke-width="14"></circle>
+<!-- Segmento 3: Déficit 20% (Color Error #EF4444) -->
+<!-- 20% = 50.3 stroke-dasharray. Offset = -201.0 -->
+<circle class="text-error transition-all duration-700" cx="50" cy="50" fill="transparent" r="40" stroke="currentColor" stroke-dasharray="50.3 251.32" stroke-dashoffset="-201.0" stroke-width="14"></circle>
+</svg>
+<!-- Centro del Donut -->
+<div class="absolute flex flex-col items-center justify-center text-center">
+<span class="font-display-lg text-display-lg font-black text-primary leading-none tabular-nums">142</span>
+<span class="font-label-sm text-label-sm uppercase font-semibold text-on-surface-variant">Pedidos</span>
+</div>
+</div>
+<!-- Leyenda con métricas -->
+<div class="grid grid-cols-3 gap-space-2xs text-center pt-space-xs border-t border-surface-container">
+<div class="p-space-2xs rounded bg-surface-container-low flex flex-col items-center">
+<div class="flex items-center gap-1">
+<span class="w-2.5 h-2.5 rounded-full bg-secondary-fixed"></span>
+<span class="font-label-sm text-label-sm font-bold text-on-surface">48%</span>
+</div>
+<span class="font-label-sm text-label-sm text-on-surface-variant">Completo</span>
+<span class="font-label-sm text-[10px] text-secondary font-semibold">68 Pedidos</span>
+</div>
+<div class="p-space-2xs rounded bg-surface-container-low flex flex-col items-center">
+<div class="flex items-center gap-1">
+<span class="w-2.5 h-2.5 rounded-full bg-primary-fixed-dim"></span>
+<span class="font-label-sm text-label-sm font-bold text-on-surface">32%</span>
+</div>
+<span class="font-label-sm text-label-sm text-on-surface-variant">Parcial</span>
+<span class="font-label-sm text-[10px] text-primary font-semibold">46 Pedidos</span>
+</div>
+<div class="p-space-2xs rounded bg-surface-container-low flex flex-col items-center">
+<div class="flex items-center gap-1">
+<span class="w-2.5 h-2.5 rounded-full bg-error"></span>
+<span class="font-label-sm text-label-sm font-bold text-error">20%</span>
+</div>
+<span class="font-label-sm text-label-sm text-on-surface-variant">Déficit</span>
+<span class="font-label-sm text-[10px] text-error font-bold">28 Pedidos</span>
+</div>
+</div>
+<div class="mt-space-xs p-space-xs bg-surface-container-high rounded text-center">
+<span class="font-label-sm text-label-sm text-primary font-semibold">Acción recomendada: Priorizar Molienda Línea B para liberar 19 pedidos</span>
+</div>
+</div>
+</div>
+<!-- Gráfico 3: Evolución Semanal de Demanda vs Cumplimiento -->
+<div class="bg-surface-container-lowest p-space-lg rounded-xl shadow-sm flex flex-col">
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-space-xs mb-space-md">
+<div>
+<h2 class="font-title-md text-title-md text-primary font-bold">Evolución de Demanda y Cumplimiento Semanal (W13 - W17)</h2>
+<p class="font-label-sm text-label-sm text-on-surface-variant">Histórico de molienda consolidada y proyección para cierre de ciclo mensual</p>
+</div>
+<div class="flex items-center gap-space-lg">
+<div class="flex items-center gap-space-xs font-label-sm text-label-sm">
+<span class="w-3 h-0.5 bg-primary inline-block"></span>
+<span class="text-on-surface font-medium">Demanda Ingresada</span>
+</div>
+<div class="flex items-center gap-space-xs font-label-sm text-label-sm">
+<span class="w-3 h-2 rounded bg-secondary-fixed inline-block"></span>
+<span class="text-on-surface font-medium">Despachado / Programado</span>
+</div>
+<div class="flex items-center gap-space-xs font-label-sm text-label-sm">
+<span class="w-3 h-0.5 border-t border-dashed border-error inline-block"></span>
+<span class="text-error font-medium">Límite Capacidad (70T)</span>
+</div>
+</div>
+</div>
+<!-- SVG Area & Bar Trend Visualizer -->
+<div class="w-full h-44 relative flex items-end justify-between pt-space-md px-space-md bg-surface-container-low rounded-lg">
+<!-- Línea de Capacidad Máxima (Guía Horizontal) -->
+<div class="absolute left-0 right-0 top-10 border-b border-dashed border-error/50 flex justify-end pr-space-md">
+<span class="font-label-sm text-[10px] text-error bg-surface-container-lowest px-1 rounded shadow-xs font-bold">Capacidad Máx: 70 Ton</span>
+</div>
+<!-- Semana W13 -->
+<div class="flex-1 flex flex-col items-center h-full justify-end group">
+<div class="w-full flex items-end justify-center gap-1.5 h-32">
+<div class="w-7 bg-primary rounded-t transition-all group-hover:brightness-110" style="height: 68%;"></div>
+<div class="w-7 bg-secondary-fixed rounded-t transition-all group-hover:brightness-110" style="height: 64%;"></div>
+</div>
+<div class="mt-space-xs text-center">
+<span class="font-label-md text-label-md font-bold text-on-surface">W13</span>
+<div class="font-label-sm text-[10px] text-on-surface-variant tabular-nums">52.4T / 50.1T</div>
+</div>
+</div>
+<!-- Semana W14 -->
+<div class="flex-1 flex flex-col items-center h-full justify-end group">
+<div class="w-full flex items-end justify-center gap-1.5 h-32">
+<div class="w-7 bg-primary rounded-t transition-all group-hover:brightness-110" style="height: 75%;"></div>
+<div class="w-7 bg-secondary-fixed rounded-t transition-all group-hover:brightness-110" style="height: 71%;"></div>
+</div>
+<div class="mt-space-xs text-center">
+<span class="font-label-md text-label-md font-bold text-on-surface">W14</span>
+<div class="font-label-sm text-[10px] text-on-surface-variant tabular-nums">58.0T / 54.8T</div>
+</div>
+</div>
+<!-- Semana W15 -->
+<div class="flex-1 flex flex-col items-center h-full justify-end group">
+<div class="w-full flex items-end justify-center gap-1.5 h-32">
+<div class="w-7 bg-primary rounded-t transition-all group-hover:brightness-110" style="height: 84%;"></div>
+<div class="w-7 bg-secondary-fixed rounded-t transition-all group-hover:brightness-110" style="height: 79%;"></div>
+</div>
+<div class="mt-space-xs text-center">
+<span class="font-label-md text-label-md font-bold text-on-surface">W15</span>
+<div class="font-label-sm text-[10px] text-on-surface-variant tabular-nums">63.2T / 60.5T</div>
+</div>
+</div>
+<!-- Semana W16 (Actual - Resaltada) -->
+<div class="flex-1 flex flex-col items-center h-full justify-end relative bg-surface-container-highest/60 rounded-t p-1">
+<span class="absolute -top-3 font-label-sm text-[10px] bg-primary text-on-primary font-bold px-1.5 py-0.5 rounded shadow-xs">Actual</span>
+<div class="w-full flex items-end justify-center gap-1.5 h-32">
+<div class="w-8 bg-primary rounded-t transition-all" style="height: 94%;"></div>
+<div class="w-8 bg-secondary-fixed rounded-t transition-all" style="height: 60%;"></div>
+</div>
+<div class="mt-space-xs text-center">
+<span class="font-label-md text-label-md font-black text-primary">W16</span>
+<div class="font-label-sm text-[10px] text-error font-bold tabular-nums">71.0T / 45.2T</div>
+</div>
+</div>
+<!-- Semana W17 (Proyección) -->
+<div class="flex-1 flex flex-col items-center h-full justify-end group opacity-75">
+<div class="w-full flex items-end justify-center gap-1.5 h-32 border-l border-dashed border-outline-variant/50">
+<div class="w-7 bg-primary/60 border-t border-l border-r border-dashed border-primary rounded-t transition-all" style="height: 72%;"></div>
+<div class="w-7 bg-secondary-fixed/60 border-t border-l border-r border-dashed border-secondary rounded-t transition-all" style="height: 70%;"></div>
+</div>
+<div class="mt-space-xs text-center">
+<span class="font-label-md text-label-md font-bold text-on-surface-variant">W17 (Est.)</span>
+<div class="font-label-sm text-[10px] text-on-surface-variant tabular-nums">~55.0T Proy.</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Tablas Operativas de Acción Inmediata (2 Columnas Rigurosas) -->
+<div class="grid grid-cols-1 xl:grid-cols-2 gap-space-lg">
+<!-- Columna Izquierda: Top 5 Productos con Mayor Déficit -->
+<div class="bg-surface-container-lowest rounded-xl shadow-sm overflow-hidden flex flex-col justify-between">
+<div class="p-space-md bg-surface-container-low flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-error text-[22px]">warning</span>
+<div>
+<h3 class="font-title-md text-title-md font-bold text-primary">Top 5 Productos con Mayor Déficit Operacional</h3>
+<p class="font-label-sm text-label-sm text-on-surface-variant">Priorización automática calculada según backlog comercial</p>
+</div>
+</div>
+<a class="font-label-sm text-label-sm text-primary font-bold hover:underline flex items-center gap-space-2xs" href="#">
+            Ver Todos (12) <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
+</a>
+</div>
+<!-- Tabla Industrial Compacta -->
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-primary text-on-primary font-label-sm text-[11px] uppercase tracking-wider">
+<th class="py-space-sm px-space-md font-semibold">SKU / Producto</th>
+<th class="py-space-sm px-space-sm font-semibold text-right">Demanda</th>
+<th class="py-space-sm px-space-sm font-semibold text-right">Disponible</th>
+<th class="py-space-sm px-space-sm font-semibold text-right">Déficit</th>
+<th class="py-space-sm px-space-sm font-semibold text-center">Línea</th>
+<th class="py-space-sm px-space-md font-semibold text-right">Acción</th>
+</tr>
+</thead>
+<tbody class="font-body-md text-[13px] text-on-surface divide-y divide-surface-container">
+<!-- Item 1 -->
+<tr class="hover:bg-surface-container-low transition-colors">
+<td class="py-space-sm px-space-md">
+<div class="font-bold text-primary leading-tight">Harina Todo Uso Extra (Saco 45Kg)</div>
+<div class="font-label-sm text-[11px] text-on-surface-variant">SKU: HAR-PAN-001</div>
+</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums font-medium">42.5 T</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums text-secondary font-medium">24.0 T</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums text-error font-black">-18.5 T</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-0.5 rounded bg-surface-container-highest font-label-sm text-[10px] font-bold text-primary">MOL-01</span>
+</td>
+<td class="py-space-sm px-space-md text-right">
+<button class="px-space-sm py-1 bg-primary text-on-primary rounded font-label-sm text-[11px] font-semibold hover:bg-primary-container transition-colors cursor-pointer" type="button">
+                    Prog. Turno
+                  </button>
+</td>
+</tr>
+<!-- Item 2 -->
+<tr class="hover:bg-surface-container-low transition-colors bg-surface-container-lowest/50">
+<td class="py-space-sm px-space-md">
+<div class="font-bold text-primary leading-tight">Pasta Corta Dedales (Fardo 12x1Kg)</div>
+<div class="font-label-sm text-[11px] text-on-surface-variant">SKU: PAS-COR-014</div>
+</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums font-medium">28.0 T</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums text-secondary font-medium">19.2 T</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums text-error font-black">-8.8 T</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-0.5 rounded bg-surface-container-highest font-label-sm text-[10px] font-bold text-primary">EXT-02</span>
+</td>
+<td class="py-space-sm px-space-md text-right">
+<button class="px-space-sm py-1 bg-primary text-on-primary rounded font-label-sm text-[11px] font-semibold hover:bg-primary-container transition-colors cursor-pointer" type="button">
+                    Prog. Turno
+                  </button>
+</td>
+</tr>
+<!-- Item 3 -->
+<tr class="hover:bg-surface-container-low transition-colors">
+<td class="py-space-sm px-space-md">
+<div class="font-bold text-primary leading-tight">Premezcla Repostería Esponjosa (25Kg)</div>
+<div class="font-label-sm text-[11px] text-on-surface-variant">SKU: PRM-REP-003</div>
+</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums font-medium">14.2 T</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums text-secondary font-medium">8.0 T</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums text-error font-black">-6.2 T</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-0.5 rounded bg-surface-container-highest font-label-sm text-[10px] font-bold text-primary">MEZ-01</span>
+</td>
+<td class="py-space-sm px-space-md text-right">
+<button class="px-space-sm py-1 bg-primary text-on-primary rounded font-label-sm text-[11px] font-semibold hover:bg-primary-container transition-colors cursor-pointer" type="button">
+                    Prog. Turno
+                  </button>
+</td>
+</tr>
+<!-- Item 4 -->
+<tr class="hover:bg-surface-container-low transition-colors bg-surface-container-lowest/50">
+<td class="py-space-sm px-space-md">
+<div class="font-bold text-primary leading-tight">Harina Integral Fina San Luis (Saco 50Kg)</div>
+<div class="font-label-sm text-[11px] text-on-surface-variant">SKU: HAR-INT-008</div>
+</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums font-medium">12.0 T</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums text-secondary font-medium">7.1 T</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums text-error font-black">-4.9 T</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-0.5 rounded bg-surface-container-highest font-label-sm text-[10px] font-bold text-primary">MOL-02</span>
+</td>
+<td class="py-space-sm px-space-md text-right">
+<button class="px-space-sm py-1 bg-primary text-on-primary rounded font-label-sm text-[11px] font-semibold hover:bg-primary-container transition-colors cursor-pointer" type="button">
+                    Prog. Turno
+                  </button>
+</td>
+</tr>
+<!-- Item 5 -->
+<tr class="hover:bg-surface-container-low transition-colors">
+<td class="py-space-sm px-space-md">
+<div class="font-bold text-primary leading-tight">Sémola de Trigo Duro Cristalino (45Kg)</div>
+<div class="font-label-sm text-[11px] text-on-surface-variant">SKU: SEM-DUR-002</div>
+</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums font-medium">18.5 T</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums text-secondary font-medium">14.1 T</td>
+<td class="py-space-sm px-space-sm text-right tabular-nums text-error font-black">-4.4 T</td>
+<td class="py-space-sm px-space-sm text-center">
+<span class="px-space-xs py-0.5 rounded bg-surface-container-highest font-label-sm text-[10px] font-bold text-primary">MOL-01</span>
+</td>
+<td class="py-space-sm px-space-md text-right">
+<button class="px-space-sm py-1 bg-primary text-on-primary rounded font-label-sm text-[11px] font-semibold hover:bg-primary-container transition-colors cursor-pointer" type="button">
+                    Prog. Turno
+                  </button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="p-space-sm bg-surface-container-low text-right">
+<span class="font-label-sm text-label-sm text-on-surface-variant">Déficit acumulado en estos 5 SKUs: <strong class="text-error tabular-nums">42.8 Toneladas</strong></span>
+</div>
+</div>
+<!-- Columna Derecha: Próximas Entregas Críticas en Riesgo (<48 Horas) -->
+<div class="bg-surface-container-lowest rounded-xl shadow-sm overflow-hidden flex flex-col justify-between">
+<div class="p-space-md bg-surface-container-low flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-error text-[22px]">notification_important</span>
+<div>
+<h3 class="font-title-md text-title-md font-bold text-primary">Próximas Entregas Críticas en Riesgo (&lt;48h)</h3>
+<p class="font-label-sm text-label-sm text-on-surface-variant">Despachos programados con faltantes directos de inventario</p>
+</div>
+</div>
+<span class="px-space-xs py-space-2xs bg-error text-on-error font-label-sm text-label-sm font-bold rounded">
+            7 Despachos
+          </span>
+</div>
+<!-- Lista de Despachos Críticos -->
+<div class="divide-y divide-surface-container">
+<!-- Fila Riesgo 1 -->
+<div class="p-space-md flex flex-col sm:flex-row sm:items-center justify-between gap-space-sm hover:bg-surface-container-low transition-colors">
+<div class="flex items-start gap-space-md min-w-0">
+<div class="p-space-xs rounded bg-surface-container-high text-error font-black text-center min-w-[50px]">
+<div class="font-headline-md text-headline-md leading-none">24</div>
+<div class="font-label-sm text-[9px] uppercase font-bold text-on-surface">Horas</div>
+</div>
+<div class="flex flex-col min-w-0">
+<div class="flex items-center gap-space-xs flex-wrap">
+<span class="font-bold text-primary text-body-md truncate">Distribuidora Central Los Andes C.A.</span>
+<span class="px-space-xs py-0.5 rounded bg-surface-container font-label-sm text-[10px] text-on-surface-variant font-medium">PED-89421</span>
+</div>
+<div class="font-label-sm text-label-sm text-on-surface-variant mt-0.5">
+                  Prometido: <strong>Mañana 09:00 AM</strong> • Destino: Valencia
+                </div>
+<div class="font-label-sm text-label-sm text-error font-semibold mt-1">
+                  Faltante: 8.5 T Harina Todo Uso Extra (Saco 45Kg)
+                </div>
+</div>
+</div>
+<div class="flex items-center gap-space-xs self-end sm:self-center shrink-0">
+<button class="px-space-sm py-1 bg-surface-container-lowest text-primary font-label-sm text-label-sm font-semibold rounded hover:bg-surface-container transition-colors shadow-xs cursor-pointer" type="button">
+                Asignar Stock
+              </button>
+<button class="px-space-sm py-1 bg-secondary-fixed text-on-secondary-fixed font-label-sm text-label-sm font-bold rounded hover:bg-secondary-fixed-dim transition-colors cursor-pointer" type="button">
+                Priorizar Lote
+              </button>
+</div>
+</div>
+<!-- Fila Riesgo 2 -->
+<div class="p-space-md flex flex-col sm:flex-row sm:items-center justify-between gap-space-sm hover:bg-surface-container-low transition-colors">
+<div class="flex items-start gap-space-md min-w-0">
+<div class="p-space-xs rounded bg-surface-container-high text-error font-black text-center min-w-[50px]">
+<div class="font-headline-md text-headline-md leading-none">32</div>
+<div class="font-label-sm text-[9px] uppercase font-bold text-on-surface">Horas</div>
+</div>
+<div class="flex flex-col min-w-0">
+<div class="flex items-center gap-space-xs flex-wrap">
+<span class="font-bold text-primary text-body-md truncate">Supermercados San Diego Oriental</span>
+<span class="px-space-xs py-0.5 rounded bg-surface-container font-label-sm text-[10px] text-on-surface-variant font-medium">PED-89435</span>
+</div>
+<div class="font-label-sm text-label-sm text-on-surface-variant mt-0.5">
+                  Prometido: <strong>Mañana 04:00 PM</strong> • Destino: Puerto Ordaz
+                </div>
+<div class="font-label-sm text-label-sm text-error font-semibold mt-1">
+                  Faltante: 5.2 T Pasta Corta Dedales
+                </div>
+</div>
+</div>
+<div class="flex items-center gap-space-xs self-end sm:self-center shrink-0">
+<button class="px-space-sm py-1 bg-surface-container-lowest text-primary font-label-sm text-label-sm font-semibold rounded hover:bg-surface-container transition-colors shadow-xs cursor-pointer" type="button">
+                Asignar Stock
+              </button>
+<button class="px-space-sm py-1 bg-secondary-fixed text-on-secondary-fixed font-label-sm text-label-sm font-bold rounded hover:bg-secondary-fixed-dim transition-colors cursor-pointer" type="button">
+                Priorizar Lote
+              </button>
+</div>
+</div>
+<!-- Fila Riesgo 3 -->
+<div class="p-space-md flex flex-col sm:flex-row sm:items-center justify-between gap-space-sm hover:bg-surface-container-low transition-colors">
+<div class="flex items-start gap-space-md min-w-0">
+<div class="p-space-xs rounded bg-surface-container-high text-error font-black text-center min-w-[50px]">
+<div class="font-headline-md text-headline-md leading-none">44</div>
+<div class="font-label-sm text-[9px] uppercase font-bold text-on-surface">Horas</div>
+</div>
+<div class="flex flex-col min-w-0">
+<div class="flex items-center gap-space-xs flex-wrap">
+<span class="font-bold text-primary text-body-md truncate">Panificadora Industrial Carabobo</span>
+<span class="px-space-xs py-0.5 rounded bg-surface-container font-label-sm text-[10px] text-on-surface-variant font-medium">PED-89440</span>
+</div>
+<div class="font-label-sm text-label-sm text-on-surface-variant mt-0.5">
+                  Prometido: <strong>Jueves 10:00 AM</strong> • Destino: Guacara
+                </div>
+<div class="font-label-sm text-label-sm text-error font-semibold mt-1">
+                  Faltante: 4.8 T Premezcla Repostería Esponjosa
+                </div>
+</div>
+</div>
+<div class="flex items-center gap-space-xs self-end sm:self-center shrink-0">
+<button class="px-space-sm py-1 bg-surface-container-lowest text-primary font-label-sm text-label-sm font-semibold rounded hover:bg-surface-container transition-colors shadow-xs cursor-pointer" type="button">
+                Asignar Stock
+              </button>
+<button class="px-space-sm py-1 bg-secondary-fixed text-on-secondary-fixed font-label-sm text-label-sm font-bold rounded hover:bg-secondary-fixed-dim transition-colors cursor-pointer" type="button">
+                Priorizar Lote
+              </button>
+</div>
+</div>
+</div>
+<div class="p-space-sm bg-surface-container-low flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant">4 entregas adicionales en riesgo de retraso moderado</span>
+<a class="font-label-sm text-label-sm text-primary font-bold hover:underline" href="#">Ver Matriz de Despachos →</a>
+</div>
+</div>
+</div>
+<!-- Pie de Control y Sincronización Profit Plus -->
+<div class="p-space-md bg-primary text-on-primary rounded-xl flex flex-col md:flex-row items-center justify-between gap-space-md shadow-md">
+<div class="flex items-center gap-space-md">
+<div class="p-space-sm rounded-lg bg-primary-container text-secondary-fixed flex items-center justify-center">
+<span class="material-symbols-outlined text-[24px]">database</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-space-xs">
+<span class="relative flex h-2.5 w-2.5">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary-fixed opacity-75"></span>
+<span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-secondary-fixed"></span>
+</span>
+<span class="font-label-md text-label-md text-primary-fixed uppercase tracking-wider font-bold">Base de Datos SQL Profit Plus Conectada</span>
+</div>
+<p class="font-body-md text-body-md text-primary-fixed-dim mt-0.5">
+            Datos actualizados hace <strong class="text-on-primary">14 minutos</strong> desde el servidor de producción. <strong>0 inconsistencias</strong> de inventario registradas en molienda.
+          </p>
+</div>
+</div>
+<div class="flex items-center gap-space-sm shrink-0">
+<button class="px-space-md py-space-xs bg-primary-container hover:bg-primary-container/80 text-on-primary rounded font-label-md text-label-md font-semibold transition-colors flex items-center gap-space-2xs cursor-pointer" type="button">
+<span class="material-symbols-outlined text-[16px]">sync</span>
+          Forzar Sync Ahora
+        </button>
+<button class="px-space-md py-space-xs bg-secondary-fixed hover:bg-secondary-fixed-dim text-on-secondary-fixed rounded font-label-md text-label-md font-bold transition-colors flex items-center gap-space-2xs cursor-pointer" type="button">
+<span class="material-symbols-outlined text-[16px]">tune</span>
+          Abrir Simulador
+        </button>
+</div>
+</div>
+</div>
+</div></main></div></body></html>
