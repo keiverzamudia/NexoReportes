@@ -29,6 +29,12 @@ export class SyncController {
     return this.sync.views();
   }
 
+  @Get('describe')
+  @Roles('ADMIN', 'PLANIFICADOR')
+  describe() {
+    return this.sync.describe();
+  }
+
   @Post('test-connection')
   @Roles('ADMIN', 'PLANIFICADOR')
   testConnection() {

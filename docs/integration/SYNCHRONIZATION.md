@@ -9,10 +9,17 @@ POST /api/sync/run/:domain   (ADMIN, PLANIFICADOR)
 GET  /api/sync/runs          (historial paginado)
 GET  /api/sync/status        (última corrida exitosa + dominios pendientes)
 GET  /api/sync/views         (descubrimiento de vistas, solo mssql)
+GET  /api/sync/describe      (columnas reales de la vista vía INFORMATION_SCHEMA)
 POST /api/sync/test-connection
 ```
 
 Dominios: `PRODUCTOS`, `CLIENTES`, `PEDIDOS`, `PEDIDOS_DETALLE`, `EXISTENCIAS`, `ALMACENES`.
+
+**Fuente única:** todas las corridas leen la misma vista aplanada
+`PROFIT_VIEW_SOLICITUDES` (`COR_A3.dbo.Solicitudes_Pendientes_Clientes`: una fila = un
+renglón de solicitud con cliente, artículo, pendiente y existencias `Stock_03`/`Stock_68`).
+Cada dominio se **deriva** de esas filas (ver tabla de derivación en `PROFIT_SQL_MAPPING.md`);
+no existen vistas por dominio.
 
 Orden dependiente: `ALMACENES` y `PRODUCTOS` → `CLIENTES` → `PEDIDOS` → `PEDIDOS_DETALLE`; `EXISTENCIAS` requiere `PRODUCTOS` y `ALMACENES` para resolver ids (si faltan, se guarda el código externo y se completa en la siguiente corrida).
 
@@ -20,10 +27,10 @@ Orden dependiente: `ALMACENES` y `PRODUCTOS` → `CLIENTES` → `PEDIDOS` → `P
 
 1. Se crea `SyncRun` (`EN_CURSO`) con la vista origen usada (`sourceRef`).
 2. El adaptador lee la vista con `SELECT TOP (pageSize) *` — sin parámetros de negocio todavía.
-3. Cada fila pasa por un **normalizador puro** (valida y transforma); las filas inválidas generan `SyncError` con la fila cruda (truncada) y la corrida continúa.
-4. **Upsert por identificador externo** (`externalCode` / `externalNumber` / `orderId+lineNumber`): re-ejecutar la misma sincronización no duplica nada (Caso de aceptación 11, cubierto por pruebas).
-5. **Bajas lógicas**: registros que existían y no aparecen en la corrida se marcan `isActive=false` + `removedAt` — nunca se borran. Solo aplica si la lectura devolvió filas (>0) para no dar de baja todo por una lectura vacía.
-6. `EXISTENCIAS` crea **una** `InventorySnapshot` por corrida con sus `InventorySnapshotLine` (fotografía coherente; el historial de snapshots permite detectar antigüedad de datos).
+3. Cada fila pasa por un **normalizador puro** (`normalizeSolicitudRow`: valida y transforma); las filas inválidas generan `SyncError` con la fila cruda (truncada) y **no alimentan ningún dominio**; la corrida continúa.
+4. **Derivación del dominio** (agrupación por clave: `co_art`, `co_cli`, `nro_solicitud`, …) y **upsert por identificador externo** (`externalCode` / `externalNumber` / `orderId+lineNumber`): re-ejecutar la misma sincronización no duplica nada (Caso de aceptación 11, cubierto por pruebas).
+5. **Bajas lógicas**: registros que existían y no aparecen en la corrida se marcan `isActive=false` + `removedAt` — nunca se borran. Solo aplica si la lectura devolvió filas (>0) **y** la corrida no tuvo errores, para no dar de baja todo por una lectura vacía o rota.
+6. `EXISTENCIAS` crea **una** `InventorySnapshot` por corrida con sus `InventorySnapshotLine` (una línea por artículo × columna de stock no nula; `NULL` = sin dato → no se crea línea). Fotografía coherente; el historial de snapshots permite detectar antigüedad de datos.
 7. La corrida finaliza como `EXITOSA` (0 errores), `PARCIAL` (algunos upserts con errores) u `ERROR`, y se registra un evento de auditoría con contadores.
 
 ## Estrategia de lectura
@@ -47,8 +54,8 @@ Orden dependiente: `ALMACENES` y `PRODUCTOS` → `CLIENTES` → `PEDIDOS` → `P
 
 ## Checklist al conectar Profit real
 
-1. Confirmar los nombres de vista en `PROFIT_VIEW_*` (ver `PROFIT_SQL_MAPPING.md`).
-2. Cambiar `PROFIT_DB_DIALECT=mssql` y completar credenciales (idealmente un usuario dedicado solo-SELECT).
-3. `POST /api/sync/test-connection` y `GET /api/sync/views`.
+1. Verificar `PROFIT_VIEW_SOLICITUDES` y `PROFIT_DB_DATABASE=COR_A3` (ver `PROFIT_SQL_MAPPING.md`).
+2. `PROFIT_DB_DIALECT=mssql` y credenciales completas (usuario dedicado solo-SELECT).
+3. `POST /api/sync/test-connection`, `GET /api/sync/views` y `GET /api/sync/describe` (columnas reales).
 4. Ejecutar los 6 dominios en orden y verificar contadores y `SyncError`.
-5. Ajustar el mapeo de estados de pedido (`mapOrderStatus`) con los valores reales de Profit.
+5. Confirmar con el negocio las supuestos documentados: estado del pedido (`ABIERTO`), `quantity` no expuesta, `reservedQty=0`, tipo de cliente no disponible.

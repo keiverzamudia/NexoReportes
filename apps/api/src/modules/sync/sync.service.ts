@@ -3,26 +3,25 @@ import { ConfigService } from '@nestjs/config';
 import { SYNC_DOMAINS, SyncDomain, SyncRun, SyncStatusResponse } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
-import {
-  normalizeCustomerRow,
-  normalizeInventoryRow,
-  normalizeOrderLineRow,
-  normalizeOrderRow,
-  normalizeProductRow,
-  normalizeWarehouseRow,
-} from './normalizers';
+import { RawSolicitudLine, normalizeSolicitudRow } from './normalizers';
 import { ProfitAdapter, PROFIT_ADAPTER } from './profit.adapter';
 
-type ProfitViewsConfig = Partial<Record<'productos' | 'clientes' | 'pedidos' | 'pedidosDetalle' | 'existencias' | 'almacenes', string>>;
+// Única vista de origen (PROFIT_VIEW_SOLICITUDES). Cada dominio de sync se
+// DERIVA de las filas de esta vista; no existe una vista por dominio.
+type ProfitViewsConfig = { solicitudes?: string };
 
-const VIEW_KEY_BY_DOMAIN: Record<SyncDomain, keyof ProfitViewsConfig> = {
-  PRODUCTOS: 'productos',
-  CLIENTES: 'clientes',
-  PEDIDOS: 'pedidos',
-  PEDIDOS_DETALLE: 'pedidosDetalle',
-  EXISTENCIAS: 'existencias',
-  ALMACENES: 'almacenes',
-};
+// La vista expone las existencias en columnas fijas por almacén.
+// Códigos derivados de los nombres reales de columna (Stock_03 → Stock 03).
+const STOCK_COLUMNS = [
+  { column: 'stock03', code: 'Stock 03' },
+  { column: 'stock68', code: 'Stock 68' },
+] as const;
+
+type StockColumn = (typeof STOCK_COLUMNS)[number]['column'];
+
+function warehouseCodeFor(column: StockColumn): string {
+  return STOCK_COLUMNS.find((c) => c.column === column)?.code ?? column;
+}
 
 @Injectable()
 export class SyncService {
@@ -73,6 +72,13 @@ export class SyncService {
     return { views, dialect: this.profit.dialect };
   }
 
+  // Columnas reales de la vista configurada (INFORMATION_SCHEMA en mssql).
+  async describe() {
+    const view = this.resolveView();
+    const columns = await this.profit.describeView(view);
+    return { view, dialect: this.profit.dialect, columns };
+  }
+
   async testConnection() {
     const result = await this.profit.testConnection();
     await this.audit.record({
@@ -100,9 +106,11 @@ export class SyncService {
 
   // ============================================================
   // Ejecución de sincronización (idempotente)
+  // Todas las corridas leen la MISMA vista aplanada y derivan el
+  // dominio solicitado. Cada fila = un renglón de solicitud.
   // ============================================================
   async run(domain: SyncDomain, actor?: { id?: string; email?: string }): Promise<SyncRun> {
-    const view = this.resolveView(domain);
+    const view = this.resolveView();
 
     const run = await this.prisma.syncRun.create({
       data: { domain, status: 'EN_CURSO', sourceRef: view },
@@ -111,42 +119,58 @@ export class SyncService {
     let recordsRead = 0;
     let recordsUpserted = 0;
     let errorsCount = 0;
-    const seenExternalCodes = new Set<string>();
 
     try {
       const pageSize = this.config.get<number>('sync.pageSize') ?? 5000;
-      const rows = await this.profit.select(view, {}, pageSize);
-      recordsRead = rows.length;
+      const rawRows = await this.profit.select(view, {}, pageSize);
+      recordsRead = rawRows.length;
 
-      // Una fotografía coherente de inventario por corrida (no por fila).
-      const snapshotId =
-        domain === 'EXISTENCIAS' && rows.length > 0
-          ? (await this.prisma.inventorySnapshot.create({ data: { source: this.profit.dialect, takenAt: new Date(), runId: run.id } })).id
-          : null;
-
-      for (const row of rows) {
-        try {
-          const upserted = await this.upsertRow(domain, row, seenExternalCodes, snapshotId);
-          if (upserted) {
-            recordsUpserted += 1;
-          }
-        } catch (error) {
+      // Normalización primero: las filas inválidas se registran como error
+      // y NO alimentan ningún dominio (no se inventa datos para enmascararlos).
+      const lines: RawSolicitudLine[] = [];
+      for (const raw of rawRows) {
+        const parsed = normalizeSolicitudRow(raw);
+        if (!parsed.ok || !parsed.value) {
           errorsCount += 1;
           await this.prisma.syncError.create({
             data: {
               runId: run.id,
               entity: domain,
-              externalId: this.externalIdOf(domain, row),
-              message: error instanceof Error ? error.message : 'Error desconocido',
-              raw: JSON.stringify(row).slice(0, 4000),
+              externalId: this.rawExternalId(raw),
+              message: parsed.issues.map((i) => `${i.field}: ${i.message}`).join('; ') || 'Fila inválida',
+              raw: JSON.stringify(raw).slice(0, 4000),
             },
           });
+          continue;
         }
+        lines.push(parsed.value);
+      }
+
+      // Fotografía coherente de inventario por corrida (no por fila).
+      const snapshotId =
+        domain === 'EXISTENCIAS' && lines.length > 0
+          ? (await this.prisma.inventorySnapshot.create({ data: { source: this.profit.dialect, takenAt: new Date(), runId: run.id } })).id
+          : null;
+
+      const seen = new Set<string>();
+      try {
+        recordsUpserted = await this.applyDomain(domain, lines, seen, snapshotId, run.id);
+      } catch (error) {
+        errorsCount += 1;
+        await this.prisma.syncError.create({
+          data: {
+            runId: run.id,
+            entity: domain,
+            externalId: null,
+            message: error instanceof Error ? error.message : 'Error desconocido',
+            raw: null,
+          },
+        });
       }
 
       // Bajas lógicas: lo que no apareció en esta corrida se marca como inactivo
       // (nunca se borra histórico). Solo si la lectura devolvió filas.
-      const missingMarked = recordsRead > 0 ? await this.markMissing(domain, seenExternalCodes) : 0;
+      const missingMarked = recordsRead > 0 && errorsCount === 0 ? await this.markMissing(domain, seen) : 0;
 
       const status = errorsCount === 0 ? 'EXITOSA' : recordsUpserted > 0 ? 'PARCIAL' : 'ERROR';
       const finished = await this.prisma.syncRun.update({
@@ -160,7 +184,7 @@ export class SyncService {
         action: 'SYNC_RUN',
         entityType: 'SyncRun',
         entityId: run.id,
-        context: { domain, status, recordsRead, recordsUpserted, errorsCount, missingMarked, dialect: this.profit.dialect },
+        context: { domain, status, recordsRead, recordsUpserted, errorsCount, missingMarked, dialect: this.profit.dialect, view },
       });
 
       this.logger.log(`Sync ${domain}: ${status} (leídas=${recordsRead}, upsert=${recordsUpserted}, errores=${errorsCount}, bajas=${missingMarked})`);
@@ -176,179 +200,250 @@ export class SyncService {
     }
   }
 
-  private resolveView(domain: SyncDomain): string {
+  private resolveView(): string {
     const views = (this.config.get<ProfitViewsConfig>('profit.views') ?? {}) as ProfitViewsConfig;
-    const configured = views[VIEW_KEY_BY_DOMAIN[domain]];
-    if (configured && configured.trim()) {
-      return configured.trim();
+    const configured = views.solicitudes?.trim();
+    if (configured) {
+      return configured;
     }
     if (this.profit.dialect === 'fixtures') {
-      // Los fixtures aceptan cualquier nombre que identifique el dominio.
-      return `fixtures.vw_${VIEW_KEY_BY_DOMAIN[domain]}`;
+      return 'fixtures.Solicitudes_Pendientes_Clientes';
     }
-    throw new NotFoundException(`Vista de Profit no configurada para el dominio ${domain} (variable PROFIT_VIEW_*)`);
+    throw new NotFoundException('Vista de Profit no configurada (variable PROFIT_VIEW_SOLICITUDES)');
   }
 
-  private externalIdOf(domain: SyncDomain, row: Record<string, unknown>): string | null {
-    const idFields: Record<SyncDomain, string[]> = {
-      PRODUCTOS: ['codigo', 'codigo_producto', 'cod', 'producto'],
-      CLIENTES: ['cliente_codigo', 'codigo', 'codigo_cliente'],
-      PEDIDOS: ['numero', 'numero_pedido', 'pedido'],
-      PEDIDOS_DETALLE: ['numero', 'numero_pedido', 'pedido'],
-      EXISTENCIAS: ['codigo_producto', 'producto', 'codigo'],
-      ALMACENES: ['almacen', 'codigo', 'codigo_almacen'],
-    };
-    for (const field of idFields[domain]) {
-      const value = row[field];
-      if (value !== undefined && value !== null && String(value).trim()) {
-        return `${String(value).trim()}${domain === 'PEDIDOS_DETALLE' ? `#${row['linea'] ?? row['lineNumber'] ?? 1}` : ''}`;
-      }
-    }
-    return null;
+  private rawExternalId(raw: Record<string, unknown>): string | null {
+    const nro = raw['nro_solicitud'];
+    const art = raw['co_art'];
+    if (nro === undefined && art === undefined) return null;
+    return `${nro ?? '?'}#${String(art ?? '?').trim()}`;
   }
 
-  private async upsertRow(domain: SyncDomain, row: Record<string, unknown>, seen: Set<string>, snapshotId: string | null): Promise<boolean> {
-    const now = new Date();
+  // ============================================================
+  // Derivación por dominio desde las líneas normalizadas
+  // ============================================================
+  private async applyDomain(
+    domain: SyncDomain,
+    lines: RawSolicitudLine[],
+    seen: Set<string>,
+    snapshotId: string | null,
+    runId: string,
+  ): Promise<number> {
     switch (domain) {
-      case 'PRODUCTOS': {
-        const parsed = normalizeProductRow(row);
-        if (!parsed.ok || !parsed.value) throw new Error(parsed.issues.map((i) => `${i.field}: ${i.message}`).join('; '));
-        const { codigo, descripcion, unidad, familia } = parsed.value;
-        seen.add(codigo);
-        await this.prisma.product.upsert({
-          where: { externalCode: codigo },
-          update: { description: descripcion, uom: unidad, family: familia, isActive: true, removedAt: null, lastSyncedAt: now },
-          create: { externalCode: codigo, description: descripcion, uom: unidad, family: familia, lastSyncedAt: now },
-        });
-        return true;
+      case 'ALMACENES':
+        return this.syncWarehouses(lines, seen);
+      case 'PRODUCTOS':
+        return this.syncProducts(lines, seen);
+      case 'CLIENTES':
+        return this.syncCustomers(lines, seen);
+      case 'PEDIDOS':
+        return this.syncOrders(lines, seen);
+      case 'PEDIDOS_DETALLE':
+        return this.syncOrderLines(lines, seen, runId);
+      case 'EXISTENCIAS':
+        return this.syncInventory(lines, seen, snapshotId, runId);
+      default:
+        return 0;
+    }
+  }
+
+  // Los almacenes se derivan de las columnas de existencia de la vista.
+  // Aunque una columna venga toda en NULL, el almacén existe (columna real).
+  private async syncWarehouses(_lines: RawSolicitudLine[], seen: Set<string>): Promise<number> {
+    const now = new Date();
+    let count = 0;
+    for (const { code } of STOCK_COLUMNS) {
+      seen.add(code);
+      await this.prisma.warehouse.upsert({
+        where: { externalCode: code },
+        update: { name: code, isActive: true, removedAt: null, lastSyncedAt: now },
+        create: { externalCode: code, name: code, lastSyncedAt: now },
+      });
+      count += 1;
+    }
+    return count;
+  }
+
+  // Catálogo derivado: un producto por co_art distinto.
+  private async syncProducts(lines: RawSolicitudLine[], seen: Set<string>): Promise<number> {
+    const now = new Date();
+    const byCode = new Map<string, RawSolicitudLine>();
+    for (const line of lines) {
+      if (!byCode.has(line.coArt)) byCode.set(line.coArt, line);
+    }
+    let count = 0;
+    for (const [code, line] of byCode) {
+      seen.add(code);
+      await this.prisma.product.upsert({
+        where: { externalCode: code },
+        // family no viene en la vista: NO se sobreescribe si ya existía.
+        update: { description: line.artDes, uom: line.uniVenta, isActive: true, removedAt: null, lastSyncedAt: now },
+        create: { externalCode: code, description: line.artDes, uom: line.uniVenta, lastSyncedAt: now },
+      });
+      count += 1;
+    }
+    return count;
+  }
+
+  // Clientes derivados: un cliente por co_cli distinto.
+  // La vista NO trae tipo de cliente ni vendedor: quedan null (documentado
+  // en PROFIT_SQL_MAPPING.md); no se rellenan con valores inventados.
+  private async syncCustomers(lines: RawSolicitudLine[], seen: Set<string>): Promise<number> {
+    const now = new Date();
+    const byCode = new Map<string, RawSolicitudLine>();
+    for (const line of lines) {
+      if (!byCode.has(line.coCli)) byCode.set(line.coCli, line);
+    }
+    let count = 0;
+    for (const [code, line] of byCode) {
+      seen.add(code);
+      await this.prisma.customer.upsert({
+        where: { externalCode: code },
+        update: { name: line.cliDes, isActive: true, removedAt: null, lastSyncedAt: now },
+        create: { externalCode: code, name: line.cliDes, lastSyncedAt: now },
+      });
+      count += 1;
+    }
+    return count;
+  }
+
+  // Un encabezado por nro_solicitud distinto.
+  // Supuesto documentado: la vista sólo contiene solicitudes PENDIENTES,
+  // por eso el estado se deriva como ABIERTO (la vista no trae columna de estado).
+  private async syncOrders(lines: RawSolicitudLine[], seen: Set<string>): Promise<number> {
+    const now = new Date();
+    const byNumber = new Map<number, RawSolicitudLine>();
+    for (const line of lines) {
+      if (!byNumber.has(line.nroSolicitud)) byNumber.set(line.nroSolicitud, line);
+    }
+    let count = 0;
+    for (const [number, line] of byNumber) {
+      const externalNumber = String(number);
+      seen.add(externalNumber);
+      const customer = await this.prisma.customer.findUnique({ where: { externalCode: line.coCli } });
+      await this.prisma.salesOrder.upsert({
+        where: { externalNumber },
+        update: {
+          customerId: customer?.id ?? null,
+          customerCode: line.coCli,
+          customerName: line.cliDes,
+          orderDate: line.emision,
+          requestedDate: line.entrega,
+          status: 'ABIERTO',
+          statusRaw: null,
+          isActive: true,
+          removedAt: null,
+          lastSyncedAt: now,
+        },
+        create: {
+          externalNumber,
+          customerId: customer?.id ?? null,
+          customerCode: line.coCli,
+          customerName: line.cliDes,
+          orderDate: line.emision,
+          requestedDate: line.entrega,
+          status: 'ABIERTO',
+          statusRaw: null,
+          lastSyncedAt: now,
+        },
+      });
+      count += 1;
+    }
+    return count;
+  }
+
+  // Un renglón por fila de la vista. La vista no trae número de línea:
+  // se numera de forma DETERMINISTA (orden alfabético de co_art dentro de
+  // cada solicitud) para que dos corridas produzcan las mismas claves.
+  // Requiere PEDIDOS previo (mismo contrato de dependencia que antes).
+  private async syncOrderLines(lines: RawSolicitudLine[], seen: Set<string>, runId: string): Promise<number> {
+    const byOrder = new Map<number, RawSolicitudLine[]>();
+    for (const line of lines) {
+      const bucket = byOrder.get(line.nroSolicitud);
+      if (bucket) bucket.push(line);
+      else byOrder.set(line.nroSolicitud, [line]);
+    }
+
+    let count = 0;
+    for (const [number, orderLines] of byOrder) {
+      const order = await this.prisma.salesOrder.findUnique({ where: { externalNumber: String(number) } });
+      if (!order) {
+        throw new Error(`Solicitud ${number} no existe; sincronice PEDIDOS antes que PEDIDOS_DETALLE`);
       }
-      case 'CLIENTES': {
-        const parsed = normalizeCustomerRow(row);
-        if (!parsed.ok || !parsed.value) throw new Error(parsed.issues.map((i) => `${i.field}: ${i.message}`).join('; '));
-        const { codigo, nombre, tipoCliente, vendedor } = parsed.value;
-        seen.add(codigo);
-        await this.prisma.customer.upsert({
-          where: { externalCode: codigo },
-          update: { name: nombre, customerType: tipoCliente, vendor: vendedor, isActive: true, removedAt: null, lastSyncedAt: now },
-          create: { externalCode: codigo, name: nombre, customerType: tipoCliente, vendor: vendedor, lastSyncedAt: now },
-        });
-        return true;
-      }
-      case 'ALMACENES': {
-        const parsed = normalizeWarehouseRow(row);
-        if (!parsed.ok || !parsed.value) throw new Error(parsed.issues.map((i) => `${i.field}: ${i.message}`).join('; '));
-        const { codigo, nombre } = parsed.value;
-        seen.add(codigo);
-        await this.prisma.warehouse.upsert({
-          where: { externalCode: codigo },
-          update: { name: nombre, isActive: true, removedAt: null, lastSyncedAt: now },
-          create: { externalCode: codigo, name: nombre, lastSyncedAt: now },
-        });
-        return true;
-      }
-      case 'PEDIDOS': {
-        const parsed = normalizeOrderRow(row);
-        if (!parsed.ok || !parsed.value) throw new Error(parsed.issues.map((i) => `${i.field}: ${i.message}`).join('; '));
-        const order = parsed.value;
-        seen.add(order.numero);
-        const customer = order.clienteCodigo
-          ? await this.prisma.customer.findUnique({ where: { externalCode: order.clienteCodigo } })
-          : null;
-        await this.prisma.salesOrder.upsert({
-          where: { externalNumber: order.numero },
-          update: {
-            customerId: customer?.id ?? null,
-            customerCode: order.clienteCodigo,
-            customerName: order.clienteNombre,
-            customerType: order.tipoCliente,
-            vendor: order.vendedor,
-            orderDate: order.fechaEmision,
-            requestedDate: order.fechaEntrega,
-            status: order.status,
-            statusRaw: order.statusRaw,
-            authorized: order.autorizado,
-            isActive: true,
-            removedAt: null,
-            lastSyncedAt: now,
-          },
-          create: {
-            externalNumber: order.numero,
-            customerId: customer?.id ?? null,
-            customerCode: order.clienteCodigo,
-            customerName: order.clienteNombre,
-            customerType: order.tipoCliente,
-            vendor: order.vendedor,
-            orderDate: order.fechaEmision,
-            requestedDate: order.fechaEntrega,
-            status: order.status,
-            statusRaw: order.statusRaw,
-            authorized: order.autorizado,
-            lastSyncedAt: now,
-          },
-        });
-        return true;
-      }
-      case 'PEDIDOS_DETALLE': {
-        const parsed = normalizeOrderLineRow(row);
-        if (!parsed.ok || !parsed.value) throw new Error(parsed.issues.map((i) => `${i.field}: ${i.message}`).join('; '));
-        const line = parsed.value;
-        const order = await this.prisma.salesOrder.findUnique({ where: { externalNumber: line.numero } });
-        if (!order) {
-          throw new Error(`Pedido ${line.numero} no existe; sincronice PEDIDOS antes que PEDIDOS_DETALLE`);
-        }
-        const product = await this.prisma.product.findUnique({ where: { externalCode: line.codigoProducto } });
-        seen.add(line.numero);
+      const sorted = [...orderLines].sort((a, b) => a.coArt.localeCompare(b.coArt));
+      seen.add(String(number));
+      let lineNumber = 0;
+      for (const line of sorted) {
+        lineNumber += 1;
+        const product = await this.prisma.product.findUnique({ where: { externalCode: line.coArt } });
         await this.prisma.salesOrderLine.upsert({
-          where: { orderId_lineNumber: { orderId: order.id, lineNumber: line.lineNumber } },
+          where: { orderId_lineNumber: { orderId: order.id, lineNumber } },
           update: {
-            productCode: line.codigoProducto,
+            productCode: line.coArt,
             productId: product?.id ?? null,
-            description: line.descripcion,
-            uom: line.unidad,
-            quantity: line.cantidad,
+            description: line.artDes,
+            uom: line.uniVenta,
             pendingQty: line.pendiente,
-            warehouses: line.almacenes,
           },
           create: {
             orderId: order.id,
-            lineNumber: line.lineNumber,
-            productCode: line.codigoProducto,
+            lineNumber,
+            productCode: line.coArt,
             productId: product?.id ?? null,
-            description: line.descripcion,
-            uom: line.unidad,
-            quantity: line.cantidad,
+            description: line.artDes,
+            uom: line.uniVenta,
             pendingQty: line.pendiente,
-            warehouses: line.almacenes,
           },
         });
-        return true;
+        count += 1;
       }
-      case 'EXISTENCIAS': {
-        const parsed = normalizeInventoryRow(row);
-        if (!parsed.ok || !parsed.value) throw new Error(parsed.issues.map((i) => `${i.field}: ${i.message}`).join('; '));
-        const inv = parsed.value;
-        seen.add(`${inv.codigoProducto}@${inv.almacen}`);
-        if (!snapshotId) {
-          throw new Error('Fotografía de inventario no creada para esta corrida');
-        }
-        const product = await this.prisma.product.findUnique({ where: { externalCode: inv.codigoProducto } });
-        const warehouse = await this.prisma.warehouse.findUnique({ where: { externalCode: inv.almacen } });
+      // Baja de renglones que ya no están en la vista (la vista es la verdad).
+      await this.prisma.salesOrderLine.deleteMany({ where: { orderId: order.id, lineNumber: { gt: lineNumber } } });
+    }
+    void runId;
+    return count;
+  }
+
+  // Fotografía: una línea por (artículo, almacén) con columna no nula.
+  // NULL = la vista no informa esa existencia → NO se crea línea (no se inventa 0).
+  private async syncInventory(
+    lines: RawSolicitudLine[],
+    seen: Set<string>,
+    snapshotId: string | null,
+    runId: string,
+  ): Promise<number> {
+    if (!snapshotId) {
+      throw new Error('Fotografía de inventario no creada para esta corrida');
+    }
+    const byArticle = new Map<string, RawSolicitudLine>();
+    for (const line of lines) {
+      if (!byArticle.has(line.coArt)) byArticle.set(line.coArt, line);
+    }
+
+    let count = 0;
+    for (const [code, line] of byArticle) {
+      const product = await this.prisma.product.findUnique({ where: { externalCode: code } });
+      for (const { column, code: warehouseCode } of STOCK_COLUMNS) {
+        const qty = line[column];
+        if (qty === null) continue; // columna anulable sin dato: no se rellena
+        seen.add(`${code}@${warehouseCode}`);
+        const warehouse = await this.prisma.warehouse.findUnique({ where: { externalCode: warehouseCode } });
         await this.prisma.inventorySnapshotLine.create({
           data: {
             snapshotId,
-            productCode: inv.codigoProducto,
+            productCode: code,
             productId: product?.id ?? null,
-            warehouseCode: inv.almacen,
+            warehouseCode,
             warehouseId: warehouse?.id ?? null,
-            qty: inv.cantidad,
-            reservedQty: inv.reservada,
+            qty,
+            reservedQty: 0, // la vista no expone reservas (documentado)
           },
         });
-        return true;
+        count += 1;
       }
-      default:
-        return false;
     }
+    void runId;
+    return count;
   }
 
   private async markMissing(domain: SyncDomain, seen: Set<string>): Promise<number> {

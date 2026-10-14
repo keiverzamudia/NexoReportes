@@ -11,70 +11,50 @@ import { ProfitAdapter, ProfitConnectionTest } from './profit.adapter';
 // ============================================================
 
 const ALMACENES: Record<string, unknown>[] = [
-  { almacen: 'Stock 68', nombre: 'Almacén Central 68' },
   { almacen: 'Stock 03', nombre: 'Depósito Tránsito 03' },
+  { almacen: 'Stock 68', nombre: 'Almacén Central 68' },
 ];
 
-const PRODUCTOS: Record<string, unknown>[] = [
-  { codigo: 'ABAEQUI01', descripcion: 'ALFALFA EN PELLETS L.V SAC (10 KG)', unidad: 'SAC', familia: 'Forrajes' },
-  { codigo: 'ABABOV58', descripcion: 'MULTIPROPOSITO 14% LINEA NARANJA SACO 35 KG', unidad: 'SAC', familia: 'Bovinos' },
-  { codigo: 'ABABOV75', descripcion: 'VACA LECHERA 21% ALTA ENERGIA SACO 35 KG', unidad: 'SAC', familia: 'Bovinos' },
-  { codigo: 'ABAGP13', descripcion: 'GALLINA PONEDORA PLUS 18% - 40 KG', unidad: 'SAC', familia: 'Avicultura' },
-  { codigo: 'ABAPOR47', descripcion: 'CERDO DESARROLLO MEDICADO PLUS 18,8% -40 KG', unidad: 'SAC', familia: 'Porcinos' },
-  { codigo: 'ABABOV67', descripcion: 'MULTIESPECIE LINEA NARANJA SACO 35 KG', unidad: 'SAC', familia: 'Multiespecie' },
-];
-
-const CLIENTES: Record<string, unknown>[] = [
-  { cliente_codigo: '183334693025', cliente_nombre: 'JESUS ENRIQUE ALVAREZ PEREZ', tipo_cliente: 'COR CORPORATIVO', vendedor: 'MEIDY CRISTINA ARIAS VIDAL' },
-  { cliente_codigo: 'B40634662012', cliente_nombre: 'INVERSIONES NADER, C.A.', tipo_cliente: 'L1  EXCLUSIVOS', vendedor: 'LIZ ANTONELLA PEREZ BAEZ' },
-  { cliente_codigo: '307314354025', cliente_nombre: 'DISTRIBUIDORA AGROBAY, C.A', tipo_cliente: 'L2  DISTRIBUIDORES', vendedor: 'MEIDY CRISTINA ARIAS VIDAL' },
-  { cliente_codigo: '406821691025', cliente_nombre: 'INVERSIONES APALOOSA A&G, C.A', tipo_cliente: 'L1  EXCLUSIVOS', vendedor: 'MEIDY CRISTINA ARIAS VIDAL' },
-  { cliente_codigo: '501635072027', cliente_nombre: 'AGROPECUARIA CAMPO DEL NORTE', tipo_cliente: 'L2  DISTRIBUIDORES', vendedor: 'EURIC MANABI VERGARA' },
-  { cliente_codigo: '403347751025', cliente_nombre: 'AGROPECUARIA EL VARGUERO C.A', tipo_cliente: 'L3  MINORISTA', vendedor: 'MEIDY CRISTINA ARIAS VIDAL' },
-];
-
-const PEDIDOS: Record<string, unknown>[] = [
-  { numero: '6743', cliente_codigo: '406821691025', cliente_nombre: 'INVERSIONES APALOOSA A&G, C.A', tipo_cliente: 'L1  EXCLUSIVOS', vendedor: 'MEIDY CRISTINA ARIAS VIDAL', fecha_emision: '13/10/2026', fecha_entrega: '16/10/2026', autorizado: 'NO' },
-  { numero: '6752', cliente_codigo: '501635072027', cliente_nombre: 'AGROPECUARIA CAMPO DEL NORTE', tipo_cliente: 'L2  DISTRIBUIDORES', vendedor: 'EURIC MANABI VERGARA', fecha_emision: '13/10/2026', fecha_entrega: '16/10/2026', autorizado: 'NO' },
-  // Pedido vencido (entrega 04/08/2026) para probar estados de riesgo.
-  { numero: '6191', cliente_codigo: '183334693025', cliente_nombre: 'JESUS ENRIQUE ALVAREZ PEREZ', tipo_cliente: 'COR CORPORATIVO', vendedor: 'MEIDY CRISTINA ARIAS VIDAL', fecha_emision: '30/07/2026', fecha_entrega: '04/08/2026', autorizado: 'NO' },
-  { numero: '6303', cliente_codigo: '307314354025', cliente_nombre: 'DISTRIBUIDORA AGROBAY, C.A', tipo_cliente: 'L2  DISTRIBUIDORES', vendedor: 'MEIDY CRISTINA ARIAS VIDAL', fecha_emision: '13/08/2026', fecha_entrega: '18/08/2026', autorizado: 'NO' },
-];
-
-// Líneas copiadas de la estructura del reporte real, incluido el
-// pendiente negativo (sobre-compromiso) del pedido 6743.
-const PEDIDOS_DETALLE: Record<string, unknown>[] = [
-  { numero: '6743', linea: 1, codigo_producto: 'ABABOV75', descripcion: 'VACA LECHERA 21% ALTA ENERGIA SACO 35 KG', unidad: 'SAC', cantidad: 30, pendiente: 29, almacenes: 'Stock 68 / Stock 03' },
-  { numero: '6743', linea: 2, codigo_producto: 'ABAGP13', descripcion: 'GALLINA PONEDORA PLUS 18% - 40 KG', unidad: 'SAC', cantidad: 30, pendiente: 40, almacenes: 'Stock 68 / Stock 03' },
-  { numero: '6743', linea: 3, codigo_producto: 'ABAPOR47', descripcion: 'CERDO DESARROLLO MEDICADO PLUS 18,8% -40 KG', unidad: 'SAC', cantidad: 100, pendiente: 35, almacenes: 'Stock 68 / Stock 03' },
-  { numero: '6743', linea: 4, codigo_producto: 'ABABOV67', descripcion: 'MULTIESPECIE LINEA NARANJA SACO 35 KG', unidad: 'SAC', cantidad: 50, pendiente: -247, almacenes: 'Stock 68 / Stock 03' },
-  { numero: '6752', linea: 1, codigo_producto: 'ABAPOR47', descripcion: 'CERDO DESARROLLO MEDICADO PLUS 18,8% -40 KG', unidad: 'SAC', cantidad: 100, pendiente: -10, almacenes: 'Stock 68 / Stock 03' },
-  { numero: '6752', linea: 2, codigo_producto: 'ABABOV75', descripcion: 'VACA LECHERA 21% ALTA ENERGIA SACO 35 KG', unidad: 'SAC', cantidad: 25, pendiente: 0, almacenes: 'Stock 68 / Stock 03' },
-  { numero: '6191', linea: 1, codigo_producto: 'ABAEQUI01', descripcion: 'ALFALFA EN PELLETS L.V SAC (10 KG)', unidad: 'SAC', cantidad: 5, pendiente: 5, almacenes: 'Stock 68 / Stock 03' },
-  { numero: '6303', linea: 1, codigo_producto: 'ABAEQUI01', descripcion: 'ALFALFA EN PELLETS L.V SAC (10 KG)', unidad: 'SAC', cantidad: 40, pendiente: 40, almacenes: 'Stock 68 / Stock 03' },
-];
-
-const EXISTENCIAS: Record<string, unknown>[] = [
-  { codigo_producto: 'ABAEQUI01', almacen: 'Stock 68', cantidad: 6, reservada: 6 },
-  { codigo_producto: 'ABAEQUI01', almacen: 'Stock 03', cantidad: 2, reservada: 2 },
-  { codigo_producto: 'ABABOV75', almacen: 'Stock 68', cantidad: 120, reservada: 55 },
-  { codigo_producto: 'ABABOV75', almacen: 'Stock 03', cantidad: 15, reservada: 0 },
-  { codigo_producto: 'ABAGP13', almacen: 'Stock 68', cantidad: 80, reservada: 70 },
-  { codigo_producto: 'ABAPOR47', almacen: 'Stock 68', cantidad: 90, reservada: 135 },
-  { codigo_producto: 'ABABOV67', almacen: 'Stock 68', cantidad: 45, reservada: 296 },
-  { codigo_producto: 'ABABOV58', almacen: 'Stock 03', cantidad: 200, reservada: 0 },
+// ============================================================
+// Vista real: dbo.Solicitudes_Pendientes_Clientes (COR_A3)
+// Una fila = un RENGLÓN de solicitud. Columnas reales:
+//   nro_solicitud, emision, entrega, co_cli, cli_des,
+//   co_art, art_des, pendiente, uni_venta, Stock_03, Stock_68
+// `pendiente` = cantidad pendiente por despachar (decimal).
+// `Stock_03`/`Stock_68` = existencia del artículo en ese almacén.
+// El catálogo de productos/clientes se DERIVA de estas filas.
+// ============================================================
+const SOLICITUDES: Record<string, unknown>[] = [
+  { nro_solicitud: 3536, emision: '2025-09-03', entrega: '2025-09-10', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABABOV58', art_des: 'MULTIPROPOSITO 14% LINEA NARANJA SACO 35 KG', pendiente: 217, uni_venta: 'SAC', Stock_03: 273, Stock_68: 0 },
+  { nro_solicitud: 3544, emision: '2025-09-04', entrega: '2025-09-09', co_cli: '505835220', cli_des: 'AGRO INVERSIONES MP, C.A', co_art: 'ABABOV58', art_des: 'MULTIPROPOSITO 14% LINEA NARANJA SACO 35 KG', pendiente: 10, uni_venta: 'SAC', Stock_03: 273, Stock_68: 0 },
+  { nro_solicitud: 3536, emision: '2025-09-03', entrega: '2025-09-10', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABAGP13', art_des: 'GALLINA PONEDORA PLUS 18% - 40 KG', pendiente: 6, uni_venta: 'SAC', Stock_03: 1, Stock_68: 0 },
+  { nro_solicitud: 3550, emision: '2025-09-05', entrega: '2025-09-12', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABAEQUI01', art_des: 'ALFALFA EN PELLETS L.V SAC (10 KG)', pendiente: 40, uni_venta: 'SAC', Stock_03: 5, Stock_68: 2 },
+  // Renglón con pendiente negativo (sobre-compromiso), tal como ocurre en Profit.
+  { nro_solicitud: 3561, emision: '2025-09-06', entrega: '2025-09-13', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABABOV67', art_des: 'MULTIESPECIE LINEA NARANJA SACO 35 KG', pendiente: -247, uni_venta: 'SAC', Stock_03: 45, Stock_68: 0 },
+  { nro_solicitud: 3572, emision: '2025-09-08', entrega: '2025-09-15', co_cli: '505835220', cli_des: 'AGRO INVERSIONES MP, C.A', co_art: 'ABAPOR47', art_des: 'CERDO DESARROLLO MEDICADO PLUS 18,8% -40 KG', pendiente: 35, uni_venta: 'SAC', Stock_03: 90, Stock_68: 0 },
+  { nro_solicitud: 3580, emision: '2025-09-09', entrega: '2025-09-16', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABABOV75', art_des: 'VACA LECHERA 21% ALTA ENERGIA SACO 35 KG', pendiente: 50, uni_venta: 'SAC', Stock_03: 120, Stock_68: 15 },
 ];
 
 function datasetFor(viewName: string): Record<string, unknown>[] {
   const lower = viewName.toLowerCase();
-  if (lower.includes('producto')) return PRODUCTOS;
-  if (lower.includes('cliente')) return CLIENTES;
-  if (lower.includes('detalle') || lower.includes('renglon') || lower.includes('linea')) return PEDIDOS_DETALLE;
-  if (lower.includes('pedido') || lower.includes('solicitud')) return PEDIDOS;
-  if (lower.includes('existenc') || lower.includes('inventar')) return EXISTENCIAS;
-  if (lower.includes('almacen')) return ALMACENES;
+  if (lower.includes('solicitud') || lower.includes('pendiente')) return SOLICITUDES;
   return [];
 }
+
+// Columnas reales de la vista (para /sync/describe cuando corre con fixtures).
+const SOLICITUDES_COLUMNS = [
+  { name: 'nro_solicitud', dataType: 'int', maxLength: null, precision: 10, scale: 0, nullable: false },
+  { name: 'emision', dataType: 'smalldatetime', maxLength: null, precision: null, scale: null, nullable: false },
+  { name: 'entrega', dataType: 'smalldatetime', maxLength: null, precision: null, scale: null, nullable: false },
+  { name: 'co_cli', dataType: 'char', maxLength: 10, precision: null, scale: null, nullable: false },
+  { name: 'cli_des', dataType: 'varchar', maxLength: 100, precision: null, scale: null, nullable: false },
+  { name: 'co_art', dataType: 'char', maxLength: 30, precision: null, scale: null, nullable: false },
+  { name: 'art_des', dataType: 'varchar', maxLength: 120, precision: null, scale: null, nullable: false },
+  { name: 'pendiente', dataType: 'decimal', maxLength: null, precision: 18, scale: 5, nullable: false },
+  { name: 'uni_venta', dataType: 'char', maxLength: 6, precision: null, scale: null, nullable: false },
+  { name: 'Stock_03', dataType: 'decimal', maxLength: null, precision: 38, scale: 5, nullable: true },
+  { name: 'Stock_68', dataType: 'decimal', maxLength: null, precision: 38, scale: 5, nullable: true },
+];
 
 @Injectable()
 export class FixturesProfitAdapter implements ProfitAdapter {
@@ -85,14 +65,11 @@ export class FixturesProfitAdapter implements ProfitAdapter {
   }
 
   async listViews(): Promise<string[]> {
-    return [
-      'fixtures.vw_productos',
-      'fixtures.vw_clientes',
-      'fixtures.vw_pedidos',
-      'fixtures.vw_pedidos_detalle',
-      'fixtures.vw_existencias',
-      'fixtures.vw_almacenes',
-    ];
+    return ['fixtures.Solicitudes_Pendientes_Clientes'];
+  }
+
+  async describeView(_viewName: string) {
+    return SOLICITUDES_COLUMNS;
   }
 
   async select(viewName: string, _params: Record<string, unknown>, limit: number): Promise<Record<string, unknown>[]> {

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as sql from 'mssql';
-import { ProfitAdapter, ProfitConnectionTest } from './profit.adapter';
+import { ProfitAdapter, ProfitColumn, ProfitConnectionTest } from './profit.adapter';
 
 // Identificadores de vista permitidos: solo letras, dígitos, _ y un máximo de
 // dos puntos (esquema.objeto). Bloquea cualquier intento de inyección SQL.
@@ -71,6 +71,34 @@ export class MssqlProfitAdapter implements ProfitAdapter {
        ORDER BY TABLE_SCHEMA, TABLE_NAME`,
     );
     return result.recordset.map((row) => `${row.TABLE_SCHEMA}.${row.TABLE_NAME}`);
+  }
+
+  async describeView(viewName: string): Promise<ProfitColumn[]> {
+    if (!SAFE_VIEW_NAME.test(viewName)) {
+      throw new Error(`Nombre de vista inválido: ${viewName}`);
+    }
+    const parts = viewName.split('.');
+    const tableSchema = parts.length === 2 ? parts[0] : 'dbo';
+    const tableName = parts[parts.length - 1];
+    const pool = await this.getPool();
+    const result = await pool
+      .request()
+      .input('schema', tableSchema)
+      .input('table', tableName)
+      .query(
+        `SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = @schema AND TABLE_NAME = @table
+         ORDER BY ORDINAL_POSITION`,
+      );
+    return result.recordset.map((c) => ({
+      name: c.COLUMN_NAME,
+      dataType: c.DATA_TYPE,
+      maxLength: c.CHARACTER_MAXIMUM_LENGTH ?? null,
+      precision: c.NUMERIC_PRECISION ?? null,
+      scale: c.NUMERIC_SCALE ?? null,
+      nullable: c.IS_NULLABLE === 'YES',
+    }));
   }
 
   async select(viewName: string, params: Record<string, unknown>, limit: number): Promise<Record<string, unknown>[]> {

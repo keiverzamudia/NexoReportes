@@ -1,84 +1,112 @@
-# Mapeo SQL de Profit — vistas y campos
+# Mapeo SQL de Profit — vista y campos
 
-> **Estado: columnas derivadas del reporte real "Solicitudes con sus renglones prod y logística
-> (almacén)" de Profit Plus (CORPORACION AGROPECUARIA VENEZOLANA, C.A.).** El nombre exacto de la
-> vista/tabla subyacente sigue pendiente de confirmación; por eso los nombres de vista son
-> configurables (`PROFIT_VIEW_*`) y la capa `ProfitAdapter` es intercambiable.
+> **Estado: CONFIRMADO.** La fuente de datos es la vista real
+> **`COR_A3.dbo.Solicitudes_Pendientes_Clientes`** (SQL Server `SRVBDPROFITBK`,
+> base **`COR_A3`** = Corp. Agropecuaria Venezolana), inspeccionada el 14/10/2026
+> vía `INFORMATION_SCHEMA.COLUMNS` con el usuario de solo lectura `solicitudweb`.
+> La vista está configurada con `PROFIT_VIEW_SOLICITUDES`.
 
-## Negocio real (derivado del reporte PDF)
+## La vista: una fila = un RENGLÓN de solicitud
+
+La vista es **plana**: cada fila trae el renglón de una solicitud pendiente con su
+cliente, artículo, pendiente por despachar y las existencias del artículo en los dos
+almacenes. El catálogo de productos, el de clientes, los encabezados de pedido y las
+existencias se **derivan** de estas filas (no existen vistas separadas).
+
+Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
+`GET /api/sync/describe` contra la vista viva):
+
+| # | Columna | Tipo SQL Server | Nula | Uso en Nexo Producción |
+|---|---|---|---|---|
+| 1 | `nro_solicitud` | `int(10,0)` | NO | `SalesOrder.externalNumber` (clave del encabezado) |
+| 2 | `emision` | `smalldatetime` | NO | `SalesOrder.orderDate` |
+| 3 | `entrega` | `smalldatetime` | NO | `SalesOrder.requestedDate` (fecha comprometida) |
+| 4 | `co_cli` | `char(10)` | NO | `Customer.externalCode` (trim del padding) |
+| 5 | `cli_des` | `varchar(100)` | NO | `Customer.name` / `SalesOrder.customerName` |
+| 6 | `co_art` | `char(30)` | NO | `Product.externalCode` (trim del padding) |
+| 7 | `art_des` | `varchar(120)` | NO | `Product.description` / `SalesOrderLine.description` |
+| 8 | `pendiente` | `decimal(18,5)` | NO | `SalesOrderLine.pendingQty` (conservar signo) |
+| 9 | `uni_venta` | `char(6)` | NO | `Product.uom` / `SalesOrderLine.uom` — valores reales: **`SAC` y `KG`** |
+| 10 | `relacion_empaque` | `decimal(??,?)` | NO | **kg por unidad de venta** (p. ej. 35 = saco de 35 kg) |
+| 11 | `kg` | `decimal(??,?)` | NO | **kg totales del renglón** = `pendiente × relacion_empaque` (verificado: 217×35=7595) |
+| 12 | `Stock_03` | `decimal(38,5)` | **SÍ** | `InventorySnapshotLine.qty` del almacén `Stock 03` |
+| 13 | `Stock_68` | `decimal(38,5)` | **SÍ** | `InventorySnapshotLine.qty` del almacén `Stock 68` |
+
+> `relacion_empaque` y `kg` son la clave para reportar en **KG/TON** (el negocio reporta
+> totales en KG y TON). Ambas columnas se leen pero **aún no se persisten**: requieren un
+> campo en `Product`/`SalesOrderLine` (decisión de esquema pendiente en Fase 3).
+
+### Perfil de los datos reales (61 filas, 14/10/2026)
+
+- 20 productos distintos, 27 clientes, 39 solicitudes.
+- `pendiente`: mín 1, máx 30000, total 85559 (hoy sin negativos en las filas vivas; el
+  signo se conserva igualmente porque el reporte histórico sí los tiene).
+- `relacion_empaque`: 1..40; `kg`: 40..30000.
+- `Stock_03`/`Stock_68`: 0 nulos en esta extracción (el manejo `NULL = sin dato` se mantiene).
+- Unidades: `SAC`, `KG`.
+
+## Negocio real (derivado del reporte PDF y de la vista)
 
 - **Empresa:** Corporación Agropecuaria Venezolana, C.A. — balanceados para animales (alfalfa, vaca lechera, gallina ponedora, cerdo, multiespecie...).
 - **Unidad de medida:** `SAC` (sacos 10/35/40 kg); totales reportados en **KG** y **TON**.
-- **Almacenes:** `Stock 68`, `Stock 03` (la línea del renglón lista ambos).
-- **Tipos de cliente (prioridad comercial):** `L1 EXCLUSIVOS` > `COR CORPORATIVO` > `L2 DISTRIBUIDORES` > `L3 MINORISTA` *(orden confirmado por el usuario; COR entre L1 y L2 es un supuesto configurable)*.
-- **Vendedor** por pedido; **Autorizado** (NO/SÍ) por pedido.
+- **Almacenes:** `Stock 68`, `Stock 03` — en la vista son **columnas** (`Stock_68`, `Stock_03`), no filas.
+- **Tipos de cliente (prioridad comercial):** `L1 EXCLUSIVOS` > `COR CORPORATIVO` > `L2 DISTRIBUIDORES` > `L3 MINORISTA` *(orden confirmado por el usuario; COR entre L1 y L2 es un supuesto configurable)*. **La vista no trae el tipo de cliente**: `Customer.customerType` queda `null` hasta que exista una fuente para ello.
 - El reporte de pendientes incluye **valores negativos** (p. ej. `-247.00`) que indican sobre-compromiso: la disponibilidad neta puede ser negativa y debe reflejarse, no recortarse a cero en el detalle.
-
-## Columnas observadas en el reporte → contrato canónico
-
-| Columna en el reporte | Contrato canónico (raw) | Notas |
-|---|---|---|
-| Número (6191, 6743...) | `numero` | clave del pedido |
-| Emision (30/07/2026) | `fecha_emision` | dd/MM/yyyy |
-| Código cliente (183334693025) | `cliente_codigo` | |
-| Cliente (nombre) | `cliente_nombre` | |
-| Vendedor | `vendedor` | |
-| Entrega (04/08/2026) | `fecha_entrega` | fecha comprometida |
-| Tipo de Cliente | `tipo_cliente` | L1/L2/L3/COR |
-| Autorizado | `autorizado` | NO/SÍ |
-| Alm. (Stock 68, Stock 03) | `almacenes` | almacenes que surten el renglón |
-| Código producto (ABAEQUI01) | `codigo_producto` | |
-| Cantidad (5.00) | `cantidad` | SAC |
-| Unid. (SAC) | `unidad` | |
-| Descripción | `descripcion` | |
-| Columnas numéricas del renglón | `disponible` / `pendiente` | Confirmar semántica exacta con el negocio; los negativos indican sobre-compromiso |
 
 ## Configuración actual
 
-| Parámetro | Valor (ejemplo) | Variable |
+| Parámetro | Valor | Variable |
 |---|---|---|
 | Servidor | `SRVBDPROFITBK` | `PROFIT_DB_SERVER` |
-| Base | `AD_TRANS` | `PROFIT_DB_DATABASE` |
+| Base | **`COR_A3`** | `PROFIT_DB_DATABASE` |
 | Usuario (solo lectura) | `solicitudweb` | `PROFIT_DB_USER` |
-| Dialecto | `fixtures` (dev) / `mssql` | `PROFIT_DB_DIALECT` |
-| Vista productos | *(sin confirmar)* | `PROFIT_VIEW_PRODUCTOS` |
-| Vista clientes | *(sin confirmar)* | `PROFIT_VIEW_CLIENTES` |
-| Vista pedidos | *(sin confirmar)* | `PROFIT_VIEW_PEDIDOS` |
-| Vista detalle de pedidos | *(sin confirmar)* | `PROFIT_VIEW_PEDIDOS_DETALLE` |
-| Vista existencias por almacén | *(sin confirmar)* | `PROFIT_VIEW_EXISTENCIAS` |
-| Vista almacenes | *(sin confirmar)* | `PROFIT_VIEW_ALMACENES` |
+| Dialecto | `mssql` (dev real) / `fixtures` | `PROFIT_DB_DIALECT` |
+| **Vista única de origen** | `dbo.Solicitudes_Pendientes_Clientes` | `PROFIT_VIEW_SOLICITUDES` |
 
-## Tabla de mapeo (completar al confirmar vistas)
+## Derivación por dominio (todas las corridas leen la MISMA vista)
 
-| Vista de origen | Campo de origen | Campo normalizado | Tipo | Regla de transformación | Validación | Manejo de nulos | Estado |
-|---|---|---|---|---|---|---|---|
-| `PROFIT_VIEW_PRODUCTOS` | *(pendiente)* | `Product.externalCode` | string | trim + mayúsculas | requerido, único | descartar registro | PENDIENTE |
-| `PROFIT_VIEW_PRODUCTOS` | *(pendiente)* | `Product.description` | string | trim | requerido | descartar registro | PENDIENTE |
-| `PROFIT_VIEW_PRODUCTOS` | *(pendiente)* | `Product.uom` | string | catálogo interno de unidades | requerido | descartar registro | PENDIENTE |
-| `PROFIT_VIEW_PRODUCTOS` | *(pendiente)* | `Product.family` | string | catálogo de familias | opcional | `SIN_FAMILIA` | PENDIENTE |
-| `PROFIT_VIEW_CLIENTES` | *(pendiente)* | `Customer.externalCode` | string | trim | requerido, único | descartar registro | PENDIENTE |
-| `PROFIT_VIEW_CLIENTES` | *(pendiente)* | `Customer.name` | string | trim | requerido | descartar registro | PENDIENTE |
-| `PROFIT_VIEW_PEDIDOS` | *(pendiente)* | `SalesOrder.externalNumber` | string | trim | requerido, único | descartar registro | PENDIENTE |
-| `PROFIT_VIEW_PEDIDOS` | *(pendiente)* | `SalesOrder.orderDate` | date | conversión a fecha | fecha válida | descartar registro | PENDIENTE |
-| `PROFIT_VIEW_PEDIDOS` | *(pendiente)* | `SalesOrder.requestedDate` | date | conversión a fecha | fecha válida | marcar `EN_RIESGO` | PENDIENTE |
-| `PROFIT_VIEW_PEDIDOS` | *(pendiente)* | `SalesOrder.status` | enum interno | mapeo de estados Profit → `ABIERTO/CERRADO/CANCELADO` | requerido | descartar registro | PENDIENTE |
-| `PROFIT_VIEW_PEDIDOS_DETALLE` | *(pendiente)* | `SalesOrderLine.quantity` | decimal(18,3) | conversión decimal, sin float | > 0 | descartar registro | PENDIENTE |
-| `PROFIT_VIEW_PEDIDOS_DETALLE` | *(pendiente)* | `SalesOrderLine.pendingQty` | decimal(18,3) | cantidad solicitada − despachada | ≥ 0 | usar `quantity` | PENDIENTE |
-| `PROFIT_VIEW_EXISTENCIAS` | *(pendiente)* | `InventorySnapshotLine.qty` | decimal(18,3) | existencia por almacén | ≥ 0 | descartar registro | PENDIENTE |
-| `PROFIT_VIEW_EXISTENCIAS` | *(pendiente)* | `reservedQty` | decimal(18,3) | reservas/compromisos si la vista los expone | ≥ 0 | `0` con advertencia | PENDIENTE |
-| `PROFIT_VIEW_ALMACENES` | *(pendiente)* | `Warehouse.externalCode` | string | trim | requerido, único | descartar registro | PENDIENTE |
+| Dominio de sync | Derivación desde las filas de la vista | Clave de upsert |
+|---|---|---|
+| `ALMACENES` | Una fila por columna de existencia (`Stock_03`→`Stock 03`, `Stock_68`→`Stock 68`) | `Warehouse.externalCode` |
+| `PRODUCTOS` | Un producto por `co_art` distinto | `Product.externalCode` |
+| `CLIENTES` | Un cliente por `co_cli` distinto | `Customer.externalCode` |
+| `PEDIDOS` | Un encabezado por `nro_solicitud` distinto | `SalesOrder.externalNumber` |
+| `PEDIDOS_DETALLE` | Una fila = un renglón; numerado de forma determinista (orden alfabético de `co_art` dentro de cada solicitud) | `SalesOrderLine(orderId, lineNumber)` |
+| `EXISTENCIAS` | Una línea por (`co_art`, columna de stock no nula) dentro de una fotografía por corrida | `InventorySnapshotLine(snapshotId, …)` |
+
+## Reglas de normalización (implementadas en `normalizers.ts`)
+
+| Campo origen | Campo normalizado | Regla | Validación | Manejo de fallo | Estado |
+|---|---|---|---|---|---|
+| `nro_solicitud` | `SalesOrder.externalNumber` | `parseProfitDecimal` + `Math.trunc` | requerido, entero | **descartar fila** (error de sync) | IMPLEMENTADO |
+| `emision` | `SalesOrder.orderDate` | `Date` de mssql directo | fecha válida | `null` (no se inventa) | IMPLEMENTADO |
+| `entrega` | `SalesOrder.requestedDate` | `Date` de mssql directo | fecha válida | `null` (no se inventa) | IMPLEMENTADO |
+| `co_cli` | `Customer.externalCode` | `trim` (padding de `char`) | requerido | **descartar fila** | IMPLEMENTADO |
+| `cli_des` | `Customer.name` | `trim` | informativo | cadena vacía | IMPLEMENTADO |
+| `co_art` | `Product.externalCode` | `trim` (padding de `char(30)`) | requerido | **descartar fila** | IMPLEMENTADO |
+| `art_des` | `Product.description` | `trim` | informativo | cadena vacía | IMPLEMENTADO |
+| `pendiente` | `SalesOrderLine.pendingQty` | `parseProfitDecimal` (acepta `'1,391.00'`) | requerido; **se conserva el signo** (negativo = sobre-compromiso) | **descartar fila** | IMPLEMENTADO |
+| `uni_venta` | `Product.uom` | `trim` | informativo | cadena vacía | IMPLEMENTADO |
+| `Stock_03` | `InventorySnapshotLine.qty` (`Stock 03`) | `parseProfitDecimal` | anulable | `null` → **no se crea línea** (no se inventa `0`) | IMPLEMENTADO |
+| `Stock_68` | `InventorySnapshotLine.qty` (`Stock 68`) | `parseProfitDecimal` | anulable | `null` → no se crea línea | IMPLEMENTADO |
+| *(no expuesto)* | `Product.family` | — | — | `null` (la vista no lo trae) | NO DISPONIBLE |
+| *(no expuesto)* | `Customer.customerType` / `vendor` | — | — | `null` (la vista no los trae) | NO DISPONIBLE |
+| *(no expuesto)* | `SalesOrder.status` | la vista sólo contiene solicitudes **pendientes** → `ABIERTO` | supuesto documentado | `statusRaw = null` | SUPUESTO |
+| *(no expuesto)* | `SalesOrderLine.quantity` | la vista no trae la cantidad total original → se deja el default `0`; el motor trabaja con `pendingQty` | supuesto documentado | `0` | SUPUESTO |
+| *(no expuesto)* | `InventorySnapshotLine.reservedQty` | la vista no expone reservas | supuesto documentado | `0` | SUPUESTO |
 
 ## Preguntas abiertas para confirmar con el negocio/Profit
 
-1. ¿Existe una vista de **existencias por almacén** con reservas/compromisos, o solo existencia física?
-2. ¿Las vistas exponen **cantidad pendiente** directamente o hay que calcularla (solicitada − despachada)?
-3. ¿Hay campos de **fecha de modificación** confiables para sincronización incremental? Si no, se usará lectura completa por períodos.
-4. ¿Los pedidos cancelados aparecen con un estado distinguible?
-5. ¿Hay información de **lotes/vencimientos** aplicable (FEFO)?
+1. ¿La vista puede traer **tipo de cliente** y **vendedor** (columnas adicionales), o hay otra vista para el motor de prioridades?
+2. ¿Hay columna de **estado/autorización** del pedido? Hoy se asume `ABIERTO` porque la vista sólo lista pendientes.
+3. ¿Existe columna de **cantidad total original** del renglón (para distinguir `quantity` de `pendingQty`)?
+4. ¿Las columnas `Stock_03`/`Stock_68` son existencia física o ya incluyen reservas?
+5. ¿Hay campos de **fecha de modificación** confiables para sincronización incremental? Si no, se usará lectura completa (61 filas hoy: no es un problema de volumen).
 
 ## Reglas del adaptador (implementadas)
 
-- Usuario de SQL Server con permisos **solo de lectura**.
-- Únicamente se emiten sentencias `SELECT` con parámetros; el nombre de la vista se valida contra `^[A-Za-z_][A-Za-z0-9_]*(\.[...]){0,2}$`.
+- Usuario de SQL Server con permisos **solo de lectura**; únicamente `SELECT` parametrizados.
+- El nombre de la vista se valida contra `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,2}$` (bloquea inyección de identificadores).
+- `describeView()` lee las columnas reales desde `INFORMATION_SCHEMA.COLUMNS` (nunca se asumen nombres/tipos).
 - Timeouts configurables (`PROFIT_DB_REQUEST_TIMEOUT_MS`) y reintentos limitados (`PROFIT_DB_MAX_RETRIES`).
 - Sin conexión a SQL Server el sistema sigue operativo en modo `fixtures`, **identificado explícitamente** en la UI y en `/api/health` como datos de desarrollo.

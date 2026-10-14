@@ -22,12 +22,9 @@ const envSchema = z.object({
   PROFIT_DB_REQUEST_TIMEOUT_MS: z.coerce.number().int().default(30000),
   PROFIT_DB_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
 
-  PROFIT_VIEW_PRODUCTOS: z.string().optional(),
-  PROFIT_VIEW_CLIENTES: z.string().optional(),
-  PROFIT_VIEW_PEDIDOS: z.string().optional(),
-  PROFIT_VIEW_PEDIDOS_DETALLE: z.string().optional(),
-  PROFIT_VIEW_EXISTENCIAS: z.string().optional(),
-  PROFIT_VIEW_ALMACENES: z.string().optional(),
+  // Única vista de origen: una fila = un renglón de solicitud
+  // (pedido + cliente + artículo + pendiente + existencias por almacén).
+  PROFIT_VIEW_SOLICITUDES: z.string().optional(),
 
   SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(0),
   SYNC_PAGE_SIZE: z.coerce.number().int().min(100).max(50000).default(5000),
@@ -68,12 +65,7 @@ export default function configuration() {
       requestTimeoutMs: env.PROFIT_DB_REQUEST_TIMEOUT_MS,
       maxRetries: env.PROFIT_DB_MAX_RETRIES,
       views: {
-        productos: env.PROFIT_VIEW_PRODUCTOS,
-        clientes: env.PROFIT_VIEW_CLIENTES,
-        pedidos: env.PROFIT_VIEW_PEDIDOS,
-        pedidosDetalle: env.PROFIT_VIEW_PEDIDOS_DETALLE,
-        existencias: env.PROFIT_VIEW_EXISTENCIAS,
-        almacenes: env.PROFIT_VIEW_ALMACENES,
+        solicitudes: env.PROFIT_VIEW_SOLICITUDES,
       },
     },
     sync: {
