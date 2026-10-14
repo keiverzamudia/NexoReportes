@@ -55,7 +55,7 @@ export const SYNC_RUN_STATUSES = ['EN_CURSO', 'EXITOSA', 'PARCIAL', 'ERROR'] as 
 export const zSyncRunStatus = z.enum(SYNC_RUN_STATUSES);
 export type SyncRunStatus = z.infer<typeof zSyncRunStatus>;
 
-export const SYNC_DOMAINS = ['PRODUCTOS', 'CLIENTES', 'PEDIDOS', 'EXISTENCIAS', 'ALMACENES'] as const;
+export const SYNC_DOMAINS = ['PRODUCTOS', 'CLIENTES', 'PEDIDOS', 'PEDIDOS_DETALLE', 'EXISTENCIAS', 'ALMACENES'] as const;
 export const zSyncDomain = z.enum(SYNC_DOMAINS);
 export type SyncDomain = z.infer<typeof zSyncDomain>;
 

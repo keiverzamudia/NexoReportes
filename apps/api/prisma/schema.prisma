@@ -104,3 +104,126 @@ model SyncError {
 
   @@index([runId])
 }
+
+// ============================================================
+// Entidades normalizadas desde Profit (Fase 2 — Integración)
+// Conservan el identificador externo de Profit y marcan bajas
+// con removedAt (nunca se borra histórico por una sync).
+// ============================================================
+
+model Product {
+  id           String    @id @default(cuid())
+  externalCode String    @unique
+  description  String
+  uom          String    @default("SAC")
+  family       String?
+  isActive     Boolean   @default(true)
+  removedAt    DateTime?
+  lastSyncedAt DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  orderLines    SalesOrderLine[]
+  inventoryLines InventorySnapshotLine[]
+}
+
+model Warehouse {
+  id           String    @id @default(cuid())
+  externalCode String    @unique
+  name         String
+  isActive     Boolean   @default(true)
+  removedAt    DateTime?
+  lastSyncedAt DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  inventoryLines InventorySnapshotLine[]
+}
+
+model Customer {
+  id           String    @id @default(cuid())
+  externalCode String    @unique
+  name         String
+  // L1 EXCLUSIVOS | COR CORPORATIVO | L2 DISTRIBUIDORES | L3 MINORISTA (crudo de Profit)
+  customerType String?
+  vendor       String?
+  isActive     Boolean   @default(true)
+  removedAt    DateTime?
+  lastSyncedAt DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  orders SalesOrder[]
+}
+
+model SalesOrder {
+  id             String    @id @default(cuid())
+  externalNumber String    @unique
+  customerId     String?
+  customer       Customer? @relation(fields: [customerId], references: [id])
+  customerCode   String?
+  customerName   String?
+  customerType   String?
+  vendor         String?
+  orderDate      DateTime?
+  requestedDate  DateTime?
+  // ABIERTO | CERRADO | CANCELADO | DESCONOCIDO (mapeo desde statusRaw de Profit)
+  status         String    @default("ABIERTO")
+  statusRaw      String?
+  authorized     Boolean?
+  isActive       Boolean   @default(true)
+  removedAt      DateTime?
+  lastSyncedAt   DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  lines SalesOrderLine[]
+
+  @@index([requestedDate])
+  @@index([status])
+}
+
+model SalesOrderLine {
+  id          String      @id @default(cuid())
+  orderId     String
+  order       SalesOrder  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  lineNumber  Int
+  productCode String
+  productId   String?
+  product     Product?    @relation(fields: [productId], references: [id])
+  description String?
+  uom         String?
+  // Cantidades DECIMAL: Precisiones de negocio (SAC con decimales). En PostgreSQL = NUMERIC.
+  quantity    Decimal     @default(0)
+  // Pendiente puede ser negativo en Profit (sobre-compromiso); conservar el signo.
+  pendingQty  Decimal     @default(0)
+  // Almacenes que surten el renglón (texto crudo, p. ej. "Stock 68 / Stock 03")
+  warehouses  String?
+
+  @@unique([orderId, lineNumber])
+  @@index([productCode])
+}
+
+// Fotografía coherente de inventario por ejecución de sincronización.
+model InventorySnapshot {
+  id      String   @id @default(cuid())
+  takenAt DateTime @default(now())
+  // 'mssql' | 'fixtures'
+  source  String
+  runId   String?
+
+  lines InventorySnapshotLine[]
+}
+
+model InventorySnapshotLine {
+  id            String           @id @default(cuid())
+  snapshotId    String
+  snapshot      InventorySnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  productCode   String
+  productId     String?
+  product       Product?         @relation(fields: [productId], references: [id])
+  warehouseCode String
+  warehouseId   String?
+  warehouse     Warehouse?       @relation(fields: [warehouseId], references: [id])
+  qty           Decimal          @default(0)
+  reservedQty   Decimal          @default(0)
+
+  @@index([snapshotId])
+  @@index([productCode])
+}

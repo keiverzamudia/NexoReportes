@@ -32,7 +32,7 @@ export default function HomePage() {
         </div>
         <div>
           <h1 className="text-headline-lg italic">Nexo Producción</h1>
-          <p className="text-label-md uppercase text-on-surface-variant">Molinos San Luis</p>
+          <p className="text-label-md uppercase text-on-surface-variant">Corp. Agropecuaria Venezolana</p>
         </div>
       </header>
 

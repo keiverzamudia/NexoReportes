@@ -12,7 +12,7 @@ const rubik = Rubik({
 });
 
 export const metadata: Metadata = {
-  title: 'Nexo Producción — Molinos San Luis',
+  title: 'Nexo Producción — Corp. Agropecuaria Venezolana',
   description:
     'Sistema inteligente de producción alimenticia, inventarios, pedidos, simulación y reportes sincronizado con Profit.',
 };

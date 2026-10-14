@@ -4,7 +4,7 @@
 |---|---|---|---|
 | 0 | Descubrimiento | Inventario del repo, análisis de mockups Stitch, decisiones técnicas, riesgos | ✅ Completada |
 | 1 | Fundamentos | Monorepo, configuración, BD (SQLite dev), JWT+RBAC, auditoría, logs, adaptador Profit (fixtures/mssql), health | ✅ Completada |
-| 2 | Integración | Lectura de vistas, normalización, sincronización idempotente, errores y trazabilidad | ⏳ Siguiente |
+| 2 | Integración | Lectura de vistas, normalización, sincronización idempotente, errores y trazabilidad | ✅ Completada |
 | 3 | Productos e inventario | Catálogo normalizado, existencias por almacén, unidades, disponibilidad neta | ⏳ Pendiente |
 | 4 | Pedidos y clientes | Importación de pedidos, líneas, estados, fechas, filtros, cumplimiento | ⏳ Pendiente |
 | 5 | Motor de disponibilidad | Reglas de asignación, faltantes, prioridades, pruebas de dominio (Casos 1–8) | ⏳ Pendiente |

@@ -1,9 +1,37 @@
 # Mapeo SQL de Profit — vistas y campos
 
-> **Estado: PENDIENTE DE CONFIRMACIÓN.** Las vistas reales de Profit aún no se han entregado.
-> Este documento es el contrato de la capa de integración; cada fila se confirma al conectar
-> y se implementa en la fase que corresponda. El sistema NO asume columnas ni relaciones:
-> la capa `ProfitAdapter` es configurable (`PROFIT_VIEW_*`) y mientras tanto corre con fixtures.
+> **Estado: columnas derivadas del reporte real "Solicitudes con sus renglones prod y logística
+> (almacén)" de Profit Plus (CORPORACION AGROPECUARIA VENEZOLANA, C.A.).** El nombre exacto de la
+> vista/tabla subyacente sigue pendiente de confirmación; por eso los nombres de vista son
+> configurables (`PROFIT_VIEW_*`) y la capa `ProfitAdapter` es intercambiable.
+
+## Negocio real (derivado del reporte PDF)
+
+- **Empresa:** Corporación Agropecuaria Venezolana, C.A. — balanceados para animales (alfalfa, vaca lechera, gallina ponedora, cerdo, multiespecie...).
+- **Unidad de medida:** `SAC` (sacos 10/35/40 kg); totales reportados en **KG** y **TON**.
+- **Almacenes:** `Stock 68`, `Stock 03` (la línea del renglón lista ambos).
+- **Tipos de cliente (prioridad comercial):** `L1 EXCLUSIVOS` > `COR CORPORATIVO` > `L2 DISTRIBUIDORES` > `L3 MINORISTA` *(orden confirmado por el usuario; COR entre L1 y L2 es un supuesto configurable)*.
+- **Vendedor** por pedido; **Autorizado** (NO/SÍ) por pedido.
+- El reporte de pendientes incluye **valores negativos** (p. ej. `-247.00`) que indican sobre-compromiso: la disponibilidad neta puede ser negativa y debe reflejarse, no recortarse a cero en el detalle.
+
+## Columnas observadas en el reporte → contrato canónico
+
+| Columna en el reporte | Contrato canónico (raw) | Notas |
+|---|---|---|
+| Número (6191, 6743...) | `numero` | clave del pedido |
+| Emision (30/07/2026) | `fecha_emision` | dd/MM/yyyy |
+| Código cliente (183334693025) | `cliente_codigo` | |
+| Cliente (nombre) | `cliente_nombre` | |
+| Vendedor | `vendedor` | |
+| Entrega (04/08/2026) | `fecha_entrega` | fecha comprometida |
+| Tipo de Cliente | `tipo_cliente` | L1/L2/L3/COR |
+| Autorizado | `autorizado` | NO/SÍ |
+| Alm. (Stock 68, Stock 03) | `almacenes` | almacenes que surten el renglón |
+| Código producto (ABAEQUI01) | `codigo_producto` | |
+| Cantidad (5.00) | `cantidad` | SAC |
+| Unid. (SAC) | `unidad` | |
+| Descripción | `descripcion` | |
+| Columnas numéricas del renglón | `disponible` / `pendiente` | Confirmar semántica exacta con el negocio; los negativos indican sobre-compromiso |
 
 ## Configuración actual
 
