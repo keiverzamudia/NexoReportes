@@ -16,7 +16,14 @@
 //  Datos propios de Nexo: NUNCA se escribe en Profit.
 // ============================================================
 
-import type { AvailabilityStatus, ForecastPlanResponse, ForecastResponse, ForecastRow, ForecastWeekRow } from '@nexo/contracts';
+import type {
+  AvailabilityStatus,
+  ForecastPlanResponse,
+  ForecastPlanWeek,
+  ForecastResponse,
+  ForecastRow,
+  ForecastWeekRow,
+} from '@nexo/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { AlertTriangle, CalendarRange, Check, Download, Lock, Save, Search } from 'lucide-react';
 import { Fragment, useMemo, useState } from 'react';
@@ -43,6 +50,15 @@ const STATUS_TONE: Record<AvailabilityStatus, 'success' | 'warning' | 'danger' |
 
 type Tab = 'asignador' | 'reporte';
 
+// Presentación del artículo en Profit: SAC = saco, KG = granel (a granel).
+type UnitFilter = 'ALL' | 'SAC' | 'KG';
+
+const UNIT_OPTIONS: { value: UnitFilter; label: string }[] = [
+  { value: 'ALL', label: 'Todos' },
+  { value: 'SAC', label: 'Saco' },
+  { value: 'KG', label: 'Granel (kg)' },
+];
+
 function currentMonthValue(): string {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -67,6 +83,7 @@ export default function ForcaPage() {
   const [ym, setYm] = useState(currentMonthValue);
   const [search, setSearch] = useState('');
   const [onlyDemand, setOnlyDemand] = useState(false);
+  const [unit, setUnit] = useState<UnitFilter>('ALL');
 
   const [yearPart, monthPart] = ym.split('-');
   const year = Number(yearPart);
@@ -90,10 +107,11 @@ export default function ForcaPage() {
     const needle = search.trim().toLowerCase();
     return all.filter(
       (r) =>
+        (unit === 'ALL' || r.uom === unit) &&
         (!onlyDemand || r.demandMonthQty > 0) &&
         (!needle || r.productCode.toLowerCase().includes(needle) || r.description.toLowerCase().includes(needle)),
     );
-  }, [forecast.data, search, onlyDemand]);
+  }, [forecast.data, search, onlyDemand, unit]);
 
   const error = forecast.error ?? plan.error;
   if (error instanceof AuthRequiredError) {
@@ -114,7 +132,7 @@ export default function ForcaPage() {
           subtitle="Pronóstico mensual por artículo repartido en las semanas del mes por cantidad. Al fijar el mes queda bloqueado (se cambia con clave); las cantidades por semana siguen editables."
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
-              <Kpi label="Artículos" value={String(forecast.data?.rows.length ?? 0)} icon={CalendarRange} />
+              <Kpi label="Artículos" value={String(rows.length)} icon={CalendarRange} />
               <Kpi label="Forca del mes" value={fmtQty(totalForca, 0)} suffix="unid." tone="primary" />
             </div>
           }
@@ -141,6 +159,10 @@ export default function ForcaPage() {
                   { value: 'reporte', label: 'Reporte' },
                 ]}
               />
+              <div className="flex items-center gap-space-2xs">
+                <span className="font-semibold uppercase text-label-sm text-outline">Presentación</span>
+                <Segmented ariaLabel="Presentación" value={unit} onChange={setUnit} options={UNIT_OPTIONS} />
+              </div>
             </div>
             {tab === 'asignador' && (
               <div className="flex flex-wrap items-center gap-space-md">
@@ -215,7 +237,7 @@ export default function ForcaPage() {
         {tab === 'reporte' && (
           <>
             {plan.isLoading && <p className="text-body-md text-on-surface-variant">Calculando plan de producción…</p>}
-            {plan.data && <PlanReport key={ym} data={plan.data} />}
+            {plan.data && <PlanReport key={ym} data={plan.data} unit={unit} />}
           </>
         )}
       </main>
@@ -363,8 +385,9 @@ function ForecastEditor({
 }
 
 // ---------- Reporte / plan de producción ----------
-function PlanReport({ data }: { data: ForecastPlanResponse }) {
+function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilter }) {
   const weeks = data.weekRanges;
+  const rows = useMemo(() => data.rows.filter((r) => unit === 'ALL' || r.uom === unit), [data, unit]);
   const today = new Date();
   const isCurrentMonth = today.getFullYear() === data.year && today.getMonth() + 1 === data.month;
   const defaultWeek = isCurrentMonth ? String(weekIndexOf(today.getDate())) : '1';
@@ -391,32 +414,33 @@ function PlanReport({ data }: { data: ForecastPlanResponse }) {
       },
       yAxis: { type: 'value', axisLabel: { color: C.outline, fontSize: 10 }, splitLine: { lineStyle: { color: C.grid } } },
       series: [
-        { name: 'Demanda', type: 'bar', data: weeks.map((w) => data.rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.demandQty ?? 0), 0)), color: C.navy, barMaxWidth: 26 },
-        { name: 'A producir', type: 'bar', data: weeks.map((w) => data.rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.toProduceQty ?? 0), 0)), color: C.red, barMaxWidth: 26 },
+        { name: 'Demanda', type: 'bar', data: weeks.map((w) => rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.demandQty ?? 0), 0)), color: C.navy, barMaxWidth: 26 },
+        { name: 'A producir', type: 'bar', data: weeks.map((w) => rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.toProduceQty ?? 0), 0)), color: C.red, barMaxWidth: 26 },
       ],
     }),
-    [data, weeks],
+    [rows, weeks],
   );
 
-  // Totales de la semana elegida (o del mes si se ven todas).
+  // Totales de la semana elegida (o del mes si se ven todas), ya filtrados.
   const totals = useMemo(() => {
-    const pick = (w: (typeof data.rows)[number]['weeks'][number]) => w;
     if (weekIndex === null) {
       return {
-        forca: data.totals.forcaQty,
-        demand: data.totals.demandQty,
-        toProduce: data.totals.productionQty,
-        toProduceKg: data.totals.productionKg,
+        forca: rows.reduce((a, r) => a + r.forcaMonthQty, 0),
+        demand: rows.reduce((a, r) => a + r.demandMonthQty, 0),
+        toProduce: rows.reduce((a, r) => a + r.productionMonthQty, 0),
+        toProduceKg: rows.reduce((a, r) => a + r.productionMonthKg, 0),
       };
     }
-    const ws = data.rows.map((r) => r.weeks.find((w) => w.weekIndex === weekIndex)).filter(Boolean).map((w) => pick(w!));
+    const ws = rows
+      .map((r) => r.weeks.find((w) => w.weekIndex === weekIndex))
+      .filter((w): w is ForecastPlanWeek => Boolean(w));
     return {
       forca: ws.reduce((a, w) => a + w.forcaQty, 0),
       demand: ws.reduce((a, w) => a + w.demandQty, 0),
       toProduce: ws.reduce((a, w) => a + w.toProduceQty, 0),
       toProduceKg: ws.reduce((a, w) => a + (w.toProduceKg ?? 0), 0),
     };
-  }, [data, weekIndex]);
+  }, [rows, weekIndex]);
 
   function exportCsv() {
     const header = ['Codigo', 'Descripcion', 'Unid', 'Stock 03', 'Stock 68', 'Existencia'];
@@ -426,7 +450,7 @@ function PlanReport({ data }: { data: ForecastPlanResponse }) {
       header.push('Promedio', `S${weekIndex} Forca`, `S${weekIndex} Demanda`, 'Disponible', 'A producir', 'A producir (kg)', 'Neto', 'Estado');
     }
     header.push('Prod mes (unid)', 'Prod mes (kg)');
-    const body = data.rows.map((r) => {
+    const body = rows.map((r) => {
       const out: string[] = [r.productCode, r.description, r.uom, String(r.stock03), String(r.stock68), String(r.stockTotal)];
       if (weekIndex === null) {
         for (const w of weeks) {
@@ -521,7 +545,12 @@ function PlanReport({ data }: { data: ForecastPlanResponse }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container">
-                {data.rows.map((r) => (
+                {rows.length === 0 && (
+                  <tr>
+                    <Td align="center" className="py-space-xl text-on-surface-variant">Sin artículos para la presentación elegida.</Td>
+                  </tr>
+                )}
+                {rows.map((r) => (
                   <tr key={r.productCode} className="transition-colors hover:bg-surface-container-low">
                     <Td className="font-bold tabular-nums text-primary">{r.productCode}</Td>
                     <Td className="max-w-[16rem] truncate" title={r.description}>{r.description}</Td>
@@ -544,9 +573,9 @@ function PlanReport({ data }: { data: ForecastPlanResponse }) {
                 <tr className="border-t-2 border-surface-container bg-surface-container-low font-bold">
                   <Td colSpan={3} className="uppercase text-label-sm text-outline">Totales</Td>
                   {weeks.map((w) => {
-                    const f = data.rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.forcaQty ?? 0), 0);
-                    const dem = data.rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.demandQty ?? 0), 0);
-                    const prod = data.rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.toProduceQty ?? 0), 0);
+                    const f = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.forcaQty ?? 0), 0);
+                    const dem = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.demandQty ?? 0), 0);
+                    const prod = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.toProduceQty ?? 0), 0);
                     return (
                       <Fragment key={w.weekIndex}>
                         <Td align="right" className="border-l border-surface-container tabular-nums text-on-surface-variant">{fmtQty(f, 0)}</Td>
@@ -555,7 +584,7 @@ function PlanReport({ data }: { data: ForecastPlanResponse }) {
                       </Fragment>
                     );
                   })}
-                  <Td align="right" className="border-l border-surface-container tabular-nums text-error">{fmtQty(data.totals.productionQty, 0)}</Td>
+                  <Td align="right" className="border-l border-surface-container tabular-nums text-error">{fmtQty(totals.toProduce, 0)}</Td>
                 </tr>
               </tfoot>
             </table>
@@ -584,7 +613,12 @@ function PlanReport({ data }: { data: ForecastPlanResponse }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container">
-                {data.rows.map((r) => {
+                {rows.length === 0 && (
+                  <tr>
+                    <Td align="center" className="py-space-xl text-on-surface-variant">Sin artículos para la presentación elegida.</Td>
+                  </tr>
+                )}
+                {rows.map((r) => {
                   const wk = r.weeks.find((x) => x.weekIndex === weekIndex);
                   if (!wk) return null;
                   return (
