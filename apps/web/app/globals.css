@@ -98,6 +98,15 @@
   --text-label-md--font-weight: 600;
   --text-label-md--letter-spacing: 0.04em;
 
+  --text-label-sm: 0.6875rem;
+  --text-label-sm--line-height: 0.875rem;
+  --text-label-sm--font-weight: 600;
+  --text-label-sm--letter-spacing: 0.05em;
+
+  --text-label-lg: 0.875rem;
+  --text-label-lg--line-height: 1.25rem;
+  --text-label-lg--font-weight: 600;
+
   --text-body-lg: 1rem;
   --text-body-lg--line-height: 1.5rem;
   --text-body-lg--font-weight: 400;

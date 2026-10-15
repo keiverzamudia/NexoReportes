@@ -182,8 +182,7 @@ export function DateInput({
   );
 }
 
-export function Th({ children, align = 'left', className }: { children?: ReactNode; align?: 'left' | 'right' | 'center'; className?: string }) {
-  return (
+export function Th({ children, align = 'left', className }: { children?: ReactNode; align?: 'left' | 'right' | 'center'; className?: string }) {  return (
     <th scope="col" className={`px-space-sm py-2 font-semibold uppercase text-label-sm text-outline ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'} ${className ?? ''}`}>
       {children}
     </th>
@@ -195,6 +194,49 @@ export function Td({ children, align = 'left', className, title }: { children?: 
     <td title={title} className={`px-space-sm py-space-xs ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'} ${className ?? ''}`}>
       {children}
     </td>
+  );
+}
+
+// Control segmentado (switch de modos). Pensado para 2–3 opciones.
+export function Segmented<T extends string>({
+  value,
+  onChange,
+  options,
+  ariaLabel,
+}: {
+  value: T;
+  onChange: (value: T) => void;
+  options: { value: T; label: string }[];
+  ariaLabel?: string;
+}) {
+  return (
+    <div role="tablist" aria-label={ariaLabel} className="inline-flex rounded-lg bg-surface-container p-space-2xs">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="tab"
+          aria-selected={value === o.value}
+          onClick={() => onChange(o.value)}
+          className={`h-8 rounded-md px-space-md text-label-md transition-colors ${
+            value === o.value ? 'bg-primary-container text-on-primary shadow-sm' : 'text-on-surface-variant hover:bg-surface-container-low'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Barra de cobertura: verde (completo) → ámbar (parcial) → rojo (nada).
+export function CoverageBar({ ratio, className }: { ratio: number; className?: string }) {
+  const pct = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0));
+  const tone = pct >= 0.999 ? 'var(--color-secondary)' : pct > 0 ? 'var(--color-warning)' : 'var(--color-critical)';
+  return (
+    <div className={`h-1.5 w-full overflow-hidden rounded-full bg-surface-container-highest ${className ?? ''}`}>
+      <div className="h-full rounded-full transition-all" style={{ width: `${pct * 100}%`, backgroundColor: tone }} />
+    </div>
   );
 }
 
