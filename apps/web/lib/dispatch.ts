@@ -1,16 +1,19 @@
 // ============================================================
-// Motor PURO de simulación de despacho (sin React ni red).
+// Motor PURO de despacho (sin React ni red).
 //
-// Recibe los renglones candidatos y el stock por producto y decide,
-// en orden de prioridad, qué se puede despachar realmente:
+// Construye la "cola de despacho": dado el stock por producto y lo que el
+// usuario ya marcó como despachado, decide en orden de prioridad qué se
+// puede entregar realmente y en qué orden mostrarlo.
 //
-//   modo 'disponible' → asigna solo lo que hay en existencia; el resto
-//                       queda como faltante (despacho "tipo real").
-//   modo 'total'      → asigna todo lo pedido; el stock proyectado puede
-//                       quedar negativo (sobre-compromiso).
+//   modo 'disponible' → asigna solo la existencia; el resto es faltante.
+//   modo 'total'      → asigna todo lo pedido (puede sobregirar el stock).
 //
-// Prioridad por defecto: fecha de entrega más próxima primero y, a igual
-// fecha, el producto con más existencia disponible.
+// Prioridad: fecha de entrega más próxima y, a igual fecha, mayor existencia.
+// Al marcar un renglón se descuenta el stock y la cola se recalcula: si el
+// que era 2º se queda sin existencia, baja y entra otro que sí la tiene.
+//
+// La vista muestra: marcados fijos en su sitio, luego los despachables en
+// turno y al final los que quedaron sin existencia.
 // ============================================================
 
 export type DispatchMode = 'disponible' | 'total';
@@ -21,24 +24,30 @@ export interface DispatchInput {
   productCode: string;
   pendingQty: number;
   pendingKg: number | null;
-  // Fecha de entrega comprometida (ISO) o null.
   requestedDate: string | null;
   orderNumber: string;
   customerName: string | null;
-  // Existencia total del producto (suma de almacenes).
   stockTotal: number;
 }
 
-export interface DispatchResult {
+export interface QueueEntry {
   key: string;
-  // Turno de despacho (1 = primero).
-  priority: number;
+  selected: boolean;
+  pendingQty: number;
+  pendingKg: number | null;
+  // Despacho calculado con el stock VIVO (ya descontado lo marcado).
   assignedQty: number;
   missingQty: number;
   assignedKg: number;
   missingKg: number;
-  // Existencia del producto que queda tras asignar (puede ser negativa en 'total').
+  // assignedQty > 0 → se puede entregar (total o parcial).
+  dispatchable: boolean;
+  // Existencia del producto tras asignar este renglón (puede ser negativa).
   productRemaining: number;
+  // Turno dentro de su grupo (marcados / no marcados). 1 = primero.
+  priority: number;
+  // Posición final en la vista.
+  sortIndex: number;
 }
 
 function round3(value: number): number {
@@ -58,9 +67,7 @@ function kgPerUnit(line: DispatchInput): number | null {
 
 function compare(sort: DispatchSort) {
   return (a: DispatchInput, b: DispatchInput): number => {
-    if (sort === 'pendiente') {
-      return b.pendingQty - a.pendingQty;
-    }
+    if (sort === 'pendiente') return b.pendingQty - a.pendingQty;
     if (sort === 'disponibilidad') {
       if (b.stockTotal !== a.stockTotal) return b.stockTotal - a.stockTotal;
       return timeOf(a.requestedDate) - timeOf(b.requestedDate);
@@ -73,36 +80,108 @@ function compare(sort: DispatchSort) {
   };
 }
 
-export function simulateDispatch(inputs: DispatchInput[], mode: DispatchMode, sort: DispatchSort): DispatchResult[] {
-  const ordered = [...inputs].sort(compare(sort));
+// Asigna stock (mutando `remaining`) a un conjunto de líneas en orden de prioridad.
+function allocate(
+  lines: DispatchInput[],
+  remaining: Map<string, number>,
+  mode: DispatchMode,
+  sort: DispatchSort,
+): Map<string, { assigned: number; missing: number; after: number }> {
+  const ordered = [...lines].sort(compare(sort));
+  const out = new Map<string, { assigned: number; missing: number; after: number }>();
+  for (const line of ordered) {
+    const left = remaining.get(line.productCode) ?? 0;
+    const assigned = mode === 'disponible' ? Math.max(0, Math.min(left, line.pendingQty)) : line.pendingQty;
+    remaining.set(line.productCode, left - assigned);
+    out.set(line.key, { assigned, missing: line.pendingQty - assigned, after: left - assigned });
+  }
+  return out;
+}
 
-  // Existencia viva por producto (se va descontando en orden de prioridad).
+export function buildDispatchQueue(
+  inputs: DispatchInput[],
+  selectedKeys: string[],
+  mode: DispatchMode,
+  sort: DispatchSort,
+): QueueEntry[] {
+  const selectedSet = new Set(selectedKeys);
+  const selected = inputs.filter((l) => selectedSet.has(l.key));
+  const unselected = inputs.filter((l) => !selectedSet.has(l.key));
+
+  // Existencia inicial por producto.
   const remaining = new Map<string, number>();
   for (const line of inputs) {
     if (!remaining.has(line.productCode)) remaining.set(line.productCode, line.stockTotal);
   }
 
-  return ordered.map((line, index) => {
-    const stockLeft = remaining.get(line.productCode) ?? 0;
-    const assignedQty =
-      mode === 'disponible' ? Math.max(0, Math.min(stockLeft, line.pendingQty)) : line.pendingQty;
-    const missingQty = line.pendingQty - assignedQty;
-    remaining.set(line.productCode, stockLeft - assignedQty);
+  // 1) Los marcados consumen primero; 2) el resto compite por lo que quede.
+  const selectedAlloc = allocate(selected, remaining, mode, sort);
+  const unselectedAlloc = allocate(unselected, remaining, mode, sort);
 
-    const kpu = kgPerUnit(line);
+  const selectedPriority = new Map<string, number>();
+  [...selected]
+    .sort(compare(sort))
+    .forEach((l, i) => selectedPriority.set(l.key, i + 1));
+
+  const origIndex = new Map(inputs.map((l, i) => [l.key, i]));
+
+  // No marcados: primero los despachables (turno por entrega), después los sin existencia.
+  const unselectedOrdered = [...unselected].sort((a, b) => {
+    const da = (unselectedAlloc.get(a.key)?.assigned ?? 0) > 0 ? 0 : 1;
+    const db = (unselectedAlloc.get(b.key)?.assigned ?? 0) > 0 ? 0 : 1;
+    if (da !== db) return da - db;
+    const byDate = timeOf(a.requestedDate) - timeOf(b.requestedDate);
+    if (byDate !== 0) return byDate;
+    if (b.stockTotal !== a.stockTotal) return b.stockTotal - a.stockTotal;
+    return a.key.localeCompare(b.key);
+  });
+  const unselectedPriority = new Map<string, number>();
+  unselectedOrdered.forEach((l, i) => unselectedPriority.set(l.key, i + 1));
+
+  // Vista: los marcados quedan FIJOS en su posición original; los demás llenan el resto.
+  const fixedByIndex = new Map<number, DispatchInput>();
+  for (const line of selected) {
+    const i = origIndex.get(line.key);
+    if (i !== undefined) fixedByIndex.set(i, line);
+  }
+  const orderedSlots: DispatchInput[] = [];
+  let cursor = 0;
+  for (let i = 0; i < inputs.length; i += 1) {
+    const fixed = fixedByIndex.get(i);
+    if (fixed) {
+      orderedSlots.push(fixed);
+      continue;
+    }
+    const next = unselectedOrdered[cursor];
+    cursor += 1;
+    if (next) orderedSlots.push(next);
+  }
+
+  return orderedSlots.map((l, index) => {
+    const isSel = selectedSet.has(l.key);
+    const alloc = isSel ? selectedAlloc.get(l.key) : unselectedAlloc.get(l.key);
+    const assigned = alloc?.assigned ?? 0;
+    const missing = alloc?.missing ?? l.pendingQty;
+    const after = alloc?.after ?? (remaining.get(l.productCode) ?? 0);
+    const kpu = kgPerUnit(l);
     return {
-      key: line.key,
-      priority: index + 1,
-      assignedQty: round3(assignedQty),
-      missingQty: round3(missingQty),
-      assignedKg: kpu === null ? 0 : round3(assignedQty * kpu),
-      missingKg: kpu === null ? 0 : round3(missingQty * kpu),
-      productRemaining: round3(stockLeft - assignedQty),
+      key: l.key,
+      selected: isSel,
+      pendingQty: l.pendingQty,
+      pendingKg: l.pendingKg,
+      assignedQty: round3(assigned),
+      missingQty: round3(missing),
+      assignedKg: kpu === null ? 0 : round3(assigned * kpu),
+      missingKg: kpu === null ? 0 : round3(missing * kpu),
+      dispatchable: assigned > 0,
+      productRemaining: round3(after),
+      priority: isSel ? (selectedPriority.get(l.key) ?? 0) : (unselectedPriority.get(l.key) ?? 0),
+      sortIndex: index,
     };
   });
 }
 
-// Resumen agregado de una simulación (para KPIs y gráficas).
+// Resumen agregado (KPIs y gráficas).
 export interface DispatchSummary {
   lines: number;
   pendingQty: number;
@@ -111,30 +190,26 @@ export interface DispatchSummary {
   missingQty: number;
   assignedKg: number;
   missingKg: number;
-  // 0..1 (1 = todo despachable con el stock actual).
   coverage: number;
 }
 
-export function summarize(inputs: DispatchInput[], results: DispatchResult[]): DispatchSummary {
-  const byKey = new Map(results.map((r) => [r.key, r]));
+export function summarizeQueue(entries: QueueEntry[]): DispatchSummary {
   let pendingQty = 0;
   let pendingKg = 0;
   let assignedQty = 0;
   let missingQty = 0;
   let assignedKg = 0;
   let missingKg = 0;
-  for (const line of inputs) {
-    const r = byKey.get(line.key);
-    if (!r) continue;
-    pendingQty += line.pendingQty;
-    pendingKg += line.pendingKg ?? 0;
-    assignedQty += r.assignedQty;
-    missingQty += r.missingQty;
-    assignedKg += r.assignedKg;
-    missingKg += r.missingKg;
+  for (const e of entries) {
+    pendingQty += e.pendingQty;
+    pendingKg += e.pendingKg ?? 0;
+    assignedQty += e.assignedQty;
+    missingQty += e.missingQty;
+    assignedKg += e.assignedKg;
+    missingKg += e.missingKg;
   }
   return {
-    lines: inputs.length,
+    lines: entries.length,
     pendingQty: round3(pendingQty),
     pendingKg: round3(pendingKg),
     assignedQty: round3(assignedQty),

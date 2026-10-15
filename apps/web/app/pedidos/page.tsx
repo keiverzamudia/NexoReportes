@@ -25,7 +25,7 @@ import { EChart } from '../../components/EChart';
 import { AppNav, LoginScreen } from '../../components/shell';
 import { Badge, Card, CoverageBar, DateInput, Kpi, PageHeader, Select, Segmented, Td, TextInput, Th, fmtDate, fmtQty } from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
-import { DispatchInput, DispatchMode, DispatchResult, DispatchSort, simulateDispatch, summarize } from '../../lib/dispatch';
+import { DispatchInput, DispatchMode, DispatchSort, QueueEntry, buildDispatchQueue, summarizeQueue } from '../../lib/dispatch';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'Estado: Todos' },
@@ -65,6 +65,14 @@ const STATUS_LABEL: Record<OrderStatus, string> = {
 
 // Paleta de las gráficas (identidad Nexo).
 const C = { navy: '#003366', lime: '#95C800', dark: '#001e40', red: '#dc2626', amber: '#b45309', outline: '#737780', grid: '#e1f0ff' };
+
+// Números compactos para los ejes (evita que se encimen): 12500 → "13k".
+function compactKg(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${Math.round(value / 1_000_000)}M`;
+  if (abs >= 1000) return `${Math.round(value / 1000)}k`;
+  return String(Math.round(value));
+}
 
 const SEL_KEY = 'nexo.seleccion.v1';
 
@@ -183,21 +191,19 @@ export default function PedidosPage() {
     return map;
   }, [groups]);
 
-  // Realidad: qué se puede despachar hoy con el stock actual (sin selección).
-  const realityResults = useMemo(() => simulateDispatch(dispatchInputs, 'disponible', sort), [dispatchInputs, sort]);
-  const realityByKey = useMemo(() => new Map(realityResults.map((r) => [r.key, r])), [realityResults]);
-  const realitySummary = useMemo(() => summarize(dispatchInputs, realityResults), [dispatchInputs, realityResults]);
+  // Cola de despacho: stock vivo, marcados fijos y el resto en turno.
+  const queue = useMemo(() => buildDispatchQueue(dispatchInputs, selection, mode, sort), [dispatchInputs, selection, mode, sort]);
+  const queueByKey = useMemo(() => new Map(queue.map((e) => [e.key, e])), [queue]);
+  const queueIndex = useMemo(() => new Map(queue.map((e) => [e.key, e.sortIndex])), [queue]);
+  const liveSummary = useMemo(() => summarizeQueue(queue), [queue]);
+  const planEntries = useMemo(() => queue.filter((e) => e.selected).sort((a, b) => a.priority - b.priority), [queue]);
+  const planSummary = useMemo(() => summarizeQueue(planEntries), [planEntries]);
 
-  // Simulación de la selección (según el modo y el orden elegidos).
-  const selectedInputs = useMemo(() => dispatchInputs.filter((i) => selection.includes(i.key)), [dispatchInputs, selection]);
-  const plan = useMemo(() => simulateDispatch(selectedInputs, mode, sort), [selectedInputs, mode, sort]);
-  const planSummary = useMemo(() => summarize(selectedInputs, plan), [selectedInputs, plan]);
-
-  // Grupos ordenados por urgencia (entrega más próxima primero).
+  // Orden de grupos por la posición de su mejor renglón en la cola.
   const orderedGroups = useMemo(() => {
-    const earliest = (g: OrderGroup) => Math.min(...g.lines.map((l) => timeOf(l.requestedDate)));
-    return [...groups].sort((a, b) => earliest(a) - earliest(b));
-  }, [groups]);
+    const rank = (g: OrderGroup) => Math.min(...g.lines.map((l) => queueIndex.get(lineKey(l)) ?? Number.MAX_SAFE_INTEGER));
+    return [...groups].sort((a, b) => rank(a) - rank(b));
+  }, [groups, queueIndex]);
 
   // --- Gráficas ---
   const coverageChart = useMemo(() => {
@@ -213,14 +219,20 @@ export default function PedidosPage() {
       .slice(0, 12)
       .reverse();
     return {
-      grid: { left: 4, right: 12, top: 6, bottom: 6, containLabel: true },
+      grid: { left: 4, right: 20, top: 8, bottom: 44, containLabel: true },
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'shadow' },
         valueFormatter: (v: number) => `${fmtQty(v, 0)} kg`,
       },
-      legend: { bottom: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 10, textStyle: { color: C.outline, fontSize: 11 } },
-      xAxis: { type: 'value', axisLabel: { color: C.outline, fontSize: 11 }, splitLine: { lineStyle: { color: C.grid } }, axisLine: { show: false }, axisTick: { show: false } },
+      legend: { bottom: 2, icon: 'roundRect', itemWidth: 10, itemHeight: 10, textStyle: { color: C.outline, fontSize: 11 } },
+      xAxis: {
+        type: 'value',
+        axisLabel: { color: C.outline, fontSize: 10, formatter: (v: number) => compactKg(v) },
+        splitLine: { lineStyle: { color: C.grid } },
+        axisLine: { show: false },
+        axisTick: { show: false },
+      },
       yAxis: {
         type: 'category',
         data: rows.map((r) => r.code),
@@ -229,15 +241,15 @@ export default function PedidosPage() {
         axisTick: { show: false },
       },
       series: [
-        { name: 'Despachable', type: 'bar', stack: 't', data: rows.map((r) => r.coveredKg), color: C.navy, barWidth: 12, itemStyle: { borderRadius: [3, 0, 0, 3] } },
-        { name: 'Faltante', type: 'bar', stack: 't', data: rows.map((r) => r.missingKg), color: C.red, barWidth: 12, itemStyle: { borderRadius: [0, 3, 3, 0] } },
+        { name: 'Despachable', type: 'bar', stack: 't', data: rows.map((r) => r.coveredKg), color: C.navy, barMaxWidth: 10, itemStyle: { borderRadius: [3, 0, 0, 3] } },
+        { name: 'Faltante', type: 'bar', stack: 't', data: rows.map((r) => r.missingKg), color: C.red, barMaxWidth: 10, itemStyle: { borderRadius: [0, 3, 3, 0] } },
       ],
     };
   }, [productInfo]);
 
   const donutChart = useMemo(() => {
-    const covered = Math.round(realitySummary.assignedKg);
-    const missing = Math.round(realitySummary.missingKg);
+    const covered = Math.round(liveSummary.assignedKg);
+    const missing = Math.round(liveSummary.missingKg);
     return {
       tooltip: { trigger: 'item', valueFormatter: (v: number) => `${fmtQty(v, 0)} kg` },
       legend: { bottom: 0, icon: 'circle', itemWidth: 10, itemHeight: 10, textStyle: { color: C.outline, fontSize: 11 } },
@@ -256,14 +268,14 @@ export default function PedidosPage() {
         },
       ],
     };
-  }, [realitySummary]);
+  }, [liveSummary]);
 
   if (error instanceof AuthRequiredError) {
     return <LoginScreen onSuccess={() => setTick((t) => t + 1)} />;
   }
 
   const hasFilters = Boolean(q || status || customerType || vendor || authorized || emisionDesde || emisionHasta || entregaDesde || entregaHasta || customerCode);
-  const coveragePct = Math.round(realitySummary.coverage * 100);
+  const coveragePct = Math.round(liveSummary.coverage * 100);
 
   function resetFilters() {
     setQ('');
@@ -292,7 +304,7 @@ export default function PedidosPage() {
 
   function exportPlan() {
     const rows: string[][] = [['Turno', 'Pedido', 'Cliente', 'Producto', 'Descripcion', 'Pendiente', 'Asignado', 'Faltante', 'Kg asignado', 'Kg faltante', 'Entrega']];
-    for (const r of plan) {
+    for (const r of planEntries) {
       const ref = lineByKey.get(r.key);
       if (!ref) continue;
       rows.push([
@@ -330,9 +342,9 @@ export default function PedidosPage() {
           subtitle="Simula qué puedes despachar hoy con tu existencia real. Marca renglones para armar el plan de despacho; se ordena por prioridad y nunca escribe en Profit."
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
-              <Kpi label="Despachable" value={fmtQty(realitySummary.assignedKg, 0)} suffix="kg" tone="primary" hint={`${coveragePct}% de la demanda`} />
-              <Kpi label="Faltante" value={fmtQty(realitySummary.missingKg, 0)} suffix="kg" tone="danger" />
-              <Kpi label="Pendiente" value={fmtQty(realitySummary.pendingQty, 0)} suffix="unid." tone="muted" />
+              <Kpi label="Despachable" value={fmtQty(liveSummary.assignedKg, 0)} suffix="kg" tone="primary" hint={`${coveragePct}% de la demanda`} />
+              <Kpi label="Faltante" value={fmtQty(liveSummary.missingKg, 0)} suffix="kg" tone="danger" />
+              <Kpi label="Pendiente" value={fmtQty(liveSummary.pendingQty, 0)} suffix="unid." tone="muted" />
             </div>
           }
         />
@@ -410,13 +422,13 @@ export default function PedidosPage() {
         </Card>
 
         {/* Plan de despacho (solo si hay selección) */}
-        {selectedInputs.length > 0 && (
+        {planEntries.length > 0 && (
           <Card className="overflow-hidden">
             <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-surface-container bg-surface-container-low px-space-md py-space-sm">
               <div className="flex flex-wrap items-center gap-space-md">
                 <span className="font-bold uppercase text-label-md text-primary">Plan de despacho · {mode === 'disponible' ? 'solo disponible' : 'demanda total'}</span>
                 <span className="text-label-sm text-on-surface-variant">
-                  {selectedInputs.length} renglón(es) · turnos por {sort === 'prioridad' ? 'entrega' : sort === 'disponibilidad' ? 'existencia' : 'pendiente'}
+                  {planEntries.length} renglón(es) · turnos por {sort === 'prioridad' ? 'entrega' : sort === 'disponibilidad' ? 'existencia' : 'pendiente'}
                 </span>
               </div>
               <div className="flex items-center gap-space-sm">
@@ -448,7 +460,7 @@ export default function PedidosPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-container">
-                  {plan.map((r) => {
+                  {planEntries.map((r) => {
                     const ref = lineByKey.get(r.key);
                     if (!ref) return null;
                     return (
@@ -506,7 +518,7 @@ export default function PedidosPage() {
                     const keys = group.lines.map(lineKey);
                     const allSelected = keys.every((k) => selection.includes(k));
                     const pendingQty = group.lines.reduce((a, l) => a + l.pendingQty, 0);
-                    const assignedQty = group.lines.reduce((a, l) => a + (realityByKey.get(lineKey(l))?.assignedQty ?? 0), 0);
+                    const assignedQty = group.lines.reduce((a, l) => a + (queueByKey.get(lineKey(l))?.assignedQty ?? 0), 0);
                     const coverage = pendingQty > 0 ? assignedQty / pendingQty : 1;
                     const earliest = group.lines.reduce((min, l) => Math.min(min, timeOf(l.requestedDate)), Number.POSITIVE_INFINITY);
                     const isOpen = expanded === group.key;
@@ -520,7 +532,8 @@ export default function PedidosPage() {
                         coverage={coverage}
                         earliest={Number.isFinite(earliest) ? new Date(earliest).toISOString() : null}
                         selection={selection}
-                        realityByKey={realityByKey}
+                        mode={mode}
+                        queueByKey={queueByKey}
                         onToggleGroup={() => toggleGroup(group)}
                         onToggleLine={toggleLine}
                         onToggleOpen={() => setExpanded(isOpen ? null : group.key)}
@@ -532,9 +545,9 @@ export default function PedidosPage() {
             </div>
             <div className="flex flex-wrap items-center justify-between gap-space-sm border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
               <span>
-                {orderedGroups.length} grupo{orderedGroups.length === 1 ? '' : 's'} · pendiente {fmtQty(realitySummary.pendingQty, 0)} unid. / {fmtQty(realitySummary.pendingKg, 0)} kg
+                {orderedGroups.length} grupo{orderedGroups.length === 1 ? '' : 's'} · pendiente {fmtQty(liveSummary.pendingQty, 0)} unid. / {fmtQty(liveSummary.pendingKg, 0)} kg
               </span>
-              <span>«Asignado» y «faltante» reflejan tu existencia actual · {realityResults.length} renglones</span>
+              <span>«Asignado» y «faltante» reflejan tu existencia actual · {queue.length} renglones</span>
             </div>
           </Card>
         )}
@@ -552,7 +565,8 @@ function GroupRow({
   coverage,
   earliest,
   selection,
-  realityByKey,
+  mode,
+  queueByKey,
   onToggleGroup,
   onToggleLine,
   onToggleOpen,
@@ -564,7 +578,8 @@ function GroupRow({
   coverage: number;
   earliest: string | null;
   selection: string[];
-  realityByKey: Map<string, DispatchResult>;
+  mode: DispatchMode;
+  queueByKey: Map<string, QueueEntry>;
   onToggleGroup: () => void;
   onToggleLine: (line: OrderGroupLine) => void;
   onToggleOpen: () => void;
@@ -623,14 +638,26 @@ function GroupRow({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-container">
-                  {group.lines.map((line) => {
+                  {[...group.lines]
+                    .sort((a, b) => (queueByKey.get(lineKey(a))?.sortIndex ?? 0) - (queueByKey.get(lineKey(b))?.sortIndex ?? 0))
+                    .map((line) => {
                     const key = lineKey(line);
                     const selected = selection.includes(key);
-                    const r = realityByKey.get(key);
+                    const r = queueByKey.get(key);
+                    const dispatchable = r?.dispatchable ?? false;
+                    const blocked = mode === 'disponible' && !selected && !dispatchable;
                     return (
-                      <tr key={key} className={selected ? 'bg-success-container' : undefined}>
+                      <tr key={key} className={`transition-colors ${selected ? 'bg-success-container' : blocked ? 'opacity-55' : 'hover:bg-surface-container-low'}`}>
                         <Td>
-                          <input type="checkbox" checked={selected} onChange={() => onToggleLine(line)} aria-label="Seleccionar renglón para despacho" className="size-4 accent-[var(--color-primary-container)]" />
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            disabled={blocked}
+                            onChange={() => onToggleLine(line)}
+                            aria-label="Seleccionar renglón para despacho"
+                            title={blocked ? 'Sin existencia disponible' : undefined}
+                            className="size-4 accent-[var(--color-primary-container)] disabled:cursor-not-allowed"
+                          />
                         </Td>
                         <Td className="font-bold tabular-nums text-primary">{line.orderNumber}</Td>
                         <Td className="tabular-nums text-on-surface-variant">
@@ -644,12 +671,22 @@ function GroupRow({
                             </span>
                           </Td>
                         )}
-                        <Td align="right" className={`tabular-nums font-bold ${line.pendingQty < 0 ? 'text-error' : 'text-on-surface'}`}>{fmtQty(line.pendingQty, 0)}</Td>
+                        <Td align="right" className="tabular-nums font-bold">
+                          {selected && (r?.assignedQty ?? 0) < line.pendingQty ? (
+                            <>
+                              <span className="text-outline line-through">{fmtQty(line.pendingQty, 0)}</span>{' '}
+                              <span className="text-secondary">{fmtQty(r?.assignedQty ?? 0, 0)}</span>
+                            </>
+                          ) : (
+                            <span className={line.pendingQty < 0 ? 'text-error' : 'text-on-surface'}>{fmtQty(line.pendingQty, 0)}</span>
+                          )}
+                        </Td>
                         <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(line.pendingKg, 0)}</Td>
                         <Td className="tabular-nums text-on-surface-variant">{line.warehouseCode ?? '—'}</Td>
                         <Td align="right" className="tabular-nums">
                           {fmtQty((line.stock03 ?? 0) + (line.stock68 ?? 0), 0)}
                           <span className="ml-space-xs text-label-sm text-outline">({fmtQty(line.stock03, 0)}/{fmtQty(line.stock68, 0)})</span>
+                          {blocked && <span className="ml-space-xs font-bold uppercase text-label-sm text-critical">sin existencia</span>}
                         </Td>
                         <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(r?.assignedQty ?? 0, 0)}</Td>
                         <Td align="right" className={`tabular-nums ${(r?.missingQty ?? 0) > 0 ? 'font-bold text-error' : 'text-outline'}`}>{fmtQty(r?.missingQty ?? 0, 0)}</Td>
