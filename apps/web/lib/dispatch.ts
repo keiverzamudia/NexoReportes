@@ -80,14 +80,13 @@ function compare(sort: DispatchSort) {
   };
 }
 
-// Asigna stock (mutando `remaining`) a un conjunto de líneas en orden de prioridad.
-function allocate(
-  lines: DispatchInput[],
+// Asigna stock (mutando `remaining`) a las líneas en el ORDEN RECIBIDO.
+// El orden define quién consume primero: lo marcado conserva lo suyo.
+function allocateOrdered(
+  ordered: DispatchInput[],
   remaining: Map<string, number>,
   mode: DispatchMode,
-  sort: DispatchSort,
 ): Map<string, { assigned: number; missing: number; after: number }> {
-  const ordered = [...lines].sort(compare(sort));
   const out = new Map<string, { assigned: number; missing: number; after: number }>();
   for (const line of ordered) {
     const left = remaining.get(line.productCode) ?? 0;
@@ -96,6 +95,10 @@ function allocate(
     out.set(line.key, { assigned, missing: line.pendingQty - assigned, after: left - assigned });
   }
   return out;
+}
+
+function sortLines(lines: DispatchInput[], sort: DispatchSort): DispatchInput[] {
+  return [...lines].sort(compare(sort));
 }
 
 export function buildDispatchQueue(
@@ -114,16 +117,22 @@ export function buildDispatchQueue(
     if (!remaining.has(line.productCode)) remaining.set(line.productCode, line.stockTotal);
   }
 
-  // 1) Los marcados consumen primero; 2) el resto compite por lo que quede.
-  const selectedAlloc = allocate(selected, remaining, mode, sort);
-  const unselectedAlloc = allocate(unselected, remaining, mode, sort);
+  // DESCUENTO INMEDIATO: los marcados consumen en el ORDEN EN QUE SE MARCARON,
+  // así lo ya reservado no se lo quita un marcado posterior. El resto compite
+  // por lo que quede, en orden de prioridad (entrega + existencia).
+  const markIndex = new Map(selectedKeys.map((k, i) => [k, i]));
+  const selectedInMarkOrder = [...selected].sort((a, b) => (markIndex.get(a.key) ?? 0) - (markIndex.get(b.key) ?? 0));
+  const selectedAlloc = allocateOrdered(selectedInMarkOrder, remaining, mode);
+  const unselectedAlloc = allocateOrdered(sortLines(unselected, sort), remaining, mode);
 
+  // Turno para el Plan de despacho: entrega más próxima; a igual fecha, orden de marcado.
   const selectedPriority = new Map<string, number>();
   [...selected]
-    .sort(compare(sort))
+    .sort((a, b) => {
+      const byDate = timeOf(a.requestedDate) - timeOf(b.requestedDate);
+      return byDate !== 0 ? byDate : (markIndex.get(a.key) ?? 0) - (markIndex.get(b.key) ?? 0);
+    })
     .forEach((l, i) => selectedPriority.set(l.key, i + 1));
-
-  const origIndex = new Map(inputs.map((l, i) => [l.key, i]));
 
   // No marcados: primero los despachables (turno por entrega), después los sin existencia.
   const unselectedOrdered = [...unselected].sort((a, b) => {
@@ -138,24 +147,10 @@ export function buildDispatchQueue(
   const unselectedPriority = new Map<string, number>();
   unselectedOrdered.forEach((l, i) => unselectedPriority.set(l.key, i + 1));
 
-  // Vista: los marcados quedan FIJOS en su posición original; los demás llenan el resto.
-  const fixedByIndex = new Map<number, DispatchInput>();
-  for (const line of selected) {
-    const i = origIndex.get(line.key);
-    if (i !== undefined) fixedByIndex.set(i, line);
-  }
-  const orderedSlots: DispatchInput[] = [];
-  let cursor = 0;
-  for (let i = 0; i < inputs.length; i += 1) {
-    const fixed = fixedByIndex.get(i);
-    if (fixed) {
-      orderedSlots.push(fixed);
-      continue;
-    }
-    const next = unselectedOrdered[cursor];
-    cursor += 1;
-    if (next) orderedSlots.push(next);
-  }
+  // Vista: PRIMERO los marcados (en turno), luego los candidatos: los
+  // despachables por entrega y al final los que quedaron sin existencia.
+  const selectedViewOrder = [...selected].sort((a, b) => (selectedPriority.get(a.key) ?? 0) - (selectedPriority.get(b.key) ?? 0));
+  const orderedSlots: DispatchInput[] = [...selectedViewOrder, ...unselectedOrdered];
 
   return orderedSlots.map((l, index) => {
     const isSel = selectedSet.has(l.key);

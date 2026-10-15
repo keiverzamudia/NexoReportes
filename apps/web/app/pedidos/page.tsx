@@ -20,7 +20,7 @@ import type { OrderGroup, OrderGroupBy, OrderGroupLine, OrderGroupedResponse, Or
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, ChevronDown, ChevronRight, Download, Search, ShoppingCart, Trash2 } from 'lucide-react';
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { EChart } from '../../components/EChart';
 import { AppNav, LoginScreen } from '../../components/shell';
 import { Badge, Card, CoverageBar, DateInput, Kpi, PageHeader, Select, Segmented, Td, TextInput, Th, fmtDate, fmtQty } from '../../components/ui';
@@ -103,6 +103,7 @@ export default function PedidosPage() {
   const [mode, setMode] = useState<DispatchMode>('disponible');
   const [sort, setSort] = useState<DispatchSort>('prioridad');
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [planExpanded, setPlanExpanded] = useState<string | null>(null);
   const [selection, setSelection] = useState<string[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
@@ -198,6 +199,29 @@ export default function PedidosPage() {
   const liveSummary = useMemo(() => summarizeQueue(queue), [queue]);
   const planEntries = useMemo(() => queue.filter((e) => e.selected).sort((a, b) => a.priority - b.priority), [queue]);
   const planSummary = useMemo(() => summarizeQueue(planEntries), [planEntries]);
+
+  // Plan agrupado igual que la tabla (por cliente o por producto), 1 abierto.
+  const planGroups = useMemo(() => {
+    const map = new Map<
+      string,
+      { key: string; label: string; code: string | null; entries: QueueEntry[]; pendingQty: number; assignedQty: number; assignedKg: number; missingKg: number }
+    >();
+    for (const e of planEntries) {
+      const ref = lineByKey.get(e.key);
+      if (!ref) continue;
+      let g = map.get(ref.group.key);
+      if (!g) {
+        g = { key: ref.group.key, label: ref.group.label, code: ref.group.code, entries: [], pendingQty: 0, assignedQty: 0, assignedKg: 0, missingKg: 0 };
+        map.set(ref.group.key, g);
+      }
+      g.entries.push(e);
+      g.pendingQty += e.pendingQty;
+      g.assignedQty += e.assignedQty;
+      g.assignedKg += e.assignedKg;
+      g.missingKg += e.missingKg;
+    }
+    return [...map.values()].map((g) => ({ ...g, entries: [...g.entries].sort((a, b) => a.priority - b.priority) }));
+  }, [planEntries, lineByKey]);
 
   // Orden de grupos por la posición de su mejor renglón en la cola.
   const orderedGroups = useMemo(() => {
@@ -421,14 +445,14 @@ export default function PedidosPage() {
           )}
         </Card>
 
-        {/* Plan de despacho (solo si hay selección) */}
+        {/* Plan de despacho (agrupado como la tabla; solo si hay selección) */}
         {planEntries.length > 0 && (
           <Card className="overflow-hidden">
             <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-surface-container bg-surface-container-low px-space-md py-space-sm">
               <div className="flex flex-wrap items-center gap-space-md">
                 <span className="font-bold uppercase text-label-md text-primary">Plan de despacho · {mode === 'disponible' ? 'solo disponible' : 'demanda total'}</span>
                 <span className="text-label-sm text-on-surface-variant">
-                  {planEntries.length} renglón(es) · turnos por {sort === 'prioridad' ? 'entrega' : sort === 'disponibilidad' ? 'existencia' : 'pendiente'}
+                  {planEntries.length} renglón(es) · turnos por entrega
                 </span>
               </div>
               <div className="flex items-center gap-space-sm">
@@ -440,42 +464,105 @@ export default function PedidosPage() {
                   <Download aria-hidden className="size-4" /> Exportar
                 </button>
                 <button
-                  onClick={() => setSelection([])}
+                  onClick={() => {
+                    setSelection([]);
+                    setPlanExpanded(null);
+                  }}
                   className="flex h-9 items-center gap-space-xs rounded-lg border border-outline-variant px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
                 >
                   <Trash2 aria-hidden className="size-4" /> Limpiar
                 </button>
               </div>
             </div>
-            <div className="max-h-72 overflow-y-auto">
+            <div className="overflow-x-auto">
               <table className="w-full border-collapse text-body-md">
-                <thead className="sticky top-0 bg-surface-container">
-                  <tr className="border-b border-surface-container">
-                    <Th align="right" className="w-12">Turno</Th>
-                    <Th>Pedido</Th>
-                    <Th>{by === 'producto' ? 'Producto' : 'Cliente / Producto'}</Th>
-                    <Th align="right">Pend.</Th>
+                <thead>
+                  <tr className="border-b border-surface-container bg-surface-container">
+                    <Th className="w-8" />
+                    <Th>{by === 'producto' ? 'Producto' : 'Cliente'}</Th>
+                    <Th align="right">Renglones</Th>
+                    <Th align="right">Pendiente</Th>
                     <Th align="right">Asignado</Th>
-                    <Th align="right">Faltante</Th>
+                    <Th align="right">Faltante kg</Th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-container">
-                  {planEntries.map((r) => {
-                    const ref = lineByKey.get(r.key);
-                    if (!ref) return null;
+                  {planGroups.map((g) => {
+                    const open = planExpanded === g.key;
                     return (
-                      <tr key={r.key} className="transition-colors hover:bg-surface-container-low">
-                        <Td align="right" className="tabular-nums font-bold text-primary">{r.priority}</Td>
-                        <Td className="tabular-nums text-on-surface-variant">{ref.line.orderNumber}</Td>
-                        <Td>
-                          <span className="block max-w-md truncate text-on-surface" title={ref.line.description ?? ''}>
-                            {by === 'producto' ? ref.line.productCode : `${ref.line.customerName ?? '—'} · ${ref.line.productCode}`}
-                          </span>
-                        </Td>
-                        <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(ref.line.pendingQty, 0)}</Td>
-                        <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(r.assignedQty, 0)}</Td>
-                        <Td align="right" className={`tabular-nums ${r.missingQty > 0 ? 'font-bold text-error' : 'text-outline'}`}>{fmtQty(r.missingQty, 0)}</Td>
-                      </tr>
+                      <Fragment key={g.key}>
+                        <tr className="transition-colors hover:bg-surface-container-low">
+                          <Td />
+                          <Td>
+                            <button onClick={() => setPlanExpanded(open ? null : g.key)} className="flex items-start gap-space-sm text-left">
+                              {open ? (
+                                <ChevronDown aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />
+                              ) : (
+                                <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-outline" />
+                              )}
+                              <span className="flex min-w-0 flex-col">
+                                <span className="truncate font-semibold text-on-surface">{g.label}</span>
+                                {g.code && <span className="text-label-sm tabular-nums text-outline">{g.code}</span>}
+                              </span>
+                            </button>
+                          </Td>
+                          <Td align="right" className="tabular-nums">{g.entries.length}</Td>
+                          <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(g.pendingQty, 0)}</Td>
+                          <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(g.assignedQty, 0)}</Td>
+                          <Td align="right" className={`tabular-nums font-bold ${g.missingKg > 0 ? 'text-error' : 'text-outline'}`}>{fmtQty(g.missingKg, 0)}</Td>
+                        </tr>
+                        {open && (
+                          <tr>
+                            <td colSpan={6} className="bg-surface-container-low px-space-md py-space-sm">
+                              <div className="overflow-x-auto rounded-lg bg-surface-container-lowest">
+                                <table className="w-full border-collapse text-label-md">
+                                  <thead>
+                                    <tr className="border-b border-surface-container">
+                                      <Th align="right" className="w-14">Turno</Th>
+                                      <Th>Pedido</Th>
+                                      <Th>{by === 'producto' ? 'Cliente' : 'Artículo'}</Th>
+                                      <Th align="right">Pend.</Th>
+                                      <Th align="right">Asignado</Th>
+                                      <Th align="right">Faltante</Th>
+                                      <Th />
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-surface-container">
+                                    {g.entries.map((e) => {
+                                      const ref = lineByKey.get(e.key);
+                                      if (!ref) return null;
+                                      return (
+                                        <tr key={e.key} className="transition-colors hover:bg-surface-container-low">
+                                          <Td align="right" className="tabular-nums font-bold text-primary">{e.priority}</Td>
+                                          <Td className="tabular-nums text-on-surface-variant">{ref.line.orderNumber}</Td>
+                                          <Td>
+                                            {by === 'producto' ? (
+                                              <span className="block max-w-[18rem] truncate">{ref.line.customerName ?? '—'}</span>
+                                            ) : (
+                                              <span className="block max-w-[22rem] truncate" title={ref.line.description ?? ''}>
+                                                <span className="font-bold text-primary">{ref.line.productCode}</span>
+                                                <span className="text-on-surface-variant"> · {ref.line.description ?? '—'}</span>
+                                              </span>
+                                            )}
+                                          </Td>
+                                          <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(e.pendingQty, 0)}</Td>
+                                          <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(e.assignedQty, 0)}</Td>
+                                          <Td align="right" className={`tabular-nums ${e.missingQty > 0 ? 'font-bold text-error' : 'text-outline'}`}>{fmtQty(e.missingQty, 0)}</Td>
+                                          <Td align="right">
+                                            <button onClick={() => toggleLine(ref.line)} className="font-semibold text-primary-container hover:underline">
+                                              Liberar
+                                            </button>
+                                          </Td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     );
                   })}
                 </tbody>
@@ -529,6 +616,7 @@ export default function PedidosPage() {
                         by={by}
                         isOpen={isOpen}
                         allSelected={allSelected}
+                        selectedCount={keys.filter((k) => selection.includes(k)).length}
                         coverage={coverage}
                         earliest={Number.isFinite(earliest) ? new Date(earliest).toISOString() : null}
                         selection={selection}
@@ -562,6 +650,7 @@ function GroupRow({
   by,
   isOpen,
   allSelected,
+  selectedCount,
   coverage,
   earliest,
   selection,
@@ -575,6 +664,7 @@ function GroupRow({
   by: OrderGroupBy;
   isOpen: boolean;
   allSelected: boolean;
+  selectedCount: number;
   coverage: number;
   earliest: string | null;
   selection: string[];
@@ -588,7 +678,7 @@ function GroupRow({
   const tone = coveragePct >= 100 ? 'success' : coveragePct > 0 ? 'warning' : 'danger';
   return (
     <>
-      <tr className="transition-colors hover:bg-surface-container-low">
+      <tr className={`transition-colors ${selectedCount > 0 ? 'bg-primary-fixed/50' : 'hover:bg-surface-container-low'}`}>
         <Td>
           <input type="checkbox" checked={allSelected} onChange={onToggleGroup} aria-label="Seleccionar grupo completo" className="size-4 accent-[var(--color-primary-container)]" />
         </Td>
@@ -596,7 +686,17 @@ function GroupRow({
           <button onClick={onToggleOpen} className="flex items-start gap-space-sm text-left">
             {isOpen ? <ChevronDown aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" /> : <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-outline" />}
             <span className="flex min-w-0 flex-col">
-              <span className="truncate font-semibold text-on-surface">{group.label}</span>
+              <span className="flex items-center gap-space-xs">
+                <span className="truncate font-semibold text-on-surface">{group.label}</span>
+                {selectedCount > 0 && (
+                  <span
+                    className="shrink-0 rounded bg-primary-container px-space-xs text-label-sm font-bold text-on-primary"
+                    title="Renglones marcados para despacho en este grupo"
+                  >
+                    {selectedCount}
+                  </span>
+                )}
+              </span>
               <span className="text-label-sm tabular-nums text-outline">
                 {group.code ?? ''}
                 {earliest ? ` · entrega ${fmtDate(earliest)}` : ''}
