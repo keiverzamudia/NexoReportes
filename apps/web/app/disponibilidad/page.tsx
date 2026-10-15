@@ -1,17 +1,17 @@
 'use client';
 
 // ============================================================
-// Disponibilidad neta por producto (Fase 3).
-// Lee GET /api/availability (lo sincronizado desde Profit):
-//   existencia física (última fotografía) − demanda pendiente.
-// Estado por fila: DISPONIBLE | PARCIAL | FALTANTE | SIN_DEMANDA.
+// Disponibilidad por Producto (Fase 3) — rediseño estilo Stitch.
+// Existencia física (última fotografía) − demanda pendiente de pedidos
+// activos. Estado: DISPONIBLE | PARCIAL | FALTANTE | SIN_DEMANDA.
 // ============================================================
 
 import type { AvailabilityResponse, AvailabilityRow, AvailabilityStatus } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, Boxes, Search, Truck, Warehouse } from 'lucide-react';
+import { AlertTriangle, Boxes, PackageSearch, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AppNav, LoginScreen } from '../../components/shell';
+import { Badge, Card, Kpi, PageHeader, Select, Td, TextInput, Th, fmtQty } from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 
 const STATUS_LABEL: Record<AvailabilityStatus, string> = {
@@ -21,26 +21,30 @@ const STATUS_LABEL: Record<AvailabilityStatus, string> = {
   SIN_DEMANDA: 'Sin demanda',
 };
 
-// Chip de estado con semáforo del design system (lima=ok, ámbar=parcial, rojo=falta).
-const STATUS_CHIP: Record<AvailabilityStatus, string> = {
-  DISPONIBLE: 'bg-secondary-container text-on-secondary-container',
-  PARCIAL: 'bg-surface-container-highest text-on-surface',
-  FALTANTE: 'bg-error-container text-on-error-container',
-  SIN_DEMANDA: 'bg-surface-container-low text-on-surface-variant border border-outline-variant',
+const STATUS_TONE: Record<AvailabilityStatus, 'success' | 'warning' | 'danger' | 'muted'> = {
+  DISPONIBLE: 'success',
+  PARCIAL: 'warning',
+  FALTANTE: 'danger',
+  SIN_DEMANDA: 'muted',
 };
 
-function fmt(value: number): string {
-  return new Intl.NumberFormat('es-VE', { maximumFractionDigits: 3 }).format(value);
-}
+const STATUS_OPTIONS = [
+  { value: '', label: 'Estado: Todos' },
+  { value: 'FALTANTE', label: 'Faltante' },
+  { value: 'PARCIAL', label: 'Parcial' },
+  { value: 'DISPONIBLE', label: 'Disponible' },
+  { value: 'SIN_DEMANDA', label: 'Sin demanda' },
+];
 
 function fmtDateTime(iso: string | null): string {
   if (!iso) return 'Sin fotografía de inventario';
-  return new Intl.DateTimeFormat('es-VE', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(iso));
+  return new Intl.DateTimeFormat('es-VE', { dateStyle: 'long', timeStyle: 'short' }).format(new Date(iso));
 }
 
 export default function DisponibilidadPage() {
   const [tick, setTick] = useState(0);
   const [search, setSearch] = useState('');
+  const [status, setStatus] = useState<AvailabilityStatus | ''>('');
 
   const { data, isLoading, error } = useQuery<AvailabilityResponse>({
     queryKey: ['availability', tick],
@@ -50,10 +54,13 @@ export default function DisponibilidadPage() {
 
   const rows = useMemo(() => {
     const all = data?.rows ?? [];
-    if (!search.trim()) return all;
     const needle = search.trim().toLowerCase();
-    return all.filter((r) => r.productCode.toLowerCase().includes(needle) || r.description.toLowerCase().includes(needle));
-  }, [data, search]);
+    return all.filter(
+      (r) =>
+        (!status || r.status === status) &&
+        (!needle || r.productCode.toLowerCase().includes(needle) || r.description.toLowerCase().includes(needle)),
+    );
+  }, [data, search, status]);
 
   const kpis = useMemo(() => {
     const all = data?.rows ?? [];
@@ -61,7 +68,7 @@ export default function DisponibilidadPage() {
       productos: all.length,
       faltantes: all.filter((r) => r.status === 'FALTANTE').length,
       parciales: all.filter((r) => r.status === 'PARCIAL').length,
-      aProducir: all.reduce((acc, r) => acc + r.toProduceQty, 0),
+      disponibles: all.filter((r) => r.status === 'DISPONIBLE').length,
     };
   }, [data]);
 
@@ -72,125 +79,111 @@ export default function DisponibilidadPage() {
   return (
     <>
       <AppNav />
-      <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-space-lg p-space-xl">
-        <header className="flex flex-wrap items-end justify-between gap-space-md">
-          <div>
-            <h1 className="text-headline-lg italic">Disponibilidad neta</h1>
-            <p className="text-body-md text-on-surface-variant">
-              Existencia física − demanda pendiente ·{' '}
-              <span className="tabular-nums">Fotografía: {fmtDateTime(data?.snapshotAt ?? null)}</span>
-              {data?.source === 'fixtures' && <strong className="ml-space-sm text-error">(datos de desarrollo)</strong>}
-            </p>
-          </div>
-          <label className="flex items-center gap-space-sm rounded border border-outline-variant bg-surface-container-lowest px-space-md py-space-sm">
-            <Search aria-hidden className="size-4 text-on-surface-variant" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar por código o descripción…"
-              className="w-64 bg-transparent text-body-md text-on-surface outline-none"
-              aria-label="Buscar producto"
-            />
-          </label>
-        </header>
+      <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg md:p-space-xl">
+        <PageHeader
+          eyebrow="Módulo de Existencias y Demanda Neta"
+          icon={Boxes}
+          title="Disponibilidad por Producto"
+          subtitle={`Existencias físicas en almacenes vs. demanda pendiente de pedidos activos. Fotografía de inventario: ${fmtDateTime(
+            data?.snapshotAt ?? null,
+          )}${data?.source === 'fixtures' ? ' · DATOS DE DESARROLLO (fixtures)' : ''}`}
+          actions={
+            <div className="flex flex-wrap items-center gap-space-sm">
+              <Kpi label="Productos" value={String(kpis.productos)} icon={Boxes} />
+              <Kpi label="Faltante" value={String(kpis.faltantes)} tone="danger" />
+              <Kpi label="Parcial" value={String(kpis.parciales)} tone="warning" />
+              <Kpi label="Disponible" value={String(kpis.disponibles)} tone="success" />
+            </div>
+          }
+        />
 
-        <section aria-label="Resumen" className="grid gap-space-md sm:grid-cols-3">
-          <div className="flex items-center gap-space-md rounded-lg border border-outline-variant bg-surface-container-lowest p-space-md">
-            <Boxes aria-hidden className="size-5 text-primary-container" />
-            <div>
-              <p className="text-label-md uppercase text-on-surface-variant">Productos con demanda o stock</p>
-              <p className="text-data-tabular-lg tabular-nums">{fmt(kpis.productos)}</p>
-            </div>
+        <Card className="p-space-md">
+          <div className="grid grid-cols-1 gap-space-md md:grid-cols-2 lg:grid-cols-12">
+            <TextInput
+              className="lg:col-span-4"
+              icon={Search}
+              value={search}
+              onChange={setSearch}
+              placeholder="Buscar harina, alimento o código (ej. ABAEQUI01)…"
+              ariaLabel="Buscar producto"
+            />
+            <Select
+              className="lg:col-span-2"
+              value={status}
+              onChange={(v) => setStatus(v as AvailabilityStatus | '')}
+              options={STATUS_OPTIONS}
+              ariaLabel="Filtrar por estado"
+            />
           </div>
-          <div className="flex items-center gap-space-md rounded-lg border border-outline-variant bg-surface-container-lowest p-space-md">
-            <Truck aria-hidden className="size-5 text-primary-container" />
-            <div>
-              <p className="text-label-md uppercase text-on-surface-variant">Parciales / faltantes</p>
-              <p className="text-data-tabular-lg tabular-nums">
-                {fmt(kpis.parciales)} / {fmt(kpis.faltantes)}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-space-md rounded-lg border border-outline-variant bg-surface-container-lowest p-space-md">
-            <Warehouse aria-hidden className="size-5 text-primary-container" />
-            <div>
-              <p className="text-label-md uppercase text-on-surface-variant">A producir (total, unidades)</p>
-              <p className="text-data-tabular-lg tabular-nums">{fmt(kpis.aProducir)}</p>
-            </div>
-          </div>
-        </section>
+        </Card>
 
         {isLoading && <p className="text-body-md text-on-surface-variant">Consultando disponibilidad…</p>}
         {error && !(error instanceof AuthRequiredError) && (
           <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
-            <AlertTriangle aria-hidden className="size-4" />{' '}
-            {error instanceof Error ? error.message : 'Error al consultar'}
+            <AlertTriangle aria-hidden className="size-4" /> {error instanceof Error ? error.message : 'Error al consultar'}
           </p>
         )}
 
         {data && (
-          <div className="overflow-x-auto rounded-lg border border-outline-variant bg-surface-container-lowest">
-            <table className="w-full border-collapse text-data-tabular-md">
-              <thead>
-                <tr className="border-b border-outline-variant bg-surface-container-low text-left text-label-md uppercase text-on-surface-variant">
-                  <th scope="col" className="px-space-md py-space-sm">Código</th>
-                  <th scope="col" className="px-space-md py-space-sm">Descripción</th>
-                  <th scope="col" className="px-space-md py-space-sm text-right">Stock 03</th>
-                  <th scope="col" className="px-space-md py-space-sm text-right">Stock 68</th>
-                  <th scope="col" className="px-space-md py-space-sm text-right">Existencia</th>
-                  <th scope="col" className="px-space-md py-space-sm text-right">Demanda</th>
-                  <th scope="col" className="px-space-md py-space-sm text-right">Disponible</th>
-                  <th scope="col" className="px-space-md py-space-sm text-right">A producir</th>
-                  <th scope="col" className="px-space-md py-space-sm text-right">Neto</th>
-                  <th scope="col" className="px-space-md py-space-sm">Unidad</th>
-                  <th scope="col" className="px-space-md py-space-sm">Estado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.length === 0 && (
-                  <tr>
-                    <td colSpan={11} className="px-space-md py-space-xl text-center text-body-md text-on-surface-variant">
-                      Sin resultados{search ? ` para “${search}”` : ''}.
-                    </td>
+          <Card className="overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-body-md">
+                <thead>
+                  <tr className="border-b border-surface-container bg-surface-container">
+                    <Th>Código</Th>
+                    <Th>Descripción</Th>
+                    <Th>Unid.</Th>
+                    <Th align="right">Stock 03</Th>
+                    <Th align="right">Stock 68</Th>
+                    <Th align="right">Existencia</Th>
+                    <Th align="right">Demanda</Th>
+                    <Th align="right">Disponible</Th>
+                    <Th align="right">A producir</Th>
+                    <Th align="right">Neto</Th>
+                    <Th align="center">Estado</Th>
                   </tr>
-                )}
-                {rows.map((row: AvailabilityRow) => {
-                  const stock03 = row.stockByWarehouse.find((w) => w.warehouseCode === 'Stock 03')?.qty ?? null;
-                  const stock68 = row.stockByWarehouse.find((w) => w.warehouseCode === 'Stock 68')?.qty ?? null;
-                  return (
-                    <tr key={row.productCode} className="border-b border-outline-variant last:border-0 hover:bg-surface-container-low">
-                      <td className="px-space-md py-space-sm font-semibold">{row.productCode}</td>
-                      <td className="max-w-xs truncate px-space-md py-space-sm" title={row.description}>
-                        {row.description}
-                      </td>
-                      <td className="px-space-md py-space-sm text-right tabular-nums">{stock03 === null ? '—' : fmt(stock03)}</td>
-                      <td className="px-space-md py-space-sm text-right tabular-nums">{stock68 === null ? '—' : fmt(stock68)}</td>
-                      <td className="px-space-md py-space-sm text-right font-semibold tabular-nums">{fmt(row.stockTotal)}</td>
-                      <td className="px-space-md py-space-sm text-right tabular-nums">{fmt(row.demandQty)}</td>
-                      <td className="px-space-md py-space-sm text-right tabular-nums">{fmt(row.availableQty)}</td>
-                      <td className={`px-space-md py-space-sm text-right font-semibold tabular-nums ${row.toProduceQty > 0 ? 'text-error' : ''}`}>
-                        {fmt(row.toProduceQty)}
-                      </td>
-                      <td className={`px-space-md py-space-sm text-right tabular-nums ${row.netQty < 0 ? 'text-error' : ''}`}>
-                        {fmt(row.netQty)}
-                      </td>
-                      <td className="px-space-md py-space-sm">{row.uom}</td>
-                      <td className="px-space-md py-space-sm">
-                        <span className={`rounded-full px-space-sm py-space-2xs text-label-md uppercase ${STATUS_CHIP[row.status]}`}>
-                          {STATUS_LABEL[row.status]}
-                        </span>
-                      </td>
+                </thead>
+                <tbody className="divide-y divide-surface-container">
+                  {rows.length === 0 && (
+                    <tr>
+                      <Td align="center" className="py-space-xl text-on-surface-variant">
+                        {search || status ? 'Sin resultados para los filtros aplicados.' : 'Sin datos de disponibilidad.'}
+                      </Td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                  )}
+                  {rows.map((row: AvailabilityRow) => {
+                    const stock03 = row.stockByWarehouse.find((w) => w.warehouseCode === 'Stock 03')?.qty ?? null;
+                    const stock68 = row.stockByWarehouse.find((w) => w.warehouseCode === 'Stock 68')?.qty ?? null;
+                    return (
+                      <tr key={row.productCode} className="transition-colors hover:bg-surface-container-low">
+                        <Td className="font-bold tabular-nums text-primary">{row.productCode}</Td>
+                        <Td className="max-w-md truncate" title={row.description}>{row.description}</Td>
+                        <Td className="text-on-surface-variant">{row.uom}</Td>
+                        <Td align="right" className="tabular-nums">{fmtQty(stock03, 0)}</Td>
+                        <Td align="right" className="tabular-nums">{fmtQty(stock68, 0)}</Td>
+                        <Td align="right" className="tabular-nums font-bold">{fmtQty(row.stockTotal, 0)}</Td>
+                        <Td align="right" className="tabular-nums">{fmtQty(row.demandQty, 0)}</Td>
+                        <Td align="right" className="tabular-nums text-secondary font-bold">{fmtQty(row.availableQty, 0)}</Td>
+                        <Td align="right" className={`tabular-nums font-bold ${row.toProduceQty > 0 ? 'text-error' : 'text-on-surface-variant'}`}>
+                          {fmtQty(row.toProduceQty, 0)}
+                        </Td>
+                        <Td align="right" className={`tabular-nums ${row.netQty < 0 ? 'text-error' : ''}`}>{fmtQty(row.netQty, 0)}</Td>
+                        <Td align="center">
+                          <Badge tone={STATUS_TONE[row.status]}>{STATUS_LABEL[row.status]}</Badge>
+                        </Td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center gap-space-sm border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
+              <PackageSearch aria-hidden className="size-4" />
+              {rows.length} de {data.rows.length} productos · unidades en la unidad de venta de cada producto (SAC/KG), no se
+              mezclan entre sí.
+            </div>
+          </Card>
         )}
-
-        <footer className="text-body-md text-on-surface-variant">
-          {rows.length} de {data?.rows.length ?? 0} productos · unidades en la unidad de venta de cada producto (SAC/KG).
-        </footer>
       </main>
     </>
   );

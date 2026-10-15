@@ -1,17 +1,19 @@
 'use client';
 
 // ============================================================
-// Detalle de pedido (Fase 4): renglones sincronizados desde Profit,
-// con cantidad pendiente y kg del renglón (valor crudo de la vista).
+// Detalle de pedido (Fase 4) — estilo Stitch.
+// Renglones sincronizados desde Profit con pendiente, kg y las
+// existencias del artículo en los almacenes Stock 03 / Stock 68.
 // ============================================================
 
 import type { OrderDetail, OrderStatus } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, ArrowLeft } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, FileText } from 'lucide-react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useState } from 'react';
 import { AppNav, LoginScreen } from '../../../components/shell';
+import { Badge, Card, Kpi, PageHeader, Td, Th, fmtDate, fmtQty } from '../../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../../lib/api';
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
@@ -21,21 +23,12 @@ const STATUS_LABEL: Record<OrderStatus, string> = {
   DESCONOCIDO: 'Desconocido',
 };
 
-const STATUS_CHIP: Record<OrderStatus, string> = {
-  ABIERTO: 'bg-secondary-container text-on-secondary-container',
-  CERRADO: 'bg-surface-container-highest text-on-surface',
-  CANCELADO: 'bg-error-container text-on-error-container',
-  DESCONOCIDO: 'bg-surface-container-low text-on-surface-variant border border-outline-variant',
+const STATUS_TONE: Record<OrderStatus, 'success' | 'muted' | 'danger' | 'default'> = {
+  ABIERTO: 'success',
+  CERRADO: 'muted',
+  CANCELADO: 'danger',
+  DESCONOCIDO: 'default',
 };
-
-function fmtQty(value: number): string {
-  return new Intl.NumberFormat('es-VE', { maximumFractionDigits: 3 }).format(value);
-}
-
-function fmtDate(iso: string | null): string {
-  if (!iso) return '—';
-  return new Intl.DateTimeFormat('es-VE', { dateStyle: 'long' }).format(new Date(iso));
-}
 
 export default function PedidoDetallePage() {
   const params = useParams<{ id: string }>();
@@ -58,95 +51,92 @@ export default function PedidoDetallePage() {
   return (
     <>
       <AppNav />
-      <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-space-lg p-space-xl">
-        <Link href="/pedidos" className="flex w-fit items-center gap-space-sm text-body-md text-on-surface-variant hover:underline">
+      <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg md:p-space-xl">
+        <Link href="/pedidos" className="flex w-fit items-center gap-space-sm text-body-md text-on-surface-variant hover:text-primary">
           <ArrowLeft aria-hidden className="size-4" /> Volver a pedidos
         </Link>
 
         {isLoading && <p className="text-body-md text-on-surface-variant">Cargando pedido…</p>}
         {error && !(error instanceof AuthRequiredError) && (
           <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
-            <AlertTriangle aria-hidden className="size-4" />{' '}
-            {error instanceof Error ? error.message : 'Error al consultar'}
+            <AlertTriangle aria-hidden className="size-4" /> {error instanceof Error ? error.message : 'Error al consultar'}
           </p>
         )}
 
         {order && (
           <>
-            <header className="flex flex-wrap items-end justify-between gap-space-md">
-              <div>
-                <h1 className="text-headline-lg italic">Pedido {order.externalNumber}</h1>
-                <p className="text-body-md text-on-surface-variant">
-                  {order.customerName ?? 'Cliente desconocido'}
-                  {order.customerCode ? ` (${order.customerCode})` : ''}
-                </p>
-              </div>
-              <span className={`rounded-full px-space-md py-space-sm text-label-md uppercase ${STATUS_CHIP[order.status]}`}>
-                {STATUS_LABEL[order.status]}
-              </span>
-            </header>
+            <PageHeader
+              eyebrow={`Ventas y CxC · Solicitud ${order.externalNumber}`}
+              icon={FileText}
+              title={`Pedido ${order.externalNumber}`}
+              subtitle={`${order.customerName ?? 'Cliente desconocido'}${order.customerCode ? ` (${order.customerCode})` : ''}`}
+              actions={
+                <div className="flex flex-wrap items-center gap-space-sm">
+                  <Badge tone={STATUS_TONE[order.status]}>{STATUS_LABEL[order.status]}</Badge>
+                  <Kpi label="Renglones" value={fmtQty(order.linesCount, 0)} tone="muted" />
+                  <Kpi label="Pendiente total" value={fmtQty(order.totalPendingQty, 0)} tone="danger" suffix="unidades" />
+                </div>
+              }
+            />
 
-            <section aria-label="Datos del pedido" className="grid gap-space-md sm:grid-cols-4">
-              <Field label="Emisión" value={fmtDate(order.orderDate)} />
-              <Field label="Entrega comprometida" value={fmtDate(order.requestedDate)} />
-              <Field label="Renglones" value={String(order.linesCount)} />
-              <Field label="Pendiente total (unidades)" value={fmtQty(order.totalPendingQty)} />
-            </section>
-
-            <div className="overflow-x-auto rounded-lg border border-outline-variant bg-surface-container-lowest">
-              <table className="w-full border-collapse text-data-tabular-md">
-                <thead>
-                  <tr className="border-b border-outline-variant bg-surface-container-low text-left text-label-md uppercase text-on-surface-variant">
-                    <th scope="col" className="px-space-md py-space-sm text-right">#</th>
-                    <th scope="col" className="px-space-md py-space-sm">Código</th>
-                    <th scope="col" className="px-space-md py-space-sm">Descripción</th>
-                    <th scope="col" className="px-space-md py-space-sm">Unidad</th>
-                    <th scope="col" className="px-space-md py-space-sm text-right">Pendiente</th>
-                    <th scope="col" className="px-space-md py-space-sm text-right">Kg</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.lines.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="px-space-md py-space-xl text-center text-body-md text-on-surface-variant">
-                        El pedido no tiene renglones sincronizados.
-                      </td>
-                    </tr>
-                  )}
-                  {data.lines.map((line) => (
-                    <tr key={line.lineNumber} className="border-b border-outline-variant last:border-0 hover:bg-surface-container-low">
-                      <td className="px-space-md py-space-sm text-right tabular-nums">{line.lineNumber}</td>
-                      <td className="px-space-md py-space-sm font-semibold">{line.productCode}</td>
-                      <td className="max-w-md truncate px-space-md py-space-sm" title={line.description ?? ''}>
-                        {line.description ?? '—'}
-                      </td>
-                      <td className="px-space-md py-space-sm">{line.uom ?? '—'}</td>
-                      <td className={`px-space-md py-space-sm text-right tabular-nums ${line.pendingQty < 0 ? 'text-error' : ''}`}>
-                        {fmtQty(line.pendingQty)}
-                      </td>
-                      <td className="px-space-md py-space-sm text-right tabular-nums">
-                        {line.pendingKg === null ? '—' : fmtQty(line.pendingKg)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="grid grid-cols-2 gap-space-sm md:grid-cols-4">
+              <Kpi label="Emisión" value={fmtDate(order.orderDate)} tone="default" />
+              <Kpi label="Entrega comprometida" value={fmtDate(order.requestedDate)} tone="default" />
+              <Kpi label="Vendedor" value={order.vendor ?? '—'} tone="muted" />
+              <Kpi label="Tipo de cliente" value={order.customerType ?? '—'} tone="muted" />
             </div>
-            <p className="text-label-md normal-case text-on-surface-variant">
-              Valores crudos de la vista de Profit. Los pendientes negativos corresponden a sobre-compromisos reales del ERP.
+
+            <Card className="overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-body-md">
+                  <thead>
+                    <tr className="border-b border-surface-container bg-surface-container">
+                      <Th align="right">#</Th>
+                      <Th>Código</Th>
+                      <Th>Descripción</Th>
+                      <Th>Unid.</Th>
+                      <Th align="right">Cantidad</Th>
+                      <Th align="right">Pendiente</Th>
+                      <Th align="right">Kg</Th>
+                      <Th align="right">Stock 03</Th>
+                      <Th align="right">Stock 68</Th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-surface-container">
+                    {data.lines.length === 0 && (
+                      <tr>
+                        <Td align="center" className="py-space-xl text-on-surface-variant">
+                          El pedido no tiene renglones sincronizados.
+                        </Td>
+                      </tr>
+                    )}
+                    {data.lines.map((line) => (
+                      <tr key={line.lineNumber} className="transition-colors hover:bg-surface-container-low">
+                        <Td align="right" className="tabular-nums text-on-surface-variant">{line.lineNumber}</Td>
+                        <Td className="font-bold tabular-nums text-primary">{line.productCode}</Td>
+                        <Td className="max-w-md truncate" title={line.description ?? ''}>{line.description ?? '—'}</Td>
+                        <Td className="text-on-surface-variant">{line.uom ?? '—'}</Td>
+                        <Td align="right" className="tabular-nums text-outline">{line.quantity ?? '—'}</Td>
+                        <Td align="right" className={`tabular-nums font-bold ${line.pendingQty < 0 ? 'text-error' : 'text-on-surface'}`}>
+                          {fmtQty(line.pendingQty, 2)}
+                        </Td>
+                        <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(line.pendingKg, 0)}</Td>
+                        <Td align="right" className="tabular-nums">{fmtQty(line.stock03, 0)}</Td>
+                        <Td align="right" className="tabular-nums">{fmtQty(line.stock68, 0)}</Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            <p className="text-label-sm normal-case text-on-surface-variant">
+              Valores crudos de la vista de Profit. «Cantidad» y «Vendedor/Tipo de cliente» no están expuestos por la vista
+              actual (se muestran como «—»). Los pendientes negativos son sobre-compromisos reales del ERP.
             </p>
           </>
         )}
       </main>
     </>
-  );
-}
-
-function Field({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-outline-variant bg-surface-container-lowest p-space-md">
-      <p className="text-label-md uppercase text-on-surface-variant">{label}</p>
-      <p className="text-data-tabular-lg tabular-nums">{value}</p>
-    </div>
   );
 }

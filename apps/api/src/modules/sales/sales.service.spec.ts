@@ -17,8 +17,18 @@ function createFakePrisma(orders: any[], customers: any[] = []) {
       findUnique: async (args: any) => orders.find((o) => o.id === args.where.id) ?? null,
       groupBy: async () => [],
     },
+    salesOrderLine: {
+      aggregate: async () => ({
+        _sum: { pendingQty: orders.reduce((acc, o) => acc + o.lines.reduce((a: number, l: any) => a + l.pendingQty, 0), 0) },
+        _count: { _all: orders.reduce((acc, o) => acc + o.lines.length, 0) },
+      }),
+    },
+    inventorySnapshot: {
+      findFirst: async () => ({ takenAt: new Date('2025-09-10T00:00:00.000Z'), lines: [] }),
+    },
     customer: {
       findMany: async () => customers,
+      findUnique: async (args: any) => customers.find((c: any) => c.externalCode === args.where.externalCode) ?? null,
       count: async () => customers.length,
     },
   } as never;

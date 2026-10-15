@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { SYNC_DOMAINS, SyncDomain, SyncRun, SyncStatusResponse } from '@nexo/contracts';
+import { SYNC_DOMAINS, SyncDomain, SyncRun, SyncRunAll, SyncStatusResponse } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
 import { RawSolicitudLine, normalizeSolicitudRow } from './normalizers';
@@ -198,6 +198,36 @@ export class SyncService {
       this.logger.error(`Sync ${domain} falló: ${message}`);
       return this.toSyncRun(failed);
     }
+  }
+
+  // Orden de dependencia entre dominios (todos derivan de la MISMA vista):
+  // los almacenes/productos deben existir antes que las existencias, y los
+  // pedidos antes que sus renglones.
+  private static readonly RUN_ALL_ORDER: SyncDomain[] = [
+    'ALMACENES',
+    'PRODUCTOS',
+    'CLIENTES',
+    'PEDIDOS',
+    'PEDIDOS_DETALLE',
+    'EXISTENCIAS',
+  ];
+
+  // Sincronización completa: ejecuta todos los dominios en orden de dependencia.
+  async runAll(actor?: { id?: string; email?: string }): Promise<SyncRunAll> {
+    const startedAt = new Date();
+    const domains: SyncRun[] = [];
+    for (const domain of SyncService.RUN_ALL_ORDER) {
+      domains.push(await this.run(domain, actor));
+    }
+    return {
+      startedAt: startedAt.toISOString(),
+      finishedAt: new Date().toISOString(),
+      domains,
+      totalRead: domains.reduce((acc, d) => acc + d.recordsRead, 0),
+      totalUpserted: domains.reduce((acc, d) => acc + d.recordsUpserted, 0),
+      totalErrors: domains.reduce((acc, d) => acc + d.errorsCount, 0),
+      failedDomains: domains.filter((d) => d.status === 'ERROR').map((d) => d.domain),
+    };
   }
 
   private resolveView(): string {

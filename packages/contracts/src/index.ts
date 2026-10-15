@@ -73,6 +73,18 @@ export const zSyncRun = z.object({
 });
 export type SyncRun = z.infer<typeof zSyncRun>;
 
+// Resultado de una sincronización completa (todos los dominios en orden de dependencia).
+export const zSyncRunAll = z.object({
+  startedAt: z.string(),
+  finishedAt: z.string(),
+  domains: z.array(zSyncRun),
+  totalRead: z.number().int(),
+  totalUpserted: z.number().int(),
+  totalErrors: z.number().int(),
+  failedDomains: z.array(z.string()),
+});
+export type SyncRunAll = z.infer<typeof zSyncRunAll>;
+
 export const zSyncStatusResponse = z.object({
   dialect: z.enum(['mssql', 'fixtures']),
   connected: z.boolean(),
@@ -198,6 +210,10 @@ export const zOrderSummary = z.object({
   externalNumber: z.string(),
   customerCode: z.string().nullable(),
   customerName: z.string().nullable(),
+  // Vendedor y tipo de cliente: la vista actual de Profit NO los trae → null
+  // (se muestran como "—", nunca inventados).
+  vendor: z.string().nullable(),
+  customerType: z.string().nullable(),
   orderDate: z.string().nullable(),
   requestedDate: z.string().nullable(),
   status: zOrderStatus,
@@ -212,8 +228,13 @@ export const zOrderLine = z.object({
   productCode: z.string(),
   description: z.string().nullable(),
   uom: z.string().nullable(),
+  // Cantidad solicitada original: no está en la vista → null.
+  quantity: z.number().nullable(),
   pendingQty: z.number(),
   pendingKg: z.number().nullable(),
+  // Existencias del artículo por almacén (última fotografía de inventario).
+  stock03: z.number().nullable(),
+  stock68: z.number().nullable(),
 });
 export type OrderLine = z.infer<typeof zOrderLine>;
 
@@ -223,10 +244,33 @@ export const zOrderDetail = z.object({
 });
 export type OrderDetail = z.infer<typeof zOrderDetail>;
 
+// Lista paginada de pedidos + resumen agregado de TODO el conjunto filtrado.
+export const zOrderListResponse = z.object({
+  items: z.array(zOrderSummary),
+  page: z.number().int(),
+  pageSize: z.number().int(),
+  total: z.number().int(),
+  summary: z.object({
+    totalPendingQty: z.number(),
+    linesTotal: z.number().int(),
+    openCount: z.number().int(),
+  }),
+});
+export type OrderListResponse = z.infer<typeof zOrderListResponse>;
+
 export const zOrderQuery = zPaginationQuery.extend({
   q: z.string().trim().max(100).optional(),
   customerCode: z.string().trim().max(20).optional(),
   status: zOrderStatus.optional(),
+  // Fecha de emisión (inclusive) en formato ISO 'yyyy-MM-dd'.
+  emisionDesde: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Debe ser yyyy-MM-dd')
+    .optional(),
+  emisionHasta: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Debe ser yyyy-MM-dd')
+    .optional(),
   // Fecha de entrega comprometida (inclusive) en formato ISO 'yyyy-MM-dd'.
   entregaDesde: z
     .string()

@@ -51,6 +51,21 @@
   --color-error-container: #ffdad6;
   --color-on-error-container: #93000a;
 
+  /* Semántica funcional (DESIGN.md: crítico / advertencia / ok) */
+  --color-critical: #dc2626;
+  --color-critical-container: #fee2e2;
+  --color-on-critical-container: #991b1b;
+  --color-warning: #b45309;
+  --color-warning-container: #fef3c7;
+  --color-on-warning-container: #92400e;
+  --color-success: #15803d;
+  --color-success-container: #dcfce7;
+  --color-on-success-container: #166534;
+
+  /* Sombras (contención estructural, no decorativa) */
+  --shadow-card: 0 1px 2px 0 rgb(23 43 58 / 0.06);
+  --shadow-float: 0 4px 12px -2px rgb(23 43 58 / 0.08), 0 2px 6px -1px rgb(23 43 58 / 0.04);
+
   /* Espaciado (nombres usados por los mockups Stitch) */
   --spacing-space-2xs: 0.125rem;
   --spacing-space-xs: 0.25rem;

@@ -5,6 +5,7 @@ import { FixturesProfitAdapter } from './fixtures.adapter';
 import { MssqlProfitAdapter } from './mssql.adapter';
 import { PROFIT_ADAPTER } from './profit.adapter';
 import { SyncController } from './sync.controller';
+import { SyncScheduler } from './sync.scheduler';
 import { SyncService } from './sync.service';
 
 // El proveedor del adaptador se elige según PROFIT_DB_DIALECT:
@@ -22,7 +23,7 @@ const adapterFactory = {
 @Module({
   imports: [AuditModule],
   controllers: [SyncController],
-  providers: [SyncService, adapterFactory],
+  providers: [SyncService, SyncScheduler, adapterFactory],
   exports: [PROFIT_ADAPTER, SyncService],
 })
 export class SyncModule {}
