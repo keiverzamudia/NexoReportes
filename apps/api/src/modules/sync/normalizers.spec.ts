@@ -22,6 +22,12 @@ const REAL_ROW = {
   kg: 7595,
   Stock_03: 273,
   Stock_68: 0,
+  // Campos del reporte ampliado (con padding, como en Profit).
+  vendedor: 'MEIDY CRISTINA ARIAS VIDAL' + ' '.repeat(20),
+  tipo_cliente: 'L1 EXCLUSIVOS' + ' '.repeat(20),
+  status_cotizacion: '1',
+  cantidad: 217,
+  almacen: '6804  ',
 };
 
 describe('parseProfitDate', () => {
@@ -70,7 +76,29 @@ describe('normalizeSolicitudRow', () => {
       kg: 7595,
       stock03: 273,
       stock68: 0,
+      vendedor: 'MEIDY CRISTINA ARIAS VIDAL',
+      tipoCliente: 'L1 EXCLUSIVOS',
+      statusCotizacion: '1',
+      cantidad: 217,
+      almacen: '6804',
     });
+  });
+
+  it('deja en null los campos ampliados si la fuente no los trae (tolerante)', () => {
+    const result = normalizeSolicitudRow(REAL_ROW);
+    const sinCampos = normalizeSolicitudRow({
+      nro_solicitud: 1,
+      co_cli: 'C1',
+      co_art: 'A1',
+      pendiente: 5,
+    });
+    expect(result.ok).toBe(true);
+    expect(sinCampos.ok).toBe(true);
+    expect(sinCampos.value?.vendedor).toBeNull();
+    expect(sinCampos.value?.tipoCliente).toBeNull();
+    expect(sinCampos.value?.statusCotizacion).toBeNull();
+    expect(sinCampos.value?.cantidad).toBeNull();
+    expect(sinCampos.value?.almacen).toBeNull();
   });
 
   it('conserva el pendiente negativo (sobre-compromiso real de Profit)', () => {

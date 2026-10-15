@@ -23,6 +23,40 @@ function warehouseCodeFor(column: StockColumn): string {
   return STOCK_COLUMNS.find((c) => c.column === column)?.code ?? column;
 }
 
+// Consulta ampliada de SOLO LECTURA (constante de la app, nunca SQL del usuario).
+// Reproduce la vista `Solicitudes_Pendientes_Clientes` y agrega los campos del
+// reporte "Solicitudes con sus renglones PROD y LOGÍSTICA (ALMACÉN)": vendedor,
+// tipo de cliente, autorizado (cotiz_c.status), cantidad y almacén del renglón.
+// NO escribe ni modifica nada en Profit (la vista sigue siendo la de referencia).
+const SOLICITUDES_SQL = `
+SELECT
+    f.fact_num                AS nro_solicitud,
+    f.fec_emis                AS emision,
+    f.fec_venc                AS entrega,
+    f.co_cli                  AS co_cli,
+    cl.cli_des                AS cli_des,
+    v.ven_des                 AS vendedor,
+    RTRIM(cl.tipo) + ' ' + RTRIM(tc.des_tipo) AS tipo_cliente,
+    f.status                  AS status_cotizacion,
+    r.co_art                  AS co_art,
+    a.art_des                 AS art_des,
+    r.co_alma                 AS almacen,
+    r.total_art               AS cantidad,
+    r.pendiente               AS pendiente,
+    r.uni_venta               AS uni_venta,
+    a.uni_relac               AS relacion_empaque,
+    r.pendiente * a.uni_relac AS kg,
+    (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = r.co_art AND sa.co_alma = '03')   AS Stock_03,
+    (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = r.co_art AND sa.co_alma = '6804') AS Stock_68
+FROM dbo.cotiz_c AS f
+INNER JOIN dbo.reng_cac AS r  ON r.fact_num = f.fact_num
+INNER JOIN dbo.art     AS a   ON a.co_art   = r.co_art
+INNER JOIN dbo.clientes AS cl ON cl.co_cli  = f.co_cli
+LEFT JOIN  dbo.vendedor AS v  ON v.co_ven   = f.co_ven
+LEFT JOIN  dbo.tipo_cli AS tc ON tc.tip_cli = cl.tipo
+WHERE f.anulada = 0 AND f.status <> '2' AND r.pendiente > 0
+`;
+
 @Injectable()
 export class SyncService {
   private readonly logger = new Logger(SyncService.name);
@@ -110,10 +144,10 @@ export class SyncService {
   // dominio solicitado. Cada fila = un renglón de solicitud.
   // ============================================================
   async run(domain: SyncDomain, actor?: { id?: string; email?: string }): Promise<SyncRun> {
-    const view = this.resolveView();
+    const source = this.resolveSource();
 
     const run = await this.prisma.syncRun.create({
-      data: { domain, status: 'EN_CURSO', sourceRef: view },
+      data: { domain, status: 'EN_CURSO', sourceRef: source.ref },
     });
 
     let recordsRead = 0;
@@ -122,7 +156,7 @@ export class SyncService {
 
     try {
       const pageSize = this.config.get<number>('sync.pageSize') ?? 5000;
-      const rawRows = await this.profit.select(view, {}, pageSize);
+      const rawRows = await this.readRows(source, pageSize);
       recordsRead = rawRows.length;
 
       // Normalización primero: las filas inválidas se registran como error
@@ -184,7 +218,7 @@ export class SyncService {
         action: 'SYNC_RUN',
         entityType: 'SyncRun',
         entityId: run.id,
-        context: { domain, status, recordsRead, recordsUpserted, errorsCount, missingMarked, dialect: this.profit.dialect, view },
+        context: { domain, status, recordsRead, recordsUpserted, errorsCount, missingMarked, dialect: this.profit.dialect, sourceRef: source.ref },
       });
 
       this.logger.log(`Sync ${domain}: ${status} (leídas=${recordsRead}, upsert=${recordsUpserted}, errores=${errorsCount}, bajas=${missingMarked})`);
@@ -228,6 +262,19 @@ export class SyncService {
       totalErrors: domains.reduce((acc, d) => acc + d.errorsCount, 0),
       failedDomains: domains.filter((d) => d.status === 'ERROR').map((d) => d.domain),
     };
+  }
+
+  // Fuente de lectura: en mssql se usa la consulta ampliada (solo lectura) para
+  // traer los campos que la vista no expone; en fixtures, el dataset local.
+  private resolveSource(): { ref: string; sql: string | null } {
+    if (this.profit.dialect === 'mssql') {
+      return { ref: 'SQL:cotiz_c+reng_cac@COR_A3', sql: SOLICITUDES_SQL };
+    }
+    return { ref: this.resolveView(), sql: null };
+  }
+
+  private async readRows(source: { ref: string; sql: string | null }, limit: number): Promise<Record<string, unknown>[]> {
+    return source.sql ? this.profit.selectQuery(source.sql, limit) : this.profit.select(source.ref, {}, limit);
   }
 
   private resolveView(): string {
@@ -331,8 +378,8 @@ export class SyncService {
   }
 
   // Clientes derivados: un cliente por co_cli distinto.
-  // La vista NO trae tipo de cliente ni vendedor: quedan null (documentado
-  // en PROFIT_SQL_MAPPING.md); no se rellenan con valores inventados.
+  // El tipo de cliente llega del reporte ampliado (tipo_cli.des_tipo); si no
+  // viene, se conserva el valor previo (nunca se inventa ni se borra con null).
   private async syncCustomers(lines: RawSolicitudLine[], seen: Set<string>): Promise<number> {
     const now = new Date();
     const byCode = new Map<string, RawSolicitudLine>();
@@ -344,8 +391,15 @@ export class SyncService {
       seen.add(code);
       await this.prisma.customer.upsert({
         where: { externalCode: code },
-        update: { name: line.cliDes, isActive: true, removedAt: null, lastSyncedAt: now },
-        create: { externalCode: code, name: line.cliDes, lastSyncedAt: now },
+        update: {
+          name: line.cliDes,
+          // Tipo de cliente (reporte ampliado); no se borra con null.
+          ...(line.tipoCliente ? { customerType: line.tipoCliente } : {}),
+          isActive: true,
+          removedAt: null,
+          lastSyncedAt: now,
+        },
+        create: { externalCode: code, name: line.cliDes, customerType: line.tipoCliente, lastSyncedAt: now },
       });
       count += 1;
     }
@@ -353,8 +407,9 @@ export class SyncService {
   }
 
   // Un encabezado por nro_solicitud distinto.
-  // Supuesto documentado: la vista sólo contiene solicitudes PENDIENTES,
-  // por eso el estado se deriva como ABIERTO (la vista no trae columna de estado).
+  // Estado: la fuente sólo contiene solicitudes PENDIENTES → ABIERTO.
+  // Vendedor, tipo de cliente y autorizado vienen del reporte ampliado
+  // (autorizado = status '1'); si no llegan, quedan null.
   private async syncOrders(lines: RawSolicitudLine[], seen: Set<string>): Promise<number> {
     const now = new Date();
     const byNumber = new Map<number, RawSolicitudLine>();
@@ -366,16 +421,22 @@ export class SyncService {
       const externalNumber = String(number);
       seen.add(externalNumber);
       const customer = await this.prisma.customer.findUnique({ where: { externalCode: line.coCli } });
+      const header = {
+        customerType: line.tipoCliente,
+        vendor: line.vendedor,
+        authorized: line.statusCotizacion === null ? null : line.statusCotizacion === '1',
+        statusRaw: line.statusCotizacion,
+      };
       await this.prisma.salesOrder.upsert({
         where: { externalNumber },
         update: {
           customerId: customer?.id ?? null,
           customerCode: line.coCli,
           customerName: line.cliDes,
+          ...header,
           orderDate: line.emision,
           requestedDate: line.entrega,
           status: 'ABIERTO',
-          statusRaw: null,
           isActive: true,
           removedAt: null,
           lastSyncedAt: now,
@@ -385,10 +446,10 @@ export class SyncService {
           customerId: customer?.id ?? null,
           customerCode: line.coCli,
           customerName: line.cliDes,
+          ...header,
           orderDate: line.emision,
           requestedDate: line.entrega,
           status: 'ABIERTO',
-          statusRaw: null,
           lastSyncedAt: now,
         },
       });
@@ -428,10 +489,13 @@ export class SyncService {
             productId: product?.id ?? null,
             description: line.artDes,
             uom: line.uniVenta,
+            // Cantidad solicitada original y pendiente (reporte ampliado).
+            quantity: line.cantidad ?? 0,
             pendingQty: line.pendiente,
-            // Valor crudo de la vista (`kg` = pendiente × relacion_empaque);
-            // no se recalcula para no divergir de Profit.
+            // Valor crudo (`kg` = pendiente × relacion_empaque); no se recalcula.
             pendingKg: line.kg,
+            // Almacén que surte el renglón (co_alma).
+            warehouses: line.almacen,
           },
           create: {
             orderId: order.id,
@@ -440,8 +504,10 @@ export class SyncService {
             productId: product?.id ?? null,
             description: line.artDes,
             uom: line.uniVenta,
+            quantity: line.cantidad ?? 0,
             pendingQty: line.pendiente,
             pendingKg: line.kg,
+            warehouses: line.almacen,
           },
         });
         count += 1;

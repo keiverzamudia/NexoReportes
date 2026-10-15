@@ -48,6 +48,9 @@ export function computeAvailability(input: AvailabilityInput): AvailabilityRow {
   // A producir sólo si la demanda supera la existencia.
   const toProduceQty = demandQty <= 0 ? 0 : round3(Math.max(0, demandQty - stockTotal));
 
+  // Equivalente en KG del faltante (para el plan de producción en kilos).
+  const toProduceKg = input.kgPerUom === null ? null : round3(toProduceQty * input.kgPerUom);
+
   let status: AvailabilityRow['status'];
   if (demandQty <= 0) {
     status = 'SIN_DEMANDA';
@@ -71,6 +74,7 @@ export function computeAvailability(input: AvailabilityInput): AvailabilityRow {
     netQty,
     availableQty,
     toProduceQty,
+    toProduceKg,
     status,
   };
 }

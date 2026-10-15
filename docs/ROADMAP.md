@@ -6,10 +6,10 @@
 | 1 | Fundamentos | Monorepo, configuración, BD (SQLite dev), JWT+RBAC, auditoría, logs, adaptador Profit (fixtures/mssql), health | ✅ Completada |
 | 2 | Integración | Lectura de vistas, normalización, sincronización idempotente, errores y trazabilidad | ✅ Completada (vista real `COR_A3.dbo.Solicitudes_Pendientes_Clientes` conectada y sincronizada en vivo) |
 | 3 | Productos e inventario | Catálogo normalizado, existencias por almacén, unidades, disponibilidad neta | ✅ Completada (motor con Caso 1, endpoints `/products` `/availability`, pantalla `/disponibilidad` con datos reales) |
-| 4 | Pedidos y clientes | Importación de pedidos, líneas, estados, fechas, filtros, cumplimiento | ✅ Completada (endpoints `/orders` `/orders/:id` `/customers`; pantallas `/pedidos`, `/clientes`; filtros por texto/estado/cliente y paginación; total pendiente por pedido) |
-| 5 | Motor de disponibilidad | Reglas de asignación, faltantes, prioridades, pruebas de dominio (Casos 1–8) | ⏳ Pendiente |
-| 6 | Simulador | Selección/deselección, inventario virtual, escenarios con versionado optimista, comparación | ⏳ Pendiente |
-| 7 | Producción | Déficits → cantidades teóricas, lote mínimo, merma, capacidad, fechas estimadas | ⏳ Pendiente |
+| 4 | Pedidos y clientes | Importación de pedidos, líneas, estados, fechas, filtros, cumplimiento | ✅ Completada (endpoints `/orders` `/orders/:id` `/orders/grouped` `/customers`; pantallas `/pedidos` (agrupada por cliente/producto con acordeón), `/clientes`; filtros por texto/estado/cliente/tipo/vendedor/autorizado/fechas; **campos del reporte ampliado**: vendedor, tipo de cliente, autorizado, cantidad, almacén; **proyección visual** de stock) |
+| 5 | Motor de disponibilidad | Reglas de asignación, faltantes, prioridades, pruebas de dominio (Casos 1–8) | ⏳ Pendiente — **desbloqueada**: el «tipo de cliente» (L1/COR/L2/L3…) ya es real |
+| 6 | Simulador | Selección/deselección, inventario virtual, escenarios con versionado optimista, comparación | ⏳ Pendiente — **semilla lista**: el «check de proyección» de Pedidos ya descuenta stock en pantalla (sin tocar Profit) |
+| 7 | Producción | Déficits → cantidades teóricas, lote mínimo, merma, capacidad, fechas estimadas | ⏳ Pendiente — `toProduceKg` ya se calcula en Disponibilidad |
 | 8 | Reportes y estadísticas | Dashboard (mockups Stitch), gráficas ECharts, reportes modulares, exportación | ⏳ Pendiente |
 | 9 | Interfaz final | Shell completo (sidebar 11 módulos), responsive, accesibilidad, flujos operativos | ⏳ Pendiente |
 | 10 | Validación integral | Seguridad, rendimiento, E2E (Playwright), recuperación, aceptación funcional | ⏳ Pendiente |
@@ -31,9 +31,17 @@ Resueltas en la **Fase 3**:
 - `uni_venta` mezcla `SAC` y `KG` (2 productos en KG, ambos a `kgPerUom=1`):
   el motor respeta la unidad por producto y no asume SAC universal.
 
-Siguen abiertas (requieren otra vista o confirmación del negocio):
+Resueltas el **15/10/2026** (reporte ampliado, solo lectura, sin modificar Profit):
 
-- La vista no trae **tipo de cliente**, **estado de pedido**, **cantidad total** del
-  renglón ni **reservas**: `customerType`, `quantity`, `reservedQty` quedan sin llenar
-  (documentado en `PROFIT_SQL_MAPPING.md`; no se rellenan con datos inventados).
-- Sin tipo de cliente, el motor de prioridades L1/COR/L2/L3 aún no tiene insumo real.
+- **Vendedor** = `cotiz_c.co_ven` → `vendedor.ven_des` (`SalesOrder.vendor`).
+- **Tipo de cliente** = `clientes.tipo` + `tipo_cli.des_tipo` (`SalesOrder.customerType`, p. ej. «L1 EXCLUSIVOS»).
+- **Autorizado** = `cotiz_c.status` («1» → SÍ) (`SalesOrder.authorized`).
+- **Cantidad** solicitada = `reng_cac.total_art` (`SalesOrderLine.quantity`).
+- **Almacén (Alm.)** del renglón = `reng_cac.co_alma` (`SalesOrderLine.warehouses`).
+
+> Origen descubierto: la «solicitud de cliente» de Profit es una **cotización**
+> (`cotiz_c` + `reng_cac`). La vista `Solicitudes_Pendientes_Clientes` es ese JOIN.
+> La app lee una **consulta ampliada equivalente** (ver `PROFIT_SQL_MAPPING.md`);
+> sigue siendo **solo lectura** y no se altera nada en Profit.
+
+Ya no bloquea la Fase 5: el motor de prioridades L1/COR/L2/L3 **tiene insumo real**.

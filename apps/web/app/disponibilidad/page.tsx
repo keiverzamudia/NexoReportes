@@ -69,6 +69,7 @@ export default function DisponibilidadPage() {
       faltantes: all.filter((r) => r.status === 'FALTANTE').length,
       parciales: all.filter((r) => r.status === 'PARCIAL').length,
       disponibles: all.filter((r) => r.status === 'DISPONIBLE').length,
+      toProduceKg: all.reduce((acc, r) => acc + (r.toProduceKg ?? 0), 0),
     };
   }, [data]);
 
@@ -93,6 +94,7 @@ export default function DisponibilidadPage() {
               <Kpi label="Faltante" value={String(kpis.faltantes)} tone="danger" />
               <Kpi label="Parcial" value={String(kpis.parciales)} tone="warning" />
               <Kpi label="Disponible" value={String(kpis.disponibles)} tone="success" />
+              <Kpi label="A producir" value={fmtQty(kpis.toProduceKg, 0)} suffix="kg" tone="danger" />
             </div>
           }
         />
@@ -139,6 +141,7 @@ export default function DisponibilidadPage() {
                     <Th align="right">Demanda</Th>
                     <Th align="right">Disponible</Th>
                     <Th align="right">A producir</Th>
+                    <Th align="right">A producir (kg)</Th>
                     <Th align="right">Neto</Th>
                     <Th align="center">Estado</Th>
                   </tr>
@@ -166,6 +169,9 @@ export default function DisponibilidadPage() {
                         <Td align="right" className="tabular-nums text-secondary font-bold">{fmtQty(row.availableQty, 0)}</Td>
                         <Td align="right" className={`tabular-nums font-bold ${row.toProduceQty > 0 ? 'text-error' : 'text-on-surface-variant'}`}>
                           {fmtQty(row.toProduceQty, 0)}
+                        </Td>
+                        <Td align="right" className={`tabular-nums ${row.toProduceKg && row.toProduceKg > 0 ? 'text-error' : 'text-on-surface-variant'}`}>
+                          {fmtQty(row.toProduceKg, 0)}
                         </Td>
                         <Td align="right" className={`tabular-nums ${row.netQty < 0 ? 'text-error' : ''}`}>{fmtQty(row.netQty, 0)}</Td>
                         <Td align="center">

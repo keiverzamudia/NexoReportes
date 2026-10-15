@@ -33,4 +33,9 @@ export interface ProfitAdapter {
 
   // Ejecuta una consulta SELECT parametrizada de solo lectura con límite de filas.
   select(viewName: string, params: Record<string, unknown>, limit: number): Promise<Record<string, unknown>[]>;
+
+  // Ejecuta una consulta SQL de SOLO LECTURA definida por la app (no por el usuario).
+  // Se usa para leer los campos que la vista actual no expone (vendedor, tipo de
+  // cliente, autorizado, cantidad, almacén) sin modificar nada en Profit.
+  selectQuery(sqlText: string, limit: number): Promise<Record<string, unknown>[]>;
 }

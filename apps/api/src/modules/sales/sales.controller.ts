@@ -1,6 +1,6 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { CustomerQuery, OrderQuery, zCustomerQuery, zOrderQuery } from '@nexo/contracts';
+import { CustomerQuery, OrderGroupQuery, OrderQuery, zCustomerQuery, zOrderGroupQuery, zOrderQuery } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -25,6 +25,12 @@ export class SalesController {
   @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA')
   listOrders(@Query(new ZodValidationPipe(zOrderQuery)) query: OrderQuery) {
     return this.sales.listOrders(query);
+  }
+
+  @Get('orders/grouped')
+  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA')
+  listOrdersGrouped(@Query(new ZodValidationPipe(zOrderGroupQuery)) query: OrderGroupQuery) {
+    return this.sales.listGrouped(query);
   }
 
   @Get('orders/:id')

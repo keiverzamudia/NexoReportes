@@ -149,6 +149,9 @@ export const zAvailabilityRow = z.object({
   availableQty: z.number(),
   // Lo que falta y debe producirse (0 si no falta).
   toProduceQty: z.number(),
+  // Lo que falta producir expresado en KG (toProduceQty × kgPerUom);
+  // null cuando el producto no tiene kg por unidad.
+  toProduceKg: z.number().nullable(),
   status: zAvailabilityStatus,
 });
 export type AvailabilityRow = z.infer<typeof zAvailabilityRow>;
@@ -210,10 +213,12 @@ export const zOrderSummary = z.object({
   externalNumber: z.string(),
   customerCode: z.string().nullable(),
   customerName: z.string().nullable(),
-  // Vendedor y tipo de cliente: la vista actual de Profit NO los trae → null
-  // (se muestran como "—", nunca inventados).
+  // Vendedor de la solicitud y tipo de cliente (del reporte ampliado de Profit).
+  // Si no llegan, son null y se muestran como "—" (nunca inventados).
   vendor: z.string().nullable(),
   customerType: z.string().nullable(),
+  // Autorizado (cotiz_c.status === '1'). null = sin dato.
+  authorized: z.boolean().nullable(),
   orderDate: z.string().nullable(),
   requestedDate: z.string().nullable(),
   status: zOrderStatus,
@@ -228,10 +233,12 @@ export const zOrderLine = z.object({
   productCode: z.string(),
   description: z.string().nullable(),
   uom: z.string().nullable(),
-  // Cantidad solicitada original: no está en la vista → null.
+  // Cantidad solicitada original (reng_cac.total_art). null = sin dato.
   quantity: z.number().nullable(),
   pendingQty: z.number(),
   pendingKg: z.number().nullable(),
+  // Almacén que surte el renglón (reng_cac.co_alma, p. ej. "6804").
+  warehouseCode: z.string().nullable(),
   // Existencias del artículo por almacén (última fotografía de inventario).
   stock03: z.number().nullable(),
   stock68: z.number().nullable(),
@@ -262,6 +269,10 @@ export const zOrderQuery = zPaginationQuery.extend({
   q: z.string().trim().max(100).optional(),
   customerCode: z.string().trim().max(20).optional(),
   status: zOrderStatus.optional(),
+  // Filtros del reporte ampliado.
+  customerType: z.string().trim().max(60).optional(),
+  vendor: z.string().trim().max(100).optional(),
+  authorized: z.enum(['SI', 'NO']).optional(),
   // Fecha de emisión (inclusive) en formato ISO 'yyyy-MM-dd'.
   emisionDesde: z
     .string()
@@ -282,6 +293,58 @@ export const zOrderQuery = zPaginationQuery.extend({
     .optional(),
 });
 export type OrderQuery = z.infer<typeof zOrderQuery>;
+
+// ---------- Pedidos agrupados (por cliente o por producto) ----------
+export const ORDER_GROUP_BY = ['cliente', 'producto'] as const;
+export const zOrderGroupBy = z.enum(ORDER_GROUP_BY);
+export type OrderGroupBy = z.infer<typeof zOrderGroupBy>;
+
+export const zOrderGroupQuery = zOrderQuery.omit({ page: true, pageSize: true }).extend({
+  by: zOrderGroupBy.default('cliente'),
+});
+export type OrderGroupQuery = z.infer<typeof zOrderGroupQuery>;
+
+export const zOrderGroupLine = z.object({
+  orderId: z.string(),
+  orderNumber: z.string(),
+  customerCode: z.string().nullable(),
+  customerName: z.string().nullable(),
+  requestedDate: z.string().nullable(),
+  authorized: z.boolean().nullable(),
+  productCode: z.string(),
+  description: z.string().nullable(),
+  uom: z.string().nullable(),
+  quantity: z.number().nullable(),
+  pendingQty: z.number(),
+  pendingKg: z.number().nullable(),
+  warehouseCode: z.string().nullable(),
+  stock03: z.number().nullable(),
+  stock68: z.number().nullable(),
+});
+export type OrderGroupLine = z.infer<typeof zOrderGroupLine>;
+
+export const zOrderGroup = z.object({
+  key: z.string(),
+  code: z.string().nullable(),
+  label: z.string(),
+  ordersCount: z.number().int(),
+  linesCount: z.number().int(),
+  totalPendingQty: z.number(),
+  totalPendingKg: z.number(),
+  // Nº de productos distintos (agrupando por cliente) o de clientes distintos
+  // (agrupando por producto).
+  itemsCount: z.number().int(),
+  lines: z.array(zOrderGroupLine),
+});
+export type OrderGroup = z.infer<typeof zOrderGroup>;
+
+export const zOrderGroupedResponse = z.object({
+  by: zOrderGroupBy,
+  groups: z.array(zOrderGroup),
+  totalPendingQty: z.number(),
+  totalPendingKg: z.number(),
+});
+export type OrderGroupedResponse = z.infer<typeof zOrderGroupedResponse>;
 
 // ---------- Salud del sistema ----------
 export const zHealthResponse = z.object({

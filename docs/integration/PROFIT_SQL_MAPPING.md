@@ -50,7 +50,7 @@ Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
 - **Empresa:** Corporación Agropecuaria Venezolana, C.A. — balanceados para animales (alfalfa, vaca lechera, gallina ponedora, cerdo, multiespecie...).
 - **Unidad de medida:** `SAC` (sacos 10/35/40 kg); totales reportados en **KG** y **TON**.
 - **Almacenes:** `Stock 68`, `Stock 03` — en la vista son **columnas** (`Stock_68`, `Stock_03`), no filas.
-- **Tipos de cliente (prioridad comercial):** `L1 EXCLUSIVOS` > `COR CORPORATIVO` > `L2 DISTRIBUIDORES` > `L3 MINORISTA` *(orden confirmado por el usuario; COR entre L1 y L2 es un supuesto configurable)*. **La vista no trae el tipo de cliente**: `Customer.customerType` queda `null` hasta que exista una fuente para ello.
+- **Tipos de cliente (prioridad comercial):** `L1 EXCLUSIVOS` > `COR CORPORATIVO` > `L2 DISTRIBUIDORES` > `L3 MINORISTA` *(orden confirmado por el usuario; COR entre L1 y L2 es un supuesto configurable)*. Catálogo real: `COR, DET, L1, L2, L3, L4, L5, L6, MAY`. La **vista no trae el tipo de cliente**, pero la **consulta ampliada (solo lectura, 15/10/2026)** sí: `clientes.tipo` + `tipo_cli.des_tipo` → `Customer.customerType` / `SalesOrder.customerType` (p. ej. «L1 EXCLUSIVOS»).
 - El reporte de pendientes incluye **valores negativos** (p. ej. `-247.00`) que indican sobre-compromiso: la disponibilidad neta puede ser negativa y debe reflejarse, no recortarse a cero en el detalle.
 
 ## Configuración actual
@@ -91,11 +91,14 @@ Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
 | `kg` | `SalesOrderLine.pendingKg` | `parseProfitDecimal` (valor crudo de Profit = `pendiente × relacion_empaque`) | anulable | `null` (no se recalcula) | IMPLEMENTADO (Fase 3) |
 | `Stock_03` | `InventorySnapshotLine.qty` (`Stock 03`) | `parseProfitDecimal` | anulable | `null` → **no se crea línea** (no se inventa `0`) | IMPLEMENTADO |
 | `Stock_68` | `InventorySnapshotLine.qty` (`Stock 68`) | `parseProfitDecimal` | anulable | `null` → no se crea línea | IMPLEMENTADO |
-| *(no expuesto)* | `Product.family` | — | — | `null` (la vista no lo trae) | NO DISPONIBLE |
-| *(no expuesto)* | `Customer.customerType` / `vendor` | — | — | `null` (la vista no los trae) | NO DISPONIBLE |
-| *(no expuesto)* | `SalesOrder.status` | la vista sólo contiene solicitudes **pendientes** → `ABIERTO` | supuesto documentado | `statusRaw = null` | SUPUESTO |
-| *(no expuesto)* | `SalesOrderLine.quantity` | la vista no trae la cantidad total original → se deja el default `0`; el motor trabaja con `pendingQty` | supuesto documentado | `0` | SUPUESTO |
-| *(no expuesto)* | `InventorySnapshotLine.reservedQty` | la vista no expone reservas | supuesto documentado | `0` | SUPUESTO |
+| *(no expuesto)* | `Product.family` | — | — | `null` (la vista/consulta no lo trae) | NO DISPONIBLE |
+| `clientes.tipo` + `tipo_cli.des_tipo` | `Customer.customerType` / `SalesOrder.customerType` | `RTRIM(tipo) + ' ' + RTRIM(des_tipo)` | anulable | conserva el valor previo si no llega | IMPLEMENTADO (15/10/2026) |
+| `vendedor.ven_des` | `SalesOrder.vendor` | `trim` | anulable | `null` (no se inventa) | IMPLEMENTADO (15/10/2026) |
+| `cotiz_c.status` | `SalesOrder.authorized` / `statusRaw` | `'1'` → `true`, `'0'`/`'2'` → `false`, ausente → `null` | anulable | `null` | IMPLEMENTADO (15/10/2026) |
+| `reng_cac.total_art` | `SalesOrderLine.quantity` | `parseProfitDecimal` | anulable | `0` | IMPLEMENTADO (15/10/2026) |
+| `reng_cac.co_alma` | `SalesOrderLine.warehouses` | `trim` | anulable | `null` | IMPLEMENTADO (15/10/2026) |
+| *(no expuesto)* | `SalesOrder.status` | la fuente sólo contiene solicitudes **pendientes** → `ABIERTO` | supuesto documentado | `statusRaw = cotiz_c.status` | SUPUESTO |
+| *(no expuesto)* | `InventorySnapshotLine.reservedQty` | la fuente no expone reservas | supuesto documentado | `0` | SUPUESTO |
 
 ## Preguntas abiertas para confirmar con el negocio/Profit
 
@@ -112,3 +115,42 @@ Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
 - `describeView()` lee las columnas reales desde `INFORMATION_SCHEMA.COLUMNS` (nunca se asumen nombres/tipos).
 - Timeouts configurables (`PROFIT_DB_REQUEST_TIMEOUT_MS`) y reintentos limitados (`PROFIT_DB_MAX_RETRIES`).
 - Sin conexión a SQL Server el sistema sigue operativo en modo `fixtures`, **identificado explícitamente** en la UI y en `/api/health` como datos de desarrollo.
+
+---
+
+## Fuente ampliada (15/10/2026) — solo lectura, sin tocar Profit
+
+Para traer los campos del reporte **«Solicitudes con sus renglones PROD y LOGÍSTICA (ALMACÉN)»**
+que la vista no exponía, la app ejecuta una **consulta SELECT equivalente**
+(constante `SOLICITUDES_SQL` en `sync.service.ts`, validada como solo lectura por el
+adaptador). **No se crea ni se altera nada en Profit.**
+
+Se leyó la definición real de la vista (`OBJECT_DEFINITION`) y resultó ser una
+**cotización de cliente**: `cotiz_c` (encabezado) + `reng_cac` (renglones) +
+`art` + `clientes` + `st_almac`, con `WHERE anulada = 0 AND status <> '2' AND pendiente > 0`.
+
+```sql
+SELECT
+    f.fact_num AS nro_solicitud, f.fec_emis AS emision, f.fec_venc AS entrega,
+    f.co_cli, cl.cli_des,
+    v.ven_des AS vendedor,
+    RTRIM(cl.tipo) + ' ' + RTRIM(tc.des_tipo) AS tipo_cliente,
+    f.status AS status_cotizacion,
+    r.co_art, a.art_des, r.co_alma AS almacen, r.total_art AS cantidad,
+    r.pendiente, r.uni_venta, a.uni_relac AS relacion_empaque,
+    r.pendiente * a.uni_relac AS kg,
+    (SELECT ISNULL(SUM(sa.stock_act),0) FROM dbo.st_almac sa WHERE sa.co_art=r.co_art AND sa.co_alma='03')   AS Stock_03,
+    (SELECT ISNULL(SUM(sa.stock_act),0) FROM dbo.st_almac sa WHERE sa.co_art=r.co_art AND sa.co_alma='6804') AS Stock_68
+FROM      dbo.cotiz_c  f
+JOIN      dbo.reng_cac r  ON r.fact_num = f.fact_num
+JOIN      dbo.art      a  ON a.co_art   = r.co_art
+JOIN      dbo.clientes cl ON cl.co_cli  = f.co_cli
+LEFT JOIN dbo.vendedor v  ON v.co_ven   = f.co_ven
+LEFT JOIN dbo.tipo_cli tc ON tc.tip_cli = cl.tipo
+WHERE f.anulada = 0 AND f.status <> '2' AND r.pendiente > 0;
+```
+
+**Garantías:**
+- Solo `SELECT`; el adaptador rechaza cualquier consulta con `;` o palabras de escritura.
+- Si una columna no llegara, el normalizador la deja en `null` (se muestra «—»); nunca rompe ni inventa.
+- `object_definition` y el sondeo se hicieron con el usuario de solo lectura.

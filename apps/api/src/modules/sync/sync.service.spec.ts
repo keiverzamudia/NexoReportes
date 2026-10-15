@@ -158,6 +158,7 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
       testConnection: async () => ({ connected: true }),
       listViews: async () => [],
       describeView: async () => [],
+      selectQuery: async () => [],
       select: async () => [{ ...base, relacion_empaque: 35, kg: 35 }],
     };
     await serviceWith(adapter, prisma).run('PRODUCTOS');
@@ -177,8 +178,8 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
     expect(prisma.tables.customers.size).toBe(2);
     expect(prisma.tables.customers.get('153064128')?.['name']).toBe('JOSEF HENDRIX HERNANDEZ REYES');
     expect(prisma.tables.customers.get('505835220')?.['name']).toBe('AGRO INVERSIONES MP, C.A');
-    // La vista no trae tipo de cliente ni vendedor: no se inventan.
-    expect(prisma.tables.customers.get('153064128')?.['customerType']).toBeUndefined();
+    // El reporte ampliado SÍ trae tipo de cliente: se persiste tal cual.
+    expect(prisma.tables.customers.get('153064128')?.['customerType']).toBe('L1 EXCLUSIVOS');
   });
 
   it('ALMACENES: se derivan de las columnas de existencia de la vista', async () => {
@@ -198,6 +199,7 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
       testConnection: async () => ({ connected: true }),
       listViews: async () => [],
       describeView: async () => [],
+      selectQuery: async () => [],
       select: async () => {
         const rows = [
           { ...base, nro_solicitud: 1, co_art: 'P1', art_des: 'Producto 1' },
@@ -280,6 +282,7 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
       testConnection: async () => ({ connected: true }),
       listViews: async () => [],
       describeView: async () => [],
+      selectQuery: async () => [],
       select: async () => [{ nro_solicitud: null, co_cli: 'X', co_art: 'P1', pendiente: 1 }],
     };
     const run = await serviceWith(adapter, prisma).run('PRODUCTOS');

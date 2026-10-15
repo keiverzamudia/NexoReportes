@@ -98,6 +98,7 @@ export default function PedidoDetallePage() {
                       <Th align="right">Cantidad</Th>
                       <Th align="right">Pendiente</Th>
                       <Th align="right">Kg</Th>
+                      <Th>Alm.</Th>
                       <Th align="right">Stock 03</Th>
                       <Th align="right">Stock 68</Th>
                     </tr>
@@ -116,11 +117,12 @@ export default function PedidoDetallePage() {
                         <Td className="font-bold tabular-nums text-primary">{line.productCode}</Td>
                         <Td className="max-w-md truncate" title={line.description ?? ''}>{line.description ?? '—'}</Td>
                         <Td className="text-on-surface-variant">{line.uom ?? '—'}</Td>
-                        <Td align="right" className="tabular-nums text-outline">{line.quantity ?? '—'}</Td>
+                        <Td align="right" className="tabular-nums text-outline">{fmtQty(line.quantity, 0)}</Td>
                         <Td align="right" className={`tabular-nums font-bold ${line.pendingQty < 0 ? 'text-error' : 'text-on-surface'}`}>
                           {fmtQty(line.pendingQty, 2)}
                         </Td>
                         <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(line.pendingKg, 0)}</Td>
+                        <Td className="tabular-nums text-on-surface-variant">{line.warehouseCode ?? '—'}</Td>
                         <Td align="right" className="tabular-nums">{fmtQty(line.stock03, 0)}</Td>
                         <Td align="right" className="tabular-nums">{fmtQty(line.stock68, 0)}</Td>
                       </tr>
@@ -131,8 +133,8 @@ export default function PedidoDetallePage() {
             </Card>
 
             <p className="text-label-sm normal-case text-on-surface-variant">
-              Valores crudos de la vista de Profit. «Cantidad» y «Vendedor/Tipo de cliente» no están expuestos por la vista
-              actual (se muestran como «—»). Los pendientes negativos son sobre-compromisos reales del ERP.
+              Valores crudos de Profit (cotización + renglones). «Autorizado» = cotización con estado 1. Los pendientes
+              negativos son sobre-compromisos reales del ERP. Cualquier «—» significa que la fuente no expone el dato.
             </p>
           </>
         )}

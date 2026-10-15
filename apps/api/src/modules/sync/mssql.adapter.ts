@@ -7,6 +7,11 @@ import { ProfitAdapter, ProfitColumn, ProfitConnectionTest } from './profit.adap
 // dos puntos (esquema.objeto). Bloquea cualquier intento de inyección SQL.
 const SAFE_VIEW_NAME = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?(\.[A-Za-z_][A-Za-z0-9_]*)?$/;
 
+// Guarda para consultas definidas por la app: deben ser un único SELECT/WITH
+// (sin `;`) y sin palabras clave de escritura. Nunca se ejecuta SQL del usuario.
+const READ_ONLY_SQL = /^\s*(with|select)\b/i;
+const FORBIDDEN_SQL = /(\b(insert|update|delete|drop|alter|create|merge|exec|execute|truncate|grant|revoke)\b|;)/i;
+
 // Adaptador SQL Server de SOLO LECTURA para Profit.
 // Reutiliza la misma forma de variables de entorno que los proyectos Data-Maestra/Taller.
 @Injectable()
@@ -120,6 +125,19 @@ export class MssqlProfitAdapter implements ProfitAdapter {
       : '';
     // Identificador ya validado con SAFE_VIEW_NAME; los valores viajan siempre como parámetros.
     const result = await request.query(`SELECT TOP (${safeLimit}) * FROM ${viewName} ${where}`);
+    return result.recordset as Record<string, unknown>[];
+  }
+
+  // Consulta de solo lectura definida por la app (para campos que la vista no expone).
+  // Es un SELECT controlado (constante en el código), nunca SQL del usuario.
+  async selectQuery(sqlText: string, limit: number): Promise<Record<string, unknown>[]> {
+    if (!READ_ONLY_SQL.test(sqlText) || FORBIDDEN_SQL.test(sqlText)) {
+      throw new Error('Consulta rechazada: solo se permite un único SELECT de lectura');
+    }
+    const safeLimit = Math.max(1, Math.min(Math.floor(limit), 100000));
+    const pool = await this.getPool();
+    // Envuelta en tabla derivada para aplicar el TOP sin alterar el resultado.
+    const result = await pool.request().query(`SELECT TOP (${safeLimit}) * FROM (${sqlText}) AS nexo_src`);
     return result.recordset as Record<string, unknown>[];
   }
 }
