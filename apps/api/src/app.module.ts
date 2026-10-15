@@ -7,6 +7,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
+import { SalesModule } from './modules/sales/sales.module';
 import { SyncModule } from './modules/sync/sync.module';
 
 @Module({
@@ -19,6 +20,7 @@ import { SyncModule } from './modules/sync/sync.module';
     AuditModule,
     SyncModule,
     CatalogModule,
+    SalesModule,
   ],
 })
 export class AppModule {}

@@ -166,6 +166,79 @@ export const zInventorySnapshotSummary = z.object({
 });
 export type InventorySnapshotSummary = z.infer<typeof zInventorySnapshotSummary>;
 
+// ---------- Pedidos y clientes (Fase 4) ----------
+export const zCustomer = z.object({
+  id: z.string(),
+  externalCode: z.string(),
+  name: z.string(),
+  // La vista actual de Profit no trae estos campos: quedan null (no inventados).
+  customerType: z.string().nullable(),
+  vendor: z.string().nullable(),
+  isActive: z.boolean(),
+  // Número de pedidos activos del cliente.
+  ordersCount: z.number().int(),
+});
+export type Customer = z.infer<typeof zCustomer>;
+
+export const zCustomerQuery = zPaginationQuery.extend({
+  q: z.string().trim().max(100).optional(),
+  includeInactive: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .transform((v) => v === true || v === 'true')
+    .optional(),
+});
+export type CustomerQuery = z.infer<typeof zCustomerQuery>;
+
+export const ORDER_STATUSES = ['ABIERTO', 'CERRADO', 'CANCELADO', 'DESCONOCIDO'] as const;
+export const zOrderStatus = z.enum(ORDER_STATUSES);
+export type OrderStatus = z.infer<typeof zOrderStatus>;
+
+export const zOrderSummary = z.object({
+  id: z.string(),
+  externalNumber: z.string(),
+  customerCode: z.string().nullable(),
+  customerName: z.string().nullable(),
+  orderDate: z.string().nullable(),
+  requestedDate: z.string().nullable(),
+  status: zOrderStatus,
+  linesCount: z.number().int(),
+  // Suma de pendientes del pedido (puede ser negativa por sobre-compromiso).
+  totalPendingQty: z.number(),
+});
+export type OrderSummary = z.infer<typeof zOrderSummary>;
+
+export const zOrderLine = z.object({
+  lineNumber: z.number().int(),
+  productCode: z.string(),
+  description: z.string().nullable(),
+  uom: z.string().nullable(),
+  pendingQty: z.number(),
+  pendingKg: z.number().nullable(),
+});
+export type OrderLine = z.infer<typeof zOrderLine>;
+
+export const zOrderDetail = z.object({
+  order: zOrderSummary,
+  lines: z.array(zOrderLine),
+});
+export type OrderDetail = z.infer<typeof zOrderDetail>;
+
+export const zOrderQuery = zPaginationQuery.extend({
+  q: z.string().trim().max(100).optional(),
+  customerCode: z.string().trim().max(20).optional(),
+  status: zOrderStatus.optional(),
+  // Fecha de entrega comprometida (inclusive) en formato ISO 'yyyy-MM-dd'.
+  entregaDesde: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Debe ser yyyy-MM-dd')
+    .optional(),
+  entregaHasta: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Debe ser yyyy-MM-dd')
+    .optional(),
+});
+export type OrderQuery = z.infer<typeof zOrderQuery>;
+
 // ---------- Salud del sistema ----------
 export const zHealthResponse = z.object({
   status: z.enum(['ok', 'degraded']),

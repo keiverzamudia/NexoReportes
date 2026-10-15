@@ -6,7 +6,7 @@
 | 1 | Fundamentos | Monorepo, configuración, BD (SQLite dev), JWT+RBAC, auditoría, logs, adaptador Profit (fixtures/mssql), health | ✅ Completada |
 | 2 | Integración | Lectura de vistas, normalización, sincronización idempotente, errores y trazabilidad | ✅ Completada (vista real `COR_A3.dbo.Solicitudes_Pendientes_Clientes` conectada y sincronizada en vivo) |
 | 3 | Productos e inventario | Catálogo normalizado, existencias por almacén, unidades, disponibilidad neta | ✅ Completada (motor con Caso 1, endpoints `/products` `/availability`, pantalla `/disponibilidad` con datos reales) |
-| 4 | Pedidos y clientes | Importación de pedidos, líneas, estados, fechas, filtros, cumplimiento | ⏳ Pendiente |
+| 4 | Pedidos y clientes | Importación de pedidos, líneas, estados, fechas, filtros, cumplimiento | ✅ Completada (endpoints `/orders` `/orders/:id` `/customers`; pantallas `/pedidos`, `/clientes`; filtros por texto/estado/cliente y paginación; total pendiente por pedido) |
 | 5 | Motor de disponibilidad | Reglas de asignación, faltantes, prioridades, pruebas de dominio (Casos 1–8) | ⏳ Pendiente |
 | 6 | Simulador | Selección/deselección, inventario virtual, escenarios con versionado optimista, comparación | ⏳ Pendiente |
 | 7 | Producción | Déficits → cantidades teóricas, lote mínimo, merma, capacidad, fechas estimadas | ⏳ Pendiente |
