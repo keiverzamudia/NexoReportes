@@ -81,6 +81,9 @@ describe('normalizeSolicitudRow', () => {
       statusCotizacion: '1',
       cantidad: 217,
       almacen: '6804',
+      linea: null,
+      categoria: null,
+      artAnulado: false,
     });
   });
 
@@ -99,6 +102,9 @@ describe('normalizeSolicitudRow', () => {
     expect(sinCampos.value?.statusCotizacion).toBeNull();
     expect(sinCampos.value?.cantidad).toBeNull();
     expect(sinCampos.value?.almacen).toBeNull();
+    expect(sinCampos.value?.linea).toBeNull();
+    expect(sinCampos.value?.categoria).toBeNull();
+    expect(sinCampos.value?.artAnulado).toBe(false);
   });
 
   it('conserva el pendiente negativo (sobre-compromiso real de Profit)', () => {

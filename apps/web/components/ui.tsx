@@ -182,16 +182,17 @@ export function DateInput({
   );
 }
 
-export function Th({ children, align = 'left', className }: { children?: ReactNode; align?: 'left' | 'right' | 'center'; className?: string }) {  return (
-    <th scope="col" className={`px-space-sm py-2 font-semibold uppercase text-label-sm text-outline ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'} ${className ?? ''}`}>
+export function Th({ children, align = 'left', className, rowSpan, colSpan }: { children?: ReactNode; align?: 'left' | 'right' | 'center'; className?: string; rowSpan?: number; colSpan?: number }) {
+  return (
+    <th scope="col" rowSpan={rowSpan} colSpan={colSpan} className={`px-space-sm py-2 font-semibold uppercase text-label-sm text-outline ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'} ${className ?? ''}`}>
       {children}
     </th>
   );
 }
 
-export function Td({ children, align = 'left', className, title }: { children?: ReactNode; align?: 'left' | 'right' | 'center'; className?: string; title?: string }) {
+export function Td({ children, align = 'left', className, title, rowSpan, colSpan }: { children?: ReactNode; align?: 'left' | 'right' | 'center'; className?: string; title?: string; rowSpan?: number; colSpan?: number }) {
   return (
-    <td title={title} className={`px-space-sm py-space-xs ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'} ${className ?? ''}`}>
+    <td title={title} rowSpan={rowSpan} colSpan={colSpan} className={`px-space-sm py-space-xs ${align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'} ${className ?? ''}`}>
       {children}
     </td>
   );

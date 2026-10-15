@@ -29,6 +29,9 @@ const envSchema = z.object({
   SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(0),
   SYNC_PAGE_SIZE: z.coerce.number().int().min(100).max(50000).default(5000),
 
+  // Clave para desbloquear/cambiar el forca mensual ya fijado.
+  FORECAST_UNLOCK_KEY: z.string().min(1).default('NEXO-FORCA'),
+
   CORS_ORIGINS: z.string().default('http://localhost:4100'),
 });
 
@@ -71,6 +74,10 @@ export default function configuration() {
     sync: {
       intervalSeconds: env.SYNC_INTERVAL_SECONDS,
       pageSize: env.SYNC_PAGE_SIZE,
+    },
+    forecast: {
+      unlockKey: env.FORECAST_UNLOCK_KEY,
+      productionLine: 'ABA',
     },
     cors: { origins: env.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean) },
   };

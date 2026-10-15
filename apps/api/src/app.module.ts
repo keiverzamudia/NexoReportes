@@ -9,6 +9,7 @@ import { AuditModule } from './modules/audit/audit.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { SyncModule } from './modules/sync/sync.module';
+import { ForecastModule } from './modules/forecast/forecast.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { SyncModule } from './modules/sync/sync.module';
     SyncModule,
     CatalogModule,
     SalesModule,
+    ForecastModule,
   ],
 })
 export class AppModule {}

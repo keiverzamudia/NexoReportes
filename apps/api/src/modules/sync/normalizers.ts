@@ -91,6 +91,10 @@ export interface RawSolicitudLine {
   cantidad: number | null;
   // Almacén que surte el renglón (columna `almacen` = reng_cac.co_alma).
   almacen: string | null;
+  // Línea y categoría del artículo (art.co_lin / art.co_cat) y si está anulado.
+  linea: string | null;
+  categoria: string | null;
+  artAnulado: boolean;
 }
 
 function trimOrNull(value: unknown): string | null {
@@ -153,9 +157,16 @@ export function normalizeSolicitudRow(row: Record<string, unknown>): Normalized<
       statusCotizacion: trimOrNull(row.status_cotizacion),
       cantidad: parseProfitDecimal(row.cantidad),
       almacen: trimOrNull(row.almacen),
+      linea: trimOrNull(row.linea),
+      categoria: trimOrNull(row.categoria),
+      // bit de SQL Server: true/false, 1/0 o 'true'/'false'.
+      artAnulado: row.art_anulado === true || row.art_anulado === 1 || row.art_anulado === '1' || row.art_anulado === 'true',
     },
   };
 }
+
+// La línea de producción de la empresa es ABA (alimentos balanceados).
+export const PRODUCTION_LINE = 'ABA';
 
 // Demanda pendiente total por artículo: suma de `pendiente` sobre todas las
 // solicitudes. Es el insumo del motor de disponibilidad (Fase 5): compara la

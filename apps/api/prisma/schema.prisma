@@ -117,6 +117,11 @@ model Product {
   description  String
   uom          String    @default("SAC")
   family       String?
+  // Línea y categoría del artículo en Profit (co_lin / co_cat).
+  // `isProduction` = pertenece a la línea de producción (ABA = balanceados).
+  line         String?
+  category     String?
+  isProduction Boolean   @default(false)
   // kg por unidad de venta (columna `relacion_empaque` de la vista real:
   // 35 = saco de 35 KG). Permite reportar totales en KG/TON.
   kgPerUom     Decimal?
@@ -232,4 +237,41 @@ model InventorySnapshotLine {
 
   @@index([snapshotId])
   @@index([productCode])
+}
+
+// ============================================================
+// Forca (pronóstico de producción) — datos PROPIOS de Nexo,
+// nunca se escriben en Profit.
+//   Forecast      = forca MENSUAL por artículo (bloqueable con clave)
+//   ForecastWeek  = reparto por semana (bloques 1-7 / 8-14 / 15-21 / 22-fin)
+//                   con un factor `pct` (100% = reparto parejo) editable.
+// ============================================================
+model Forecast {
+  id          String    @id @default(cuid())
+  productCode String
+  year        Int
+  month       Int
+  monthlyQty  Decimal   @default(0)
+  locked      Boolean   @default(false)
+  lockedAt    DateTime?
+  updatedBy   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  weeks ForecastWeek[]
+
+  @@unique([productCode, year, month])
+  @@index([year, month])
+}
+
+model ForecastWeek {
+  id         String   @id @default(cuid())
+  forecastId String
+  forecast   Forecast @relation(fields: [forecastId], references: [id], onDelete: Cascade)
+  // 1..4 = bloques de días 1-7, 8-14, 15-21, 22-fin.
+  weekIndex  Int
+  // Factor sobre el reparto parejo del mes (100 = reparto normal; 120 = +20%).
+  pct        Decimal  @default(100)
+
+  @@unique([forecastId, weekIndex])
 }

@@ -7,7 +7,7 @@
 // ============================================================
 
 import { useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Boxes, LogIn, LogOut, RefreshCw, ShoppingCart, Users } from 'lucide-react';
+import { AlertTriangle, Boxes, CalendarRange, LogIn, LogOut, RefreshCw, ShoppingCart, Users } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { FormEvent, useState } from 'react';
@@ -96,6 +96,7 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
 
 const NAV_LINKS = [
   { href: '/disponibilidad', label: 'Disponibilidad', icon: Boxes },
+  { href: '/forca', label: 'Forca', icon: CalendarRange },
   { href: '/pedidos', label: 'Pedidos', icon: ShoppingCart },
   { href: '/clientes', label: 'Clientes', icon: Users },
 ] as const;

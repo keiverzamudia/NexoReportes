@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { SYNC_DOMAINS, SyncDomain, SyncRun, SyncRunAll, SyncStatusResponse } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
-import { RawSolicitudLine, normalizeSolicitudRow } from './normalizers';
+import { RawSolicitudLine, normalizeSolicitudRow, parseProfitDecimal, PRODUCTION_LINE } from './normalizers';
 import { ProfitAdapter, PROFIT_ADAPTER } from './profit.adapter';
 
 // Única vista de origen (PROFIT_VIEW_SOLICITUDES). Cada dominio de sync se
@@ -40,6 +40,9 @@ SELECT
     f.status                  AS status_cotizacion,
     r.co_art                  AS co_art,
     a.art_des                 AS art_des,
+    a.co_lin                  AS linea,
+    a.co_cat                  AS categoria,
+    a.anulado                 AS art_anulado,
     r.co_alma                 AS almacen,
     r.total_art               AS cantidad,
     r.pendiente               AS pendiente,
@@ -55,6 +58,16 @@ INNER JOIN dbo.clientes AS cl ON cl.co_cli  = f.co_cli
 LEFT JOIN  dbo.vendedor AS v  ON v.co_ven   = f.co_ven
 LEFT JOIN  dbo.tipo_cli AS tc ON tc.tip_cli = cl.tipo
 WHERE f.anulada = 0 AND f.status <> '2' AND r.pendiente > 0
+`;
+
+// Catálogo COMPLETO de la línea de producción (ABA = alimentos balanceados),
+// para poder pronosticar (Forca) sobre los 130 artículos y no solo sobre los
+// que hoy tienen pedido. Solo lectura.
+const PRODUCTION_PRODUCTS_SQL = `
+SELECT RTRIM(a.co_art) AS co_art, a.art_des, a.uni_venta, a.uni_relac,
+       RTRIM(a.co_lin) AS co_lin, RTRIM(a.co_cat) AS co_cat
+FROM dbo.art AS a
+WHERE a.co_lin = 'ABA' AND a.anulado = 0
 `;
 
 @Injectable()
@@ -342,6 +355,7 @@ export class SyncService {
   }
 
   // Catálogo derivado: un producto por co_art distinto.
+  // Además marca si el artículo es de la línea de producción (ABA).
   private async syncProducts(lines: RawSolicitudLine[], seen: Set<string>): Promise<number> {
     const now = new Date();
     const byCode = new Map<string, RawSolicitudLine>();
@@ -351,6 +365,7 @@ export class SyncService {
     let count = 0;
     for (const [code, line] of byCode) {
       seen.add(code);
+      const isProduction = line.linea === PRODUCTION_LINE && !line.artAnulado;
       await this.prisma.product.upsert({
         where: { externalCode: code },
         // family no viene en la vista: NO se sobreescribe si ya existía.
@@ -359,6 +374,9 @@ export class SyncService {
         update: {
           description: line.artDes,
           uom: line.uniVenta,
+          ...(line.linea ? { line: line.linea } : {}),
+          ...(line.categoria ? { category: line.categoria } : {}),
+          isProduction,
           ...(line.relacionEmpaque !== null ? { kgPerUom: line.relacionEmpaque } : {}),
           isActive: true,
           removedAt: null,
@@ -368,11 +386,47 @@ export class SyncService {
           externalCode: code,
           description: line.artDes,
           uom: line.uniVenta,
+          line: line.linea,
+          category: line.categoria,
+          isProduction,
           kgPerUom: line.relacionEmpaque,
           lastSyncedAt: now,
         },
       });
       count += 1;
+    }
+
+    // Catálogo COMPLETO de la línea de producción (incluso sin pedido), para
+    // que el módulo Forca trabaje sobre los artículos reales de producción.
+    if (this.profit.dialect === 'mssql') {
+      const pageSize = this.config.get<number>('sync.pageSize') ?? 5000;
+      const rows = await this.profit.selectQuery(PRODUCTION_PRODUCTS_SQL, pageSize);
+      for (const raw of rows) {
+        const code = String(raw.co_art ?? '').trim();
+        if (!code) continue;
+        seen.add(code);
+        const description = String(raw.art_des ?? '').trim();
+        const uom = String(raw.uni_venta ?? '').trim();
+        const kg = parseProfitDecimal(raw.uni_relac);
+        const lineCode = String(raw.co_lin ?? '').trim();
+        const category = String(raw.co_cat ?? '').trim();
+        await this.prisma.product.upsert({
+          where: { externalCode: code },
+          update: {
+            description,
+            uom,
+            line: lineCode,
+            category,
+            isProduction: true,
+            ...(kg !== null ? { kgPerUom: kg } : {}),
+            isActive: true,
+            removedAt: null,
+            lastSyncedAt: now,
+          },
+          create: { externalCode: code, description, uom, line: lineCode, category, isProduction: true, kgPerUom: kg, lastSyncedAt: now },
+        });
+        count += 1;
+      }
     }
     return count;
   }
