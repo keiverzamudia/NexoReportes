@@ -393,7 +393,7 @@ export const zForecastSetWeeks = z.object({
   year: zYear,
   month: zMonth,
   weeks: z
-    .array(z.object({ weekIndex: z.number().int().min(1).max(4), pct: z.coerce.number().min(0).max(1000) }))
+    .array(z.object({ weekIndex: z.number().int().min(1).max(4), qty: z.coerce.number().min(0) }))
     .min(1),
 });
 export type ForecastSetWeeks = z.infer<typeof zForecastSetWeeks>;
@@ -408,7 +408,7 @@ export type ForecastWeekRange = z.infer<typeof zForecastWeekRange>;
 
 export const zForecastWeekRow = z.object({
   weekIndex: z.number().int(),
-  pct: z.number(),
+  // Cantidad asignada a la semana (editable). Por defecto = mensual / 4.
   qty: z.number(),
 });
 export type ForecastWeekRow = z.infer<typeof zForecastWeekRow>;
@@ -423,6 +423,8 @@ export const zForecastRow = z.object({
   demandMonthQty: z.number(),
   demandMonthKg: z.number(),
   monthlyQty: z.number(),
+  // Promedio sugerido por semana = forca mensual / 4 (valor por defecto de `weeks`).
+  averageQty: z.number(),
   locked: z.boolean(),
   weeks: z.array(zForecastWeekRow),
   weeksTotalQty: z.number(),
@@ -439,13 +441,26 @@ export const zForecastResponse = z.object({
 export type ForecastResponse = z.infer<typeof zForecastResponse>;
 
 // Reporte/plan de producción semanal.
+// Cada semana trae, además del forca, los mismos campos de la tabla de
+// Disponibilidad por Producto (existencia, disponible, a producir, neto,
+// estado) calculados con el motor de disponibilidad sobre la demanda OBJETIVO
+// = max(forca de la semana, demanda de la semana).
 export const zForecastPlanWeek = z.object({
   weekIndex: z.number().int(),
+  // Forca asignado a esa semana (cantidad editable en el Asignador).
   forcaQty: z.number(),
+  // Demanda real de pedidos activos cuya entrega cae en esa semana.
   demandQty: z.number(),
   demandKg: z.number(),
-  productionQty: z.number(),
-  productionKg: z.number(),
+  // Objetivo de la semana = max(forca, demanda). Es la "demanda" que usa el
+  // motor de disponibilidad.
+  objectiveQty: z.number(),
+  // Campos de disponibilidad por producto (misma semántica que /availability).
+  availableQty: z.number(),
+  toProduceQty: z.number(),
+  toProduceKg: z.number().nullable(),
+  netQty: z.number(),
+  status: zAvailabilityStatus,
 });
 export type ForecastPlanWeek = z.infer<typeof zForecastPlanWeek>;
 
@@ -455,8 +470,12 @@ export const zForecastPlanRow = z.object({
   uom: z.string(),
   category: z.string().nullable(),
   kgPerUom: z.number().nullable(),
+  // Existencia global y desglose por almacén (Stock 03 / Stock 68).
   stockTotal: z.number(),
+  stock03: z.number(),
+  stock68: z.number(),
   forcaMonthQty: z.number(),
+  averageQty: z.number(),
   demandMonthQty: z.number(),
   productionMonthQty: z.number(),
   productionMonthKg: z.number(),

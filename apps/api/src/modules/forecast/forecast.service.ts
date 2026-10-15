@@ -3,15 +3,19 @@ import { ConfigService } from '@nestjs/config';
 import {
   FORECAST_WEEK_INDEXES,
   ForecastPlanResponse,
+  ForecastPlanRow,
   ForecastPlanWeek,
   ForecastResponse,
+  ForecastRow,
   ForecastSetMonthly,
   ForecastSetWeeks,
   ForecastWeekRange,
   ForecastWeekRow,
+  InventoryByWarehouse,
 } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
+import { computeAvailability } from '../availability/availability.engine';
 
 // ============================================================
 // Forca (pronóstico de producción). Datos PROPIOS de Nexo Producción:
@@ -19,8 +23,11 @@ import { AuditService } from '../audit/audit.service';
 //
 //  · El FORCA MENSUAL por artículo se fija y queda BLOQUEADO; para
 //    cambiarlo se exige la clave especial (FORECAST_UNLOCK_KEY).
-//  · El reparto por semana (4 bloques) tiene un factor `pct` editable.
-//  · Producción semanal = max(0, max(forca_sem, demanda_sem) − stock global).
+//  · Cada semana (4 bloques) tiene una CANTIDAD editable. Por defecto se
+//    llena con el PROMEDIO = forca mensual / 4.
+//  · El Reporte reutiliza el MISMO motor de disponibilidad que la vista
+//    «Disponibilidad por Producto», con la demanda OBJETIVO de la semana
+//    (max(forca de la semana, demanda de la semana)).
 // ============================================================
 
 function round3(value: number): number {
@@ -45,6 +52,10 @@ export const WEEK_BOUNDS = [
   [22, 31],
 ] as const;
 
+// Almacenes reales de la compañía (mismos códigos que la vista de Disponibilidad).
+const WAREHOUSE_03 = 'Stock 03';
+const WAREHOUSE_68 = 'Stock 68';
+
 export function weekIndexOf(day: number): number {
   if (day <= 7) return 1;
   if (day <= 14) return 2;
@@ -58,6 +69,10 @@ function weekRanges(year: number, month: number): ForecastWeekRange[] {
     const end = Math.min(to, daysInMonth);
     return { weekIndex: i + 1, label: `S${i + 1} (${from}-${end})`, from: isoDate(year, month, from), to: isoDate(year, month, end) };
   });
+}
+
+function warehouseQty(list: InventoryByWarehouse[], code: string): number {
+  return round3(list.find((w) => w.warehouseCode === code)?.qty ?? 0);
 }
 
 @Injectable()
@@ -74,12 +89,12 @@ export class ForecastService {
       orderBy: { externalCode: 'asc' },
     });
 
-    const [stockMap, demand] = await Promise.all([this.stockByProduct(), this.demandBuckets(year, month)]);
+    const [stock, demand] = await Promise.all([this.stockIndex(), this.demandBuckets(year, month)]);
     const forecasts = await this.prisma.forecast.findMany({ where: { year, month }, include: { weeks: true } });
     const byCode = new Map(forecasts.map((f) => [f.productCode, f]));
     const ranges = weekRanges(year, month);
 
-    const rows = products.map((p) => {
+    const rows: ForecastRow[] = products.map((p) => {
       const f = byCode.get(p.externalCode);
       const monthlyQty = f ? num(f.monthlyQty) : 0;
       const weeks = this.computeWeeks(monthlyQty, f?.weeks ?? []);
@@ -90,10 +105,11 @@ export class ForecastService {
         uom: p.uom,
         category: p.category,
         kgPerUom: p.kgPerUom === null || p.kgPerUom === undefined ? null : num(p.kgPerUom),
-        stockTotal: round3(stockMap.get(p.externalCode) ?? 0),
+        stockTotal: round3(stock.get(p.externalCode)?.total ?? 0),
         demandMonthQty: round3(demandMonth.qty),
         demandMonthKg: round3(demandMonth.kg),
         monthlyQty: round3(monthlyQty),
+        averageQty: round3(monthlyQty / WEEK_BOUNDS.length),
         locked: f?.locked ?? false,
         weeks,
         weeksTotalQty: round3(weeks.reduce((acc, w) => acc + w.qty, 0)),
@@ -104,6 +120,7 @@ export class ForecastService {
   }
 
   // Fija el forca mensual. Si ya estaba fijado, exige la clave especial.
+  // Al cambiar el mensual, el reparto semanal vuelve al PROMEDIO (mensual / 4).
   async setMonthly(productCode: string, dto: ForecastSetMonthly, actor?: { id?: string; email?: string }) {
     const existing = await this.prisma.forecast.findUnique({
       where: { productCode_year_month: { productCode, year: dto.year, month: dto.month } },
@@ -128,7 +145,12 @@ export class ForecastService {
         updatedBy: actor?.email ?? null,
       },
     });
-    await this.ensureWeeks(saved.id);
+
+    // Si el forca mensual cambió, se reinicia el reparto al promedio; si es el
+    // mismo valor (sólo bloqueo/confirmación) se respeta el ajuste semanal.
+    const previous = existing ? num(existing.monthlyQty) : null;
+    const resetWeeks = previous === null || previous !== dto.monthlyQty;
+    await this.ensureWeeks(saved.id, dto.monthlyQty, resetWeeks);
 
     await this.audit.record({
       actorId: actor?.id ?? null,
@@ -136,19 +158,20 @@ export class ForecastService {
       action: 'FORECAST_SET_MONTHLY',
       entityType: 'Forecast',
       entityId: saved.id,
-      context: { productCode, year: dto.year, month: dto.month, monthlyQty: dto.monthlyQty, unlocked: Boolean(existing?.locked) },
+      context: { productCode, year: dto.year, month: dto.month, monthlyQty: dto.monthlyQty, resetWeeks, unlocked: Boolean(existing?.locked) },
     });
-    return { ok: true, productCode, year: dto.year, month: dto.month, monthlyQty: dto.monthlyQty, locked: true };
+    const weeks = await this.weeksOf(saved.id, dto.monthlyQty);
+    return { ok: true, productCode, year: dto.year, month: dto.month, monthlyQty: dto.monthlyQty, locked: true, weeks };
   }
 
-  // Cambia SOLO el factor de reparto semanal (siempre permitido).
+  // Cambia SOLO las cantidades por semana (siempre permitido, sin clave).
   async setWeeks(productCode: string, dto: ForecastSetWeeks) {
     const forecast = await this.ensureForecast(productCode, dto.year, dto.month);
     for (const w of dto.weeks) {
       await this.prisma.forecastWeek.upsert({
         where: { forecastId_weekIndex: { forecastId: forecast.id, weekIndex: w.weekIndex } },
-        update: { pct: w.pct },
-        create: { forecastId: forecast.id, weekIndex: w.weekIndex, pct: w.pct },
+        update: { qty: w.qty },
+        create: { forecastId: forecast.id, weekIndex: w.weekIndex, qty: w.qty },
       });
     }
     await this.audit.record({
@@ -157,30 +180,43 @@ export class ForecastService {
       entityId: forecast.id,
       context: { productCode, year: dto.year, month: dto.month, weeks: dto.weeks },
     });
-    return { ok: true, productCode, year: dto.year, month: dto.month, weeks: dto.weeks };
+    const weeks = await this.weeksOf(forecast.id, num(forecast.monthlyQty));
+    return { ok: true, productCode, year: dto.year, month: dto.month, weeks };
   }
 
-  // Reporte: plan de producción semanal por artículo.
+  // Reporte: plan de producción semanal por artículo, con los campos de la
+  // tabla de Disponibilidad por Producto calculados sobre la demanda objetivo
+  // de cada semana (max(forca, demanda)).
   async plan(year: number, month: number): Promise<ForecastPlanResponse> {
-    const list = await this.list(year, month);
-    const demand = await this.demandBuckets(year, month);
+    const [list, stock, demand] = await Promise.all([this.list(year, month), this.stockIndex(), this.demandBuckets(year, month)]);
 
-    const rows = list.rows.map((r) => {
-      const kgPerUnit = r.kgPerUom;
+    const rows: ForecastPlanRow[] = list.rows.map((r) => {
+      const stockInfo = stock.get(r.productCode) ?? { total: 0, byWarehouse: [] };
       const weeks: ForecastPlanWeek[] = list.weekRanges.map((range) => {
         const forcaQty = r.weeks.find((w) => w.weekIndex === range.weekIndex)?.qty ?? 0;
         const dem = demand.byProductWeek.get(`${r.productCode}#${range.weekIndex}`) ?? { qty: 0, kg: 0 };
-        // Regla: se produce lo mayor entre el forca y la demanda, menos el stock.
-        const target = Math.max(forcaQty, dem.qty);
-        const productionQty = Math.max(0, target - r.stockTotal);
-        const productionKg = kgPerUnit === null ? 0 : productionQty * kgPerUnit;
+        const objectiveQty = round3(Math.max(forcaQty, dem.qty));
+        // Mismo motor que la vista «Disponibilidad por Producto».
+        const availability = computeAvailability({
+          productCode: r.productCode,
+          description: r.description,
+          uom: r.uom,
+          kgPerUom: r.kgPerUom,
+          stockByWarehouse: stockInfo.byWarehouse,
+          demandQty: objectiveQty,
+          demandKg: dem.kg,
+        });
         return {
           weekIndex: range.weekIndex,
           forcaQty: round3(forcaQty),
           demandQty: round3(dem.qty),
           demandKg: round3(dem.kg),
-          productionQty: round3(productionQty),
-          productionKg: round3(productionKg),
+          objectiveQty,
+          availableQty: availability.availableQty,
+          toProduceQty: availability.toProduceQty,
+          toProduceKg: availability.toProduceKg,
+          netQty: availability.netQty,
+          status: availability.status,
         };
       });
       return {
@@ -189,11 +225,14 @@ export class ForecastService {
         uom: r.uom,
         category: r.category,
         kgPerUom: r.kgPerUom,
-        stockTotal: r.stockTotal,
+        stockTotal: stockInfo.total,
+        stock03: warehouseQty(stockInfo.byWarehouse, WAREHOUSE_03),
+        stock68: warehouseQty(stockInfo.byWarehouse, WAREHOUSE_68),
         forcaMonthQty: r.monthlyQty,
+        averageQty: r.averageQty,
         demandMonthQty: r.demandMonthQty,
-        productionMonthQty: round3(weeks.reduce((acc, w) => acc + w.productionQty, 0)),
-        productionMonthKg: round3(weeks.reduce((acc, w) => acc + w.productionKg, 0)),
+        productionMonthQty: round3(weeks.reduce((acc, w) => acc + w.toProduceQty, 0)),
+        productionMonthKg: round3(weeks.reduce((acc, w) => acc + (w.toProduceKg ?? 0), 0)),
         weeks,
       };
     });
@@ -214,13 +253,20 @@ export class ForecastService {
 
   // ---------- auxiliares ----------
 
-  private computeWeeks(monthlyQty: number, stored: { weekIndex: number; pct: unknown }[]): ForecastWeekRow[] {
-    const share = monthlyQty / WEEK_BOUNDS.length;
+  // Cantidades por semana: usa lo guardado; si aún no se repartió (filas en
+  // cero, p. ej. recién creadas) se usa el PROMEDIO del mes (forca / 4).
+  private computeWeeks(monthlyQty: number, stored: { weekIndex: number; qty: unknown }[]): ForecastWeekRow[] {
+    const average = monthlyQty / WEEK_BOUNDS.length;
+    const distributed = stored.some((w) => num(w.qty) !== 0);
     return FORECAST_WEEK_INDEXES.map((weekIndex) => {
       const found = stored.find((w) => w.weekIndex === weekIndex);
-      const pct = found ? num(found.pct) : 100;
-      return { weekIndex, pct, qty: round3(share * (pct / 100)) };
+      return { weekIndex, qty: round3(distributed && found ? num(found.qty) : average) };
     });
+  }
+
+  private async weeksOf(forecastId: string, monthlyQty: number): Promise<ForecastWeekRow[]> {
+    const stored = await this.prisma.forecastWeek.findMany({ where: { forecastId } });
+    return this.computeWeeks(monthlyQty, stored);
   }
 
   private async ensureForecast(productCode: string, year: number, month: number) {
@@ -229,27 +275,43 @@ export class ForecastService {
       update: {},
       create: { productCode, year, month, monthlyQty: 0 },
     });
-    await this.ensureWeeks(forecast.id);
+    await this.ensureWeeks(forecast.id, num(forecast.monthlyQty), false);
     return forecast;
   }
 
-  private async ensureWeeks(forecastId: string) {
+  // Crea las 4 semanas. `reset=true` reescribe el promedio; `false` sólo crea
+  // las que falten (sin pisar ajustes manuales del usuario).
+  private async ensureWeeks(forecastId: string, monthlyQty: number, reset: boolean) {
+    const average = round3(monthlyQty / WEEK_BOUNDS.length);
     for (const weekIndex of FORECAST_WEEK_INDEXES) {
       await this.prisma.forecastWeek.upsert({
         where: { forecastId_weekIndex: { forecastId, weekIndex } },
-        update: {},
-        create: { forecastId, weekIndex, pct: 100 },
+        update: reset ? { qty: average } : {},
+        create: { forecastId, weekIndex, qty: average },
       });
     }
   }
 
-  // Existencia combinada por artículo (última fotografía de inventario).
-  private async stockByProduct(): Promise<Map<string, number>> {
-    const snapshot = await this.prisma.inventorySnapshot.findFirst({ orderBy: { takenAt: 'desc' }, include: { lines: true } });
-    const map = new Map<string, number>();
+  // Existencia por artículo (última fotografía de inventario): total y desglose.
+  private async stockIndex(): Promise<Map<string, { total: number; byWarehouse: InventoryByWarehouse[] }>> {
+    const snapshot = await this.prisma.inventorySnapshot.findFirst({
+      orderBy: { takenAt: 'desc' },
+      include: { lines: { include: { warehouse: true } } },
+    });
+    const map = new Map<string, { total: number; byWarehouse: InventoryByWarehouse[] }>();
     for (const l of snapshot?.lines ?? []) {
-      map.set(l.productCode, (map.get(l.productCode) ?? 0) + num(l.qty));
+      const entry: InventoryByWarehouse = {
+        warehouseCode: l.warehouseCode,
+        warehouseName: l.warehouse?.name ?? null,
+        qty: num(l.qty),
+        reservedQty: num(l.reservedQty),
+      };
+      const bucket = map.get(l.productCode) ?? { total: 0, byWarehouse: [] };
+      bucket.total += entry.qty;
+      bucket.byWarehouse.push(entry);
+      map.set(l.productCode, bucket);
     }
+    for (const bucket of map.values()) bucket.total = round3(bucket.total);
     return map;
   }
 

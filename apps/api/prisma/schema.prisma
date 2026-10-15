@@ -244,7 +244,8 @@ model InventorySnapshotLine {
 // nunca se escriben en Profit.
 //   Forecast      = forca MENSUAL por artículo (bloqueable con clave)
 //   ForecastWeek  = reparto por semana (bloques 1-7 / 8-14 / 15-21 / 22-fin)
-//                   con un factor `pct` (100% = reparto parejo) editable.
+//                   con una CANTIDAD editable. Por defecto se llena con el
+//                   promedio = forca mensual / 4 y el usuario la ajusta.
 // ============================================================
 model Forecast {
   id          String    @id @default(cuid())
@@ -270,8 +271,8 @@ model ForecastWeek {
   forecast   Forecast @relation(fields: [forecastId], references: [id], onDelete: Cascade)
   // 1..4 = bloques de días 1-7, 8-14, 15-21, 22-fin.
   weekIndex  Int
-  // Factor sobre el reparto parejo del mes (100 = reparto normal; 120 = +20%).
-  pct        Decimal  @default(100)
+  // Cantidad asignada a la semana (por defecto = forca mensual / 4).
+  qty        Decimal  @default(0)
 
   @@unique([forecastId, weekIndex])
 }
