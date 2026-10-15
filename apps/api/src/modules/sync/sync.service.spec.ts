@@ -136,12 +136,37 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
     expect(prisma.tables.products.size).toBe(6); // sin duplicados
   });
 
-  it('PRODUCTOS: recorta el padding real de char y conserva la unidad de venta', async () => {
+  it('PRODUCTOS: recorta el padding real de char y conserva unidad y kg por unidad', async () => {
     const prisma = createFakePrisma();
     await serviceWith(new FixturesProfitAdapter(), prisma).run('PRODUCTOS');
     const product = prisma.tables.products.get('ABAEQUI01');
     expect(product?.['description']).toBe('ALFALFA EN PELLETS L.V SAC (10 KG)');
     expect(product?.['uom']).toBe('SAC');
+    // relacion_empaque de la vista = kg por unidad de venta.
+    expect(product?.['kgPerUom']).toBe(10);
+    expect(prisma.tables.products.get('ABABOV58')?.['kgPerUom']).toBe(35);
+  });
+
+  it('PRODUCTOS: no borra kgPerUom conocido si una corrida posterior trae la columna en NULL', async () => {
+    const prisma = createFakePrisma();
+    const base = {
+      nro_solicitud: 1, co_cli: '153064128', cli_des: 'C', co_art: 'ART1', art_des: 'Artículo 1',
+      pendiente: 1, uni_venta: 'SAC', Stock_03: 0, Stock_68: 0,
+    };
+    const adapter: ProfitAdapter = {
+      dialect: 'fixtures',
+      testConnection: async () => ({ connected: true }),
+      listViews: async () => [],
+      describeView: async () => [],
+      select: async () => [{ ...base, relacion_empaque: 35, kg: 35 }],
+    };
+    await serviceWith(adapter, prisma).run('PRODUCTOS');
+    expect(prisma.tables.products.get('ART1')?.['kgPerUom']).toBe(35);
+
+    // Columna en NULL: se conserva el dato conocido (no se escribe null).
+    adapter.select = async () => [{ ...base, relacion_empaque: null, kg: null }];
+    await serviceWith(adapter, prisma).run('PRODUCTOS');
+    expect(prisma.tables.products.get('ART1')?.['kgPerUom']).toBe(35);
   });
 
   it('CLIENTES: catálogo derivado de co_cli con el nombre exacto de la vista', async () => {
@@ -220,10 +245,16 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
     const orderLineKeys = [...prisma.tables.lines.keys()].filter((k) => k.startsWith(`${order?.['id']}#`));
     expect(orderLineKeys.length).toBe(2);
 
-    // Pendiente negativo conservado en el renglón de sobre-compromiso.
+    // Pendiente negativo conservado en el renglón de sobre-compromiso,
+    // junto con su kg crudo de Profit (-247 × 35).
     const negative = [...prisma.tables.lines.values()].find((l) => Number(l['pendingQty']) === -247);
     expect(negative).toBeDefined();
     expect(negative?.['productCode']).toBe('ABABOV67');
+    expect(Number(negative?.['pendingKg'])).toBe(-8645);
+
+    // Renglón normal: kg = pendiente × relacion_empaque tal como lo trae Profit.
+    const normal = [...prisma.tables.lines.values()].find((l) => Number(l['pendingQty']) === 217);
+    expect(Number(normal?.['pendingKg'])).toBe(7595);
   });
 
   it('EXISTENCIAS: fotografía por corrida con una línea por artículo/almacén no nulo', async () => {

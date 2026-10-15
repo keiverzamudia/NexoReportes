@@ -18,6 +18,8 @@ const REAL_ROW = {
   art_des: 'MULTIPROPOSITO 14% LINEA NARANJA SACO 35 KG' + ' '.repeat(78),
   pendiente: 217,
   uni_venta: 'SAC   ',
+  relacion_empaque: 35,
+  kg: 7595,
   Stock_03: 273,
   Stock_68: 0,
 };
@@ -64,6 +66,8 @@ describe('normalizeSolicitudRow', () => {
       artDes: 'MULTIPROPOSITO 14% LINEA NARANJA SACO 35 KG',
       pendiente: 217,
       uniVenta: 'SAC',
+      relacionEmpaque: 35,
+      kg: 7595,
       stock03: 273,
       stock68: 0,
     });
@@ -80,6 +84,21 @@ describe('normalizeSolicitudRow', () => {
     expect(result.ok).toBe(true);
     expect(result.value?.stock03).toBeNull();
     expect(result.value?.stock68).toBeNull();
+  });
+
+  it('las columnas de conversión a KG se normalizan y admiten negativo (kg del sobre-compromiso)', () => {
+    const normal = normalizeSolicitudRow(REAL_ROW);
+    expect(normal.value?.relacionEmpaque).toBe(35);
+    expect(normal.value?.kg).toBe(7595);
+
+    const negativo = normalizeSolicitudRow({ ...REAL_ROW, pendiente: -247, kg: -8645 });
+    expect(negativo.value?.kg).toBe(-8645);
+
+    // Columna ausente (vista anterior sin esas columnas): null, sin inventar dato.
+    const sinKg = normalizeSolicitudRow({ ...REAL_ROW, relacion_empaque: undefined, kg: undefined });
+    expect(sinKg.ok).toBe(true);
+    expect(sinKg.value?.relacionEmpaque).toBeNull();
+    expect(sinKg.value?.kg).toBeNull();
   });
 
   it('rechaza filas sin solicitud, cliente o artículo (Caso: datos incompletos)', () => {

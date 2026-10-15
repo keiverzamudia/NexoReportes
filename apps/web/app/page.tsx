@@ -63,8 +63,14 @@ export default function HomePage() {
         )}
       </section>
 
-      <footer className="text-body-md text-on-surface-variant">
-        Integración con Profit: lectura por vistas SQL configurables. Ninguna simulación modifica el ERP.
+      <footer className="flex flex-wrap items-center justify-between gap-space-md text-body-md text-on-surface-variant">
+        <span>Integración con Profit: lectura por vistas SQL configurables. Ninguna simulación modifica el ERP.</span>
+        <a
+          href="/disponibilidad"
+          className="rounded bg-primary-container px-space-lg py-space-sm font-semibold text-on-primary hover:opacity-90"
+        >
+          Ver disponibilidad →
+        </a>
       </footer>
     </main>
   );

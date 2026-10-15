@@ -117,6 +117,9 @@ model Product {
   description  String
   uom          String    @default("SAC")
   family       String?
+  // kg por unidad de venta (columna `relacion_empaque` de la vista real:
+  // 35 = saco de 35 KG). Permite reportar totales en KG/TON.
+  kgPerUom     Decimal?
   isActive     Boolean   @default(true)
   removedAt    DateTime?
   lastSyncedAt DateTime  @default(now())
@@ -193,6 +196,9 @@ model SalesOrderLine {
   quantity    Decimal     @default(0)
   // Pendiente puede ser negativo en Profit (sobre-compromiso); conservar el signo.
   pendingQty  Decimal     @default(0)
+  // kg del renglón según la vista (`kg` = pendiente × relacion_empaque,
+  // calculado en Profit; se persiste el valor crudo, no se recalcula).
+  pendingKg   Decimal?
   // Almacenes que surten el renglón (texto crudo, p. ej. "Stock 68 / Stock 03")
   warehouses  String?
 

@@ -5,7 +5,7 @@
 | 0 | Descubrimiento | Inventario del repo, análisis de mockups Stitch, decisiones técnicas, riesgos | ✅ Completada |
 | 1 | Fundamentos | Monorepo, configuración, BD (SQLite dev), JWT+RBAC, auditoría, logs, adaptador Profit (fixtures/mssql), health | ✅ Completada |
 | 2 | Integración | Lectura de vistas, normalización, sincronización idempotente, errores y trazabilidad | ✅ Completada (vista real `COR_A3.dbo.Solicitudes_Pendientes_Clientes` conectada y sincronizada en vivo) |
-| 3 | Productos e inventario | Catálogo normalizado, existencias por almacén, unidades, disponibilidad neta | ⏳ Pendiente |
+| 3 | Productos e inventario | Catálogo normalizado, existencias por almacén, unidades, disponibilidad neta | ✅ Completada (motor con Caso 1, endpoints `/products` `/availability`, pantalla `/disponibilidad` con datos reales) |
 | 4 | Pedidos y clientes | Importación de pedidos, líneas, estados, fechas, filtros, cumplimiento | ⏳ Pendiente |
 | 5 | Motor de disponibilidad | Reglas de asignación, faltantes, prioridades, pruebas de dominio (Casos 1–8) | ⏳ Pendiente |
 | 6 | Simulador | Selección/deselección, inventario virtual, escenarios con versionado optimista, comparación | ⏳ Pendiente |
@@ -23,11 +23,17 @@
 
 ## Decisiones de datos abiertas (detectadas en la Fase 2 con la vista real)
 
-- La vista trae **13 columnas**, incluidas `relacion_empaque` (kg/unidad) y `kg`
-  (kg del renglón = `pendiente × relacion_empaque`): candidatas a persistirse en
-  `Product`/`SalesOrderLine` para reportes en KG/TON (decisión de esquema en Fase 3).
+Resueltas en la **Fase 3**:
+
+- `relacion_empaque` (kg/unidad) y `kg` (kg del renglón) **ya se persisten**:
+  `Product.kgPerUom` y `SalesOrderLine.pendingKg`. Son la base para reportes en KG/TON.
+  `kgPerUom` no se sobreescribe con `NULL` si una corrida posterior trae la columna vacía.
+- `uni_venta` mezcla `SAC` y `KG` (2 productos en KG, ambos a `kgPerUom=1`):
+  el motor respeta la unidad por producto y no asume SAC universal.
+
+Siguen abiertas (requieren otra vista o confirmación del negocio):
+
 - La vista no trae **tipo de cliente**, **estado de pedido**, **cantidad total** del
   renglón ni **reservas**: `customerType`, `quantity`, `reservedQty` quedan sin llenar
   (documentado en `PROFIT_SQL_MAPPING.md`; no se rellenan con datos inventados).
-- `uni_venta` mezcla `SAC` y `KG` (2 productos en KG): el motor debe respetar la unidad
-  por producto y no asumir SAC universal.
+- Sin tipo de cliente, el motor de prioridades L1/COR/L2/L3 aún no tiene insumo real.

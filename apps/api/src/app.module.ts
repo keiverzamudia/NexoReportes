@@ -6,6 +6,7 @@ import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { AuditModule } from './modules/audit/audit.module';
+import { CatalogModule } from './modules/catalog/catalog.module';
 import { SyncModule } from './modules/sync/sync.module';
 
 @Module({
@@ -17,6 +18,7 @@ import { SyncModule } from './modules/sync/sync.module';
     UsersModule,
     AuditModule,
     SyncModule,
+    CatalogModule,
   ],
 })
 export class AppModule {}

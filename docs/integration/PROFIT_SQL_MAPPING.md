@@ -33,8 +33,8 @@ Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
 | 13 | `Stock_68` | `decimal(38,5)` | **SÍ** | `InventorySnapshotLine.qty` del almacén `Stock 68` |
 
 > `relacion_empaque` y `kg` son la clave para reportar en **KG/TON** (el negocio reporta
-> totales en KG y TON). Ambas columnas se leen pero **aún no se persisten**: requieren un
-> campo en `Product`/`SalesOrderLine` (decisión de esquema pendiente en Fase 3).
+> totales en KG y TON). Desde la **Fase 3** se persisten en `Product.kgPerUom` y
+> `SalesOrderLine.pendingKg` (ver sección de reglas más abajo).
 
 ### Perfil de los datos reales (61 filas, 14/10/2026)
 
@@ -87,6 +87,8 @@ Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
 | `art_des` | `Product.description` | `trim` | informativo | cadena vacía | IMPLEMENTADO |
 | `pendiente` | `SalesOrderLine.pendingQty` | `parseProfitDecimal` (acepta `'1,391.00'`) | requerido; **se conserva el signo** (negativo = sobre-compromiso) | **descartar fila** | IMPLEMENTADO |
 | `uni_venta` | `Product.uom` | `trim` | informativo | cadena vacía | IMPLEMENTADO |
+| `relacion_empaque` | `Product.kgPerUom` | `parseProfitDecimal` | anulable | no se persiste; **no se sobreescribe con `NULL`** si una corrida posterior lo trae vacío | IMPLEMENTADO (Fase 3) |
+| `kg` | `SalesOrderLine.pendingKg` | `parseProfitDecimal` (valor crudo de Profit = `pendiente × relacion_empaque`) | anulable | `null` (no se recalcula) | IMPLEMENTADO (Fase 3) |
 | `Stock_03` | `InventorySnapshotLine.qty` (`Stock 03`) | `parseProfitDecimal` | anulable | `null` → **no se crea línea** (no se inventa `0`) | IMPLEMENTADO |
 | `Stock_68` | `InventorySnapshotLine.qty` (`Stock 68`) | `parseProfitDecimal` | anulable | `null` → no se crea línea | IMPLEMENTADO |
 | *(no expuesto)* | `Product.family` | — | — | `null` (la vista no lo trae) | NO DISPONIBLE |

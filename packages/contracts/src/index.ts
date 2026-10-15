@@ -82,6 +82,90 @@ export const zSyncStatusResponse = z.object({
 });
 export type SyncStatusResponse = z.infer<typeof zSyncStatusResponse>;
 
+// ---------- Catálogo, inventario y disponibilidad (Fase 3) ----------
+export const zProduct = z.object({
+  id: z.string(),
+  externalCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  family: z.string().nullable(),
+  // kg por unidad de venta (relacion_empaque de Profit); null si no está disponible.
+  kgPerUom: z.number().nullable(),
+  isActive: z.boolean(),
+  lastSyncedAt: z.string(),
+});
+export type Product = z.infer<typeof zProduct>;
+
+export const zProductQuery = zPaginationQuery.extend({
+  // Búsqueda por código o descripción.
+  q: z.string().trim().max(100).optional(),
+  // Por defecto sólo activos; con includeInactive=true se incluyen bajas lógicas.
+  // (z.coerce.boolean() convertiría el string 'false' a true; se valida explícito.)
+  includeInactive: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .transform((v) => v === true || v === 'true')
+    .optional(),
+});
+export type ProductQuery = z.infer<typeof zProductQuery>;
+
+export const zInventoryByWarehouse = z.object({
+  warehouseCode: z.string(),
+  warehouseName: z.string().nullable(),
+  qty: z.number(),
+  reservedQty: z.number(),
+});
+export type InventoryByWarehouse = z.infer<typeof zInventoryByWarehouse>;
+
+export const AVAILABILITY_STATUSES = ['SIN_DEMANDA', 'DISPONIBLE', 'PARCIAL', 'FALTANTE'] as const;
+export const zAvailabilityStatus = z.enum(AVAILABILITY_STATUSES);
+export type AvailabilityStatus = z.infer<typeof zAvailabilityStatus>;
+
+export const zAvailabilityRow = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  kgPerUom: z.number().nullable(),
+  // Existencia física combinada de los almacenes (última fotografía).
+  stockTotal: z.number(),
+  stockByWarehouse: z.array(zInventoryByWarehouse),
+  // Demanda pendiente agregada (pedidos activos); puede ser negativa.
+  demandQty: z.number(),
+  demandKg: z.number().nullable(),
+  // Disponibilidad neta = existencia − demanda (puede ser negativa).
+  netQty: z.number(),
+  // Lo que se puede despachar de la demanda con lo existente.
+  availableQty: z.number(),
+  // Lo que falta y debe producirse (0 si no falta).
+  toProduceQty: z.number(),
+  status: zAvailabilityStatus,
+});
+export type AvailabilityRow = z.infer<typeof zAvailabilityRow>;
+
+export const zAvailabilityResponse = z.object({
+  // Momento de la fotografía de inventario usada (null si nunca hubo sync).
+  snapshotAt: z.string().nullable(),
+  source: z.string().nullable(),
+  rows: z.array(zAvailabilityRow),
+});
+export type AvailabilityResponse = z.infer<typeof zAvailabilityResponse>;
+
+export const zProductDetail = z.object({
+  product: zProduct,
+  inventory: z.array(zInventoryByWarehouse),
+  snapshotAt: z.string().nullable(),
+  availability: zAvailabilityRow.nullable(),
+});
+export type ProductDetail = z.infer<typeof zProductDetail>;
+
+export const zInventorySnapshotSummary = z.object({
+  id: z.string(),
+  takenAt: z.string(),
+  source: z.string(),
+  runId: z.string().nullable(),
+  linesCount: z.number().int(),
+});
+export type InventorySnapshotSummary = z.infer<typeof zInventorySnapshotSummary>;
+
 // ---------- Salud del sistema ----------
 export const zHealthResponse = z.object({
   status: z.enum(['ok', 'degraded']),

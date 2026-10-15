@@ -17,22 +17,25 @@ const ALMACENES: Record<string, unknown>[] = [
 
 // ============================================================
 // Vista real: dbo.Solicitudes_Pendientes_Clientes (COR_A3)
-// Una fila = un RENGLÓN de solicitud. Columnas reales:
+// Una fila = un RENGLÓN de solicitud. 13 columnas reales:
 //   nro_solicitud, emision, entrega, co_cli, cli_des,
-//   co_art, art_des, pendiente, uni_venta, Stock_03, Stock_68
+//   co_art, art_des, pendiente, uni_venta, relacion_empaque, kg,
+//   Stock_03, Stock_68
 // `pendiente` = cantidad pendiente por despachar (decimal).
+// `relacion_empaque` = kg por unidad de venta (35 = saco de 35 kg).
+// `kg` = kg del renglón = pendiente × relacion_empaque (calculado en Profit).
 // `Stock_03`/`Stock_68` = existencia del artículo en ese almacén.
 // El catálogo de productos/clientes se DERIVA de estas filas.
 // ============================================================
 const SOLICITUDES: Record<string, unknown>[] = [
-  { nro_solicitud: 3536, emision: '2025-09-03', entrega: '2025-09-10', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABABOV58', art_des: 'MULTIPROPOSITO 14% LINEA NARANJA SACO 35 KG', pendiente: 217, uni_venta: 'SAC', Stock_03: 273, Stock_68: 0 },
-  { nro_solicitud: 3544, emision: '2025-09-04', entrega: '2025-09-09', co_cli: '505835220', cli_des: 'AGRO INVERSIONES MP, C.A', co_art: 'ABABOV58', art_des: 'MULTIPROPOSITO 14% LINEA NARANJA SACO 35 KG', pendiente: 10, uni_venta: 'SAC', Stock_03: 273, Stock_68: 0 },
-  { nro_solicitud: 3536, emision: '2025-09-03', entrega: '2025-09-10', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABAGP13', art_des: 'GALLINA PONEDORA PLUS 18% - 40 KG', pendiente: 6, uni_venta: 'SAC', Stock_03: 1, Stock_68: 0 },
-  { nro_solicitud: 3550, emision: '2025-09-05', entrega: '2025-09-12', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABAEQUI01', art_des: 'ALFALFA EN PELLETS L.V SAC (10 KG)', pendiente: 40, uni_venta: 'SAC', Stock_03: 5, Stock_68: 2 },
+  { nro_solicitud: 3536, emision: '2025-09-03', entrega: '2025-09-10', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABABOV58', art_des: 'MULTIPROPOSITO 14% LINEA NARANJA SACO 35 KG', pendiente: 217, uni_venta: 'SAC', relacion_empaque: 35, kg: 7595, Stock_03: 273, Stock_68: 0 },
+  { nro_solicitud: 3544, emision: '2025-09-04', entrega: '2025-09-09', co_cli: '505835220', cli_des: 'AGRO INVERSIONES MP, C.A', co_art: 'ABABOV58', art_des: 'MULTIPROPOSITO 14% LINEA NARANJA SACO 35 KG', pendiente: 10, uni_venta: 'SAC', relacion_empaque: 35, kg: 350, Stock_03: 273, Stock_68: 0 },
+  { nro_solicitud: 3536, emision: '2025-09-03', entrega: '2025-09-10', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABAGP13', art_des: 'GALLINA PONEDORA PLUS 18% - 40 KG', pendiente: 6, uni_venta: 'SAC', relacion_empaque: 40, kg: 240, Stock_03: 1, Stock_68: 0 },
+  { nro_solicitud: 3550, emision: '2025-09-05', entrega: '2025-09-12', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABAEQUI01', art_des: 'ALFALFA EN PELLETS L.V SAC (10 KG)', pendiente: 40, uni_venta: 'SAC', relacion_empaque: 10, kg: 400, Stock_03: 5, Stock_68: 2 },
   // Renglón con pendiente negativo (sobre-compromiso), tal como ocurre en Profit.
-  { nro_solicitud: 3561, emision: '2025-09-06', entrega: '2025-09-13', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABABOV67', art_des: 'MULTIESPECIE LINEA NARANJA SACO 35 KG', pendiente: -247, uni_venta: 'SAC', Stock_03: 45, Stock_68: 0 },
-  { nro_solicitud: 3572, emision: '2025-09-08', entrega: '2025-09-15', co_cli: '505835220', cli_des: 'AGRO INVERSIONES MP, C.A', co_art: 'ABAPOR47', art_des: 'CERDO DESARROLLO MEDICADO PLUS 18,8% -40 KG', pendiente: 35, uni_venta: 'SAC', Stock_03: 90, Stock_68: 0 },
-  { nro_solicitud: 3580, emision: '2025-09-09', entrega: '2025-09-16', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABABOV75', art_des: 'VACA LECHERA 21% ALTA ENERGIA SACO 35 KG', pendiente: 50, uni_venta: 'SAC', Stock_03: 120, Stock_68: 15 },
+  { nro_solicitud: 3561, emision: '2025-09-06', entrega: '2025-09-13', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABABOV67', art_des: 'MULTIESPECIE LINEA NARANJA SACO 35 KG', pendiente: -247, uni_venta: 'SAC', relacion_empaque: 35, kg: -8645, Stock_03: 45, Stock_68: 0 },
+  { nro_solicitud: 3572, emision: '2025-09-08', entrega: '2025-09-15', co_cli: '505835220', cli_des: 'AGRO INVERSIONES MP, C.A', co_art: 'ABAPOR47', art_des: 'CERDO DESARROLLO MEDICADO PLUS 18,8% -40 KG', pendiente: 35, uni_venta: 'SAC', relacion_empaque: 40, kg: 1400, Stock_03: 90, Stock_68: 0 },
+  { nro_solicitud: 3580, emision: '2025-09-09', entrega: '2025-09-16', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', co_art: 'ABABOV75', art_des: 'VACA LECHERA 21% ALTA ENERGIA SACO 35 KG', pendiente: 50, uni_venta: 'SAC', relacion_empaque: 35, kg: 1750, Stock_03: 120, Stock_68: 15 },
 ];
 
 function datasetFor(viewName: string): Record<string, unknown>[] {
@@ -52,6 +55,8 @@ const SOLICITUDES_COLUMNS = [
   { name: 'art_des', dataType: 'varchar', maxLength: 120, precision: null, scale: null, nullable: false },
   { name: 'pendiente', dataType: 'decimal', maxLength: null, precision: 18, scale: 5, nullable: false },
   { name: 'uni_venta', dataType: 'char', maxLength: 6, precision: null, scale: null, nullable: false },
+  { name: 'relacion_empaque', dataType: 'decimal', maxLength: null, precision: 18, scale: 5, nullable: false },
+  { name: 'kg', dataType: 'decimal', maxLength: null, precision: 18, scale: 5, nullable: false },
   { name: 'Stock_03', dataType: 'decimal', maxLength: null, precision: 38, scale: 5, nullable: true },
   { name: 'Stock_68', dataType: 'decimal', maxLength: null, precision: 38, scale: 5, nullable: true },
 ];

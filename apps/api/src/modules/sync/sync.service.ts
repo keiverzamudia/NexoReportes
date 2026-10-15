@@ -277,8 +277,23 @@ export class SyncService {
       await this.prisma.product.upsert({
         where: { externalCode: code },
         // family no viene en la vista: NO se sobreescribe si ya existía.
-        update: { description: line.artDes, uom: line.uniVenta, isActive: true, removedAt: null, lastSyncedAt: now },
-        create: { externalCode: code, description: line.artDes, uom: line.uniVenta, lastSyncedAt: now },
+        // kgPerUom (relacion_empaque) sólo se actualiza si la vista lo trae
+        // (columna anulable: no se borra un dato conocido con null).
+        update: {
+          description: line.artDes,
+          uom: line.uniVenta,
+          ...(line.relacionEmpaque !== null ? { kgPerUom: line.relacionEmpaque } : {}),
+          isActive: true,
+          removedAt: null,
+          lastSyncedAt: now,
+        },
+        create: {
+          externalCode: code,
+          description: line.artDes,
+          uom: line.uniVenta,
+          kgPerUom: line.relacionEmpaque,
+          lastSyncedAt: now,
+        },
       });
       count += 1;
     }
@@ -384,6 +399,9 @@ export class SyncService {
             description: line.artDes,
             uom: line.uniVenta,
             pendingQty: line.pendiente,
+            // Valor crudo de la vista (`kg` = pendiente × relacion_empaque);
+            // no se recalcula para no divergir de Profit.
+            pendingKg: line.kg,
           },
           create: {
             orderId: order.id,
@@ -393,6 +411,7 @@ export class SyncService {
             description: line.artDes,
             uom: line.uniVenta,
             pendingQty: line.pendiente,
+            pendingKg: line.kg,
           },
         });
         count += 1;

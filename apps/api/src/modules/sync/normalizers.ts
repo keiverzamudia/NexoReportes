@@ -74,6 +74,10 @@ export interface RawSolicitudLine {
   artDes: string;
   pendiente: number;
   uniVenta: string;
+  // kg por unidad de venta (columna `relacion_empaque`; null si la vista no la trae).
+  relacionEmpaque: number | null;
+  // kg del renglón (columna `kg`, calculada en Profit como pendiente × relacion_empaque).
+  kg: number | null;
   stock03: number | null;
   stock68: number | null;
 }
@@ -119,6 +123,10 @@ export function normalizeSolicitudRow(row: Record<string, unknown>): Normalized<
       artDes: String(row.art_des ?? '').trim(),
       pendiente: pendiente as number,
       uniVenta: String(row.uni_venta ?? '').trim(),
+      // Columnas de conversión a KG (agregadas a la vista el 14/10/2026):
+      // anulables/informativas → null si no vienen (no se inventa el dato).
+      relacionEmpaque: parseProfitDecimal(row.relacion_empaque),
+      kg: parseProfitDecimal(row.kg),
       // Columnas anulables: null sólo si vienen null (no se inventa 0).
       stock03: parseProfitDecimal(row.Stock_03 ?? row.stock_03),
       stock68: parseProfitDecimal(row.Stock_68 ?? row.stock_68),
