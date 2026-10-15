@@ -35,14 +35,26 @@ pnpm dev                        # api (4000) + web (4100)
 - API: `http://localhost:4000/api` — Swagger en `/api/docs`
 - Web: `http://localhost:4100`
 
-Nota: si el puerto 4000 está ocupado por otro proyecto, usa `API_PORT=4010`.
+Nota: si el puerto 4000 está ocupado por otro proyecto, usa `API_PORT=4010`. En esta máquina el 4000 está ocupado, por eso la API de desarrollo y la de `pnpm start` usan **4010** (configúralo en `apps/api/.env`).
+
+### Producción (un solo comando)
+
+```bash
+pnpm build            # compila api + web
+pnpm start            # levanta API (4010) y Web (4100) juntos vía Turbo
+```
+
+`pnpm start` compila primero (con caché de Turbo) y luego arranca ambos procesos en la misma terminal; `Ctrl+C` detiene los dos. Si quieres incluir también el worker, usa `npx turbo run start --parallel` (agrega `@nexo/worker`).
+
+> No corras `pnpm build` mientras `pnpm dev` está activo: build y dev comparten la carpeta `.next` y se corrompen entre sí.
 
 ## Comandos útiles
 
 | Comando | Descripción |
 |---|---|
-| `pnpm dev` | Desarrollo de todos los paquetes |
+| `pnpm dev` | Desarrollo de todos los paquetes (api 4010 + web 4100) |
 | `pnpm build` | Build de producción |
+| `pnpm start` | Producción: build + API y Web juntos (Turbo) |
 | `pnpm typecheck` | Verificación de tipos |
 | `pnpm test` | Pruebas unitarias (Vitest) |
 | `pnpm db:migrate` | Migraciones Prisma |

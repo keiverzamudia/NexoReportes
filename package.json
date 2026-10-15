@@ -5,6 +5,7 @@
   "description": "Nexo Producción — Sistema inteligente de producción alimenticia, inventarios, pedidos, simulación y reportes (datos desde Profit Plus vía vistas SQL)",
   "scripts": {
     "dev": "turbo run dev",
+    "start": "turbo run start --filter=@nexo/api --filter=@nexo/web",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",

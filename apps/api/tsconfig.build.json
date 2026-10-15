@@ -2,7 +2,11 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "dist"
+    "outDir": "dist",
+    // El build NO usa incremental: `nest build` borra dist (deleteOutDir) y con
+    // un .tsbuildinfo al día tsc no reemitía nada → dist quedaba vacío y el
+    // `start` fallaba. Sin incremental, cada build emite siempre.
+    "incremental": false
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/**/*.spec.ts", "prisma/**/*"]
