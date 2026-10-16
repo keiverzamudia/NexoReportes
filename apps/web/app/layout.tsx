@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Rubik } from 'next/font/google';
 import './globals.css';
 import { Providers } from './providers';
@@ -15,6 +15,17 @@ export const metadata: Metadata = {
   title: 'Nexo Producción — Corp. Agropecuaria Venezolana',
   description:
     'Sistema inteligente de producción alimenticia, inventarios, pedidos, simulación y reportes sincronizado con Profit.',
+  applicationName: 'Nexo Producción',
+  appleWebApp: { capable: true, title: 'Nexo Producción', statusBarStyle: 'default' },
+};
+
+// Móvil primero: ajuste al ancho real, sin bloquear el zoom (accesibilidad) y
+// cubriendo el área del notch.
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  themeColor: '#f6f9ff',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

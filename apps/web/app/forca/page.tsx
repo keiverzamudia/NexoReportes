@@ -3,37 +3,43 @@
 // ============================================================
 // Forca — pronóstico de producción (línea ABA = alimentos balanceados).
 //
-//  · Pestaña «Asignador»: forca MENSUAL por artículo (se fija y queda
-//    bloqueado; para cambiarlo pide la clave especial) + CANTIDAD por cada
-//    una de las 4 semanas. Por defecto se llena con el PROMEDIO
-//    (forca mensual / 4) y esa cantidad se ajusta semana a semana.
-//  · Pestaña «Reporte»: se elige la SEMANA a evaluar (o «Todas»). Para una
-//    semana se muestra, por artículo, el forca y además los mismos campos de
-//    la tabla de Disponibilidad (Stock 03/68, Existencia, Demanda,
-//    Disponible, A producir, kg, Neto, Estado), calculados con el motor de
-//    disponibilidad sobre la demanda objetivo = max(forca, demanda).
+//  · Pestaña «Asignador»: forca mensual por artículo (se fija y queda
+//    bloqueado; se cambia con la clave especial) + cantidad por cada una de
+//    las 4 semanas. Por defecto se llena con el promedio (forca mes / 4).
+//  · Pestaña «Reporte»: se elige la semana a evaluar (o todo el mes). Por
+//    semana se muestra, además del forca, los mismos campos de la tabla de
+//    Disponibilidad por Producto, calculados con el motor de disponibilidad
+//    sobre la demanda objetivo = max(forca de la semana, demanda de la semana).
 //
 //  Datos propios de Nexo: NUNCA se escribe en Profit.
+//  Contrato de UI: docs/design/DESIGN_SYSTEM.md
 // ============================================================
 
-import type {
-  AvailabilityStatus,
-  ForecastPlanResponse,
-  ForecastPlanRow,
-  ForecastPlanWeek,
-  ForecastResponse,
-  ForecastRow,
-  ForecastWeekRow,
-} from '@nexo/contracts';
+import type { AvailabilityStatus, ForecastPlanResponse, ForecastRow, ForecastResponse, ForecastWeekRow } from '@nexo/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CalendarRange, Check, Download, Lock, Save, Search } from 'lucide-react';
-import { Fragment, useMemo, useState } from 'react';
+import { CalendarRange, Check, Download, Lock, Save, Search, TrendingUp } from 'lucide-react';
+import { useMemo, useState } from 'react';
 import { EChart } from '../../components/EChart';
 import { AppNav, LoginScreen } from '../../components/shell';
-import { Badge, Card, Kpi, PageHeader, Segmented, Select, Td, TextInput, Th, fmtQty } from '../../components/ui';
+import {
+  Badge,
+  Button,
+  Card,
+  CardHeader,
+  Column,
+  DataTable,
+  EmptyState,
+  ErrorNote,
+  FilterBar,
+  Kpi,
+  PageHeader,
+  Segmented,
+  Select,
+  TextInput,
+  cx,
+  fmtInt,
+} from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
-
-const C = { navy: '#003366', red: '#dc2626', lime: '#95C800', outline: '#737780', grid: '#e1f0ff' };
 
 const STATUS_LABEL: Record<AvailabilityStatus, string> = {
   DISPONIBLE: 'Cubierto',
@@ -49,9 +55,9 @@ const STATUS_TONE: Record<AvailabilityStatus, 'success' | 'warning' | 'danger' |
   SIN_DEMANDA: 'muted',
 };
 
-type Tab = 'asignador' | 'reporte';
+const CHART = { navy: '#003366', lime: '#95C800', red: '#dc2626', outline: '#737780', grid: '#e1f0ff' };
 
-// Presentación del artículo en Profit: SAC = saco, KG = granel (a granel).
+type Tab = 'asignador' | 'reporte';
 type UnitFilter = 'ALL' | 'SAC' | 'KG';
 
 const UNIT_OPTIONS: { value: UnitFilter; label: string }[] = [
@@ -103,8 +109,11 @@ export default function ForcaPage() {
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
 
+  const error = forecast.error ?? plan.error;
+  if (error instanceof AuthRequiredError) return <LoginScreen onSuccess={() => setTick((t) => t + 1)} />;
+
+  const all = forecast.data?.rows ?? [];
   const rows = useMemo(() => {
-    const all = forecast.data?.rows ?? [];
     const needle = search.trim().toLowerCase();
     return all.filter(
       (r) =>
@@ -112,43 +121,48 @@ export default function ForcaPage() {
         (!onlyDemand || r.demandMonthQty > 0) &&
         (!needle || r.productCode.toLowerCase().includes(needle) || r.description.toLowerCase().includes(needle)),
     );
-  }, [forecast.data, search, onlyDemand, unit]);
+  }, [all, search, onlyDemand, unit]);
 
-  const error = forecast.error ?? plan.error;
-  if (error instanceof AuthRequiredError) {
-    return <LoginScreen onSuccess={() => setTick((t) => t + 1)} />;
-  }
+  const totals = useMemo(
+    () => ({
+      forca: all.reduce((a, r) => a + r.monthlyQty, 0),
+      locked: all.filter((r) => r.locked).length,
+      demand: all.reduce((a, r) => a + r.demandMonthQty, 0),
+    }),
+    [all],
+  );
 
-  const weeks = forecast.data?.weekRanges ?? [];
-  const totalForca = (forecast.data?.rows ?? []).reduce((a, r) => a + r.monthlyQty, 0);
+  const filtersActive = (unit !== 'ALL' ? 1 : 0) + (onlyDemand ? 1 : 0);
 
   return (
     <>
       <AppNav />
-      <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg md:p-space-xl">
+      <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-md md:p-space-xl">
         <PageHeader
-          eyebrow="Producción · Alimentos balanceados (línea ABA)"
           icon={CalendarRange}
           title="Forca"
-          subtitle="Pronóstico mensual por artículo repartido en las semanas del mes por cantidad. Al fijar el mes queda bloqueado (se cambia con clave); las cantidades por semana siguen editables."
-          actions={
-            <div className="flex flex-wrap items-center gap-space-sm">
-              <Kpi label="Artículos" value={String(rows.length)} icon={CalendarRange} />
-              <Kpi label="Forca del mes" value={fmtQty(totalForca, 0)} suffix="unid." tone="primary" />
-            </div>
-          }
+          subtitle={`Pronóstico mensual por artículo repartido en las semanas del mes. Al fijar el mes queda bloqueado (se cambia con la clave especial); las cantidades por semana siguen editables.${
+            forecast.data?.rows.length ? ` ${forecast.data.rows.length} artículos de la línea ABA.` : ''
+          }`}
         />
 
-        <Card className="p-space-md">
-          <div className="flex flex-wrap items-end justify-between gap-space-md">
+        <div className="grid grid-cols-2 gap-space-sm md:grid-cols-3 xl:grid-cols-4">
+          <Kpi label="Artículos" value={String(rows.length)} icon={CalendarRange} hint={rows.length === all.length ? undefined : `de ${all.length}`} />
+          <Kpi label="Forca del mes" value={fmtInt(totals.forca)} suffix="unid." tone="primary" />
+          <Kpi label="Fijados" value={`${totals.locked}/${all.length}`} tone={totals.locked > 0 ? 'success' : 'muted'} />
+          <Kpi label="Demanda del mes" value={fmtInt(totals.demand)} suffix="unid." tone="default" />
+        </div>
+
+        <Card>
+          <div className="flex flex-col gap-space-md border-b border-surface-container px-space-lg py-space-md xl:flex-row xl:items-center xl:justify-between">
             <div className="flex flex-wrap items-center gap-space-md">
               <label className="flex flex-col gap-space-2xs">
-                <span className="font-semibold uppercase text-label-sm text-outline">Mes</span>
+                <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Mes</span>
                 <input
                   type="month"
                   value={ym}
                   onChange={(e) => setYm(e.target.value || currentMonthValue())}
-                  className="h-9 rounded-lg bg-surface px-space-sm text-body-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container"
+                  className="h-11 rounded-lg bg-surface-container-low px-space-sm text-base text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container md:h-9 md:text-body-md"
                 />
               </label>
               <Segmented
@@ -160,118 +174,85 @@ export default function ForcaPage() {
                   { value: 'reporte', label: 'Reporte' },
                 ]}
               />
-              <div className="flex items-center gap-space-2xs">
-                <span className="font-semibold uppercase text-label-sm text-outline">Presentación</span>
+              <div className="flex items-center gap-space-sm">
+                <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Presentación</span>
                 <Segmented ariaLabel="Presentación" value={unit} onChange={setUnit} options={UNIT_OPTIONS} />
               </div>
             </div>
-            {tab === 'asignador' && (
-              <div className="flex flex-wrap items-center gap-space-md">
-                <TextInput icon={Search} value={search} onChange={setSearch} placeholder="Buscar artículo…" ariaLabel="Buscar artículo" />
-                <label className="flex items-center gap-space-xs text-body-md text-on-surface-variant">
-                  <input type="checkbox" checked={onlyDemand} onChange={(e) => setOnlyDemand(e.target.checked)} className="size-4 accent-[var(--color-primary-container)]" />
-                  Solo con demanda
-                </label>
-              </div>
-            )}
           </div>
+
+          {tab === 'asignador' && (
+            <FilterBar
+              activeCount={filtersActive}
+              search={<TextInput icon={Search} value={search} onChange={setSearch} placeholder="Buscar artículo o código…" ariaLabel="Buscar artículo" />}
+              filters={
+                <>
+                  <label className="flex items-center gap-space-sm text-body-md text-on-surface-variant">
+                    <input
+                      type="checkbox"
+                      checked={onlyDemand}
+                      onChange={(e) => setOnlyDemand(e.target.checked)}
+                      className="size-4 accent-[var(--color-primary-container)]"
+                    />
+                    Solo con demanda
+                  </label>
+                </>
+              }
+            />
+          )}
         </Card>
 
-        {error && !(error instanceof AuthRequiredError) && (
-          <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
-            <AlertTriangle aria-hidden className="size-4" /> {error instanceof Error ? error.message : 'Error al consultar'}
-          </p>
-        )}
+        {error && !(error instanceof AuthRequiredError) && <ErrorNote>{error instanceof Error ? error.message : 'Error al consultar'}</ErrorNote>}
 
         {tab === 'asignador' && (
-          <>
-            {forecast.isLoading && <p className="text-body-md text-on-surface-variant">Cargando artículos de producción…</p>}
-            {forecast.data && (
-              <Card className="overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full border-collapse text-body-md">
-                    <thead>
-                      <tr className="border-b border-surface-container bg-surface-container">
-                        <Th>Código</Th>
-                        <Th>Descripción</Th>
-                        <Th align="right">Stock</Th>
-                        <Th align="right">Demanda mes</Th>
-                        <Th align="right">Forca mes</Th>
-                        <Th align="right">Promedio</Th>
-                        {weeks.map((w) => (
-                          <Th key={w.weekIndex} align="center">{w.label}</Th>
-                        ))}
-                        <Th align="right">Total sem.</Th>
-                        <Th align="center">Estado</Th>
-                        <Th align="right">Acciones</Th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-surface-container">
-                      {rows.length === 0 && (
-                        <tr>
-                          <Td align="center" className="py-space-xl text-on-surface-variant">
-                            {search || onlyDemand ? 'Sin artículos para el filtro.' : 'No hay artículos de producción sincronizados.'}
-                          </Td>
-                        </tr>
-                      )}
-                      {rows.map((row) => (
-                        <ForecastEditor
-                          key={row.productCode}
-                          row={row}
-                          year={year}
-                          month={month}
-                          onSaved={() => forecast.refetch()}
-                        />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
-                  Las cantidades de cada semana se llenan por defecto con el <strong>promedio = forca mes / 4</strong> y son
-                  libremente editables. «Fijar mes» guarda el forca mensual (y pide clave si ya estaba fijado).
-                </div>
-              </Card>
-            )}
-          </>
+          <Asignador rows={rows} year={year} month={month} loading={forecast.isLoading} totalRows={all.length} onSaved={() => forecast.refetch()} />
         )}
 
-        {tab === 'reporte' && (
-          <>
-            {plan.isLoading && <p className="text-body-md text-on-surface-variant">Calculando plan de producción…</p>}
-            {plan.data && <PlanReport key={ym} data={plan.data} unit={unit} />}
-          </>
-        )}
+        {tab === 'reporte' && <Reporte data={plan.data} loading={plan.isLoading} unit={unit} />}
       </main>
     </>
   );
 }
 
-// ---------- Editor de una fila (forca mensual + cantidad por semana) ----------
-function ForecastEditor({
-  row,
+// ============================================================
+// Asignador: forca mensual + cantidades por semana.
+// El borrador vive en el estado de la página (un mapa por código) para que
+// cada fila siga siendo "tonta" y la tabla se ordene sin perder lo escrito.
+// ============================================================
+
+type Draft = { monthly: string; weeks: string[] };
+
+function Asignador({
+  rows,
   year,
   month,
+  loading,
+  totalRows,
   onSaved,
 }: {
-  row: ForecastRow;
+  rows: ForecastRow[];
   year: number;
   month: number;
+  loading: boolean;
+  totalRows: number;
   onSaved: () => void;
 }) {
-  const [monthly, setMonthly] = useState(String(row.monthlyQty));
-  const [qtys, setQtys] = useState<string[]>(row.weeks.map((w) => String(w.qty)));
-  const [monthlyUnlocked, setMonthlyUnlocked] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  const [notes, setNotes] = useState<Record<string, { tone: 'ok' | 'error'; text: string }>>({});
 
-  const monthlyNum = parseNumber(monthly);
-  const weeksTotal = qtys.reduce((acc, q) => acc + parseNumber(q), 0);
-  const monthlyEditable = !row.locked || monthlyUnlocked;
+  const write = (code: string, draft: Draft) => setDrafts((prev) => ({ ...prev, [code]: draft }));
+  const clear = (code: string) =>
+    setDrafts((prev) => {
+      const next = { ...prev };
+      delete next[code];
+      return next;
+    });
+  const note = (code: string, tone: 'ok' | 'error', text: string) => setNotes((prev) => ({ ...prev, [code]: { tone, text } }));
 
-  const applyWeeks = (weeks: ForecastWeekRow[]) => {
-    if (weeks.length === 4) setQtys(weeks.map((w) => String(w.qty)));
-  };
-
-  const saveMonthly = useMutation<{ weeks: ForecastWeekRow[] }, Error, void>({
-    mutationFn: async () => {
+  const saveMonthly = useMutation<{ weeks: ForecastWeekRow[] }, Error, ForecastRow>({
+    mutationFn: async (row) => {
+      const draft = drafts[row.productCode];
+      const monthlyQty = parseNumber(draft?.monthly ?? String(row.monthlyQty));
       let unlockKey: string | undefined;
       if (row.locked) {
         const typed = window.prompt('El forca de ese mes ya está fijado. Ingresa la clave especial para cambiarlo:') ?? undefined;
@@ -280,430 +261,545 @@ function ForecastEditor({
       }
       return apiFetch<{ weeks: ForecastWeekRow[] }>(`/forecast/${encodeURIComponent(row.productCode)}`, {
         method: 'PUT',
-        body: JSON.stringify({ year, month, monthlyQty: monthlyNum, unlockKey }),
+        body: JSON.stringify({ year, month, monthlyQty, unlockKey }),
       });
     },
-    onSuccess: (data) => {
-      setMonthlyUnlocked(false);
-      applyWeeks(data.weeks ?? []);
+    onSuccess: (_data, row) => {
+      clear(row.productCode);
+      note(row.productCode, 'ok', 'Mes fijado');
       onSaved();
     },
+    onError: (err, row) => note(row.productCode, 'error', err.message),
   });
 
-  const saveWeeks = useMutation<{ weeks: ForecastWeekRow[] }, Error, void>({
-    mutationFn: () =>
-      apiFetch<{ weeks: ForecastWeekRow[] }>(`/forecast/${encodeURIComponent(row.productCode)}/weeks`, {
+  const saveWeeks = useMutation<{ weeks: ForecastWeekRow[] }, Error, ForecastRow>({
+    mutationFn: async (row) => {
+      const draft = drafts[row.productCode];
+      const weeks = (draft?.weeks ?? row.weeks.map((w) => String(w.qty))).map((q, i) => ({ weekIndex: i + 1, qty: parseNumber(q) }));
+      return apiFetch<{ weeks: ForecastWeekRow[] }>(`/forecast/${encodeURIComponent(row.productCode)}/weeks`, {
         method: 'PATCH',
-        body: JSON.stringify({
-          year,
-          month,
-          weeks: qtys.map((q, i) => ({ weekIndex: i + 1, qty: parseNumber(q) })),
-        }),
-      }),
-    onSuccess: (data) => {
-      applyWeeks(data.weeks ?? []);
+        body: JSON.stringify({ year, month, weeks }),
+      });
+    },
+    onSuccess: (_data, row) => {
+      clear(row.productCode);
+      note(row.productCode, 'ok', 'Semanas guardadas');
       onSaved();
     },
+    onError: (err, row) => note(row.productCode, 'error', err.message),
   });
 
   const busy = saveMonthly.isPending || saveWeeks.isPending;
-  const feedback = saveMonthly.error ?? saveWeeks.error;
-  const ok = saveMonthly.isSuccess || saveWeeks.isSuccess;
+
+  const columns: Column<ForecastRow>[] = [
+    {
+      key: 'code',
+      header: 'Código',
+      kind: 'id',
+      render: (r) => r.productCode,
+      sortValue: (r) => r.productCode,
+    },
+    {
+      key: 'description',
+      header: 'Descripción',
+      kind: 'id',
+      className: 'max-w-[13rem]',
+      render: (r) => r.description,
+      title: (r) => r.description,
+      sortValue: (r) => r.description,
+    },
+    {
+      key: 'stock',
+      header: 'Existencia',
+      align: 'right',
+      kind: 'metric',
+      render: (r) => <span className="font-bold text-on-surface">{fmtInt(r.stockTotal)}</span>,
+      sortValue: (r) => r.stockTotal,
+    },
+    {
+      key: 'demand',
+      header: 'Demanda mes',
+      align: 'right',
+      kind: 'metric',
+      render: (r) => <span className={r.demandMonthQty > 0 ? 'font-bold text-on-surface' : 'text-outline'}>{fmtInt(r.demandMonthQty)}</span>,
+      sortValue: (r) => r.demandMonthQty,
+    },
+    {
+      key: 'monthly',
+      header: 'Forca mes',
+      align: 'right',
+      kind: 'metric',
+      render: (r) => {
+        const draft = drafts[r.productCode];
+        return (
+          <span className="inline-flex items-center">
+            <input
+              value={draft?.monthly ?? String(r.monthlyQty)}
+              onChange={(e) => write(r.productCode, { monthly: e.target.value, weeks: draft?.weeks ?? r.weeks.map((w) => String(w.qty)) })}
+              inputMode="decimal"
+              aria-label={`Forca mensual de ${r.productCode}`}
+              className={cx(
+                'h-11 w-16 rounded-lg px-space-2xs text-right tabular-nums text-base text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container md:h-8 md:text-body-md',
+                r.locked ? 'bg-surface-container' : 'bg-surface-container-low',
+              )}
+            />
+          </span>
+        );
+      },
+      sortValue: (r) => r.monthlyQty,
+    },
+    {
+      key: 'average',
+      header: 'Promedio',
+      align: 'right',
+      kind: 'detail',
+      render: (r) => <span className="text-on-surface-variant">{fmtInt(r.averageQty)}</span>,
+      sortValue: (r) => r.averageQty,
+    },
+    ...[0, 1, 2, 3].map((i) => ({
+      key: `w${i + 1}`,
+      header: `S${i + 1}`,
+      align: 'right' as const,
+      kind: 'metric' as const,
+      render: (r: ForecastRow) => {
+        const draft = drafts[r.productCode];
+        const value = draft?.weeks?.[i] ?? String(r.weeks[i]?.qty ?? 0);
+        const changed = parseNumber(value) !== r.averageQty;
+        return (
+          <input
+            value={value}
+            onChange={(e) => {
+              const weeks = (draft?.weeks ?? r.weeks.map((w) => String(w.qty))).map((q, idx) => (idx === i ? e.target.value : q));
+              write(r.productCode, { monthly: draft?.monthly ?? String(r.monthlyQty), weeks });
+            }}
+            inputMode="decimal"
+            aria-label={`Semana ${i + 1} de ${r.productCode}`}
+            className={cx(
+              'h-11 w-14 rounded-lg px-space-2xs text-right tabular-nums text-base text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container md:h-8 md:text-body-md',
+              changed ? 'bg-warning-container font-semibold' : 'bg-surface-container-low',
+            )}
+          />
+        );
+      },
+    })),
+    {
+      key: 'total',
+      header: 'Total sem.',
+      align: 'right',
+      kind: 'metric',
+      render: (r) => {
+        const draft = drafts[r.productCode];
+        const total = draft?.weeks ? draft.weeks.reduce((a, q) => a + parseNumber(q), 0) : r.weeksTotalQty;
+        return <span className="font-bold text-primary">{fmtInt(total)}</span>;
+      },
+      sortValue: (r) => r.weeksTotalQty,
+    },
+    {
+      key: 'state',
+      header: 'Estado',
+      align: 'center',
+      kind: 'status',
+      render: (r) => <Badge tone={r.locked ? 'primary' : 'muted'} dot>{r.locked ? 'Fijado' : 'Sin fijar'}</Badge>,
+      sortValue: (r) => (r.locked ? 1 : 0),
+    },
+    {
+      key: 'actions',
+      header: 'Acciones',
+      align: 'right',
+      kind: 'action',
+      className: 'whitespace-nowrap',
+      render: (r) => {
+        const dirty = Boolean(drafts[r.productCode]);
+        const noteForRow = notes[r.productCode];
+        return (
+          <div className="flex flex-col items-end gap-space-2xs">
+            <div className="flex flex-nowrap items-center justify-end gap-space-xs">
+              <Button
+                variant={r.locked ? 'outline' : 'primary'}
+                icon={r.locked ? Lock : Check}
+                onClick={() => saveMonthly.mutate(r)}
+                disabled={busy}
+                ariaLabel={`Fijar el forca de ${r.productCode}`}
+                title="Fijar y bloquear el forca del mes. Si cambia el valor, el reparto vuelve al promedio."
+                className="md:h-8"
+              >
+                <span className="hidden max-md:inline">Fijar mes</span>
+              </Button>
+              <Button
+                variant="outline"
+                icon={Save}
+                onClick={() => saveWeeks.mutate(r)}
+                disabled={busy}
+                ariaLabel={`Guardar las semanas de ${r.productCode}`}
+                title="Guardar las cantidades por semana (siempre editable)"
+                className="md:h-8"
+              >
+                <span className="hidden max-md:inline">Semanas</span>
+              </Button>
+            </div>
+            {dirty && !noteForRow && <span className="text-label-sm text-warning">Sin guardar</span>}
+            {noteForRow && (
+              <span className={cx('max-w-[16rem] text-label-sm', noteForRow.tone === 'ok' ? 'text-success' : 'text-critical')}>{noteForRow.text}</span>
+            )}
+          </div>
+        );
+      },
+    },
+  ];
 
   return (
-    <tr className="transition-colors hover:bg-surface-container-low">
-      <Td className="font-bold tabular-nums text-primary">{row.productCode}</Td>
-      <Td className="max-w-[18rem] truncate" title={row.description}>{row.description}</Td>
-      <Td align="right" className="tabular-nums">{fmtQty(row.stockTotal, 0)}</Td>
-      <Td align="right" className={`tabular-nums ${row.demandMonthQty > 0 ? 'font-semibold text-on-surface' : 'text-outline'}`}>
-        {fmtQty(row.demandMonthQty, 0)}
-      </Td>
-      <Td align="right">
-        <div className="flex items-center justify-end gap-space-xs">
-          <input
-            value={monthly}
-            onChange={(e) => setMonthly(e.target.value)}
-            disabled={!monthlyEditable}
-            inputMode="decimal"
-            className="h-9 w-24 rounded-lg bg-surface px-space-sm text-right tabular-nums text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container disabled:cursor-not-allowed disabled:opacity-60"
-            aria-label="Forca mensual"
+    <Card className="overflow-hidden">
+      <CardHeader
+        title="Asignador del forca"
+        description="Cada semana se llena por defecto con el promedio = forca mes ÷ 4 y es libremente editable. Las celdas en ámbar se apartaron del promedio."
+      />
+      <DataTable
+        columns={columns}
+        rows={rows}
+        rowKey={(r) => r.productCode}
+        loading={loading}
+        loadingRows={8}
+        defaultSortKey="code"
+        empty={
+          <EmptyState
+            icon={CalendarRange}
+            title={rows.length === 0 && totalRows > 0 ? 'Sin artículos para los filtros aplicados' : 'Aún no hay artículos de producción'}
+            description={
+              rows.length === 0 && totalRows > 0
+                ? 'Prueba con otra presentación, quita «Solo con demanda» o borra la búsqueda.'
+                : 'Sincroniza para traer el catálogo de la línea ABA desde Profit.'
+            }
           />
-          {row.locked && !monthlyUnlocked && (
-            <button
-              onClick={() => setMonthlyUnlocked(true)}
-              title="El mes está fijado; habilita para cambiar (pedirá la clave)"
-              className="flex h-8 items-center gap-space-2xs rounded-md border border-outline-variant px-space-sm text-label-sm font-semibold text-on-surface-variant hover:bg-surface-container-low"
-            >
-              <Lock aria-hidden className="size-3.5" /> Fijado
-            </button>
-          )}
-        </div>
-      </Td>
-      <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(row.averageQty, 0)}</Td>
-      {row.weeks.map((w, i) => (
-        <Td key={w.weekIndex} align="center">
-          <input
-            value={qtys[i] ?? ''}
-            onChange={(e) => setQtys((prev) => prev.map((q, idx) => (idx === i ? e.target.value : q)))}
-            inputMode="decimal"
-            className={`h-8 w-20 rounded-md px-space-2xs text-right tabular-nums text-label-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container ${
-              parseNumber(qtys[i] ?? '') !== row.averageQty ? 'bg-amber-50 font-semibold' : 'bg-surface'
-            }`}
-            aria-label={`Semana ${w.weekIndex}`}
-          />
-        </Td>
-      ))}
-      <Td align="right" className="tabular-nums font-bold">{fmtQty(weeksTotal, 0)}</Td>
-      <Td align="center">
-        <Badge tone={row.locked ? 'primary' : 'muted'}>{row.locked ? 'Fijado' : 'Sin fijar'}</Badge>
-      </Td>
-      <Td align="right">
-        <div className="flex flex-col items-end gap-space-2xs">
-          <div className="flex items-center gap-space-xs">
-            <button
-              onClick={() => saveMonthly.mutate()}
-              disabled={busy || !monthlyEditable}
-              title="Fijar / guardar el forca del mes. Si cambia el valor, el reparto semanal vuelve al promedio."
-              className="flex h-8 items-center gap-space-2xs rounded-md bg-primary-container px-space-sm text-label-sm font-semibold text-on-primary hover:bg-primary disabled:opacity-50"
-            >
-              {row.locked && !monthlyUnlocked ? <Lock aria-hidden className="size-3.5" /> : <Check aria-hidden className="size-3.5" />} Fijar mes
-            </button>
-            <button
-              onClick={() => saveWeeks.mutate()}
-              disabled={busy}
-              title="Guardar las cantidades por semana (siempre editable)"
-              className="flex h-8 items-center gap-space-2xs rounded-md border border-outline-variant px-space-sm text-label-sm font-semibold text-on-surface-variant hover:bg-surface-container-low disabled:opacity-50"
-            >
-              <Save aria-hidden className="size-3.5" /> Semanas
-            </button>
-          </div>
-          {ok && <span className="text-label-sm text-success">Guardado</span>}
-          {feedback && <span className="max-w-[16rem] text-label-sm text-error">{feedback instanceof Error ? feedback.message : 'Error'}</span>}
-        </div>
-      </Td>
-    </tr>
+        }
+      />
+    </Card>
   );
 }
 
-// ---------- Reporte / plan de producción ----------
-function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilter }) {
-  const weeks = data.weekRanges;
-  const rows = useMemo(() => data.rows.filter((r) => unit === 'ALL' || r.uom === unit), [data, unit]);
-  const today = new Date();
-  const isCurrentMonth = today.getFullYear() === data.year && today.getMonth() + 1 === data.month;
-  const defaultWeek = isCurrentMonth ? String(weekIndexOf(today.getDate())) : '1';
-  const [selected, setSelected] = useState<string>(defaultWeek);
+// ============================================================
+// Reporte: plan de producción por semana.
+// ============================================================
 
-  const weekOptions = [
-    ...weeks.map((w) => ({ value: String(w.weekIndex), label: `Semana ${w.weekIndex} (${w.from.slice(8)}-${w.to.slice(8)})` })),
-    { value: 'all', label: 'Todas las semanas' },
-  ];
+function Reporte({ data, loading, unit }: { data: ForecastPlanResponse | undefined; loading: boolean; unit: UnitFilter }) {
+  const today = new Date();
+  const isCurrentMonth = data ? today.getFullYear() === data.year && today.getMonth() + 1 === data.month : false;
+  const [picked, setPicked] = useState<string | null>(null);
+  const selected = picked ?? (isCurrentMonth ? String(weekIndexOf(today.getDate())) : '1');
+  const setSelected = (value: string) => setPicked(value);
+
+  const rows = useMemo(() => (data?.rows ?? []).filter((r) => unit === 'ALL' || r.uom === unit), [data, unit]);
+  const weeks = data?.weekRanges ?? [];
   const weekIndex = selected === 'all' ? null : Number(selected);
   const selectedRange = weeks.find((w) => w.weekIndex === weekIndex) ?? null;
 
-  const chart = useMemo(
-    () => ({
-      grid: { left: 8, right: 16, top: 10, bottom: 40, containLabel: true },
-      tooltip: { trigger: 'axis', valueFormatter: (v: number) => `${fmtQty(v, 0)} unid.` },
-      legend: { bottom: 2, icon: 'roundRect', itemWidth: 10, itemHeight: 10, textStyle: { color: C.outline, fontSize: 11 } },
+  const chart = useMemo(() => {
+    if (!data) return {};
+    const byWeek = (w: number, pick: 'demandQty' | 'toProduceQty') =>
+      rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w)?.[pick] ?? 0), 0);
+    return {
+      grid: { left: 4, right: 8, top: 24, bottom: 8, containLabel: true },
+      tooltip: { trigger: 'axis', valueFormatter: (v: number) => `${fmtInt(v)} unid.` },
+      legend: { top: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 10, textStyle: { color: CHART.outline, fontSize: 11 } },
       xAxis: {
         type: 'category',
-        data: weeks.map((w) => w.label),
-        axisLabel: { color: C.outline, fontSize: 11 },
-        axisLine: { show: false },
+        data: weeks.map((w) => `S${w.weekIndex}`),
+        axisLabel: { color: CHART.outline, fontSize: 11 },
+        axisLine: { lineStyle: { color: CHART.grid } },
         axisTick: { show: false },
       },
-      yAxis: { type: 'value', axisLabel: { color: C.outline, fontSize: 10 }, splitLine: { lineStyle: { color: C.grid } } },
+      yAxis: {
+        type: 'value',
+        axisLabel: { color: CHART.outline, fontSize: 10 },
+        splitLine: { lineStyle: { color: CHART.grid } },
+      },
       series: [
-        { name: 'Demanda', type: 'bar', data: weeks.map((w) => rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.demandQty ?? 0), 0)), color: C.navy, barMaxWidth: 26 },
-        { name: 'A producir', type: 'bar', data: weeks.map((w) => rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.toProduceQty ?? 0), 0)), color: C.red, barMaxWidth: 26 },
+        { name: 'Demanda', type: 'bar', data: weeks.map((w) => byWeek(w.weekIndex, 'demandQty')), itemStyle: { color: CHART.navy }, barMaxWidth: 28 },
+        { name: 'A producir', type: 'bar', data: weeks.map((w) => byWeek(w.weekIndex, 'toProduceQty')), itemStyle: { color: CHART.lime }, barMaxWidth: 28 },
       ],
-    }),
-    [rows, weeks],
-  );
+    };
+  }, [data, rows, weeks]);
 
-  // Totales de la semana elegida (o del mes si se ven todas), ya filtrados.
   const totals = useMemo(() => {
-    if (weekIndex === null) {
+    if (!weekIndex) {
       return {
         forca: rows.reduce((a, r) => a + r.forcaMonthQty, 0),
         demand: rows.reduce((a, r) => a + r.demandMonthQty, 0),
-        toProduce: rows.reduce((a, r) => a + r.productionMonthQty, 0),
-        toProduceKg: rows.reduce((a, r) => a + r.productionMonthKg, 0),
-        // El excedente es stock, no se acumula semana a semana: se mide contra
-        // el objetivo más alto del mes.
-        excedente: rows.reduce(
-          (a, r) => a + Math.max(0, r.stockTotal - r.weeks.reduce((m, w) => Math.max(m, w.objectiveQty), 0)),
-          0,
-        ),
+        produce: rows.reduce((a, r) => a + r.productionMonthQty, 0),
+        produceKg: rows.reduce((a, r) => a + r.productionMonthKg, 0),
       };
     }
-    const ws = rows
-      .map((r) => ({ row: r, week: r.weeks.find((w) => w.weekIndex === weekIndex) }))
-      .filter((x): x is { row: ForecastPlanRow; week: ForecastPlanWeek } => Boolean(x.week));
+    const ws = rows.map((r) => r.weeks.find((w) => w.weekIndex === weekIndex)).filter(Boolean);
     return {
-      forca: ws.reduce((a, x) => a + x.week.forcaQty, 0),
-      demand: ws.reduce((a, x) => a + x.week.demandQty, 0),
-      toProduce: ws.reduce((a, x) => a + x.week.toProduceQty, 0),
-      toProduceKg: ws.reduce((a, x) => a + (x.week.toProduceKg ?? 0), 0),
-      excedente: ws.reduce((a, x) => a + Math.max(0, x.row.stockTotal - x.week.objectiveQty), 0),
+      forca: ws.reduce((a, w) => a + (w?.forcaQty ?? 0), 0),
+      demand: ws.reduce((a, w) => a + (w?.demandQty ?? 0), 0),
+      produce: ws.reduce((a, w) => a + (w?.toProduceQty ?? 0), 0),
+      produceKg: ws.reduce((a, w) => a + (w?.toProduceKg ?? 0), 0),
     };
   }, [rows, weekIndex]);
 
+  const weekOptions = useMemo(
+    () => [
+      ...weeks.map((w) => ({ value: String(w.weekIndex), label: `Semana ${w.weekIndex} · ${w.from.slice(8)}–${w.to.slice(8)}` })),
+      { value: 'all', label: 'Todo el mes' },
+    ],
+    [weeks],
+  );
+
   function exportCsv() {
+    if (!data) return;
     const header = ['Codigo', 'Descripcion', 'Unid', 'Stock 03', 'Stock 68', 'Existencia'];
-    if (weekIndex === null) {
-      for (const w of weeks) header.push(`${w.label} Forca`, `${w.label} Demanda`, `${w.label} A producir`);
+    if (weekIndex) {
+      header.push(`S${weekIndex} Forca`, `S${weekIndex} Demanda`, 'Objetivo', 'Disponible', 'A producir', 'A producir (kg)', 'Excedente', 'Estado');
     } else {
-      header.push(
-        `S${weekIndex} Forca`,
-        `S${weekIndex} Demanda`,
-        'Objetivo',
-        'Disponible',
-        'A producir',
-        'A producir (kg)',
-        'Excedente',
-        'Estado',
-      );
+      for (const w of weeks) header.push(`S${w.weekIndex} Forca`, `S${w.weekIndex} Demanda`, `S${w.weekIndex} A producir`);
     }
     header.push('Prod mes (unid)', 'Prod mes (kg)');
     const body = rows.map((r) => {
-      const out: string[] = [r.productCode, r.description, r.uom, String(r.stock03), String(r.stock68), String(r.stockTotal)];
-      if (weekIndex === null) {
-        for (const w of weeks) {
-          const wk = r.weeks.find((x) => x.weekIndex === w.weekIndex);
-          out.push(String(wk?.forcaQty ?? 0), String(wk?.demandQty ?? 0), String(wk?.toProduceQty ?? 0));
-        }
-      } else {
-        const wk = r.weeks.find((x) => x.weekIndex === weekIndex);
+      const out: (string | number)[] = [r.productCode, r.description, r.uom, r.stock03, r.stock68, r.stockTotal];
+      if (weekIndex) {
+        const wk = r.weeks.find((w) => w.weekIndex === weekIndex);
         out.push(
-          String(wk?.forcaQty ?? 0),
-          String(wk?.demandQty ?? 0),
-          String(wk?.objectiveQty ?? 0),
-          String(wk?.availableQty ?? 0),
-          String(wk?.toProduceQty ?? 0),
-          String(wk?.toProduceKg ?? ''),
-          String(Math.max(0, r.stockTotal - (wk?.objectiveQty ?? 0))),
+          wk?.forcaQty ?? 0,
+          wk?.demandQty ?? 0,
+          wk?.objectiveQty ?? 0,
+          wk?.availableQty ?? 0,
+          wk?.toProduceQty ?? 0,
+          wk?.toProduceKg ?? '',
+          Math.max(0, r.stockTotal - (wk?.objectiveQty ?? 0)),
           wk ? STATUS_LABEL[wk.status] : '',
         );
+      } else {
+        for (const w of weeks) {
+          const wk = r.weeks.find((x) => x.weekIndex === w.weekIndex);
+          out.push(wk?.forcaQty ?? 0, wk?.demandQty ?? 0, wk?.toProduceQty ?? 0);
+        }
       }
-      out.push(String(r.productionMonthQty), String(r.productionMonthKg));
+      out.push(r.productionMonthQty, r.productionMonthKg);
       return out;
     });
     const csv = [header, ...body].map((line) => line.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
+    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' }));
     const link = document.createElement('a');
     link.href = url;
-    const suffix = weekIndex === null ? 'todas' : `s${weekIndex}`;
-    link.download = `plan-produccion-${data.year}-${String(data.month).padStart(2, '0')}-${suffix}.csv`;
+    link.download = `plan-produccion-${data.year}-${String(data.month).padStart(2, '0')}-${weekIndex ? `s${weekIndex}` : 'mes'}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   }
 
+  if (loading || !data) {
+    return (
+      <Card className="overflow-hidden">
+        <CardHeader title="Plan de producción" />
+        <DataTable columns={[]} rows={[]} rowKey={() => ''} loading loadingRows={8} />
+      </Card>
+    );
+  }
+
   return (
     <>
-      <div className="grid grid-cols-1 gap-space-md lg:grid-cols-12">
-        <Card className="p-space-md lg:col-span-7">
-          <div className="mb-space-xs font-semibold uppercase text-label-sm text-outline">Demanda vs a producir por semana (unidades)</div>
-          <EChart option={chart} height={230} ariaLabel="Demanda versus producción por semana" />
-        </Card>
-        <Card className="flex flex-col justify-between gap-space-md p-space-md lg:col-span-5">
-          <label className="flex flex-col gap-space-2xs">
-            <span className="font-semibold uppercase text-label-sm text-outline">Semana a evaluar</span>
-            <Select value={selected} onChange={setSelected} options={weekOptions} ariaLabel="Semana a evaluar" />
-            <span className="text-label-sm text-on-surface-variant">
-              {selectedRange
-                ? `Del ${selectedRange.from} al ${selectedRange.to}.`
-                : 'Vista consolidada de todo el mes.'}
-            </span>
-          </label>
-          <div className="grid grid-cols-2 gap-space-sm">
-            <Kpi label={weekIndex === null ? 'Forca del mes' : 'Forca de la semana'} value={fmtQty(totals.forca, 0)} suffix="unid." tone="primary" />
-            <Kpi label={weekIndex === null ? 'Demanda del mes' : 'Demanda de la semana'} value={fmtQty(totals.demand, 0)} suffix="unid." />
-            <Kpi label="A producir" value={fmtQty(totals.toProduce, 0)} suffix="unid." tone="danger" />
-            <Kpi label="A producir en kg" value={fmtQty(totals.toProduceKg, 0)} suffix="kg" tone="danger" />
+      <div className="grid grid-cols-1 gap-space-md xl:grid-cols-12">
+        <Card className="animate-rise xl:col-span-7">
+          <CardHeader title="Demanda vs a producir por semana" description="Unidades, todo el mes en curso." />
+          <div className="p-space-md">
+            <EChart option={chart} height={240} ariaLabel="Demanda versus producción por semana" />
           </div>
-          <button
-            onClick={exportCsv}
-            className="flex h-9 items-center justify-center gap-space-xs rounded-lg bg-primary-container px-space-md font-semibold text-on-primary hover:bg-primary"
-          >
-            <Download aria-hidden className="size-4" /> Exportar plan (CSV)
-          </button>
-          <p className="text-label-sm text-on-surface-variant">
-            <strong>Objetivo de la semana = el mayor entre el forca y la demanda.</strong> Con eso:{' '}
-            <strong>a producir = max(0, objetivo − existencia)</strong> y, si sobra stock, la diferencia se muestra como{' '}
-            <strong>Excedente</strong>. Existencia, disponible y estado usan el mismo cálculo que la vista de
-            Disponibilidad por Producto.
-          </p>
+        </Card>
+
+        <Card className="animate-rise xl:col-span-5">
+          <CardHeader
+            title="Resumen"
+            action={
+              <Button variant="outline" icon={Download} onClick={exportCsv} title="Descargar el plan en CSV">
+                <span className="hidden sm:inline">Exportar CSV</span>
+              </Button>
+            }
+          />
+          <div className="flex flex-col gap-space-md p-space-md">
+            <label className="flex flex-col gap-space-2xs">
+              <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Semana a evaluar</span>
+              <Select value={selected} onChange={setSelected} options={weekOptions} ariaLabel="Semana a evaluar" />
+              <span className="text-label-sm text-on-surface-variant">
+                {selectedRange ? `Del ${selectedRange.from} al ${selectedRange.to}.` : 'Vista consolidada de todo el mes.'}
+              </span>
+            </label>
+            <div className="grid grid-cols-2 gap-space-sm">
+              <Kpi label={weekIndex ? 'Forca semana' : 'Forca mes'} value={fmtInt(totals.forca)} suffix="unid." tone="primary" />
+              <Kpi label={weekIndex ? 'Demanda semana' : 'Demanda mes'} value={fmtInt(totals.demand)} suffix="unid." tone="default" />
+              <Kpi label="A producir" value={fmtInt(totals.produce)} suffix="unid." tone={totals.produce > 0 ? 'danger' : 'muted'} icon={TrendingUp} />
+              <Kpi label="A producir" value={fmtInt(totals.produceKg)} suffix="kg" tone={totals.produceKg > 0 ? 'danger' : 'muted'} />
+            </div>
+            <p className="text-label-sm text-on-surface-variant">
+              <strong>Objetivo = el mayor entre el forca y la demanda.</strong> A producir = max(0, objetivo − existencia); si sobra, la
+              diferencia se muestra como <strong>excedente</strong>.
+            </p>
+          </div>
         </Card>
       </div>
 
-      {weekIndex === null ? (
-        <Card className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-body-md">
-              <thead className="bg-surface-container">
-                <tr className="border-b border-surface-container">
-                  <Th rowSpan={2}>Código</Th>
-                  <Th rowSpan={2}>Descripción</Th>
-                  <Th rowSpan={2} align="right">Stock</Th>
-                  {weeks.map((w) => (
-                    <Th key={w.weekIndex} align="center" className="border-l border-surface-container">{w.label}</Th>
-                  ))}
-                  <Th rowSpan={2} align="right" className="border-l border-surface-container">Prod. mes</Th>
-                </tr>
-                <tr className="border-b border-surface-container">
-                  {weeks.map((w) => (
-                    <Fragment key={w.weekIndex}>
-                      <Th align="right" className="border-l border-surface-container">Forca</Th>
-                      <Th align="right">Dem.</Th>
-                      <Th align="right">Prod.</Th>
-                    </Fragment>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-surface-container">
-                {rows.length === 0 && (
-                  <tr>
-                    <Td align="center" className="py-space-xl text-on-surface-variant">Sin artículos para la presentación elegida.</Td>
-                  </tr>
-                )}
-                {rows.map((r) => (
-                  <tr key={r.productCode} className="transition-colors hover:bg-surface-container-low">
-                    <Td className="font-bold tabular-nums text-primary">{r.productCode}</Td>
-                    <Td className="max-w-[16rem] truncate" title={r.description}>{r.description}</Td>
-                    <Td align="right" className="tabular-nums">{fmtQty(r.stockTotal, 0)}</Td>
-                    {weeks.map((w) => {
-                      const wk = r.weeks.find((x) => x.weekIndex === w.weekIndex);
-                      return (
-                        <Fragment key={w.weekIndex}>
-                          <Td align="right" className="border-l border-surface-container tabular-nums text-on-surface-variant">{fmtQty(wk?.forcaQty ?? 0, 0)}</Td>
-                          <Td align="right" className="tabular-nums">{fmtQty(wk?.demandQty ?? 0, 0)}</Td>
-                          <Td align="right" className={`tabular-nums font-bold ${(wk?.toProduceQty ?? 0) > 0 ? 'text-error' : 'text-outline'}`}>{fmtQty(wk?.toProduceQty ?? 0, 0)}</Td>
-                        </Fragment>
-                      );
-                    })}
-                    <Td align="right" className="border-l border-surface-container tabular-nums font-bold text-primary">{fmtQty(r.productionMonthQty, 0)}</Td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 border-surface-container bg-surface-container-low font-bold">
-                  <Td colSpan={3} className="uppercase text-label-sm text-outline">Totales</Td>
-                  {weeks.map((w) => {
-                    const f = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.forcaQty ?? 0), 0);
-                    const dem = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.demandQty ?? 0), 0);
-                    const prod = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.toProduceQty ?? 0), 0);
-                    return (
-                      <Fragment key={w.weekIndex}>
-                        <Td align="right" className="border-l border-surface-container tabular-nums text-on-surface-variant">{fmtQty(f, 0)}</Td>
-                        <Td align="right" className="tabular-nums">{fmtQty(dem, 0)}</Td>
-                        <Td align="right" className="tabular-nums text-error">{fmtQty(prod, 0)}</Td>
-                      </Fragment>
-                    );
-                  })}
-                  <Td align="right" className="border-l border-surface-container tabular-nums text-error">{fmtQty(totals.toProduce, 0)}</Td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </Card>
+      {weekIndex ? (
+        <WeekTable rows={rows} weekIndex={weekIndex} />
       ) : (
-        <Card className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-body-md">
-              <thead>
-                <tr className="border-b border-surface-container bg-surface-container">
-                  <Th>Código</Th>
-                  <Th>Descripción</Th>
-                  <Th>Unid.</Th>
-                  <Th align="right">Stock 03</Th>
-                  <Th align="right">Stock 68</Th>
-                  <Th align="right">Existencia</Th>
-                  <Th align="right">Demanda</Th>
-                  <Th align="right">Forca sem.</Th>
-                  <Th align="right">Disponible</Th>
-                  <Th align="right">A producir</Th>
-                  <Th align="right">A producir (kg)</Th>
-                  <Th align="right">Excedente</Th>
-                  <Th align="center">Estado</Th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-surface-container">
-                {rows.length === 0 && (
-                  <tr>
-                    <Td align="center" className="py-space-xl text-on-surface-variant">Sin artículos para la presentación elegida.</Td>
-                  </tr>
-                )}
-                {rows.map((r) => {
-                  const wk = r.weeks.find((x) => x.weekIndex === weekIndex);
-                  if (!wk) return null;
-                  // Sobrante de existencia sobre el objetivo de la semana.
-                  // Complementario de «A producir»: nunca hay los dos a la vez.
-                  const excedente = Math.max(0, r.stockTotal - wk.objectiveQty);
-                  return (
-                    <tr key={r.productCode} className="transition-colors hover:bg-surface-container-low">
-                      <Td className="font-bold tabular-nums text-primary">{r.productCode}</Td>
-                      <Td className="max-w-[16rem] truncate" title={r.description}>{r.description}</Td>
-                      <Td className="text-on-surface-variant">{r.uom}</Td>
-                      <Td align="right" className="tabular-nums">{fmtQty(r.stock03, 0)}</Td>
-                      <Td align="right" className="tabular-nums">{fmtQty(r.stock68, 0)}</Td>
-                      <Td align="right" className="tabular-nums font-bold">{fmtQty(r.stockTotal, 0)}</Td>
-                      <Td align="right" className="tabular-nums">{fmtQty(wk.demandQty, 0)}</Td>
-                      <Td align="right" className="tabular-nums font-semibold text-on-surface">{fmtQty(wk.forcaQty, 0)}</Td>
-                      <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(wk.availableQty, 0)}</Td>
-                      <Td
-                        align="right"
-                        className={`tabular-nums font-bold ${wk.toProduceQty > 0 ? 'text-error' : 'text-outline'}`}
-                        title={`Objetivo ${fmtQty(wk.objectiveQty, 0)} − existencia ${fmtQty(r.stockTotal, 0)} → ${
-                          wk.toProduceQty > 0 ? `faltan ${fmtQty(wk.toProduceQty, 0)}` : 'la existencia cubre el objetivo'
-                        }`}
-                      >
-                        {fmtQty(wk.toProduceQty, 0)}
-                      </Td>
-                      <Td align="right" className={`tabular-nums ${wk.toProduceKg && wk.toProduceKg > 0 ? 'text-error' : 'text-outline'}`}>
-                        {fmtQty(wk.toProduceKg, 0)}
-                      </Td>
-                      <Td
-                        align="right"
-                        className={`tabular-nums font-semibold ${excedente > 0 ? 'text-success' : 'text-outline'}`}
-                        title={`Existencia ${fmtQty(r.stockTotal, 0)} − objetivo ${fmtQty(wk.objectiveQty, 0)} → ${
-                          excedente > 0 ? `sobran ${fmtQty(excedente, 0)}` : 'sin excedente'
-                        }`}
-                      >
-                        {fmtQty(excedente, 0)}
-                      </Td>
-                      <Td align="center">
-                        <Badge tone={STATUS_TONE[wk.status]}>{STATUS_LABEL[wk.status]}</Badge>
-                      </Td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 border-surface-container bg-surface-container-low font-bold">
-                  <Td colSpan={6} className="uppercase text-label-sm text-outline">Totales de la semana</Td>
-                  <Td align="right" className="tabular-nums">{fmtQty(totals.demand, 0)}</Td>
-                  <Td align="right" className="tabular-nums">{fmtQty(totals.forca, 0)}</Td>
-                  <Td />
-                  <Td align="right" className="tabular-nums text-error">{fmtQty(totals.toProduce, 0)}</Td>
-                  <Td align="right" className="tabular-nums text-error">{fmtQty(totals.toProduceKg, 0)}</Td>
-                  <Td align="right" className="tabular-nums text-success">{fmtQty(totals.excedente, 0)}</Td>
-                  <Td />
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-          <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
-            <span className="font-semibold text-error">Rojo</span> = falta producir ·{' '}
-            <span className="font-semibold text-success">Verde</span> = sobra stock. «A producir» = max(0, objetivo −
-            existencia) y «Excedente» = max(0, existencia − objetivo): <strong>nunca hay los dos a la vez</strong>. El
-            objetivo de la semana es el <strong>mayor entre el forca semanal y la demanda</strong>. Un 0 en «A producir»
-            significa que la existencia ya cubre el objetivo (mira el «Excedente»).
-          </div>
-        </Card>
+        <MonthMatrix rows={rows} weeks={weeks.map((w) => w.weekIndex)} />
       )}
     </>
+  );
+}
+
+function WeekTable({ rows, weekIndex }: { rows: ForecastPlanResponse['rows']; weekIndex: number }) {
+  const columns: Column<ForecastPlanResponse['rows'][number]>[] = [
+    { key: 'code', header: 'Código', kind: 'id', render: (r) => r.productCode, sortValue: (r) => r.productCode },
+    { key: 'description', header: 'Descripción', kind: 'id', render: (r) => r.description, title: (r) => r.description },
+    { key: 'uom', header: 'Unid.', kind: 'detail', render: (r) => r.uom },
+    { key: 'stock03', header: 'Stock 03', align: 'right', kind: 'detail', render: (r) => fmtInt(r.stock03), sortValue: (r) => r.stock03 },
+    { key: 'stock68', header: 'Stock 68', align: 'right', kind: 'detail', render: (r) => fmtInt(r.stock68), sortValue: (r) => r.stock68 },
+    { key: 'stock', header: 'Existencia', align: 'right', kind: 'metric', render: (r) => <span className="font-bold">{fmtInt(r.stockTotal)}</span>, sortValue: (r) => r.stockTotal },
+    {
+      key: 'demand',
+      header: 'Demanda',
+      align: 'right',
+      kind: 'metric',
+      render: (r) => fmtInt(r.weeks.find((w) => w.weekIndex === weekIndex)?.demandQty),
+      sortValue: (r) => r.weeks.find((w) => w.weekIndex === weekIndex)?.demandQty ?? 0,
+    },
+    {
+      key: 'forca',
+      header: 'Forca sem.',
+      align: 'right',
+      kind: 'metric',
+      render: (r) => <span className="font-semibold">{fmtInt(r.weeks.find((w) => w.weekIndex === weekIndex)?.forcaQty)}</span>,
+      sortValue: (r) => r.weeks.find((w) => w.weekIndex === weekIndex)?.forcaQty ?? 0,
+    },
+    {
+      key: 'available',
+      header: 'Disponible',
+      align: 'right',
+      kind: 'detail',
+      render: (r) => <span className="font-bold text-secondary">{fmtInt(r.weeks.find((w) => w.weekIndex === weekIndex)?.availableQty)}</span>,
+    },
+    {
+      key: 'produce',
+      header: 'A producir',
+      align: 'right',
+      kind: 'metric',
+      render: (r) => {
+        const wk = r.weeks.find((w) => w.weekIndex === weekIndex);
+        const value = wk?.toProduceQty ?? 0;
+        return <span className={value > 0 ? 'font-bold text-critical' : 'text-outline'}>{fmtInt(value)}</span>;
+      },
+      sortValue: (r) => r.weeks.find((w) => w.weekIndex === weekIndex)?.toProduceQty ?? 0,
+    },
+    {
+      key: 'kg',
+      header: 'A producir (kg)',
+      align: 'right',
+      kind: 'detail',
+      render: (r) => {
+        const kg = r.weeks.find((w) => w.weekIndex === weekIndex)?.toProduceKg;
+        return <span className={kg && kg > 0 ? 'text-critical' : 'text-outline'}>{kg === null || kg === undefined ? '—' : fmtInt(kg)}</span>;
+      },
+    },
+    {
+      key: 'excedente',
+      header: 'Excedente',
+      align: 'right',
+      kind: 'metric',
+      render: (r) => {
+        const wk = r.weeks.find((w) => w.weekIndex === weekIndex);
+        const exc = Math.max(0, r.stockTotal - (wk?.objectiveQty ?? 0));
+        return <span className={exc > 0 ? 'font-semibold text-success' : 'text-outline'}>{fmtInt(exc)}</span>;
+      },
+      sortValue: (r) => {
+        const wk = r.weeks.find((w) => w.weekIndex === weekIndex);
+        return Math.max(0, r.stockTotal - (wk?.objectiveQty ?? 0));
+      },
+    },
+    {
+      key: 'state',
+      header: 'Estado',
+      align: 'center',
+      kind: 'status',
+      render: (r) => {
+        const status = r.weeks.find((w) => w.weekIndex === weekIndex)?.status ?? 'SIN_DEMANDA';
+        return <Badge tone={STATUS_TONE[status]} dot>{STATUS_LABEL[status]}</Badge>;
+      },
+    },
+  ];
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader
+        title={`Detalle de la semana ${weekIndex}`}
+        description="Mismos campos que la vista de Disponibilidad por Producto, con la demanda objetivo de la semana."
+      />
+      <DataTable
+        columns={columns}
+        rows={rows}
+        rowKey={(r) => r.productCode}
+        defaultSortKey="code"
+        empty={<EmptyState icon={CalendarRange} title="Sin artículos para la presentación elegida" description="Cambia la presentación a «Todos»." />}
+      />
+      <div className="border-t border-surface-container px-space-lg py-space-sm text-label-sm text-on-surface-variant">
+        <span className="font-semibold text-critical">Rojo</span> = falta producir ·{' '}
+        <span className="font-semibold text-success">Verde</span> = sobra stock. Nunca hay los dos a la vez: si «A producir» es 0, mira el
+        «Excedente».
+      </div>
+    </Card>
+  );
+}
+
+function MonthMatrix({ rows, weeks }: { rows: ForecastPlanResponse['rows']; weeks: number[] }) {
+  const columns: Column<ForecastPlanResponse['rows'][number]>[] = [
+    { key: 'code', header: 'Código', kind: 'id', render: (r) => r.productCode, sortValue: (r) => r.productCode },
+    { key: 'description', header: 'Descripción', kind: 'id', render: (r) => r.description, title: (r) => r.description },
+    { key: 'stock', header: 'Existencia', align: 'right', kind: 'metric', render: (r) => fmtInt(r.stockTotal), sortValue: (r) => r.stockTotal },
+    ...weeks.map((w) => ({
+      key: `w${w}`,
+      header: `S${w}`,
+      align: 'right' as const,
+      kind: 'metric' as const,
+      title: undefined,
+      render: (r: ForecastPlanResponse['rows'][number]) => {
+        const wk = r.weeks.find((x) => x.weekIndex === w);
+        const value = wk?.toProduceQty ?? 0;
+        return (
+          <span
+            className={value > 0 ? 'font-bold text-critical' : 'text-outline'}
+            title={`Forca ${fmtInt(wk?.forcaQty)} · Demanda ${fmtInt(wk?.demandQty)} · Objetivo ${fmtInt(wk?.objectiveQty)}`}
+          >
+            {fmtInt(value)}
+          </span>
+        );
+      },
+      sortValue: (r: ForecastPlanResponse['rows'][number]) => r.weeks.find((x) => x.weekIndex === w)?.toProduceQty ?? 0,
+    })),
+    {
+      key: 'month',
+      header: 'Prod. mes',
+      align: 'right',
+      kind: 'metric',
+      render: (r) => <span className="font-bold text-primary">{fmtInt(r.productionMonthQty)}</span>,
+      sortValue: (r) => r.productionMonthQty,
+    },
+    {
+      key: 'kg',
+      header: 'Prod. mes (kg)',
+      align: 'right',
+      kind: 'detail',
+      render: (r) => fmtInt(r.productionMonthKg),
+      sortValue: (r) => r.productionMonthKg,
+    },
+  ];
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader title="Matriz de producción del mes" description="Unidades a producir por artículo y semana. Pasa el cursor o abre «Ver más» para el forca y la demanda." />
+      <DataTable
+        columns={columns}
+        rows={rows}
+        rowKey={(r) => r.productCode}
+        defaultSortKey="month"
+        empty={<EmptyState icon={CalendarRange} title="Sin artículos para la presentación elegida" description="Cambia la presentación a «Todos»." />}
+      />
+    </Card>
   );
 }
