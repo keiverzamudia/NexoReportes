@@ -19,6 +19,7 @@
 import type {
   AvailabilityStatus,
   ForecastPlanResponse,
+  ForecastPlanRow,
   ForecastPlanWeek,
   ForecastResponse,
   ForecastRow,
@@ -35,10 +36,10 @@ import { AuthRequiredError, apiFetch } from '../../lib/api';
 const C = { navy: '#003366', red: '#dc2626', lime: '#95C800', outline: '#737780', grid: '#e1f0ff' };
 
 const STATUS_LABEL: Record<AvailabilityStatus, string> = {
-  DISPONIBLE: 'Disponible',
+  DISPONIBLE: 'Cubierto',
   PARCIAL: 'Parcial',
   FALTANTE: 'Faltante',
-  SIN_DEMANDA: 'Sin demanda',
+  SIN_DEMANDA: 'Sin forca ni demanda',
 };
 
 const STATUS_TONE: Record<AvailabilityStatus, 'success' | 'warning' | 'danger' | 'muted'> = {
@@ -429,16 +430,23 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         demand: rows.reduce((a, r) => a + r.demandMonthQty, 0),
         toProduce: rows.reduce((a, r) => a + r.productionMonthQty, 0),
         toProduceKg: rows.reduce((a, r) => a + r.productionMonthKg, 0),
+        // El excedente es stock, no se acumula semana a semana: se mide contra
+        // el objetivo más alto del mes.
+        excedente: rows.reduce(
+          (a, r) => a + Math.max(0, r.stockTotal - r.weeks.reduce((m, w) => Math.max(m, w.objectiveQty), 0)),
+          0,
+        ),
       };
     }
     const ws = rows
-      .map((r) => r.weeks.find((w) => w.weekIndex === weekIndex))
-      .filter((w): w is ForecastPlanWeek => Boolean(w));
+      .map((r) => ({ row: r, week: r.weeks.find((w) => w.weekIndex === weekIndex) }))
+      .filter((x): x is { row: ForecastPlanRow; week: ForecastPlanWeek } => Boolean(x.week));
     return {
-      forca: ws.reduce((a, w) => a + w.forcaQty, 0),
-      demand: ws.reduce((a, w) => a + w.demandQty, 0),
-      toProduce: ws.reduce((a, w) => a + w.toProduceQty, 0),
-      toProduceKg: ws.reduce((a, w) => a + (w.toProduceKg ?? 0), 0),
+      forca: ws.reduce((a, x) => a + x.week.forcaQty, 0),
+      demand: ws.reduce((a, x) => a + x.week.demandQty, 0),
+      toProduce: ws.reduce((a, x) => a + x.week.toProduceQty, 0),
+      toProduceKg: ws.reduce((a, x) => a + (x.week.toProduceKg ?? 0), 0),
+      excedente: ws.reduce((a, x) => a + Math.max(0, x.row.stockTotal - x.week.objectiveQty), 0),
     };
   }, [rows, weekIndex]);
 
@@ -447,7 +455,16 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
     if (weekIndex === null) {
       for (const w of weeks) header.push(`${w.label} Forca`, `${w.label} Demanda`, `${w.label} A producir`);
     } else {
-      header.push('Promedio', `S${weekIndex} Forca`, `S${weekIndex} Demanda`, 'Disponible', 'A producir', 'A producir (kg)', 'Neto', 'Estado');
+      header.push(
+        `S${weekIndex} Forca`,
+        `S${weekIndex} Demanda`,
+        'Objetivo',
+        'Disponible',
+        'A producir',
+        'A producir (kg)',
+        'Excedente',
+        'Estado',
+      );
     }
     header.push('Prod mes (unid)', 'Prod mes (kg)');
     const body = rows.map((r) => {
@@ -460,14 +477,14 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
       } else {
         const wk = r.weeks.find((x) => x.weekIndex === weekIndex);
         out.push(
-          String(r.averageQty),
           String(wk?.forcaQty ?? 0),
           String(wk?.demandQty ?? 0),
+          String(wk?.objectiveQty ?? 0),
           String(wk?.availableQty ?? 0),
           String(wk?.toProduceQty ?? 0),
           String(wk?.toProduceKg ?? ''),
-          String(wk?.netQty ?? 0),
-          wk?.status ?? '',
+          String(Math.max(0, r.stockTotal - (wk?.objectiveQty ?? 0))),
+          wk ? STATUS_LABEL[wk.status] : '',
         );
       }
       out.push(String(r.productionMonthQty), String(r.productionMonthKg));
@@ -514,8 +531,10 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             <Download aria-hidden className="size-4" /> Exportar plan (CSV)
           </button>
           <p className="text-label-sm text-on-surface-variant">
-            Cada semana: <strong>a producir = max(0, max(forca, demanda) − existencia)</strong>. Los campos de existencia,
-            disponible, neto y estado usan el mismo cálculo que la vista de Disponibilidad.
+            <strong>Objetivo de la semana = el mayor entre el forca y la demanda.</strong> Con eso:{' '}
+            <strong>a producir = max(0, objetivo − existencia)</strong> y, si sobra stock, la diferencia se muestra como{' '}
+            <strong>Excedente</strong>. Existencia, disponible y estado usan el mismo cálculo que la vista de
+            Disponibilidad por Producto.
           </p>
         </Card>
       </div>
@@ -603,12 +622,11 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
                   <Th align="right">Stock 68</Th>
                   <Th align="right">Existencia</Th>
                   <Th align="right">Demanda</Th>
-                  <Th align="right">Promedio</Th>
                   <Th align="right">Forca sem.</Th>
                   <Th align="right">Disponible</Th>
                   <Th align="right">A producir</Th>
                   <Th align="right">A producir (kg)</Th>
-                  <Th align="right">Neto</Th>
+                  <Th align="right">Excedente</Th>
                   <Th align="center">Estado</Th>
                 </tr>
               </thead>
@@ -621,6 +639,9 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
                 {rows.map((r) => {
                   const wk = r.weeks.find((x) => x.weekIndex === weekIndex);
                   if (!wk) return null;
+                  // Sobrante de existencia sobre el objetivo de la semana.
+                  // Complementario de «A producir»: nunca hay los dos a la vez.
+                  const excedente = Math.max(0, r.stockTotal - wk.objectiveQty);
                   return (
                     <tr key={r.productCode} className="transition-colors hover:bg-surface-container-low">
                       <Td className="font-bold tabular-nums text-primary">{r.productCode}</Td>
@@ -630,16 +651,29 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
                       <Td align="right" className="tabular-nums">{fmtQty(r.stock68, 0)}</Td>
                       <Td align="right" className="tabular-nums font-bold">{fmtQty(r.stockTotal, 0)}</Td>
                       <Td align="right" className="tabular-nums">{fmtQty(wk.demandQty, 0)}</Td>
-                      <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(r.averageQty, 0)}</Td>
                       <Td align="right" className="tabular-nums font-semibold text-on-surface">{fmtQty(wk.forcaQty, 0)}</Td>
                       <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(wk.availableQty, 0)}</Td>
-                      <Td align="right" className={`tabular-nums font-bold ${wk.toProduceQty > 0 ? 'text-error' : 'text-on-surface-variant'}`}>
+                      <Td
+                        align="right"
+                        className={`tabular-nums font-bold ${wk.toProduceQty > 0 ? 'text-error' : 'text-outline'}`}
+                        title={`Objetivo ${fmtQty(wk.objectiveQty, 0)} − existencia ${fmtQty(r.stockTotal, 0)} → ${
+                          wk.toProduceQty > 0 ? `faltan ${fmtQty(wk.toProduceQty, 0)}` : 'la existencia cubre el objetivo'
+                        }`}
+                      >
                         {fmtQty(wk.toProduceQty, 0)}
                       </Td>
-                      <Td align="right" className={`tabular-nums ${wk.toProduceKg && wk.toProduceKg > 0 ? 'text-error' : 'text-on-surface-variant'}`}>
+                      <Td align="right" className={`tabular-nums ${wk.toProduceKg && wk.toProduceKg > 0 ? 'text-error' : 'text-outline'}`}>
                         {fmtQty(wk.toProduceKg, 0)}
                       </Td>
-                      <Td align="right" className={`tabular-nums ${wk.netQty < 0 ? 'text-error' : ''}`}>{fmtQty(wk.netQty, 0)}</Td>
+                      <Td
+                        align="right"
+                        className={`tabular-nums font-semibold ${excedente > 0 ? 'text-success' : 'text-outline'}`}
+                        title={`Existencia ${fmtQty(r.stockTotal, 0)} − objetivo ${fmtQty(wk.objectiveQty, 0)} → ${
+                          excedente > 0 ? `sobran ${fmtQty(excedente, 0)}` : 'sin excedente'
+                        }`}
+                      >
+                        {fmtQty(excedente, 0)}
+                      </Td>
                       <Td align="center">
                         <Badge tone={STATUS_TONE[wk.status]}>{STATUS_LABEL[wk.status]}</Badge>
                       </Td>
@@ -651,15 +685,22 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
                 <tr className="border-t-2 border-surface-container bg-surface-container-low font-bold">
                   <Td colSpan={6} className="uppercase text-label-sm text-outline">Totales de la semana</Td>
                   <Td align="right" className="tabular-nums">{fmtQty(totals.demand, 0)}</Td>
-                  <Td />
                   <Td align="right" className="tabular-nums">{fmtQty(totals.forca, 0)}</Td>
                   <Td />
                   <Td align="right" className="tabular-nums text-error">{fmtQty(totals.toProduce, 0)}</Td>
                   <Td align="right" className="tabular-nums text-error">{fmtQty(totals.toProduceKg, 0)}</Td>
-                  <Td colSpan={2} />
+                  <Td align="right" className="tabular-nums text-success">{fmtQty(totals.excedente, 0)}</Td>
+                  <Td />
                 </tr>
               </tfoot>
             </table>
+          </div>
+          <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
+            <span className="font-semibold text-error">Rojo</span> = falta producir ·{' '}
+            <span className="font-semibold text-success">Verde</span> = sobra stock. «A producir» = max(0, objetivo −
+            existencia) y «Excedente» = max(0, existencia − objetivo): <strong>nunca hay los dos a la vez</strong>. El
+            objetivo de la semana es el <strong>mayor entre el forca semanal y la demanda</strong>. Un 0 en «A producir»
+            significa que la existencia ya cubre el objetivo (mira el «Excedente»).
           </div>
         </Card>
       )}
