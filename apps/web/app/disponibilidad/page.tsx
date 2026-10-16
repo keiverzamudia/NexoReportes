@@ -27,8 +27,11 @@ import {
   PageHeader,
   Select,
   TextInput,
+  UnitFilter,
+  UnitFilterControl,
   fmtDateTime,
   fmtInt,
+  matchesUnit,
 } from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 
@@ -58,6 +61,7 @@ export default function DisponibilidadPage() {
   const [tick, setTick] = useState(0);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<AvailabilityStatus | ''>('');
+  const [unit, setUnit] = useState<UnitFilter>('ALL');
 
   const { data, isLoading, error } = useQuery<AvailabilityResponse>({
     queryKey: ['availability', tick],
@@ -71,10 +75,11 @@ export default function DisponibilidadPage() {
     const needle = search.trim().toLowerCase();
     return all.filter(
       (r) =>
+        matchesUnit(r.uom, unit) &&
         (!status || r.status === status) &&
         (!needle || r.productCode.toLowerCase().includes(needle) || r.description.toLowerCase().includes(needle)),
     );
-  }, [all, search, status]);
+  }, [all, search, status, unit]);
 
   const kpis = useMemo(
     () => ({
@@ -90,14 +95,15 @@ export default function DisponibilidadPage() {
   const clearFilters = useCallback(() => {
     setSearch('');
     setStatus('');
+    setUnit('ALL');
   }, []);
 
   if (error instanceof AuthRequiredError) {
     return <LoginScreen onSuccess={() => setTick((t) => t + 1)} />;
   }
 
-  const filtersActive = status ? 1 : 0;
-  const filtered = Boolean(search.trim() || status);
+  const filtersActive = (status ? 1 : 0) + (unit !== 'ALL' ? 1 : 0);
+  const filtered = Boolean(search.trim() || status || unit !== 'ALL');
   const snapshotLabel = data?.snapshotAt ? fmtDateTime(data.snapshotAt) : 'Sin fotografía de inventario';
 
   // Mientras carga no hay dato: se muestra «—», nunca un 0 engañoso.
@@ -260,13 +266,16 @@ export default function DisponibilidadPage() {
               />
             }
             filters={
-              <Select
-                className="md:w-56"
-                value={status}
-                onChange={(v) => setStatus(v as AvailabilityStatus | '')}
-                options={STATUS_OPTIONS}
-                ariaLabel="Filtrar por estado"
-              />
+              <>
+                <Select
+                  className="md:w-56"
+                  value={status}
+                  onChange={(v) => setStatus(v as AvailabilityStatus | '')}
+                  options={STATUS_OPTIONS}
+                  ariaLabel="Filtrar por estado"
+                />
+                <UnitFilterControl value={unit} onChange={setUnit} />
+              </>
             }
           />
           <DataTable

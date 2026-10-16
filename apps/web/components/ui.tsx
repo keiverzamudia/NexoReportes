@@ -436,6 +436,38 @@ export function FilterBar({
   );
 }
 
+// ---------- Presentación del artículo (Profit: `uni_venta`) ----------
+// SAC = saco · KG = granel. Es el mismo criterio en todas las vistas: una
+// sola definición para que el filtro se vea y se comporte igual en todas.
+export type UnitFilter = 'ALL' | 'SAC' | 'KG';
+
+export const UNIT_OPTIONS: { value: UnitFilter; label: string }[] = [
+  { value: 'ALL', label: 'Todos' },
+  { value: 'SAC', label: 'Saco' },
+  { value: 'KG', label: 'Granel (kg)' },
+];
+
+export function matchesUnit(uom: string, filter: UnitFilter): boolean {
+  return filter === 'ALL' || uom === filter;
+}
+
+export function UnitFilterControl({
+  value,
+  onChange,
+  label = 'Presentación',
+}: {
+  value: UnitFilter;
+  onChange: (value: UnitFilter) => void;
+  label?: string;
+}) {
+  return (
+    <div className="flex items-center gap-space-sm">
+      <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">{label}</span>
+      <Segmented ariaLabel={label} value={value} onChange={onChange} options={UNIT_OPTIONS} />
+    </div>
+  );
+}
+
 // ---------- Tabla / tarjetas ----------
 
 export type ColumnKind = 'id' | 'metric' | 'field' | 'status' | 'action' | 'detail';

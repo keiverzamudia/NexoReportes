@@ -36,8 +36,11 @@ import {
   Segmented,
   Select,
   TextInput,
+  UnitFilter,
+  UnitFilterControl,
   cx,
   fmtInt,
+  matchesUnit,
 } from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 
@@ -58,13 +61,6 @@ const STATUS_TONE: Record<AvailabilityStatus, 'success' | 'warning' | 'danger' |
 const CHART = { navy: '#003366', lime: '#95C800', red: '#dc2626', outline: '#737780', grid: '#e1f0ff' };
 
 type Tab = 'asignador' | 'reporte';
-type UnitFilter = 'ALL' | 'SAC' | 'KG';
-
-const UNIT_OPTIONS: { value: UnitFilter; label: string }[] = [
-  { value: 'ALL', label: 'Todos' },
-  { value: 'SAC', label: 'Saco' },
-  { value: 'KG', label: 'Granel (kg)' },
-];
 
 function currentMonthValue(): string {
   const now = new Date();
@@ -117,7 +113,7 @@ export default function ForcaPage() {
     const needle = search.trim().toLowerCase();
     return all.filter(
       (r) =>
-        (unit === 'ALL' || r.uom === unit) &&
+        matchesUnit(r.uom, unit) &&
         (!onlyDemand || r.demandMonthQty > 0) &&
         (!needle || r.productCode.toLowerCase().includes(needle) || r.description.toLowerCase().includes(needle)),
     );
@@ -175,8 +171,7 @@ export default function ForcaPage() {
                 ]}
               />
               <div className="flex items-center gap-space-sm">
-                <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Presentación</span>
-                <Segmented ariaLabel="Presentación" value={unit} onChange={setUnit} options={UNIT_OPTIONS} />
+                <UnitFilterControl value={unit} onChange={setUnit} />
               </div>
             </div>
           </div>
@@ -487,7 +482,7 @@ function Reporte({ data, loading, unit }: { data: ForecastPlanResponse | undefin
   const selected = picked ?? (isCurrentMonth ? String(weekIndexOf(today.getDate())) : '1');
   const setSelected = (value: string) => setPicked(value);
 
-  const rows = useMemo(() => (data?.rows ?? []).filter((r) => unit === 'ALL' || r.uom === unit), [data, unit]);
+  const rows = useMemo(() => (data?.rows ?? []).filter((r) => matchesUnit(r.uom, unit)), [data, unit]);
   const weeks = data?.weekRanges ?? [];
   const weekIndex = selected === 'all' ? null : Number(selected);
   const selectedRange = weeks.find((w) => w.weekIndex === weekIndex) ?? null;

@@ -24,3 +24,6 @@ Thumbs.db
 # Reportes/exportaciones generadas
 exports/
 uploads/
+
+# Capturas de auditoría de interfaz (tools/ui-shots.mjs)
+artifacts/
