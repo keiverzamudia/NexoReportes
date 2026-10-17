@@ -1,34 +1,18 @@
 'use client';
 
 // ============================================================
-// Clientes — catálogo derivado de la vista de Profit.
-// Tipo de cliente y vendedor no vienen en la vista actual → "—"
-// (nunca inventados).
-// Contrato de UI: docs/design/DESIGN_SYSTEM.md
-// (PageHeader + tira de KPIs, Card/CardHeader, FilterBar, DataTable
-//  —tabla en ≥md y tarjetas en phone—, EmptyState, ErrorNote).
+// Clientes (Fase 4) — rediseño estilo Stitch.
+// Catálogo derivado de la vista de Profit. Tipo de cliente y vendedor
+// no vienen en la vista actual → "—" (nunca inventados).
 // ============================================================
 
 import type { Customer } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { ChevronLeft, ChevronRight, Search, ShoppingCart, Users } from 'lucide-react';
+import { AlertTriangle, ChevronLeft, ChevronRight, Search, Users } from 'lucide-react';
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import { AppNav, LoginScreen } from '../../components/shell';
-import {
-  Button,
-  Card,
-  CardHeader,
-  Column,
-  DataTable,
-  EmptyState,
-  ErrorNote,
-  FilterBar,
-  Kpi,
-  PageHeader,
-  TextInput,
-  fmtInt,
-} from '../../components/ui';
+import { Badge, Card, Kpi, PageHeader, Td, TextInput, Th } from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 
 interface Paginated<T> {
@@ -62,171 +46,120 @@ export default function ClientesPage() {
     return <LoginScreen onSuccess={() => setTick((t) => t + 1)} />;
   }
 
-  const rows = data?.items ?? [];
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
-
-  // Una sola definición: la tabla densa (≥md) y la tarjeta del teléfono salen
-  // de las mismas columnas. `kind` decide dónde cae cada dato en la tarjeta.
-  const columns: Column<Customer>[] = [
-    {
-      key: 'code',
-      header: 'Código',
-      kind: 'id',
-      render: (c) => c.externalCode,
-      sortValue: (c) => c.externalCode,
-    },
-    {
-      key: 'name',
-      header: 'Nombre',
-      kind: 'id',
-      render: (c) => c.name,
-      title: (c) => c.name,
-      sortValue: (c) => c.name,
-    },
-    {
-      key: 'type',
-      header: 'Tipo',
-      kind: 'field',
-      render: (c) => (c.customerType ? <span className="font-semibold text-on-surface">{c.customerType}</span> : <span className="text-outline">—</span>),
-      sortValue: (c) => c.customerType ?? '',
-    },
-    {
-      key: 'vendor',
-      header: 'Vendedor',
-      kind: 'field',
-      render: (c) => (c.vendor ? c.vendor : <span className="text-outline">—</span>),
-      sortValue: (c) => c.vendor ?? '',
-    },
-    {
-      key: 'orders',
-      header: 'Pedidos activos',
-      align: 'right',
-      kind: 'metric',
-      render: (c) => <span className={c.ordersCount > 0 ? 'font-bold text-on-surface' : 'text-outline'}>{fmtInt(c.ordersCount)}</span>,
-      sortValue: (c) => c.ordersCount,
-    },
-    {
-      key: 'actions',
-      header: 'Acciones',
-      align: 'right',
-      kind: 'action',
-      render: (c) =>
-        c.ordersCount > 0 ? (
-          <Link
-            href={`/pedidos?cliente=${encodeURIComponent(c.externalCode)}`}
-            className="inline-flex h-11 w-full items-center justify-center gap-space-xs rounded-lg border border-outline-variant bg-surface-container-lowest px-space-md font-semibold text-primary-container transition-colors hover:bg-surface-container-low md:h-9 md:w-auto"
-          >
-            <ShoppingCart aria-hidden className="size-4 shrink-0" />
-            Ver pedidos
-          </Link>
-        ) : null,
-    },
-  ];
 
   return (
     <>
       <AppNav />
-      <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-md md:p-space-xl">
+      <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg md:p-space-xl">
         <PageHeader
+          eyebrow="Comercial · Cartera de clientes"
           icon={Users}
           title="Clientes"
           subtitle="Catálogo de clientes con pedidos sincronizados desde Profit y acceso directo a sus solicitudes."
+          actions={
+            <div className="flex flex-wrap items-center gap-space-sm">
+              <Kpi label="Clientes" value={data ? new Intl.NumberFormat('es-VE').format(data.total) : '—'} icon={Users} />
+              <Kpi label="Con pedidos (pág.)" value={String(withOrders)} tone="success" />
+            </div>
+          }
         />
 
-        <div className="grid grid-cols-2 gap-space-sm md:grid-cols-4">
-          <Kpi label="Clientes" value={data ? fmtInt(data.total) : '—'} icon={Users} />
-          <Kpi
-            label="En esta página"
-            value={String(rows.length)}
-            tone="default"
-            hint={data && data.total > rows.length ? `de ${fmtInt(data.total)}` : undefined}
-          />
-          <Kpi label="Con pedidos (pág.)" value={String(withOrders)} tone="success" />
-          <Kpi label="Página" value={`${data?.page ?? page} / ${totalPages}`} tone="muted" />
-        </div>
-
-        {error && !(error instanceof AuthRequiredError) && <ErrorNote>{error instanceof Error ? error.message : 'Error al consultar'}</ErrorNote>}
-
-        <Card className="overflow-hidden">
-          <CardHeader
-            title="Catálogo de clientes"
-            description="Se ordena por código. El tipo de cliente y el vendedor llegan de Profit; cuando la vista no los trae se muestran como «—»."
-          />
-          <FilterBar
-            search={
-              <TextInput
-                icon={Search}
-                value={q}
-                onChange={(v) => {
-                  setQ(v);
-                  setPage(1);
-                }}
-                placeholder="Buscar por código o nombre…"
-                ariaLabel="Buscar cliente"
-              />
-            }
-          />
-          <DataTable
-            columns={columns}
-            rows={rows}
-            rowKey={(c) => c.id}
-            loading={isLoading}
-            loadingRows={6}
-            defaultSortKey="code"
-            empty={
-              <EmptyState
-                icon={Users}
-                title={q ? `Sin clientes para “${q}”.` : 'No hay clientes sincronizados.'}
-                description={
-                  q
-                    ? 'Revisa el código o el nombre: la búsqueda no distingue mayúsculas de minúsculas.'
-                    : 'Sincroniza desde Profit para traer el catálogo de clientes.'
-                }
-                action={
-                  q ? (
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        setQ('');
-                        setPage(1);
-                      }}
-                    >
-                      Limpiar búsqueda
-                    </Button>
-                  ) : undefined
-                }
-              />
-            }
-          />
-
-          {data && data.total > PAGE_SIZE && (
-            <div className="flex flex-col gap-space-sm border-t border-surface-container px-space-lg py-space-md sm:flex-row sm:items-center sm:justify-between">
-              <span className="text-body-md text-on-surface-variant">
-                {fmtInt(data.total)} cliente{data.total === 1 ? '' : 's'} · página {data.page} de {totalPages}
-              </span>
-              <div className="flex items-center gap-space-sm">
-                <Button
-                  variant="outline"
-                  icon={ChevronLeft}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page <= 1}
-                  className="flex-1 sm:flex-none"
-                >
-                  Anterior
-                </Button>
-                <Button
-                  variant="outline"
-                  iconRight={ChevronRight}
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={page >= totalPages}
-                  className="flex-1 sm:flex-none"
-                >
-                  Siguiente
-                </Button>
-              </div>
-            </div>
-          )}
+        <Card className="p-space-md">
+          <div className="grid grid-cols-1 gap-space-md lg:grid-cols-12">
+            <TextInput
+              className="lg:col-span-4"
+              icon={Search}
+              value={q}
+              onChange={(v) => {
+                setQ(v);
+                setPage(1);
+              }}
+              placeholder="Buscar por código o nombre…"
+              ariaLabel="Buscar cliente"
+            />
+          </div>
         </Card>
+
+        {isLoading && <p className="text-body-md text-on-surface-variant">Consultando clientes…</p>}
+        {error && !(error instanceof AuthRequiredError) && (
+          <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
+            <AlertTriangle aria-hidden className="size-4" /> {error instanceof Error ? error.message : 'Error al consultar'}
+          </p>
+        )}
+
+        {data && (
+          <Card className="overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-body-md">
+                <thead>
+                  <tr className="border-b border-surface-container bg-surface-container">
+                    <Th>Código</Th>
+                    <Th>Nombre</Th>
+                    <Th>Tipo</Th>
+                    <Th>Vendedor</Th>
+                    <Th align="right">Pedidos activos</Th>
+                    <Th />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-surface-container">
+                  {data.items.length === 0 && (
+                    <tr>
+                      <Td align="center" className="py-space-xl text-on-surface-variant">
+                        {q ? `Sin clientes para “${q}”.` : 'No hay clientes sincronizados.'}
+                      </Td>
+                    </tr>
+                  )}
+                  {data.items.map((customer) => (
+                    <tr key={customer.id} className="transition-colors hover:bg-surface-container-low">
+                      <Td className="font-bold tabular-nums text-primary">{customer.externalCode}</Td>
+                      <Td className="max-w-md truncate" title={customer.name}>{customer.name}</Td>
+                      <Td title={customer.customerType ? undefined : 'No disponible en la vista actual de Profit'}>
+                        {customer.customerType ? <Badge tone="primary">{customer.customerType}</Badge> : <span className="text-outline">—</span>}
+                      </Td>
+                      <Td className="text-on-surface-variant">{customer.vendor ?? '—'}</Td>
+                      <Td align="right" className="tabular-nums font-bold">{customer.ordersCount}</Td>
+                      <Td align="right">
+                        {customer.ordersCount > 0 && (
+                          <Link
+                            href={`/pedidos?cliente=${encodeURIComponent(customer.externalCode)}`}
+                            className="font-semibold text-primary-container hover:underline"
+                          >
+                            Ver pedidos
+                          </Link>
+                        )}
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {data.total > PAGE_SIZE && (
+              <div className="flex items-center justify-between border-t border-surface-container px-space-md py-space-sm text-body-md text-on-surface-variant">
+                <span>
+                  {data.total} cliente{data.total === 1 ? '' : 's'} · página {data.page} de {totalPages}
+                </span>
+                <div className="flex items-center gap-space-sm">
+                  <button
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page <= 1}
+                    className="flex h-9 items-center gap-space-2xs rounded-lg border border-outline-variant px-space-md transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                  >
+                    <ChevronLeft aria-hidden className="size-4" /> Anterior
+                  </button>
+                  <button
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={page >= totalPages}
+                    className="flex h-9 items-center gap-space-2xs rounded-lg border border-outline-variant px-space-md transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                  >
+                    Siguiente <ChevronRight aria-hidden className="size-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </Card>
+        )}
       </main>
     </>
   );

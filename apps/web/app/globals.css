@@ -129,19 +129,11 @@
 }
 
 @layer base {
-  html {
-    -webkit-text-size-adjust: 100%;
-    scrollbar-gutter: stable;
-  }
-
   body {
     background-color: var(--color-surface);
     color: var(--color-on-surface);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
-    /* Respeta el notch/indicador del teléfono en horizontal. */
-    padding-left: env(safe-area-inset-left);
-    padding-right: env(safe-area-inset-right);
   }
 
   /* Cifras alineadas verticalmente en tablas y KPIs */
@@ -149,101 +141,10 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* --- Superficies del navegador: también son diseño --- */
-  ::selection {
-    background-color: var(--color-primary-container);
-    color: #ffffff;
-  }
-
-  input,
-  select,
-  textarea {
-    caret-color: var(--color-primary-container);
-  }
-
-  ::placeholder {
-    color: var(--color-outline);
-    opacity: 1;
-  }
-
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--color-outline-variant) transparent;
-  }
-
-  *::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-
-  *::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  *::-webkit-scrollbar-thumb {
-    background-color: var(--color-outline-variant);
-    background-clip: content-box;
-    border: 3px solid transparent;
-    border-radius: 9999px;
-  }
-
-  *::-webkit-scrollbar-thumb:hover {
-    background-color: var(--color-outline);
-  }
-
-  a {
-    text-underline-offset: 3px;
-  }
-
   :focus-visible {
     outline: 2px solid var(--color-secondary-container);
     outline-offset: 2px;
   }
-
-  summary::-webkit-details-marker {
-    display: none;
-  }
-}
-
-/* En puntero grueso (dedo) todo control alcanza el mínimo táctil de 44px y
-   los campos suben a 16px, que es lo que evita el zoom automático de iOS. */
-@media (pointer: coarse) {
-  input,
-  select,
-  textarea {
-    font-size: 16px;
-  }
-
-  button,
-  [role='tab'],
-  summary,
-  input,
-  select {
-    min-height: 2.75rem;
-  }
-}
-
-/* Espacio para la barra inferior de pestañas del teléfono. */
-@media (max-width: 767px) {
-  body {
-    padding-bottom: calc(3.75rem + env(safe-area-inset-bottom));
-  }
-}
-
-/* Una sola animación autoral, con easing exponencial. */
-@keyframes nexo-rise {
-  from {
-    opacity: 0;
-    transform: translate3d(0, 6px, 0);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.animate-rise {
-  animation: nexo-rise 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -251,8 +152,6 @@
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
   }
 }

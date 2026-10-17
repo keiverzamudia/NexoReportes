@@ -1,81 +1,31 @@
 'use client';
 
 // ============================================================
-// Pedidos — Simulador de despacho (modo "Operate").
+// Pedidos — Simulador de despacho (estilo Stitch, modo "Operate").
 //
-//  · Jerarquía: PageHeader → KPIs de la simulación → panel de modo/orden.
-//  · Plan de despacho: turnos (una fila por renglón marcado), con el
-//    asignado, el faltante y «Liberar».
-//  · Cola de pedidos: grupos por cliente o producto, un desplegable abierto
-//    a la vez, los marcados arriba, tinte azul y contador de marcados.
-//  · Tablas y tarjetas las resuelve `DataTable`: tabla densa en ≥md,
-//    tarjeta por fila en teléfono. Contrato: docs/design/DESIGN_SYSTEM.md
+//  · Conmutador Por cliente / Por producto (acordeón de 1 abierto).
+//  · SWITCH de simulación:
+//      - "Solo disponible": despacho tipo real; asigna únicamente lo que
+//        hay en existencia y lo demás queda como faltante.
+//      - "Demanda total": descuenta todo lo pedido (puede quedar negativo).
+//  · Orden por PRIORIDAD (fecha de entrega más próxima y existencia).
+//  · Plan de despacho: lista priorizada de lo seleccionado (asignado/faltante).
+//  · Gráficas de decisión: cobertura por producto y cobertura global (kg).
 //
-//  Reglas del motor (lib/dispatch.ts, NO se tocan desde esta vista):
-//   · «Solo disponible» asigna únicamente la existencia; el resto es faltante.
-//   · «Demanda total» descuenta todo lo pedido (puede sobregirar).
-//   · Los marcados consumen la existencia en el orden en que se marcan.
-//   · Parcial permitido; para reasignar hay que liberar primero.
-//   · Marcados fijos arriba en la cola; pendiente tachado + asignado.
-//   · La selección vive en el navegador (localStorage `nexo.seleccion.v1`)
-//     y NUNCA escribe en Profit.
+//  La selección y la simulación son SOLO visuales/analíticas: se guardan en
+//  el navegador y NUNCA escriben en Profit.
 // ============================================================
 
 import type { OrderGroup, OrderGroupBy, OrderGroupLine, OrderGroupedResponse, OrderStatus } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import {
-  ArrowUpRight,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  ChevronUp,
-  Download,
-  Gauge,
-  PackageCheck,
-  PackageX,
-  Search,
-  ShoppingCart,
-  Trash2,
-  Truck,
-  X,
-} from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, Download, Search, ShoppingCart, Trash2 } from 'lucide-react';
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { EChart } from '../../components/EChart';
 import { AppNav, LoginScreen } from '../../components/shell';
-import {
-  Badge,
-  Button,
-  Card,
-  CardHeader,
-  CoverageBar,
-  DataTable,
-  DateInput,
-  EmptyState,
-  ErrorNote,
-  FilterBar,
-  Kpi,
-  PageHeader,
-  Segmented,
-  Select,
-  Skeleton,
-  TextInput,
-  Toolbar,
-  cx,
-  fmtDate,
-  fmtInt,
-  fmtQty,
-  type Column,
-} from '../../components/ui';
+import { Badge, Card, CoverageBar, DateInput, Kpi, PageHeader, Select, Segmented, Td, TextInput, Th, fmtDate, fmtQty } from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
-import {
-  buildDispatchQueue,
-  summarizeQueue,
-  type DispatchInput,
-  type DispatchMode,
-  type DispatchSort,
-  type QueueEntry,
-} from '../../lib/dispatch';
+import { DispatchInput, DispatchMode, DispatchSort, QueueEntry, buildDispatchQueue, summarizeQueue } from '../../lib/dispatch';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'Estado: Todos' },
@@ -105,6 +55,13 @@ const SORT_OPTIONS: { value: DispatchSort; label: string }[] = [
   { value: 'disponibilidad', label: 'Mayor existencia primero' },
   { value: 'pendiente', label: 'Mayor pendiente primero' },
 ];
+
+const STATUS_LABEL: Record<OrderStatus, string> = {
+  ABIERTO: 'Abierto',
+  CERRADO: 'Cerrado',
+  CANCELADO: 'Cancelado',
+  DESCONOCIDO: 'Desconocido',
+};
 
 // Paleta de las gráficas (identidad Nexo).
 const C = { navy: '#003366', lime: '#95C800', dark: '#001e40', red: '#dc2626', amber: '#b45309', outline: '#737780', grid: '#e1f0ff' };
@@ -138,29 +95,6 @@ function loadSelection(): string[] {
   } catch {
     return [];
   }
-}
-
-// Semáforo de cobertura: cubre → success · parcial → warning · falta → danger.
-function coverageTone(ratio: number): 'success' | 'warning' | 'danger' {
-  return ratio >= 0.999 ? 'success' : ratio > 0 ? 'warning' : 'danger';
-}
-
-// Cantidades: enteras sin decimales; con decimales reales, dos cifras.
-function fmtUnits(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '—';
-  return Number.isInteger(value) ? fmtInt(value) : fmtQty(value, 2);
-}
-
-// Grupo del plan de despacho: la misma agrupación de la cola, con sus turnos.
-interface PlanGroup {
-  key: string;
-  label: string;
-  code: string | null;
-  entries: QueueEntry[];
-  pendingQty: number;
-  assignedQty: number;
-  missingQty: number;
-  missingKg: number;
 }
 
 export default function PedidosPage() {
@@ -266,43 +200,34 @@ export default function PedidosPage() {
   const planEntries = useMemo(() => queue.filter((e) => e.selected).sort((a, b) => a.priority - b.priority), [queue]);
   const planSummary = useMemo(() => summarizeQueue(planEntries), [planEntries]);
 
-  // Orden de grupos por la posición de su mejor renglón en la cola
-  // (los grupos con renglones marcados suben al principio).
+  // Plan agrupado igual que la tabla (por cliente o por producto), 1 abierto.
+  const planGroups = useMemo(() => {
+    const map = new Map<
+      string,
+      { key: string; label: string; code: string | null; entries: QueueEntry[]; pendingQty: number; assignedQty: number; assignedKg: number; missingKg: number }
+    >();
+    for (const e of planEntries) {
+      const ref = lineByKey.get(e.key);
+      if (!ref) continue;
+      let g = map.get(ref.group.key);
+      if (!g) {
+        g = { key: ref.group.key, label: ref.group.label, code: ref.group.code, entries: [], pendingQty: 0, assignedQty: 0, assignedKg: 0, missingKg: 0 };
+        map.set(ref.group.key, g);
+      }
+      g.entries.push(e);
+      g.pendingQty += e.pendingQty;
+      g.assignedQty += e.assignedQty;
+      g.assignedKg += e.assignedKg;
+      g.missingKg += e.missingKg;
+    }
+    return [...map.values()].map((g) => ({ ...g, entries: [...g.entries].sort((a, b) => a.priority - b.priority) }));
+  }, [planEntries, lineByKey]);
+
+  // Orden de grupos por la posición de su mejor renglón en la cola.
   const orderedGroups = useMemo(() => {
     const rank = (g: OrderGroup) => Math.min(...g.lines.map((l) => queueIndex.get(lineKey(l)) ?? Number.MAX_SAFE_INTEGER));
     return [...groups].sort((a, b) => rank(a) - rank(b));
   }, [groups, queueIndex]);
-
-  // Plan de despacho agrupado igual que la cola: por producto (y dentro, los
-  // clientes) o por cliente (y dentro, los artículos). Un grupo abierto a la vez.
-  const planGroups = useMemo<PlanGroup[]>(() => {
-    const map = new Map<string, PlanGroup>();
-    for (const entry of planEntries) {
-      const ref = lineByKey.get(entry.key);
-      if (!ref) continue;
-      const bucket =
-        map.get(ref.group.key) ??
-        ({
-          key: ref.group.key,
-          label: ref.group.label,
-          code: ref.group.code,
-          entries: [],
-          pendingQty: 0,
-          assignedQty: 0,
-          missingQty: 0,
-          missingKg: 0,
-        } satisfies PlanGroup);
-      bucket.entries.push(entry);
-      bucket.pendingQty += ref.line.pendingQty;
-      bucket.assignedQty += entry.assignedQty;
-      bucket.missingQty += entry.missingQty;
-      bucket.missingKg += entry.missingKg;
-      map.set(ref.group.key, bucket);
-    }
-    return [...map.values()]
-      .map((g) => ({ ...g, entries: [...g.entries].sort((a, b) => a.priority - b.priority) }))
-      .sort((a, b) => (a.entries[0]?.priority ?? 0) - (b.entries[0]?.priority ?? 0));
-  }, [planEntries, lineByKey]);
 
   // --- Gráficas ---
   const coverageChart = useMemo(() => {
@@ -374,9 +299,6 @@ export default function PedidosPage() {
   }
 
   const hasFilters = Boolean(q || status || customerType || vendor || authorized || emisionDesde || emisionHasta || entregaDesde || entregaHasta || customerCode);
-  const filtersActive = [status, authorized, customerType.trim(), vendor.trim(), emisionDesde, emisionHasta, entregaDesde, entregaHasta, customerCode].filter(
-    Boolean,
-  ).length;
   const coveragePct = Math.round(liveSummary.coverage * 100);
 
   function resetFilters() {
@@ -433,845 +355,456 @@ export default function PedidosPage() {
     URL.revokeObjectURL(url);
   }
 
-  // --- Columnas: cola de pedidos (una fila por grupo) ---
-  const markedOf = (g: OrderGroup) => g.lines.reduce((a, l) => a + (selection.includes(lineKey(l)) ? 1 : 0), 0);
-  const assignedOf = (g: OrderGroup) => g.lines.reduce((a, l) => a + (queueByKey.get(lineKey(l))?.assignedQty ?? 0), 0);
-  const pendingOf = (g: OrderGroup) => g.lines.reduce((a, l) => a + l.pendingQty, 0);
-  const coverageOf = (g: OrderGroup) => (pendingOf(g) > 0 ? assignedOf(g) / pendingOf(g) : 1);
-
-  const groupColumns: Column<OrderGroup>[] = [
-    {
-      key: 'label',
-      header: by === 'producto' ? 'Producto' : 'Cliente',
-      kind: 'id',
-      sortValue: (g) => g.label,
-      render: (g) => {
-        const marked = markedOf(g);
-        const earliest = g.lines.reduce((min, l) => Math.min(min, timeOf(l.requestedDate)), Number.POSITIVE_INFINITY);
-        const open = expanded === g.key;
-        return (
-          <span
-            aria-current={open ? 'true' : undefined}
-            className={cx('flex min-w-0 flex-col gap-space-2xs rounded-md px-space-xs py-space-2xs', marked > 0 && 'bg-primary-fixed/60')}
-          >
-            <span className="flex min-w-0 items-center gap-space-xs">
-              <span className="truncate">{g.label}</span>
-              {marked > 0 && (
-                <span
-                  title={`${marked} ${marked === 1 ? 'renglón marcado' : 'renglones marcados'} para despacho en este grupo`}
-                  className="shrink-0 rounded bg-primary-container px-space-xs py-space-2xs font-bold tabular-nums text-label-sm text-on-primary"
-                >
-                  {marked}
-                </span>
-              )}
-            </span>
-            <span className="truncate text-label-sm font-medium tracking-normal text-outline">
-              {g.code ?? '—'}
-              {Number.isFinite(earliest) ? ` · entrega ${fmtDate(new Date(earliest).toISOString())}` : ''}
-            </span>
-          </span>
-        );
-      },
-    },
-    {
-      key: 'items',
-      header: by === 'producto' ? 'Clientes' : 'Productos',
-      kind: 'field',
-      align: 'right',
-      render: (g) => <span className="tabular-nums">{fmtInt(g.itemsCount)}</span>,
-      sortValue: (g) => g.itemsCount,
-    },
-    {
-      key: 'orders',
-      header: 'Pedidos',
-      kind: 'field',
-      align: 'right',
-      render: (g) => <span className="tabular-nums">{fmtInt(g.ordersCount)}</span>,
-      sortValue: (g) => g.ordersCount,
-    },
-    {
-      key: 'pending',
-      header: 'Pendiente',
-      kind: 'metric',
-      align: 'right',
-      render: (g) => (
-        <span className={cx('font-bold tabular-nums', g.totalPendingQty < 0 ? 'text-critical' : 'text-on-surface')}>{fmtUnits(g.totalPendingQty)}</span>
-      ),
-      sortValue: (g) => g.totalPendingQty,
-    },
-    {
-      key: 'pendingKg',
-      header: 'Pendiente kg',
-      kind: 'metric',
-      align: 'right',
-      render: (g) => <span className="tabular-nums text-on-surface-variant">{fmtInt(g.totalPendingKg)}</span>,
-      sortValue: (g) => g.totalPendingKg,
-    },
-    {
-      key: 'assigned',
-      header: 'Asignado',
-      kind: 'metric',
-      align: 'right',
-      render: (g) => <span className="font-bold tabular-nums text-secondary">{fmtUnits(assignedOf(g))}</span>,
-      sortValue: (g) => assignedOf(g),
-    },
-    {
-      key: 'coverage',
-      header: 'Cobertura',
-      kind: 'status',
-      sortValue: (g) => coverageOf(g),
-      render: (g) => {
-        const ratio = coverageOf(g);
-        return (
-          <span className="flex items-center gap-space-sm">
-            <CoverageBar ratio={ratio} className="w-16" />
-            <Badge tone={coverageTone(ratio)}>{Math.round(ratio * 100)}%</Badge>
-          </span>
-        );
-      },
-    },
-    {
-      key: 'actions',
-      header: 'Acciones',
-      kind: 'action',
-      align: 'right',
-      render: (g) => {
-        const allSelected = g.lines.length > 0 && g.lines.every((l) => selection.includes(lineKey(l)));
-        const open = expanded === g.key;
-        return (
-          <div className="flex flex-wrap items-center justify-end gap-space-sm">
-            <Button
-              variant={allSelected ? 'outline' : 'primary'}
-              icon={allSelected ? X : Check}
-              onClick={() => toggleGroup(g)}
-              ariaLabel={allSelected ? `Quitar la marca de todos los renglones de ${g.label}` : `Marcar todos los renglones de ${g.label}`}
-              className="md:h-8"
-            >
-              {allSelected ? 'Quitar marca' : 'Marcar todo'}
-            </Button>
-            <Button
-              variant="ghost"
-              icon={open ? ChevronUp : ChevronDown}
-              onClick={() => setExpanded(open ? null : g.key)}
-              title={open ? 'Cerrar los renglones de este grupo' : 'Ver los renglones de este grupo'}
-              ariaLabel={open ? `Cerrar los renglones de ${g.label}` : `Ver los renglones de ${g.label}`}
-              className="md:h-8"
-            >
-              {open ? 'Cerrar' : 'Renglones'}
-            </Button>
-          </div>
-        );
-      },
-    },
-  ];
-
-  // --- Columnas: plan de despacho (una fila por grupo; se despliega a turnos) ---
-  const planGroupColumns: Column<PlanGroup>[] = [
-    {
-      key: 'label',
-      header: by === 'producto' ? 'Producto' : 'Cliente',
-      kind: 'id',
-      sortValue: (g) => g.entries[0]?.priority ?? 0,
-      render: (g) => {
-        const open = planExpanded === g.key;
-        const Chevron = open ? ChevronDown : ChevronRight;
-        return (
-          <span className="flex min-w-0 items-start gap-space-sm">
-            <Chevron aria-hidden className={cx('mt-0.5 size-4 shrink-0', open ? 'text-primary' : 'text-outline')} />
-            <span className="flex min-w-0 flex-col gap-space-2xs">
-              <span className="truncate font-semibold">{g.label}</span>
-              {g.code && <span className="text-label-sm font-medium tabular-nums tracking-normal text-outline">{g.code}</span>}
-            </span>
-          </span>
-        );
-      },
-    },
-    {
-      key: 'entries',
-      header: 'Turnos',
-      kind: 'metric',
-      align: 'right',
-      render: (g) => <span className="font-bold tabular-nums">{fmtInt(g.entries.length)}</span>,
-      sortValue: (g) => g.entries.length,
-    },
-    {
-      key: 'pending',
-      header: 'Pendiente',
-      kind: 'metric',
-      align: 'right',
-      render: (g) => <span className="tabular-nums text-on-surface-variant">{fmtUnits(g.pendingQty)}</span>,
-      sortValue: (g) => g.pendingQty,
-    },
-    {
-      key: 'assigned',
-      header: 'Asignado',
-      kind: 'metric',
-      align: 'right',
-      render: (g) => <span className="font-bold tabular-nums text-secondary">{fmtUnits(g.assignedQty)}</span>,
-      sortValue: (g) => g.assignedQty,
-    },
-    {
-      key: 'missingKg',
-      header: 'Faltante kg',
-      kind: 'metric',
-      align: 'right',
-      render: (g) => (
-        <span className={cx('tabular-nums', g.missingKg > 0 ? 'font-bold text-critical' : 'text-outline')}>{fmtInt(g.missingKg)}</span>
-      ),
-      sortValue: (g) => g.missingKg,
-    },
-    {
-      key: 'toggle',
-      header: 'Acciones',
-      kind: 'action',
-      align: 'right',
-      render: (g) => {
-        const open = planExpanded === g.key;
-        return (
-          <Button
-            variant="ghost"
-            icon={open ? ChevronUp : ChevronDown}
-            onClick={() => setPlanExpanded(open ? null : g.key)}
-            title={open ? 'Cerrar los turnos de este grupo' : 'Ver los turnos de este grupo'}
-            ariaLabel={open ? `Cerrar los turnos de ${g.label}` : `Ver los turnos de ${g.label}`}
-            className="md:h-8"
-          >
-            {open ? 'Cerrar' : 'Ver turnos'}
-          </Button>
-        );
-      },
-    },
-  ];
-
   return (
     <>
       <AppNav />
-      <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-md md:p-space-xl">
+      <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg md:p-space-xl">
         <PageHeader
+          eyebrow="Ventas y CxC · Simulador de despacho"
           icon={ShoppingCart}
-          title="Simulador de despacho"
-          subtitle={`Pedidos de Profit agrupados por cliente o producto y comparados contra la existencia real de los almacenes Stock 03 y Stock 68. Marca renglones para armar el plan; la simulación se ordena por prioridad y nunca escribe en Profit.`}
+          title="Pedidos"
+          subtitle="Simula qué puedes despachar hoy con tu existencia real. Marca renglones para armar el plan de despacho; se ordena por prioridad y nunca escribe en Profit."
+          actions={
+            <div className="flex flex-wrap items-center gap-space-sm">
+              <Kpi label="Despachable" value={fmtQty(liveSummary.assignedKg, 0)} suffix="kg" tone="primary" hint={`${coveragePct}% de la demanda`} />
+              <Kpi label="Faltante" value={fmtQty(liveSummary.missingKg, 0)} suffix="kg" tone="danger" />
+              <Kpi label="Pendiente" value={fmtQty(liveSummary.pendingQty, 0)} suffix="unid." tone="muted" />
+            </div>
+          }
         />
 
-        {error && !(error instanceof AuthRequiredError) && (
-          <ErrorNote>{error instanceof Error ? error.message : 'No se pudo consultar los pedidos. Revisa la conexión con el API e inténtalo de nuevo.'}</ErrorNote>
-        )}
-
-        {!data && isLoading && (
-          <div className="grid grid-cols-2 gap-space-sm md:grid-cols-4">
-            {[0, 1, 2, 3].map((i) => (
-              <Skeleton key={i} className="h-20" />
-            ))}
-          </div>
-        )}
-
-        {data && (
-          <div className="grid grid-cols-2 gap-space-sm md:grid-cols-4">
-            <Kpi
-              label="Cobertura"
-              value={`${coveragePct}%`}
-              tone={coverageTone(liveSummary.coverage)}
-              icon={Gauge}
-              hint={`${fmtUnits(liveSummary.assignedQty)} de ${fmtUnits(liveSummary.pendingQty)} unid.`}
-            />
-            <Kpi label="Despachable" value={fmtInt(liveSummary.assignedKg)} suffix="kg" tone="primary" icon={PackageCheck} hint="Según la existencia del momento" />
-            <Kpi
-              label="Faltante"
-              value={fmtInt(liveSummary.missingKg)}
-              suffix="kg"
-              tone="danger"
-              icon={PackageX}
-              hint={`${fmtUnits(liveSummary.missingQty)} unid.`}
-            />
-            <Kpi label="Pendiente" value={fmtUnits(liveSummary.pendingQty)} suffix="unid." tone="muted" icon={Truck} hint={`${fmtInt(liveSummary.pendingKg)} kg`} />
-          </div>
-        )}
-
-        {/* Panel de decisión: modo de simulación y orden de la cola */}
-        <Card className="overflow-hidden">
-          <CardHeader
-            title="Modo de simulación"
-            description={
-              mode === 'disponible'
-                ? 'Asigna únicamente lo que hay en existencia; el resto queda como faltante.'
-                : 'Descuenta todo lo pedido aunque sobregire la existencia.'
-            }
-          />
-          <div className="flex flex-col gap-space-md px-space-lg py-space-md xl:flex-row xl:items-end xl:justify-between">
-            <div className="flex flex-wrap items-end gap-space-lg">
-              <div className="flex flex-col gap-space-2xs">
-                <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Simulación</span>
-                <Segmented ariaLabel="Modo de simulación" value={mode} onChange={setMode} options={MODE_OPTIONS} />
+        {/* Panel de decisión: modo + orden + gráficas */}
+        <Card className="p-space-md">
+          <div className="flex flex-col gap-space-md xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex flex-col gap-space-md">
+              <div>
+                <span className="font-semibold uppercase text-label-sm text-outline">Modo de simulación</span>
+                <div className="mt-space-xs flex flex-wrap items-center gap-space-sm">
+                  <Segmented ariaLabel="Modo de simulación" value={mode} onChange={setMode} options={MODE_OPTIONS} />
+                  <span className="text-label-sm text-on-surface-variant">
+                    {mode === 'disponible' ? 'Asigna solo lo que hay; el resto queda como faltante.' : 'Descuenta todo lo pedido (puede sobregirar).'}
+                  </span>
+                </div>
               </div>
-              <div className="flex flex-col gap-space-2xs">
-                <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Agrupar la cola</span>
-                <Select
-                  className="w-full md:w-44"
-                  ariaLabel="Agrupar la cola por"
-                  value={by}
-                  onChange={(v) => {
-                    setBy(v as OrderGroupBy);
-                    setExpanded(null);
-                    setPlanExpanded(null);
-                  }}
-                  options={BY_OPTIONS}
-                />
-              </div>
-              <div className="flex flex-col gap-space-2xs">
-                <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Orden de la cola</span>
-                <Select
-                  className="w-full md:w-72"
-                  ariaLabel="Orden de la cola"
-                  value={sort}
-                  onChange={(v) => setSort(v as DispatchSort)}
-                  options={SORT_OPTIONS}
-                />
+              <div>
+                <span className="font-semibold uppercase text-label-sm text-outline">Agrupar y ordenar</span>
+                <div className="mt-space-xs flex flex-wrap items-center gap-space-sm">
+                  <Select className="w-40" ariaLabel="Agrupar por" value={by} onChange={(v) => { setBy(v as OrderGroupBy); setExpanded(null); }} options={BY_OPTIONS} />
+                  <Select className="w-64" ariaLabel="Orden" value={sort} onChange={(v) => setSort(v as DispatchSort)} options={SORT_OPTIONS} />
+                </div>
               </div>
             </div>
-            <p className="text-label-sm text-on-surface-variant xl:max-w-sm">
-              Los renglones marcados consumen la existencia en el orden en que se marcan; el resto compite por lo que quede.
-            </p>
+
+            <div className="grid grid-cols-1 gap-space-md sm:grid-cols-2 xl:w-[58%]">
+              <div className="rounded-lg bg-surface p-space-sm">
+                <div className="mb-space-xs font-semibold uppercase text-label-sm text-outline">Cobertura por producto (kg)</div>
+                <EChart option={coverageChart} height={220} ariaLabel="Cobertura por producto en kilogramos" />
+              </div>
+              <div className="rounded-lg bg-surface p-space-sm">
+                <div className="mb-space-xs font-semibold uppercase text-label-sm text-outline">Cobertura global (kg)</div>
+                <EChart option={donutChart} height={220} ariaLabel="Cobertura global en kilogramos" />
+              </div>
+            </div>
           </div>
         </Card>
 
-        <div className="grid gap-space-lg xl:grid-cols-12">
-          <div className="flex flex-col gap-space-lg xl:col-span-12">
-            {/* Plan de despacho: turnos por entrega */}
-            <Card className="overflow-hidden">
-              <CardHeader
-                title={`Plan de despacho · ${mode === 'disponible' ? 'solo disponible' : 'demanda total'}`}
-                description={`Turnos por fecha de entrega, agrupados por ${by === 'producto' ? 'producto (y dentro, sus clientes)' : 'cliente (y dentro, sus artículos)'}. A igual fecha, el orden en que se marcaron.`}
-              />
-              {planEntries.length > 0 && (
-                <Toolbar className="justify-between">
-                  <p aria-live="polite" className="text-body-md text-on-surface-variant">
-                    <strong className="tabular-nums text-on-surface">{fmtInt(planEntries.length)}</strong> {planEntries.length === 1 ? 'renglón' : 'renglones'} en
-                    turno · <strong className="tabular-nums text-secondary">{fmtInt(planSummary.assignedKg)} kg</strong> asignados ·{' '}
-                    <strong className={planSummary.missingKg > 0 ? 'tabular-nums text-critical' : 'tabular-nums text-outline'}>
-                      {fmtInt(planSummary.missingKg)} kg
-                    </strong>{' '}
-                    faltantes
-                  </p>
-                  <div className="flex flex-wrap items-center gap-space-sm">
-                    <Button variant="outline" icon={Download} onClick={exportPlan} title="Descargar el plan en CSV" ariaLabel="Exportar el plan de despacho en CSV">
-                      Exportar plan
-                    </Button>
-                    <Button variant="ghost" icon={Trash2} onClick={() => { setSelection([]); setPlanExpanded(null); }} ariaLabel="Limpiar el plan de despacho">
-                      Limpiar plan
-                    </Button>
-                  </div>
-                </Toolbar>
-              )}
-              <DataTable
-                columns={planGroupColumns}
-                rows={planGroups}
-                rowKey={(g) => g.key}
-                defaultSortKey="label"
-                expandedKey={planExpanded}
-                renderExpanded={(g) => (
-                  <PlanDespacho entries={g.entries} lineByKey={lineByKey} onToggleLine={toggleLine} by={by} />
-                )}
-                empty={
-                  <EmptyState
-                    icon={PackageCheck}
-                    title="Aún no hay plan de despacho"
-                    description="Abre un grupo de la cola de pedidos y marca los renglones que puedes despachar hoy: aquí aparecerán agrupados igual que la cola, y dentro de cada grupo, sus turnos."
-                  />
-                }
-              />
-              {planEntries.length > 0 && (
-                <div className="border-t border-surface-container px-space-lg py-space-sm text-label-sm text-on-surface-variant">
-                  Abre un grupo para ver sus turnos. «Liberar» devuelve la existencia de ese renglón a la cola; el plan es solo
-                  analítico: no reserva stock en Profit.
-                </div>
-              )}
-            </Card>
+        {/* Filtros */}
+        <Card className="p-space-md">
+          <div className="grid grid-cols-1 gap-space-md md:grid-cols-2 lg:grid-cols-12">
+            <TextInput className="lg:col-span-3" icon={Search} value={q} onChange={setQ} placeholder="Buscar N° de pedido o cliente…" ariaLabel="Buscar" />
+            <Select className="lg:col-span-2" value={status} onChange={(v) => setStatus(v as OrderStatus | '')} options={STATUS_OPTIONS} ariaLabel="Estado" />
+            <Select className="lg:col-span-2" value={authorized} onChange={setAuthorized} options={AUTH_OPTIONS} ariaLabel="Autorizado" />
+            <TextInput className="lg:col-span-2" value={customerType} onChange={setCustomerType} placeholder="Tipo (ej. L1)" ariaLabel="Tipo de cliente" />
+            <TextInput className="lg:col-span-3" value={vendor} onChange={setVendor} placeholder="Vendedor…" ariaLabel="Vendedor" />
+            <div className="flex items-center gap-space-xs lg:col-span-4">
+              <span className="whitespace-nowrap font-semibold uppercase text-label-sm text-outline">Entrega</span>
+              <DateInput ariaLabel="Entrega desde" value={entregaDesde} onChange={setEntregaDesde} className="w-full" />
+              <span className="text-outline">–</span>
+              <DateInput ariaLabel="Entrega hasta" value={entregaHasta} onChange={setEntregaHasta} className="w-full" />
+            </div>
+            <div className="flex items-center gap-space-xs lg:col-span-4">
+              <span className="whitespace-nowrap font-semibold uppercase text-label-sm text-outline">Emisión</span>
+              <DateInput ariaLabel="Emisión desde" value={emisionDesde} onChange={setEmisionDesde} className="w-full" />
+              <span className="text-outline">–</span>
+              <DateInput ariaLabel="Emisión hasta" value={emisionHasta} onChange={setEmisionHasta} className="w-full" />
+            </div>
+            <div className="flex items-center lg:col-span-4">
+              <button
+                onClick={resetFilters}
+                disabled={!hasFilters}
+                className="h-9 rounded-lg border border-outline-variant px-space-md font-semibold text-body-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
+              >
+                Limpiar filtros
+              </button>
+            </div>
+          </div>
+          {customerCode && (
+            <p className="mt-space-sm text-body-md text-on-surface-variant">
+              Filtrando por cliente <strong className="text-primary">{customerCode}</strong>
+            </p>
+          )}
+        </Card>
 
-            {/* Cola de pedidos */}
-            <Card className="overflow-hidden">
-              <CardHeader
-                title={`Cola de pedidos · ${by === 'producto' ? 'por producto' : 'por cliente'}`}
-                description="Los grupos con renglones marcados suben al principio y llevan el contador azul. Se abre un grupo a la vez."
-                action={<Badge tone="muted">{fmtInt(orderedGroups.length)} grupos</Badge>}
-              />
-              <FilterBar
-                activeCount={filtersActive}
-                search={
-                  <TextInput
-                    icon={Search}
-                    value={q}
-                    onChange={setQ}
-                    placeholder="Buscar N° de pedido o cliente…"
-                    ariaLabel="Buscar por número de pedido o cliente"
-                  />
-                }
-                filters={
-                  <>
-                    <Select
-                      className="md:w-40"
-                      value={status}
-                      onChange={(v) => setStatus(v as OrderStatus | '')}
-                      options={STATUS_OPTIONS}
-                      ariaLabel="Estado del pedido"
-                    />
-                    <Select
-                      className="md:w-40"
-                      value={authorized}
-                      onChange={setAuthorized}
-                      options={AUTH_OPTIONS}
-                      ariaLabel="Autorizado"
-                    />
-                    <TextInput className="md:w-40" value={customerType} onChange={setCustomerType} placeholder="Tipo (ej. L1)" ariaLabel="Tipo de cliente" />
-                    <TextInput className="md:w-44" value={vendor} onChange={setVendor} placeholder="Vendedor…" ariaLabel="Vendedor" />
-                    <div className="flex items-center gap-space-xs">
-                      <span className="whitespace-nowrap font-semibold uppercase tracking-wider text-label-sm text-outline">Entrega</span>
-                      <DateInput ariaLabel="Entrega desde" value={entregaDesde} onChange={setEntregaDesde} className="w-full md:w-36" />
-                      <span aria-hidden className="text-outline">
-                        –
-                      </span>
-                      <DateInput ariaLabel="Entrega hasta" value={entregaHasta} onChange={setEntregaHasta} className="w-full md:w-36" />
-                    </div>
-                    <div className="flex items-center gap-space-xs">
-                      <span className="whitespace-nowrap font-semibold uppercase tracking-wider text-label-sm text-outline">Emisión</span>
-                      <DateInput ariaLabel="Emisión desde" value={emisionDesde} onChange={setEmisionDesde} className="w-full md:w-36" />
-                      <span aria-hidden className="text-outline">
-                        –
-                      </span>
-                      <DateInput ariaLabel="Emisión hasta" value={emisionHasta} onChange={setEmisionHasta} className="w-full md:w-36" />
-                    </div>
-                    {customerCode && <Badge tone="primary">Cliente {customerCode}</Badge>}
-                    <Button variant="outline" icon={X} onClick={resetFilters} disabled={!hasFilters} ariaLabel="Limpiar todos los filtros">
-                      Limpiar filtros
-                    </Button>
-                  </>
-                }
-              />
-              <DataTable
-                columns={groupColumns}
-                rows={orderedGroups}
-                rowKey={(g) => g.key}
-                loading={isLoading}
-                loadingRows={6}
-                expandedKey={expanded}
-                renderExpanded={(g) => (
-                  <RenglonesDeGrupo
-                    group={g}
-                    by={by}
-                    selection={selection}
-                    mode={mode}
-                    queueByKey={queueByKey}
-                    onToggleLine={toggleLine}
-                  />
-                )}
-                empty={
-                  error ? (
-                    <EmptyState
-                      icon={Search}
-                      title="No se pudo mostrar la cola de pedidos"
-                      description="Revisa el aviso de error de arriba y vuelve a intentarlo."
-                      action={
-                        hasFilters ? (
-                          <Button variant="outline" icon={X} onClick={resetFilters}>
-                            Limpiar filtros
-                          </Button>
-                        ) : undefined
-                      }
-                    />
-                  ) : (
-                    <EmptyState
-                      icon={Search}
-                      title={hasFilters ? 'Sin pedidos para los filtros aplicados' : 'No hay pedidos sincronizados'}
-                      description={
-                        hasFilters
-                          ? 'Quita los filtros o cambia el rango de fechas para ver la cola completa.'
-                          : 'Ejecuta «Sincronizar» en la barra superior para traer los pedidos desde Profit.'
-                      }
-                      action={
-                        hasFilters ? (
-                          <Button variant="outline" icon={X} onClick={resetFilters}>
-                            Limpiar filtros
-                          </Button>
-                        ) : undefined
-                      }
-                    />
-                  )
-                }
-              />
-
-              <div className="flex flex-wrap items-center justify-between gap-space-sm border-t border-surface-container px-space-lg py-space-sm text-label-sm text-on-surface-variant">
-                <span>
-                  {fmtInt(orderedGroups.length)} grupo{orderedGroups.length === 1 ? '' : 's'} · pendiente {fmtInt(liveSummary.pendingQty)} unid. /{' '}
-                  {fmtInt(liveSummary.pendingKg)} kg
+        {/* Plan de despacho (agrupado como la tabla; solo si hay selección) */}
+        {planEntries.length > 0 && (
+          <Card className="overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-surface-container bg-surface-container-low px-space-md py-space-sm">
+              <div className="flex flex-wrap items-center gap-space-md">
+                <span className="font-bold uppercase text-label-md text-primary">Plan de despacho · {mode === 'disponible' ? 'solo disponible' : 'demanda total'}</span>
+                <span className="text-label-sm text-on-surface-variant">
+                  {planEntries.length} renglón(es) · turnos por entrega
                 </span>
-                <span>«Asignado» y «faltante» se calculan con la existencia del momento · {fmtInt(queue.length)} renglones</span>
               </div>
-            </Card>
-          </div>
+              <div className="flex items-center gap-space-sm">
+                <span className="tabular-nums font-bold text-secondary">{fmtQty(planSummary.assignedKg, 0)} kg asignados</span>
+                <span className={`tabular-nums font-bold ${planSummary.missingKg > 0 ? 'text-error' : 'text-outline'}`}>
+                  {fmtQty(planSummary.missingKg, 0)} kg faltantes
+                </span>
+                <button onClick={exportPlan} className="flex h-9 items-center gap-space-xs rounded-lg bg-primary-container px-space-md font-semibold text-on-primary transition-colors hover:bg-primary">
+                  <Download aria-hidden className="size-4" /> Exportar
+                </button>
+                <button
+                  onClick={() => {
+                    setSelection([]);
+                    setPlanExpanded(null);
+                  }}
+                  className="flex h-9 items-center gap-space-xs rounded-lg border border-outline-variant px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
+                >
+                  <Trash2 aria-hidden className="size-4" /> Limpiar
+                </button>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-body-md">
+                <thead>
+                  <tr className="border-b border-surface-container bg-surface-container">
+                    <Th className="w-8" />
+                    <Th>{by === 'producto' ? 'Producto' : 'Cliente'}</Th>
+                    <Th align="right">Renglones</Th>
+                    <Th align="right">Pendiente</Th>
+                    <Th align="right">Asignado</Th>
+                    <Th align="right">Faltante kg</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-surface-container">
+                  {planGroups.map((g) => {
+                    const open = planExpanded === g.key;
+                    return (
+                      <Fragment key={g.key}>
+                        <tr className="transition-colors hover:bg-surface-container-low">
+                          <Td />
+                          <Td>
+                            <button onClick={() => setPlanExpanded(open ? null : g.key)} className="flex items-start gap-space-sm text-left">
+                              {open ? (
+                                <ChevronDown aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />
+                              ) : (
+                                <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-outline" />
+                              )}
+                              <span className="flex min-w-0 flex-col">
+                                <span className="truncate font-semibold text-on-surface">{g.label}</span>
+                                {g.code && <span className="text-label-sm tabular-nums text-outline">{g.code}</span>}
+                              </span>
+                            </button>
+                          </Td>
+                          <Td align="right" className="tabular-nums">{g.entries.length}</Td>
+                          <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(g.pendingQty, 0)}</Td>
+                          <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(g.assignedQty, 0)}</Td>
+                          <Td align="right" className={`tabular-nums font-bold ${g.missingKg > 0 ? 'text-error' : 'text-outline'}`}>{fmtQty(g.missingKg, 0)}</Td>
+                        </tr>
+                        {open && (
+                          <tr>
+                            <td colSpan={6} className="bg-surface-container-low px-space-md py-space-sm">
+                              <div className="overflow-x-auto rounded-lg bg-surface-container-lowest">
+                                <table className="w-full border-collapse text-label-md">
+                                  <thead>
+                                    <tr className="border-b border-surface-container">
+                                      <Th align="right" className="w-14">Turno</Th>
+                                      <Th>Pedido</Th>
+                                      <Th>{by === 'producto' ? 'Cliente' : 'Artículo'}</Th>
+                                      <Th align="right">Pend.</Th>
+                                      <Th align="right">Asignado</Th>
+                                      <Th align="right">Faltante</Th>
+                                      <Th />
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-surface-container">
+                                    {g.entries.map((e) => {
+                                      const ref = lineByKey.get(e.key);
+                                      if (!ref) return null;
+                                      return (
+                                        <tr key={e.key} className="transition-colors hover:bg-surface-container-low">
+                                          <Td align="right" className="tabular-nums font-bold text-primary">{e.priority}</Td>
+                                          <Td className="tabular-nums text-on-surface-variant">{ref.line.orderNumber}</Td>
+                                          <Td>
+                                            {by === 'producto' ? (
+                                              <span className="block max-w-[18rem] truncate">{ref.line.customerName ?? '—'}</span>
+                                            ) : (
+                                              <span className="block max-w-[22rem] truncate" title={ref.line.description ?? ''}>
+                                                <span className="font-bold text-primary">{ref.line.productCode}</span>
+                                                <span className="text-on-surface-variant"> · {ref.line.description ?? '—'}</span>
+                                              </span>
+                                            )}
+                                          </Td>
+                                          <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(e.pendingQty, 0)}</Td>
+                                          <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(e.assignedQty, 0)}</Td>
+                                          <Td align="right" className={`tabular-nums ${e.missingQty > 0 ? 'font-bold text-error' : 'text-outline'}`}>{fmtQty(e.missingQty, 0)}</Td>
+                                          <Td align="right">
+                                            <button onClick={() => toggleLine(ref.line)} className="font-semibold text-primary-container hover:underline">
+                                              Liberar
+                                            </button>
+                                          </Td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
 
-          {/* Análisis de cobertura */}
-          <div className="xl:col-span-12">
-            <Card className="overflow-hidden">
-              <CardHeader
-                title="Cobertura de la demanda"
-                description="Kilogramos despachables y faltantes con la existencia viva (ya descontado lo marcado)."
-              />
-              <div className="grid gap-space-lg p-space-lg md:grid-cols-2">
-                <div>
-                  <h3 className="mb-space-xs font-semibold uppercase tracking-wider text-label-sm text-outline">Por producto (kg)</h3>
-                  <EChart option={coverageChart} height={240} ariaLabel="Cobertura por producto en kilogramos" />
-                </div>
-                <div className="md:border-l md:border-surface-container md:pl-space-lg">
-                  <h3 className="mb-space-xs font-semibold uppercase tracking-wider text-label-sm text-outline">Global (kg)</h3>
-                  <EChart option={donutChart} height={240} ariaLabel="Cobertura global en kilogramos" />
-                </div>
-              </div>
-            </Card>
-          </div>
-        </div>
+        {isLoading && <p className="text-body-md text-on-surface-variant">Consultando pedidos…</p>}
+        {error && !(error instanceof AuthRequiredError) && (
+          <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
+            <AlertTriangle aria-hidden className="size-4" /> {error instanceof Error ? error.message : 'Error al consultar'}
+          </p>
+        )}
+
+        {data && (
+          <Card className="overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-body-md">
+                <thead>
+                  <tr className="border-b border-surface-container bg-surface-container">
+                    <Th className="w-8" />
+                    <Th>{by === 'producto' ? 'Producto' : 'Cliente'}</Th>
+                    <Th>Cobertura</Th>
+                    <Th align="right">{by === 'producto' ? 'Clientes' : 'Productos'}</Th>
+                    <Th align="right">Pedidos</Th>
+                    <Th align="right">Pendiente</Th>
+                    <Th align="right">Pendiente kg</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-surface-container">
+                  {orderedGroups.length === 0 && (
+                    <tr>
+                      <Td align="center" className="py-space-xl text-on-surface-variant">
+                        {hasFilters ? 'Sin pedidos para los filtros aplicados.' : 'No hay pedidos sincronizados.'}
+                      </Td>
+                    </tr>
+                  )}
+                  {orderedGroups.map((group) => {
+                    const keys = group.lines.map(lineKey);
+                    const allSelected = keys.every((k) => selection.includes(k));
+                    const pendingQty = group.lines.reduce((a, l) => a + l.pendingQty, 0);
+                    const assignedQty = group.lines.reduce((a, l) => a + (queueByKey.get(lineKey(l))?.assignedQty ?? 0), 0);
+                    const coverage = pendingQty > 0 ? assignedQty / pendingQty : 1;
+                    const earliest = group.lines.reduce((min, l) => Math.min(min, timeOf(l.requestedDate)), Number.POSITIVE_INFINITY);
+                    const isOpen = expanded === group.key;
+                    return (
+                      <GroupRow
+                        key={group.key}
+                        group={group}
+                        by={by}
+                        isOpen={isOpen}
+                        allSelected={allSelected}
+                        selectedCount={keys.filter((k) => selection.includes(k)).length}
+                        coverage={coverage}
+                        earliest={Number.isFinite(earliest) ? new Date(earliest).toISOString() : null}
+                        selection={selection}
+                        mode={mode}
+                        queueByKey={queueByKey}
+                        onToggleGroup={() => toggleGroup(group)}
+                        onToggleLine={toggleLine}
+                        onToggleOpen={() => setExpanded(isOpen ? null : group.key)}
+                      />
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-space-sm border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
+              <span>
+                {orderedGroups.length} grupo{orderedGroups.length === 1 ? '' : 's'} · pendiente {fmtQty(liveSummary.pendingQty, 0)} unid. / {fmtQty(liveSummary.pendingKg, 0)} kg
+              </span>
+              <span>«Asignado» y «faltante» reflejan tu existencia actual · {queue.length} renglones</span>
+            </div>
+          </Card>
+        )}
       </main>
     </>
   );
 }
 
-// ============================================================
-// Plan de despacho: una fila por renglón marcado, en turnos.
-// ============================================================
-function PlanDespacho({
-  entries,
-  lineByKey,
-  onToggleLine,
-  by,
-}: {
-  entries: QueueEntry[];
-  lineByKey: Map<string, { line: OrderGroupLine; group: OrderGroup }>;
-  onToggleLine: (line: OrderGroupLine) => void;
-  by: OrderGroupBy;
-}) {
-  const columns: Column<QueueEntry>[] = [
-    {
-      key: 'order',
-      header: 'Pedido',
-      kind: 'id',
-      sortValue: (e) => lineByKey.get(e.key)?.line.orderNumber ?? '',
-      render: (e) => {
-        const ref = lineByKey.get(e.key);
-        return (
-          <span className="flex min-w-0 flex-col gap-space-2xs">
-            <span className="truncate tabular-nums">{ref?.line.orderNumber ?? '—'}</span>
-            <span className="text-label-sm font-medium tracking-normal text-outline">
-              Turno {e.priority}
-              {ref ? ` · entrega ${fmtDate(ref.line.requestedDate)}` : ''}
-            </span>
-          </span>
-        );
-      },
-    },
-    {
-      key: 'other',
-      header: by === 'producto' ? 'Cliente' : 'Artículo',
-      kind: 'field',
-      sortValue: (e) => (by === 'producto' ? (lineByKey.get(e.key)?.line.customerName ?? '') : (lineByKey.get(e.key)?.line.productCode ?? '')),
-      render: (e) => {
-        const line = lineByKey.get(e.key)?.line;
-        if (!line) return <span className="text-outline">—</span>;
-        return by === 'producto' ? (
-          <span className="block max-w-[18rem] truncate">{line.customerName ?? '—'}</span>
-        ) : (
-          <span className="block max-w-[22rem] truncate" title={line.description ?? undefined}>
-            <span className="font-bold text-primary">{line.productCode}</span>
-            <span className="text-on-surface-variant"> · {line.description ?? '—'}</span>
-          </span>
-        );
-      },
-    },
-    {
-      key: 'pending',
-      header: 'Pendiente',
-      kind: 'metric',
-      align: 'right',
-      render: (e) => <span className={cx('font-bold tabular-nums', e.pendingQty < 0 ? 'text-critical' : 'text-on-surface')}>{fmtUnits(e.pendingQty)}</span>,
-      sortValue: (e) => e.pendingQty,
-    },
-    {
-      key: 'assigned',
-      header: 'Asignado',
-      kind: 'metric',
-      align: 'right',
-      render: (e) => <span className="font-bold tabular-nums text-secondary">{fmtUnits(e.assignedQty)}</span>,
-      sortValue: (e) => e.assignedQty,
-    },
-    {
-      key: 'missing',
-      header: 'Faltante',
-      kind: 'metric',
-      align: 'right',
-      render: (e) => (
-        <span className={cx('tabular-nums', e.missingQty > 0 ? 'font-bold text-critical' : 'text-outline')}>{fmtUnits(e.missingQty)}</span>
-      ),
-      sortValue: (e) => e.missingQty,
-    },
-    {
-      key: 'assignedKg',
-      header: 'Kg asignado',
-      kind: 'detail',
-      align: 'right',
-      render: (e) => <span className="tabular-nums">{fmtInt(e.assignedKg)}</span>,
-      sortValue: (e) => e.assignedKg,
-    },
-    {
-      key: 'missingKg',
-      header: 'Kg faltante',
-      kind: 'detail',
-      align: 'right',
-      render: (e) => (
-        <span className={cx('tabular-nums', e.missingKg > 0 ? 'text-critical' : 'text-outline')}>{fmtInt(e.missingKg)}</span>
-      ),
-      sortValue: (e) => e.missingKg,
-    },
-    {
-      key: 'warehouse',
-      header: 'Almacén',
-      kind: 'detail',
-      render: (e) => <span className="tabular-nums text-on-surface-variant">{lineByKey.get(e.key)?.line.warehouseCode ?? '—'}</span>,
-    },
-    {
-      key: 'actions',
-      header: 'Acciones',
-      kind: 'action',
-      align: 'right',
-      render: (e) => {
-        const ref = lineByKey.get(e.key);
-        if (!ref) return null;
-        return (
-          <Button
-            variant="outline"
-            icon={X}
-            onClick={() => onToggleLine(ref.line)}
-            ariaLabel={`Liberar el renglón ${ref.line.orderNumber} de ${ref.line.productCode}`}
-            className="md:h-8"
-          >
-            Liberar
-          </Button>
-        );
-      },
-    },
-  ];
-
-  return (
-    <DataTable
-      columns={columns}
-      rows={entries}
-      rowKey={(e) => e.key}
-      maxHeightClass=""
-      sticky={false}
-      empty={
-        <EmptyState
-          icon={PackageCheck}
-          title="Aún no hay plan de despacho"
-          description="Abre un grupo de la cola de pedidos y marca los renglones que puedes despachar hoy: aquí aparecerán en turnos."
-        />
-      }
-    />
-  );
-}
-
-// ============================================================
-// Renglones del grupo abierto: marcar / liberar con el stock vivo.
-// ============================================================
-function RenglonesDeGrupo({
+// ---------- Fila de grupo + panel desplegable ----------
+function GroupRow({
   group,
   by,
+  isOpen,
+  allSelected,
+  selectedCount,
+  coverage,
+  earliest,
   selection,
   mode,
   queueByKey,
+  onToggleGroup,
   onToggleLine,
+  onToggleOpen,
 }: {
   group: OrderGroup;
   by: OrderGroupBy;
+  isOpen: boolean;
+  allSelected: boolean;
+  selectedCount: number;
+  coverage: number;
+  earliest: string | null;
   selection: string[];
   mode: DispatchMode;
   queueByKey: Map<string, QueueEntry>;
+  onToggleGroup: () => void;
   onToggleLine: (line: OrderGroupLine) => void;
+  onToggleOpen: () => void;
 }) {
-  const lines = useMemo(
-    () => [...group.lines].sort((a, b) => (queueByKey.get(lineKey(a))?.sortIndex ?? 0) - (queueByKey.get(lineKey(b))?.sortIndex ?? 0)),
-    [group, queueByKey],
-  );
-
-  const columns: Column<OrderGroupLine>[] = [
-    {
-      key: 'order',
-      header: 'Pedido',
-      kind: 'id',
-      sortValue: (l) => l.orderNumber,
-      render: (l) => (
-        <span className="flex min-w-0 flex-col gap-space-2xs">
-          <span className="truncate tabular-nums">{l.orderNumber}</span>
-          <span className="text-label-sm font-medium tracking-normal text-outline">entrega {fmtDate(l.requestedDate)}</span>
-        </span>
-      ),
-    },
-    {
-      key: 'other',
-      header: by === 'producto' ? 'Cliente' : 'Artículo',
-      kind: 'field',
-      sortValue: (l) => (by === 'producto' ? l.customerName ?? '' : l.productCode),
-      render: (l) =>
-        by === 'producto' ? (
-          <span className="block max-w-[18rem] truncate">{l.customerName ?? '—'}</span>
-        ) : (
-          <span className="block max-w-[22rem] truncate" title={l.description ?? undefined}>
-            <span className="font-bold text-primary">{l.productCode}</span>
-            <span className="text-on-surface-variant"> · {l.description ?? '—'}</span>
-          </span>
-        ),
-    },
-    {
-      key: 'pending',
-      header: 'Pendiente',
-      kind: 'metric',
-      align: 'right',
-      sortValue: (l) => l.pendingQty,
-      render: (l) => {
-        const entry = queueByKey.get(lineKey(l));
-        const selected = selection.includes(lineKey(l));
-        if (selected && (entry?.assignedQty ?? 0) < l.pendingQty) {
-          return (
-            <span className="tabular-nums">
-              <span className="text-outline line-through">{fmtUnits(l.pendingQty)}</span>{' '}
-              <span className="font-bold text-secondary">{fmtUnits(entry?.assignedQty ?? 0)}</span>
+  const coveragePct = Math.round(coverage * 100);
+  const tone = coveragePct >= 100 ? 'success' : coveragePct > 0 ? 'warning' : 'danger';
+  return (
+    <>
+      <tr className={`transition-colors ${selectedCount > 0 ? 'bg-primary-fixed/50' : 'hover:bg-surface-container-low'}`}>
+        <Td>
+          <input type="checkbox" checked={allSelected} onChange={onToggleGroup} aria-label="Seleccionar grupo completo" className="size-4 accent-[var(--color-primary-container)]" />
+        </Td>
+        <Td>
+          <button onClick={onToggleOpen} className="flex items-start gap-space-sm text-left">
+            {isOpen ? <ChevronDown aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" /> : <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-outline" />}
+            <span className="flex min-w-0 flex-col">
+              <span className="flex items-center gap-space-xs">
+                <span className="truncate font-semibold text-on-surface">{group.label}</span>
+                {selectedCount > 0 && (
+                  <span
+                    className="shrink-0 rounded bg-primary-container px-space-xs text-label-sm font-bold text-on-primary"
+                    title="Renglones marcados para despacho en este grupo"
+                  >
+                    {selectedCount}
+                  </span>
+                )}
+              </span>
+              <span className="text-label-sm tabular-nums text-outline">
+                {group.code ?? ''}
+                {earliest ? ` · entrega ${fmtDate(earliest)}` : ''}
+              </span>
             </span>
-          );
-        }
-        return <span className={cx('font-bold tabular-nums', l.pendingQty < 0 ? 'text-critical' : 'text-on-surface')}>{fmtUnits(l.pendingQty)}</span>;
-      },
-    },
-    {
-      key: 'assigned',
-      header: 'Asignado',
-      kind: 'metric',
-      align: 'right',
-      sortValue: (l) => queueByKey.get(lineKey(l))?.assignedQty ?? 0,
-      render: (l) => <span className="font-bold tabular-nums text-secondary">{fmtUnits(queueByKey.get(lineKey(l))?.assignedQty ?? 0)}</span>,
-    },
-    {
-      key: 'missing',
-      header: 'Faltante',
-      kind: 'metric',
-      align: 'right',
-      sortValue: (l) => queueByKey.get(lineKey(l))?.missingQty ?? 0,
-      render: (l) => {
-        const missing = queueByKey.get(lineKey(l))?.missingQty ?? 0;
-        return <span className={cx('tabular-nums', missing > 0 ? 'font-bold text-critical' : 'text-outline')}>{fmtUnits(missing)}</span>;
-      },
-    },
-    {
-      key: 'stock',
-      header: 'Existencia',
-      kind: 'metric',
-      align: 'right',
-      sortValue: (l) => (l.stock03 ?? 0) + (l.stock68 ?? 0),
-      render: (l) => <span className="font-bold tabular-nums">{fmtInt((l.stock03 ?? 0) + (l.stock68 ?? 0))}</span>,
-    },
-    {
-      key: 'kg',
-      header: 'Kg pendiente',
-      kind: 'detail',
-      align: 'right',
-      render: (l) => <span className="tabular-nums text-on-surface-variant">{fmtInt(l.pendingKg)}</span>,
-      sortValue: (l) => l.pendingKg ?? 0,
-    },
-    {
-      key: 'stock03',
-      header: 'Stock 03',
-      kind: 'detail',
-      align: 'right',
-      render: (l) => <span className="tabular-nums">{fmtInt(l.stock03)}</span>,
-    },
-    {
-      key: 'stock68',
-      header: 'Stock 68',
-      kind: 'detail',
-      align: 'right',
-      render: (l) => <span className="tabular-nums">{fmtInt(l.stock68)}</span>,
-    },
-    {
-      key: 'warehouse',
-      header: 'Almacén',
-      kind: 'detail',
-      render: (l) => <span className="tabular-nums text-on-surface-variant">{l.warehouseCode ?? '—'}</span>,
-    },
-    {
-      key: 'authorized',
-      header: 'Autorizado',
-      kind: 'field',
-      render: (l) => (l.authorized === null ? <span className="text-outline">—</span> : <Badge tone={l.authorized ? 'success' : 'muted'}>{l.authorized ? 'SÍ' : 'NO'}</Badge>),
-    },
-    {
-      key: 'state',
-      header: 'Estado',
-      kind: 'status',
-      sortValue: (l) => (selection.includes(lineKey(l)) ? 0 : queueByKey.get(lineKey(l))?.dispatchable ? 1 : 2),
-      render: (l) => {
-        const entry = queueByKey.get(lineKey(l));
-        const selected = selection.includes(lineKey(l));
-        const blocked = mode === 'disponible' && !selected && !(entry?.dispatchable ?? false);
-        if (selected) {
-          return (entry?.missingQty ?? 0) > 0 ? <Badge tone="warning" dot>Parcial</Badge> : <Badge tone="success" dot>Marcado</Badge>;
-        }
-        if (blocked) return <Badge tone="danger" dot>Sin existencia</Badge>;
-        return <Badge tone="muted" dot>Disponible</Badge>;
-      },
-    },
-    {
-      key: 'actions',
-      header: 'Acciones',
-      kind: 'action',
-      align: 'right',
-      render: (l) => {
-        const key = lineKey(l);
-        const selected = selection.includes(key);
-        const entry = queueByKey.get(key);
-        const blocked = mode === 'disponible' && !selected && !(entry?.dispatchable ?? false);
-        return (
-          <div className="flex flex-wrap items-center justify-end gap-space-sm">
-            {selected ? (
-              <Button
-                variant="outline"
-                icon={X}
-                onClick={() => onToggleLine(l)}
-                ariaLabel={`Liberar el renglón de ${l.productCode} del pedido ${l.orderNumber}`}
-                className="md:h-8"
-              >
-                Liberar
-              </Button>
-            ) : blocked ? (
-              <Button variant="ghost" icon={PackageX} disabled ariaLabel={`Sin existencia para el renglón de ${l.productCode} del pedido ${l.orderNumber}`} className="md:h-8">
-                Sin existencia
-              </Button>
-            ) : (
-              <Button
-                variant="primary"
-                icon={Check}
-                onClick={() => onToggleLine(l)}
-                ariaLabel={`Marcar el renglón de ${l.productCode} del pedido ${l.orderNumber}`}
-                className="md:h-8"
-              >
-                Marcar
-              </Button>
-            )}
-            <Link
-              href={`/pedidos/${l.orderId}`}
-              title={`Abrir el detalle del pedido ${l.orderNumber}`}
-              className="inline-flex h-11 items-center gap-space-xs rounded-lg px-space-sm font-semibold text-primary-container hover:bg-surface-container-low md:h-8"
-            >
-              Ver pedido <ArrowUpRight aria-hidden className="size-4" />
-            </Link>
+          </button>
+        </Td>
+        <Td>
+          <div className="flex min-w-[7rem] items-center gap-space-sm">
+            <CoverageBar ratio={coverage} className="w-16" />
+            <Badge tone={tone}>{coveragePct}%</Badge>
           </div>
-        );
-      },
-    },
-  ];
+        </Td>
+        <Td align="right" className="tabular-nums">{group.itemsCount}</Td>
+        <Td align="right" className="tabular-nums">{group.ordersCount}</Td>
+        <Td align="right" className={`tabular-nums font-bold ${group.totalPendingQty < 0 ? 'text-error' : 'text-on-surface'}`}>{fmtQty(group.totalPendingQty, 0)}</Td>
+        <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(group.totalPendingKg, 0)}</Td>
+      </tr>
 
-  return <DataTable columns={columns} rows={lines} rowKey={(l) => lineKey(l)} maxHeightClass="" sticky={false} />;
+      {isOpen && (
+        <tr>
+          <td colSpan={7} className="bg-surface-container-low px-space-md py-space-sm">
+            <div className="overflow-x-auto rounded-lg bg-surface-container-lowest">
+              <table className="w-full border-collapse text-label-md">
+                <thead>
+                  <tr className="border-b border-surface-container">
+                    <Th className="w-8" />
+                    <Th>Pedido</Th>
+                    <Th>{by === 'producto' ? 'Cliente' : 'Entrega'}</Th>
+                    {by === 'cliente' && <Th>Artículo</Th>}
+                    <Th align="right">Pend.</Th>
+                    <Th align="right">Kg</Th>
+                    <Th>Alm.</Th>
+                    <Th align="right">Stock</Th>
+                    <Th align="right">Asignado</Th>
+                    <Th align="right">Faltante</Th>
+                    <Th align="center">Aut.</Th>
+                    <Th />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-surface-container">
+                  {[...group.lines]
+                    .sort((a, b) => (queueByKey.get(lineKey(a))?.sortIndex ?? 0) - (queueByKey.get(lineKey(b))?.sortIndex ?? 0))
+                    .map((line) => {
+                    const key = lineKey(line);
+                    const selected = selection.includes(key);
+                    const r = queueByKey.get(key);
+                    const dispatchable = r?.dispatchable ?? false;
+                    const blocked = mode === 'disponible' && !selected && !dispatchable;
+                    return (
+                      <tr key={key} className={`transition-colors ${selected ? 'bg-success-container' : blocked ? 'opacity-55' : 'hover:bg-surface-container-low'}`}>
+                        <Td>
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            disabled={blocked}
+                            onChange={() => onToggleLine(line)}
+                            aria-label="Seleccionar renglón para despacho"
+                            title={blocked ? 'Sin existencia disponible' : undefined}
+                            className="size-4 accent-[var(--color-primary-container)] disabled:cursor-not-allowed"
+                          />
+                        </Td>
+                        <Td className="font-bold tabular-nums text-primary">{line.orderNumber}</Td>
+                        <Td className="tabular-nums text-on-surface-variant">
+                          {by === 'producto' ? <span className="block max-w-[16rem] truncate">{line.customerName ?? '—'}</span> : fmtDate(line.requestedDate)}
+                        </Td>
+                        {by === 'cliente' && (
+                          <Td>
+                            <span className="block max-w-[22rem] truncate" title={line.description ?? ''}>
+                              <span className="font-bold text-primary">{line.productCode}</span>
+                              <span className="text-on-surface-variant"> · {line.description ?? '—'}</span>
+                            </span>
+                          </Td>
+                        )}
+                        <Td align="right" className="tabular-nums font-bold">
+                          {selected && (r?.assignedQty ?? 0) < line.pendingQty ? (
+                            <>
+                              <span className="text-outline line-through">{fmtQty(line.pendingQty, 0)}</span>{' '}
+                              <span className="text-secondary">{fmtQty(r?.assignedQty ?? 0, 0)}</span>
+                            </>
+                          ) : (
+                            <span className={line.pendingQty < 0 ? 'text-error' : 'text-on-surface'}>{fmtQty(line.pendingQty, 0)}</span>
+                          )}
+                        </Td>
+                        <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(line.pendingKg, 0)}</Td>
+                        <Td className="tabular-nums text-on-surface-variant">{line.warehouseCode ?? '—'}</Td>
+                        <Td align="right" className="tabular-nums">
+                          {fmtQty((line.stock03 ?? 0) + (line.stock68 ?? 0), 0)}
+                          <span className="ml-space-xs text-label-sm text-outline">({fmtQty(line.stock03, 0)}/{fmtQty(line.stock68, 0)})</span>
+                          {blocked && <span className="ml-space-xs font-bold uppercase text-label-sm text-critical">sin existencia</span>}
+                        </Td>
+                        <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(r?.assignedQty ?? 0, 0)}</Td>
+                        <Td align="right" className={`tabular-nums ${(r?.missingQty ?? 0) > 0 ? 'font-bold text-error' : 'text-outline'}`}>{fmtQty(r?.missingQty ?? 0, 0)}</Td>
+                        <Td align="center">
+                          {line.authorized === null ? <span className="text-outline">—</span> : <Badge tone={line.authorized ? 'success' : 'muted'}>{line.authorized ? 'SÍ' : 'NO'}</Badge>}
+                        </Td>
+                        <Td align="right">
+                          <Link href={`/pedidos/${line.orderId}`} className="font-semibold text-primary-container hover:underline">Ver</Link>
+                        </Td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
 }
