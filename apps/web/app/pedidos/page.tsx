@@ -27,6 +27,7 @@ import {
   ArrowUpRight,
   Check,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Download,
   Gauge,
@@ -39,7 +40,7 @@ import {
   X,
 } from 'lucide-react';
 import Link from 'next/link';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { EChart } from '../../components/EChart';
 import { AppNav, LoginScreen } from '../../components/shell';
 import {
@@ -150,9 +151,16 @@ function fmtUnits(value: number | null | undefined): string {
   return Number.isInteger(value) ? fmtInt(value) : fmtQty(value, 2);
 }
 
-// Identificador estable para `aria-controls` (las claves de grupo traen espacios).
-function renglonesId(key: string): string {
-  return `renglones-${key.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+// Grupo del plan de despacho: la misma agrupación de la cola, con sus turnos.
+interface PlanGroup {
+  key: string;
+  label: string;
+  code: string | null;
+  entries: QueueEntry[];
+  pendingQty: number;
+  assignedQty: number;
+  missingQty: number;
+  missingKg: number;
 }
 
 export default function PedidosPage() {
@@ -161,6 +169,7 @@ export default function PedidosPage() {
   const [mode, setMode] = useState<DispatchMode>('disponible');
   const [sort, setSort] = useState<DispatchSort>('prioridad');
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [planExpanded, setPlanExpanded] = useState<string | null>(null);
   const [selection, setSelection] = useState<string[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
@@ -178,8 +187,6 @@ export default function PedidosPage() {
     typeof window === 'undefined' ? '' : (new URLSearchParams(window.location.search).get('cliente') ?? ''),
   );
 
-  const renglonesRef = useRef<HTMLElement | null>(null);
-
   useEffect(() => {
     setSelection(loadSelection());
     setHydrated(true);
@@ -187,12 +194,6 @@ export default function PedidosPage() {
   useEffect(() => {
     if (hydrated) window.localStorage.setItem(SEL_KEY, JSON.stringify(selection));
   }, [selection, hydrated]);
-  // Al abrir un grupo, los renglones quedan a la vista (la tabla puede ser larga).
-  useEffect(() => {
-    if (expanded && renglonesRef.current) {
-      renglonesRef.current.scrollIntoView({ block: 'start', behavior: 'smooth' });
-    }
-  }, [expanded]);
 
   const params = new URLSearchParams();
   params.set('by', by);
@@ -272,7 +273,36 @@ export default function PedidosPage() {
     return [...groups].sort((a, b) => rank(a) - rank(b));
   }, [groups, queueIndex]);
 
-  const openGroup = useMemo(() => (expanded ? orderedGroups.find((g) => g.key === expanded) ?? null : null), [expanded, orderedGroups]);
+  // Plan de despacho agrupado igual que la cola: por producto (y dentro, los
+  // clientes) o por cliente (y dentro, los artículos). Un grupo abierto a la vez.
+  const planGroups = useMemo<PlanGroup[]>(() => {
+    const map = new Map<string, PlanGroup>();
+    for (const entry of planEntries) {
+      const ref = lineByKey.get(entry.key);
+      if (!ref) continue;
+      const bucket =
+        map.get(ref.group.key) ??
+        ({
+          key: ref.group.key,
+          label: ref.group.label,
+          code: ref.group.code,
+          entries: [],
+          pendingQty: 0,
+          assignedQty: 0,
+          missingQty: 0,
+          missingKg: 0,
+        } satisfies PlanGroup);
+      bucket.entries.push(entry);
+      bucket.pendingQty += ref.line.pendingQty;
+      bucket.assignedQty += entry.assignedQty;
+      bucket.missingQty += entry.missingQty;
+      bucket.missingKg += entry.missingKg;
+      map.set(ref.group.key, bucket);
+    }
+    return [...map.values()]
+      .map((g) => ({ ...g, entries: [...g.entries].sort((a, b) => a.priority - b.priority) }))
+      .sort((a, b) => (a.entries[0]?.priority ?? 0) - (b.entries[0]?.priority ?? 0));
+  }, [planEntries, lineByKey]);
 
   // --- Gráficas ---
   const coverageChart = useMemo(() => {
@@ -535,6 +565,84 @@ export default function PedidosPage() {
     },
   ];
 
+  // --- Columnas: plan de despacho (una fila por grupo; se despliega a turnos) ---
+  const planGroupColumns: Column<PlanGroup>[] = [
+    {
+      key: 'label',
+      header: by === 'producto' ? 'Producto' : 'Cliente',
+      kind: 'id',
+      sortValue: (g) => g.entries[0]?.priority ?? 0,
+      render: (g) => {
+        const open = planExpanded === g.key;
+        const Chevron = open ? ChevronDown : ChevronRight;
+        return (
+          <span className="flex min-w-0 items-start gap-space-sm">
+            <Chevron aria-hidden className={cx('mt-0.5 size-4 shrink-0', open ? 'text-primary' : 'text-outline')} />
+            <span className="flex min-w-0 flex-col gap-space-2xs">
+              <span className="truncate font-semibold">{g.label}</span>
+              {g.code && <span className="text-label-sm font-medium tabular-nums tracking-normal text-outline">{g.code}</span>}
+            </span>
+          </span>
+        );
+      },
+    },
+    {
+      key: 'entries',
+      header: 'Turnos',
+      kind: 'metric',
+      align: 'right',
+      render: (g) => <span className="font-bold tabular-nums">{fmtInt(g.entries.length)}</span>,
+      sortValue: (g) => g.entries.length,
+    },
+    {
+      key: 'pending',
+      header: 'Pendiente',
+      kind: 'metric',
+      align: 'right',
+      render: (g) => <span className="tabular-nums text-on-surface-variant">{fmtUnits(g.pendingQty)}</span>,
+      sortValue: (g) => g.pendingQty,
+    },
+    {
+      key: 'assigned',
+      header: 'Asignado',
+      kind: 'metric',
+      align: 'right',
+      render: (g) => <span className="font-bold tabular-nums text-secondary">{fmtUnits(g.assignedQty)}</span>,
+      sortValue: (g) => g.assignedQty,
+    },
+    {
+      key: 'missingKg',
+      header: 'Faltante kg',
+      kind: 'metric',
+      align: 'right',
+      render: (g) => (
+        <span className={cx('tabular-nums', g.missingKg > 0 ? 'font-bold text-critical' : 'text-outline')}>{fmtInt(g.missingKg)}</span>
+      ),
+      sortValue: (g) => g.missingKg,
+    },
+    {
+      key: 'toggle',
+      header: 'Acciones',
+      kind: 'action',
+      align: 'right',
+      render: (g) => {
+        const open = planExpanded === g.key;
+        return (
+          <Button
+            variant="ghost"
+            icon={open ? ChevronUp : ChevronDown}
+            onClick={() => setPlanExpanded(open ? null : g.key)}
+            title={open ? 'Cerrar los turnos de este grupo' : 'Ver los turnos de este grupo'}
+            ariaLabel={open ? `Cerrar los turnos de ${g.label}` : `Ver los turnos de ${g.label}`}
+            className="md:h-8"
+          >
+            {open ? 'Cerrar' : 'Ver turnos'}
+          </Button>
+        );
+      },
+    },
+  ];
+
   return (
     <>
       <AppNav />
@@ -604,6 +712,7 @@ export default function PedidosPage() {
                   onChange={(v) => {
                     setBy(v as OrderGroupBy);
                     setExpanded(null);
+                    setPlanExpanded(null);
                   }}
                   options={BY_OPTIONS}
                 />
@@ -631,7 +740,7 @@ export default function PedidosPage() {
             <Card className="overflow-hidden">
               <CardHeader
                 title={`Plan de despacho · ${mode === 'disponible' ? 'solo disponible' : 'demanda total'}`}
-                description="Turnos por fecha de entrega; a igual fecha, el orden en que se marcaron."
+                description={`Turnos por fecha de entrega, agrupados por ${by === 'producto' ? 'producto (y dentro, sus clientes)' : 'cliente (y dentro, sus artículos)'}. A igual fecha, el orden en que se marcaron.`}
               />
               {planEntries.length > 0 && (
                 <Toolbar className="justify-between">
@@ -647,16 +756,33 @@ export default function PedidosPage() {
                     <Button variant="outline" icon={Download} onClick={exportPlan} title="Descargar el plan en CSV" ariaLabel="Exportar el plan de despacho en CSV">
                       Exportar plan
                     </Button>
-                    <Button variant="ghost" icon={Trash2} onClick={() => setSelection([])} ariaLabel="Limpiar el plan de despacho">
+                    <Button variant="ghost" icon={Trash2} onClick={() => { setSelection([]); setPlanExpanded(null); }} ariaLabel="Limpiar el plan de despacho">
                       Limpiar plan
                     </Button>
                   </div>
                 </Toolbar>
               )}
-              <PlanDespacho entries={planEntries} lineByKey={lineByKey} onToggleLine={toggleLine} />
+              <DataTable
+                columns={planGroupColumns}
+                rows={planGroups}
+                rowKey={(g) => g.key}
+                defaultSortKey="label"
+                expandedKey={planExpanded}
+                renderExpanded={(g) => (
+                  <PlanDespacho entries={g.entries} lineByKey={lineByKey} onToggleLine={toggleLine} by={by} />
+                )}
+                empty={
+                  <EmptyState
+                    icon={PackageCheck}
+                    title="Aún no hay plan de despacho"
+                    description="Abre un grupo de la cola de pedidos y marca los renglones que puedes despachar hoy: aquí aparecerán agrupados igual que la cola, y dentro de cada grupo, sus turnos."
+                  />
+                }
+              />
               {planEntries.length > 0 && (
                 <div className="border-t border-surface-container px-space-lg py-space-sm text-label-sm text-on-surface-variant">
-                  «Liberar» devuelve la existencia de ese renglón a la cola. El plan es solo analítico: no reserva stock en Profit.
+                  Abre un grupo para ver sus turnos. «Liberar» devuelve la existencia de ese renglón a la cola; el plan es solo
+                  analítico: no reserva stock en Profit.
                 </div>
               )}
             </Card>
@@ -726,6 +852,17 @@ export default function PedidosPage() {
                 rowKey={(g) => g.key}
                 loading={isLoading}
                 loadingRows={6}
+                expandedKey={expanded}
+                renderExpanded={(g) => (
+                  <RenglonesDeGrupo
+                    group={g}
+                    by={by}
+                    selection={selection}
+                    mode={mode}
+                    queueByKey={queueByKey}
+                    onToggleLine={toggleLine}
+                  />
+                )}
                 empty={
                   error ? (
                     <EmptyState
@@ -760,28 +897,6 @@ export default function PedidosPage() {
                   )
                 }
               />
-
-              {openGroup && (
-                <section
-                  ref={renglonesRef}
-                  id={renglonesId(openGroup.key)}
-                  aria-label={`Renglones de ${openGroup.label}`}
-                  className="scroll-mt-24 border-t border-surface-container"
-                >
-                  <div className="flex flex-wrap items-baseline justify-between gap-space-sm bg-surface-container-low px-space-lg py-space-sm">
-                    <h3 className="font-semibold uppercase tracking-wider text-label-md text-primary">Renglones de {openGroup.label}</h3>
-                    <p className="text-label-sm text-on-surface-variant">Primero los marcados; después, los que sí tienen existencia.</p>
-                  </div>
-                  <RenglonesDeGrupo
-                    group={openGroup}
-                    by={by}
-                    selection={selection}
-                    mode={mode}
-                    queueByKey={queueByKey}
-                    onToggleLine={toggleLine}
-                  />
-                </section>
-              )}
 
               <div className="flex flex-wrap items-center justify-between gap-space-sm border-t border-surface-container px-space-lg py-space-sm text-label-sm text-on-surface-variant">
                 <span>
@@ -825,10 +940,12 @@ function PlanDespacho({
   entries,
   lineByKey,
   onToggleLine,
+  by,
 }: {
   entries: QueueEntry[];
   lineByKey: Map<string, { line: OrderGroupLine; group: OrderGroup }>;
   onToggleLine: (line: OrderGroupLine) => void;
+  by: OrderGroupBy;
 }) {
   const columns: Column<QueueEntry>[] = [
     {
@@ -850,27 +967,22 @@ function PlanDespacho({
       },
     },
     {
-      key: 'article',
-      header: 'Artículo',
+      key: 'other',
+      header: by === 'producto' ? 'Cliente' : 'Artículo',
       kind: 'field',
-      sortValue: (e) => lineByKey.get(e.key)?.line.productCode ?? '',
+      sortValue: (e) => (by === 'producto' ? (lineByKey.get(e.key)?.line.customerName ?? '') : (lineByKey.get(e.key)?.line.productCode ?? '')),
       render: (e) => {
         const line = lineByKey.get(e.key)?.line;
         if (!line) return <span className="text-outline">—</span>;
-        return (
+        return by === 'producto' ? (
+          <span className="block max-w-[18rem] truncate">{line.customerName ?? '—'}</span>
+        ) : (
           <span className="block max-w-[22rem] truncate" title={line.description ?? undefined}>
             <span className="font-bold text-primary">{line.productCode}</span>
             <span className="text-on-surface-variant"> · {line.description ?? '—'}</span>
           </span>
         );
       },
-    },
-    {
-      key: 'customer',
-      header: 'Cliente',
-      kind: 'field',
-      sortValue: (e) => lineByKey.get(e.key)?.line.customerName ?? '',
-      render: (e) => <span className="block max-w-[16rem] truncate">{lineByKey.get(e.key)?.line.customerName ?? '—'}</span>,
     },
     {
       key: 'pending',
@@ -950,6 +1062,8 @@ function PlanDespacho({
       columns={columns}
       rows={entries}
       rowKey={(e) => e.key}
+      maxHeightClass=""
+      sticky={false}
       empty={
         <EmptyState
           icon={PackageCheck}
@@ -1159,5 +1273,5 @@ function RenglonesDeGrupo({
     },
   ];
 
-  return <DataTable columns={columns} rows={lines} rowKey={(l) => lineKey(l)} maxHeightClass="" />;
+  return <DataTable columns={columns} rows={lines} rowKey={(l) => lineKey(l)} maxHeightClass="" sticky={false} />;
 }

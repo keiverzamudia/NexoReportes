@@ -53,6 +53,28 @@ const clickByText = (text, selector = '[role="tab"], button, summary, a') =>
     text.toLowerCase(),
   )})); if (!el) return false; el.click(); return true; })()`;
 
+// Enfoca el contenido desplegado para que la captura lo muestre (el viewport
+// solo ve la parte alta de una página larga).
+const scrollToExpanded = `(() => {
+  const nodes = [...document.querySelectorAll('tbody td[colspan], main ul > li > div')];
+  const el = nodes.find((n) => n.getBoundingClientRect().height > 40);
+  if (!el) return false;
+  el.scrollIntoView({ block: 'center' });
+  return true;
+})()`;
+
+// Cambia un <select> controlado por React (setter nativo + evento change).
+const setSelectByLabel = (label, value) => `(() => {
+  const sel = [...document.querySelectorAll('select')].find((s) => (s.getAttribute('aria-label') || '').toLowerCase().includes(${JSON.stringify(
+    label.toLowerCase(),
+  )}));
+  if (!sel) return false;
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+  setter.call(sel, ${JSON.stringify(value)});
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+})()`;
+
 const SCENARIOS = [
   { name: 'portada', path: '/', devices: ['desktop', 'phone'] },
   { name: 'disponibilidad', path: '/disponibilidad', devices: ['desktop', 'phone'] },
@@ -80,7 +102,31 @@ const SCENARIOS = [
     name: 'pedidos-grupo',
     path: '/pedidos',
     devices: ['desktop', 'phone'],
-    steps: [{ tag: 'abrir-grupo', js: clickByText('Renglones') }],
+    steps: [
+      { tag: 'abrir-grupo', js: clickByText('Renglones') },
+      { tag: 'ver', js: scrollToExpanded },
+    ],
+  },
+  {
+    name: 'pedidos-plan',
+    path: '/pedidos',
+    devices: ['desktop', 'phone'],
+    steps: [
+      { tag: 'marcar-grupo', js: clickByText('Marcar todo') },
+      { tag: 'abrir-turnos', js: clickByText('Ver turnos') },
+      { tag: 'ver', js: scrollToExpanded },
+    ],
+  },
+  {
+    name: 'pedidos-por-producto',
+    path: '/pedidos',
+    devices: ['desktop', 'phone'],
+    steps: [
+      { tag: 'agrupar-producto', js: setSelectByLabel('agrupar', 'producto') },
+      { tag: 'marcar-grupo', js: clickByText('Marcar todo') },
+      { tag: 'abrir-turnos', js: clickByText('Ver turnos') },
+      { tag: 'ver', js: scrollToExpanded },
+    ],
   },
   { name: 'clientes', path: '/clientes', devices: ['desktop', 'phone'] },
 ];
@@ -124,10 +170,38 @@ const AUDIT = `(() => {
     viewport: { w: vw, h: window.innerHeight },
     pageHeight: doc.scrollHeight,
     overflowX: Math.max(0, doc.scrollWidth - vw),
+    // Qué elementos se salen del ancho: apunta al culpable del scroll horizontal.
+    overflowSources: (() => {
+      if (doc.scrollWidth <= vw + 1) return [];
+      const out = [];
+      for (const el of document.querySelectorAll('body *')) {
+        const r = el.getBoundingClientRect();
+        if (r.width < 1 || r.right <= vw + 1) continue;
+        const s = getComputedStyle(el);
+        if (s.display === 'none' || s.visibility === 'hidden') continue;
+        out.push({
+          el: el.tagName.toLowerCase(),
+          cls: typeof el.className === 'string' ? el.className.split(' ').slice(0, 3).join('.') : '',
+          text: (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 24),
+          w: Math.round(r.width),
+          right: Math.round(r.right),
+        });
+      }
+      return out.sort((a, b) => b.right - a.right).slice(0, 6);
+    })(),
     smallTargets,
     tables: document.querySelectorAll('table').length,
     cards: document.querySelectorAll('main ul > li').length,
     nav: { bottom: Boolean(document.querySelector('nav[aria-label="Módulos"].fixed')), top: document.querySelectorAll('header nav').length },
+    // Diagnóstico del ancho de la barra inferior (clave en teléfono).
+    bottomNav: (() => {
+      const n = [...document.querySelectorAll('nav[aria-label="Módulos"]')].pop();
+      if (!n) return null;
+      const cs = getComputedStyle(n);
+      return { position: cs.position, left: cs.left, right: cs.right, width: Math.round(n.getBoundingClientRect().width) };
+    })(),
+    bodyBox: { width: Math.round(document.body.getBoundingClientRect().width), transform: getComputedStyle(document.body).transform },
+    metaViewport: document.querySelector('meta[name="viewport"]')?.getAttribute('content') ?? null,
   };
 })()`;
 
@@ -218,7 +292,10 @@ const send = (method, params = {}) =>
   });
 const evaluate = async (expression) => {
   const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error(r.exceptionDetails.text);
+  if (r.exceptionDetails) {
+    const detail = r.exceptionDetails.exception?.description ?? r.exceptionDetails.text;
+    throw new Error(String(detail).split('\n').slice(0, 4).join(' | '));
+  }
   return r.result?.value;
 };
 
@@ -270,7 +347,12 @@ for (const scenario of SCENARIOS) {
 
     const stepResults = [];
     for (const step of scenario.steps ?? []) {
-      stepResults.push({ tag: step.tag, applied: await evaluate(step.js) });
+      try {
+        stepResults.push({ tag: step.tag, applied: await evaluate(step.js) });
+      } catch (err) {
+        stepResults.push({ tag: step.tag, applied: false, error: err.message });
+        console.log(`   ⚠ paso "${step.tag}" falló: ${err.message}`);
+      }
       await sleep(1400);
     }
 

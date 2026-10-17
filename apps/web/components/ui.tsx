@@ -18,7 +18,7 @@
 
 import { ChevronDown, ChevronsUpDown, ChevronUp, Inbox, SlidersHorizontal } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, Fragment, type ReactNode } from 'react';
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(' ');
@@ -511,6 +511,9 @@ export function DataTable<T>({
   maxHeightClass = 'md:max-h-[min(72vh,900px)]',
   sortable = true,
   defaultSortKey,
+  expandedKey,
+  renderExpanded,
+  sticky = true,
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -524,6 +527,12 @@ export function DataTable<T>({
   maxHeightClass?: string;
   sortable?: boolean;
   defaultSortKey?: string;
+  /** Clave de la fila abierta (acordeón). Ver `renderExpanded`. */
+  expandedKey?: string | null;
+  /** Contenido que se despliega **dentro de la fila** (escritorio) o de la tarjeta (teléfono). */
+  renderExpanded?: (row: T) => ReactNode;
+  /** Encabezado anclado al hacer scroll. Desactivar en tablas anidadas. */
+  sticky?: boolean;
 }) {
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
 
@@ -582,9 +591,10 @@ export function DataTable<T>({
                     scope="col"
                     aria-sort={ariaSort}
                     className={cx(
-                      'sticky top-0 z-10 whitespace-nowrap bg-surface-container-low px-space-sm py-space-sm font-semibold uppercase tracking-wider text-label-sm text-outline',
+                      'whitespace-nowrap bg-surface-container-low px-space-sm py-space-sm font-semibold uppercase tracking-wider text-label-sm text-outline',
+                      sticky && 'sticky top-0 z-10',
                       ALIGN[c.align ?? 'left'],
-                      index === 0 && 'left-0 z-20 border-r border-surface-container',
+                      index === 0 && cx('left-0 border-r border-surface-container', sticky ? 'z-20' : 'z-[1]'),
                       c.className,
                     )}
                   >
@@ -615,29 +625,48 @@ export function DataTable<T>({
             </tr>
           </thead>
           <tbody className="divide-y divide-surface-container">
-            {sorted.map((row) => (
-              <tr key={rowKey(row)} className="group transition-colors hover:bg-surface-container-low">
-                {columns.map((c, index) => (
-                  <td
-                    key={c.key}
-                    title={c.title?.(row)}
+            {sorted.map((row) => {
+              const key = rowKey(row);
+              const isOpen = expandedKey != null && expandedKey === key;
+              return (
+                <Fragment key={key}>
+                  <tr
                     className={cx(
-                      'px-space-sm py-[7px] align-middle',
-                      ALIGN[c.align ?? 'left'],
-                      c.align === 'right' && NUMERIC,
-                      // Si la columna declara `title` es porque su texto puede ser
-                      // largo: se trunca con elipsis y el completo sale en el title.
-                      c.title && 'max-w-[18rem] truncate',
-                      index === 0 &&
-                        'sticky left-0 z-[1] border-r border-surface-container bg-surface-container-lowest font-semibold text-primary group-hover:bg-surface-container-low',
-                      c.className,
+                      'group transition-colors',
+                      isOpen ? 'bg-surface-container-low' : 'hover:bg-surface-container-low',
                     )}
                   >
-                    {c.render(row)}
-                  </td>
-                ))}
-              </tr>
-            ))}
+                    {columns.map((c, index) => (
+                      <td
+                        key={c.key}
+                        title={c.title?.(row)}
+                        className={cx(
+                          'px-space-sm py-[7px] align-middle',
+                          ALIGN[c.align ?? 'left'],
+                          c.align === 'right' && NUMERIC,
+                          // Si la columna declara `title` es porque su texto puede ser
+                          // largo: se trunca con elipsis y el completo sale en el title.
+                          c.title && 'max-w-[18rem] truncate',
+                          index === 0 &&
+                            'sticky left-0 z-[1] border-r border-surface-container bg-surface-container-lowest font-semibold text-primary group-hover:bg-surface-container-low',
+                          isOpen && index === 0 && 'bg-surface-container-low',
+                          c.className,
+                        )}
+                      >
+                        {c.render(row)}
+                      </td>
+                    ))}
+                  </tr>
+                  {isOpen && renderExpanded && (
+                    <tr>
+                      <td colSpan={columns.length} className="bg-surface-container-low px-space-md py-space-md">
+                        {renderExpanded(row)}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
           </tbody>
           {footer && <tfoot>{footer}</tfoot>}
         </table>
@@ -645,8 +674,14 @@ export function DataTable<T>({
 
       {/* ---------- Teléfono: tarjetas ---------- */}
       <ul className="flex flex-col divide-y divide-surface-container md:hidden">
-        {sorted.map((row) => (
-          <li key={rowKey(row)} className="flex flex-col gap-space-sm px-space-lg py-space-md">
+        {sorted.map((row) => {
+          const key = rowKey(row);
+          const isOpen = expandedKey != null && expandedKey === key;
+          return (
+          <li
+            key={key}
+            className={cx('flex flex-col gap-space-sm px-space-lg py-space-md', isOpen && 'bg-surface-container-low')}
+          >
             <div className="flex items-start justify-between gap-space-sm">
               <div className="flex min-w-0 flex-col gap-space-2xs">
                 {idCols.map((c) => (
@@ -709,8 +744,13 @@ export function DataTable<T>({
                 ))}
               </div>
             )}
+
+            {isOpen && renderExpanded && (
+              <div className="rounded-lg bg-surface-container px-space-md py-space-md">{renderExpanded(row)}</div>
+            )}
           </li>
-        ))}
+          );
+        })}
         {mobileSummary && <li className="border-t-2 border-surface-container bg-surface-container-low">{mobileSummary}</li>}
       </ul>
     </>
