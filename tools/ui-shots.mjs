@@ -53,6 +53,17 @@ const clickByText = (text, selector = '[role="tab"], button, summary, a') =>
     text.toLowerCase(),
   )})); if (!el) return false; el.click(); return true; })()`;
 
+// Pedidos: la cola agrupa por cliente/producto. El botón de la etiqueta abre el
+// grupo y el checkbox de la primera columna marca solo los renglones con
+// existencia (en «Solo disponible» los demás quedan deshabilitados).
+const clickFirstGroupToggle = `(() => { const b = document.querySelector('table tbody tr td:nth-child(2) button'); if (!b) return false; b.click(); return true; })()`;
+
+const checkGroupCheckbox = (index = 0) =>
+  `(() => { const boxes = [...document.querySelectorAll('table tbody tr td:nth-child(1) input[type="checkbox"]:not([disabled])')]; const box = boxes[${index}]; if (!box) return false; box.click(); return true; })()`;
+
+// La última tabla de la página es la lista de pedidos (el plan va antes).
+const clickLastTableGroupToggle = `(() => { const tables = [...document.querySelectorAll('table')]; const t = tables[tables.length - 1]; if (!t) return false; const b = t.querySelector('tbody tr td:nth-child(2) button'); if (!b) return false; b.click(); return true; })()`;
+
 // Enfoca el contenido desplegado para que la captura lo muestre (el viewport
 // solo ve la parte alta de una página larga).
 const scrollToExpanded = `(() => {
@@ -103,7 +114,7 @@ const SCENARIOS = [
     path: '/pedidos',
     devices: ['desktop', 'phone'],
     steps: [
-      { tag: 'abrir-grupo', js: clickByText('Renglones') },
+      { tag: 'abrir-grupo', js: clickFirstGroupToggle },
       { tag: 'ver', js: scrollToExpanded },
     ],
   },
@@ -112,8 +123,7 @@ const SCENARIOS = [
     path: '/pedidos',
     devices: ['desktop', 'phone'],
     steps: [
-      { tag: 'marcar-grupo', js: clickByText('Marcar todo') },
-      { tag: 'abrir-turnos', js: clickByText('Ver turnos') },
+      { tag: 'marcar-grupo', js: checkGroupCheckbox(0) },
       { tag: 'ver', js: scrollToExpanded },
     ],
   },
@@ -123,8 +133,23 @@ const SCENARIOS = [
     devices: ['desktop', 'phone'],
     steps: [
       { tag: 'agrupar-producto', js: setSelectByLabel('agrupar', 'producto') },
-      { tag: 'marcar-grupo', js: clickByText('Marcar todo') },
-      { tag: 'abrir-turnos', js: clickByText('Ver turnos') },
+      { tag: 'marcar-grupo', js: checkGroupCheckbox(0) },
+      { tag: 'ver', js: scrollToExpanded },
+    ],
+  },
+  {
+    name: 'forca-asignador-guardar',
+    path: '/forca',
+    devices: ['desktop'],
+    steps: [{ tag: 'guardar-semanas', js: clickByText('Semanas') }],
+  },
+  {
+    name: 'pedidos-detalle',
+    path: '/pedidos',
+    devices: ['desktop'],
+    steps: [
+      { tag: 'marcar-grupo', js: checkGroupCheckbox(0) },
+      { tag: 'abrir-grupo', js: clickLastTableGroupToggle },
       { tag: 'ver', js: scrollToExpanded },
     ],
   },

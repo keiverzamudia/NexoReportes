@@ -11,7 +11,19 @@ import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Boxes, PackageSearch, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AppNav, LoginScreen } from '../../components/shell';
-import { Badge, Card, Kpi, PageHeader, Segmented, Select, Td, TextInput, Th, fmtQty } from '../../components/ui';
+import {
+  Badge,
+  Card,
+  Column,
+  DataTable,
+  EmptyState,
+  Kpi,
+  PageHeader,
+  Segmented,
+  Select,
+  TextInput,
+  fmtQty,
+} from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 
 const STATUS_LABEL: Record<AvailabilityStatus, string> = {
@@ -54,6 +66,89 @@ function fmtDateTime(iso: string | null): string {
   if (!iso) return 'Sin fotografía de inventario';
   return new Intl.DateTimeFormat('es-VE', { dateStyle: 'long', timeStyle: 'short' }).format(new Date(iso));
 }
+
+// Existencia de un almacén concreto; `null` = la fuente no lo expone («—»).
+function stockOf(row: AvailabilityRow, warehouseCode: string): number | null {
+  return row.stockByWarehouse.find((w) => w.warehouseCode === warehouseCode)?.qty ?? null;
+}
+
+const COLUMNS: Column<AvailabilityRow>[] = [
+  {
+    key: 'codigo',
+    header: 'Código',
+    kind: 'id',
+    sortValue: (r) => r.productCode,
+    render: (r) => <span className="font-bold tabular-nums text-primary">{r.productCode}</span>,
+  },
+  {
+    key: 'descripcion',
+    header: 'Descripción',
+    title: (r) => r.description,
+    sortValue: (r) => r.description,
+    render: (r) => r.description,
+  },
+  { key: 'unid', header: 'Unid.', render: (r) => <span className="text-on-surface-variant">{r.uom}</span> },
+  { key: 'stock03', header: 'Stock 03', align: 'right', render: (r) => fmtQty(stockOf(r, 'Stock 03'), 0) },
+  { key: 'stock68', header: 'Stock 68', align: 'right', render: (r) => fmtQty(stockOf(r, 'Stock 68'), 0) },
+  {
+    key: 'existencia',
+    header: 'Existencia',
+    align: 'right',
+    kind: 'metric',
+    sortValue: (r) => r.stockTotal,
+    render: (r) => <span className="font-bold">{fmtQty(r.stockTotal, 0)}</span>,
+  },
+  {
+    key: 'demanda',
+    header: 'Demanda',
+    align: 'right',
+    kind: 'metric',
+    sortValue: (r) => r.demandQty,
+    render: (r) => fmtQty(r.demandQty, 0),
+  },
+  {
+    key: 'disponible',
+    header: 'Disponible',
+    align: 'right',
+    kind: 'metric',
+    sortValue: (r) => r.availableQty,
+    render: (r) => <span className="font-bold text-secondary">{fmtQty(r.availableQty, 0)}</span>,
+  },
+  {
+    key: 'aProducir',
+    header: 'A producir',
+    align: 'right',
+    sortValue: (r) => r.toProduceQty,
+    render: (r) => (
+      <span className={r.toProduceQty > 0 ? 'font-bold text-error' : 'text-on-surface-variant'}>{fmtQty(r.toProduceQty, 0)}</span>
+    ),
+  },
+  {
+    key: 'aProducirKg',
+    header: 'A producir (kg)',
+    align: 'right',
+    kind: 'metric',
+    sortValue: (r) => r.toProduceKg ?? 0,
+    render: (r) => (
+      <span className={(r.toProduceKg ?? 0) > 0 ? 'text-error' : 'text-on-surface-variant'}>{fmtQty(r.toProduceKg, 0)}</span>
+    ),
+  },
+  {
+    key: 'neto',
+    header: 'Neto',
+    align: 'right',
+    sortValue: (r) => r.netQty,
+    render: (r) => <span className={r.netQty < 0 ? 'text-error' : ''}>{fmtQty(r.netQty, 0)}</span>,
+  },
+  {
+    key: 'estado',
+    header: 'Estado',
+    align: 'center',
+    kind: 'status',
+    sortValue: (r) => STATUS_LABEL[r.status],
+    render: (r) => <Badge tone={STATUS_TONE[r.status]}>{STATUS_LABEL[r.status]}</Badge>,
+  },
+];
 
 export default function DisponibilidadPage() {
   const [tick, setTick] = useState(0);
@@ -148,61 +243,18 @@ export default function DisponibilidadPage() {
 
         {data && (
           <Card className="overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-body-md">
-                <thead>
-                  <tr className="border-b border-surface-container bg-surface-container">
-                    <Th>Código</Th>
-                    <Th>Descripción</Th>
-                    <Th>Unid.</Th>
-                    <Th align="right">Stock 03</Th>
-                    <Th align="right">Stock 68</Th>
-                    <Th align="right">Existencia</Th>
-                    <Th align="right">Demanda</Th>
-                    <Th align="right">Disponible</Th>
-                    <Th align="right">A producir</Th>
-                    <Th align="right">A producir (kg)</Th>
-                    <Th align="right">Neto</Th>
-                    <Th align="center">Estado</Th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-surface-container">
-                  {rows.length === 0 && (
-                    <tr>
-                      <Td align="center" className="py-space-xl text-on-surface-variant">
-                        {search || status ? 'Sin resultados para los filtros aplicados.' : 'Sin datos de disponibilidad.'}
-                      </Td>
-                    </tr>
-                  )}
-                  {rows.map((row: AvailabilityRow) => {
-                    const stock03 = row.stockByWarehouse.find((w) => w.warehouseCode === 'Stock 03')?.qty ?? null;
-                    const stock68 = row.stockByWarehouse.find((w) => w.warehouseCode === 'Stock 68')?.qty ?? null;
-                    return (
-                      <tr key={row.productCode} className="transition-colors hover:bg-surface-container-low">
-                        <Td className="font-bold tabular-nums text-primary">{row.productCode}</Td>
-                        <Td className="max-w-md truncate" title={row.description}>{row.description}</Td>
-                        <Td className="text-on-surface-variant">{row.uom}</Td>
-                        <Td align="right" className="tabular-nums">{fmtQty(stock03, 0)}</Td>
-                        <Td align="right" className="tabular-nums">{fmtQty(stock68, 0)}</Td>
-                        <Td align="right" className="tabular-nums font-bold">{fmtQty(row.stockTotal, 0)}</Td>
-                        <Td align="right" className="tabular-nums">{fmtQty(row.demandQty, 0)}</Td>
-                        <Td align="right" className="tabular-nums text-secondary font-bold">{fmtQty(row.availableQty, 0)}</Td>
-                        <Td align="right" className={`tabular-nums font-bold ${row.toProduceQty > 0 ? 'text-error' : 'text-on-surface-variant'}`}>
-                          {fmtQty(row.toProduceQty, 0)}
-                        </Td>
-                        <Td align="right" className={`tabular-nums ${row.toProduceKg && row.toProduceKg > 0 ? 'text-error' : 'text-on-surface-variant'}`}>
-                          {fmtQty(row.toProduceKg, 0)}
-                        </Td>
-                        <Td align="right" className={`tabular-nums ${row.netQty < 0 ? 'text-error' : ''}`}>{fmtQty(row.netQty, 0)}</Td>
-                        <Td align="center">
-                          <Badge tone={STATUS_TONE[row.status]}>{STATUS_LABEL[row.status]}</Badge>
-                        </Td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              columns={COLUMNS}
+              rows={rows}
+              rowKey={(r) => r.productCode}
+              empty={
+                <EmptyState
+                  icon={PackageSearch}
+                  title={search || status ? 'Sin resultados para los filtros aplicados' : 'Sin datos de disponibilidad'}
+                  description="Ajusta la búsqueda, el estado o la presentación para ver productos."
+                />
+              }
+            />
             <div className="flex items-center gap-space-sm border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
               <PackageSearch aria-hidden className="size-4" />
               {rows.length} de {data.rows.length} productos · unidades en la unidad de venta de cada producto (SAC/KG), no se

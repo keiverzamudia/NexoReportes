@@ -12,7 +12,7 @@ import { AlertTriangle, ChevronLeft, ChevronRight, Search, Users } from 'lucide-
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import { AppNav, LoginScreen } from '../../components/shell';
-import { Badge, Card, Kpi, PageHeader, Td, TextInput, Th } from '../../components/ui';
+import { Badge, Card, Column, DataTable, EmptyState, Kpi, PageHeader, TextInput } from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 
 interface Paginated<T> {
@@ -23,6 +23,61 @@ interface Paginated<T> {
 }
 
 const PAGE_SIZE = 50;
+
+// Columnas del catálogo paginado.
+const COLUMNS: Column<Customer>[] = [
+  {
+    key: 'codigo',
+    header: 'Código',
+    kind: 'id',
+    sortValue: (c) => c.externalCode,
+    render: (c) => <span className="font-bold tabular-nums text-primary">{c.externalCode}</span>,
+  },
+  { key: 'nombre', header: 'Nombre', title: (c) => c.name, sortValue: (c) => c.name, render: (c) => c.name },
+  {
+    key: 'tipo',
+    header: 'Tipo',
+    kind: 'status',
+    sortValue: (c) => c.customerType ?? '',
+    render: (c) =>
+      c.customerType ? (
+        <Badge tone="primary">{c.customerType}</Badge>
+      ) : (
+        <span className="text-outline" title="No disponible en la vista actual de Profit">
+          —
+        </span>
+      ),
+  },
+  {
+    key: 'vendedor',
+    header: 'Vendedor',
+    sortValue: (c) => c.vendor ?? '',
+    render: (c) => <span className="text-on-surface-variant">{c.vendor ?? '—'}</span>,
+  },
+  {
+    key: 'pedidos',
+    header: 'Pedidos activos',
+    align: 'right',
+    kind: 'metric',
+    sortValue: (c) => c.ordersCount,
+    render: (c) => <span className="font-bold">{c.ordersCount}</span>,
+  },
+  {
+    key: 'accion',
+    header: ' ',
+    align: 'right',
+    kind: 'action',
+    render: (c) =>
+      c.ordersCount > 0 ? (
+        <Link
+          href={`/pedidos?cliente=${encodeURIComponent(c.externalCode)}`}
+          className="font-semibold text-primary-container hover:underline"
+        >
+          Ver pedidos
+        </Link>
+      ) : null,
+  },
+];
 
 export default function ClientesPage() {
   const [tick, setTick] = useState(0);
@@ -90,50 +145,18 @@ export default function ClientesPage() {
 
         {data && (
           <Card className="overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-body-md">
-                <thead>
-                  <tr className="border-b border-surface-container bg-surface-container">
-                    <Th>Código</Th>
-                    <Th>Nombre</Th>
-                    <Th>Tipo</Th>
-                    <Th>Vendedor</Th>
-                    <Th align="right">Pedidos activos</Th>
-                    <Th />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-surface-container">
-                  {data.items.length === 0 && (
-                    <tr>
-                      <Td align="center" className="py-space-xl text-on-surface-variant">
-                        {q ? `Sin clientes para “${q}”.` : 'No hay clientes sincronizados.'}
-                      </Td>
-                    </tr>
-                  )}
-                  {data.items.map((customer) => (
-                    <tr key={customer.id} className="transition-colors hover:bg-surface-container-low">
-                      <Td className="font-bold tabular-nums text-primary">{customer.externalCode}</Td>
-                      <Td className="max-w-md truncate" title={customer.name}>{customer.name}</Td>
-                      <Td title={customer.customerType ? undefined : 'No disponible en la vista actual de Profit'}>
-                        {customer.customerType ? <Badge tone="primary">{customer.customerType}</Badge> : <span className="text-outline">—</span>}
-                      </Td>
-                      <Td className="text-on-surface-variant">{customer.vendor ?? '—'}</Td>
-                      <Td align="right" className="tabular-nums font-bold">{customer.ordersCount}</Td>
-                      <Td align="right">
-                        {customer.ordersCount > 0 && (
-                          <Link
-                            href={`/pedidos?cliente=${encodeURIComponent(customer.externalCode)}`}
-                            className="font-semibold text-primary-container hover:underline"
-                          >
-                            Ver pedidos
-                          </Link>
-                        )}
-                      </Td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              columns={COLUMNS}
+              rows={data.items}
+              rowKey={(c) => c.id}
+              empty={
+                <EmptyState
+                  icon={Users}
+                  title={q ? `Sin clientes para “${q}”` : 'No hay clientes sincronizados'}
+                  description="Prueba con otro código o nombre, o vuelve a la primera página."
+                />
+              }
+            />
 
             {data.total > PAGE_SIZE && (
               <div className="flex items-center justify-between border-t border-surface-container px-space-md py-space-sm text-body-md text-on-surface-variant">
