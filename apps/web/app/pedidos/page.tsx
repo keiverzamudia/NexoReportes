@@ -197,6 +197,21 @@ export default function PedidosPage() {
   const queueByKey = useMemo(() => new Map(queue.map((e) => [e.key, e])), [queue]);
   const queueIndex = useMemo(() => new Map(queue.map((e) => [e.key, e.sortIndex])), [queue]);
   const liveSummary = useMemo(() => summarizeQueue(queue), [queue]);
+  // Existencia viva por producto: lo que queda después de descontar lo ya
+  // marcado. Es la disponibilidad que la cola va gastando cliente a cliente.
+  const liveStock = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const [code, info] of productInfo) map.set(code, info.units);
+    for (const e of queue) {
+      if (!e.selected) continue;
+      const ref = lineByKey.get(e.key);
+      if (!ref) continue;
+      const code = ref.line.productCode;
+      map.set(code, (map.get(code) ?? 0) - e.assignedQty);
+    }
+    return map;
+  }, [productInfo, queue, lineByKey]);
+
   const planEntries = useMemo(() => queue.filter((e) => e.selected).sort((a, b) => a.priority - b.priority), [queue]);
   const planSummary = useMemo(() => summarizeQueue(planEntries), [planEntries]);
 
@@ -315,13 +330,23 @@ export default function PedidosPage() {
     if (typeof window !== 'undefined') window.history.replaceState(null, '', '/pedidos');
   }
 
+  // Renglones seleccionables de un grupo: en «Solo disponible», únicamente los
+  // que tienen existencia para despachar (completo o parcial). En «Demanda
+  // total» no se restringe: esa simulación sobregira el stock a propósito.
+  function dispatchableKeys(group: OrderGroup): string[] {
+    return group.lines.map(lineKey).filter((k) => mode === 'total' || (queueByKey.get(k)?.dispatchable ?? false));
+  }
+
   function toggleLine(line: OrderGroupLine) {
     const key = lineKey(line);
     setSelection((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
   }
 
   function toggleGroup(group: OrderGroup) {
-    const keys = group.lines.map(lineKey);
+    // Solo se marca o se suelta lo despachable. Cambiar de modo NO reinicia la
+    // selección: lo ya marcado se queda como está.
+    const keys = dispatchableKeys(group);
+    if (keys.length === 0) return;
     const all = keys.every((k) => selection.includes(k));
     setSelection((prev) => (all ? prev.filter((k) => !keys.includes(k)) : [...new Set([...prev, ...keys])]));
   }
@@ -602,8 +627,8 @@ export default function PedidosPage() {
                     </tr>
                   )}
                   {orderedGroups.map((group) => {
-                    const keys = group.lines.map(lineKey);
-                    const allSelected = keys.every((k) => selection.includes(k));
+                    const candidates = dispatchableKeys(group);
+                    const allSelected = candidates.length > 0 && candidates.every((k) => selection.includes(k));
                     const pendingQty = group.lines.reduce((a, l) => a + l.pendingQty, 0);
                     const assignedQty = group.lines.reduce((a, l) => a + (queueByKey.get(lineKey(l))?.assignedQty ?? 0), 0);
                     const coverage = pendingQty > 0 ? assignedQty / pendingQty : 1;
@@ -616,12 +641,14 @@ export default function PedidosPage() {
                         by={by}
                         isOpen={isOpen}
                         allSelected={allSelected}
-                        selectedCount={keys.filter((k) => selection.includes(k)).length}
+                        selectable={candidates.length > 0}
+                        selectedCount={group.lines.filter((l) => selection.includes(lineKey(l))).length}
                         coverage={coverage}
                         earliest={Number.isFinite(earliest) ? new Date(earliest).toISOString() : null}
                         selection={selection}
                         mode={mode}
                         queueByKey={queueByKey}
+                        liveStock={liveStock}
                         onToggleGroup={() => toggleGroup(group)}
                         onToggleLine={toggleLine}
                         onToggleOpen={() => setExpanded(isOpen ? null : group.key)}
@@ -650,12 +677,14 @@ function GroupRow({
   by,
   isOpen,
   allSelected,
+  selectable,
   selectedCount,
   coverage,
   earliest,
   selection,
   mode,
   queueByKey,
+  liveStock,
   onToggleGroup,
   onToggleLine,
   onToggleOpen,
@@ -664,12 +693,16 @@ function GroupRow({
   by: OrderGroupBy;
   isOpen: boolean;
   allSelected: boolean;
+  /** Hay al menos un renglón despachable (y el modo lo permite). */
+  selectable: boolean;
   selectedCount: number;
   coverage: number;
   earliest: string | null;
   selection: string[];
   mode: DispatchMode;
   queueByKey: Map<string, QueueEntry>;
+  /** Existencia viva por producto (ya descontado lo marcado). */
+  liveStock: Map<string, number>;
   onToggleGroup: () => void;
   onToggleLine: (line: OrderGroupLine) => void;
   onToggleOpen: () => void;
@@ -680,7 +713,15 @@ function GroupRow({
     <>
       <tr className={`transition-colors ${selectedCount > 0 ? 'bg-primary-fixed/50' : 'hover:bg-surface-container-low'}`}>
         <Td>
-          <input type="checkbox" checked={allSelected} onChange={onToggleGroup} aria-label="Seleccionar grupo completo" className="size-4 accent-[var(--color-primary-container)]" />
+          <input
+            type="checkbox"
+            checked={allSelected}
+            disabled={!selectable}
+            onChange={onToggleGroup}
+            aria-label={selectable ? 'Seleccionar los renglones con existencia' : 'Sin existencia disponible en este grupo'}
+            title={selectable ? undefined : 'No hay existencia para despachar en este grupo'}
+            className="size-4 accent-[var(--color-primary-container)] disabled:cursor-not-allowed"
+          />
         </Td>
         <Td>
           <button onClick={onToggleOpen} className="flex items-start gap-space-sm text-left">
@@ -700,6 +741,7 @@ function GroupRow({
               <span className="text-label-sm tabular-nums text-outline">
                 {group.code ?? ''}
                 {earliest ? ` · entrega ${fmtDate(earliest)}` : ''}
+                {!selectable && <span className="ml-space-xs font-bold uppercase text-critical">sin existencia</span>}
               </span>
             </span>
           </button>
@@ -786,6 +828,12 @@ function GroupRow({
                         <Td align="right" className="tabular-nums">
                           {fmtQty((line.stock03 ?? 0) + (line.stock68 ?? 0), 0)}
                           <span className="ml-space-xs text-label-sm text-outline">({fmtQty(line.stock03, 0)}/{fmtQty(line.stock68, 0)})</span>
+                          {(() => {
+                            const total = (line.stock03 ?? 0) + (line.stock68 ?? 0);
+                            const live = liveStock.get(line.productCode);
+                            if (live === undefined || live === total) return null;
+                            return <span className="ml-space-xs text-label-sm font-semibold text-primary">· quedan {fmtQty(live, 0)}</span>;
+                          })()}
                           {blocked && <span className="ml-space-xs font-bold uppercase text-label-sm text-critical">sin existencia</span>}
                         </Td>
                         <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(r?.assignedQty ?? 0, 0)}</Td>
