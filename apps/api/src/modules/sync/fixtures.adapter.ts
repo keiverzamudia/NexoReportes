@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { ProfitAdapter, ProfitConnectionTest } from './profit.adapter';
+import { ProfitAdapter, ProfitConnectionTest, ProfitUserRef } from './profit.adapter';
 
 // ============================================================
 // Adaptador de fixtures: datos de DESARROLLO/PRUEBA deterministas
@@ -43,6 +43,17 @@ function datasetFor(viewName: string): Record<string, unknown>[] {
   if (lower.includes('solicitud') || lower.includes('pendiente')) return SOLICITUDES;
   return [];
 }
+
+// Usuarios de desarrollo: mismo papel que `MasterProfit.dbo.VUSUARIOS`.
+// La contraseña de todos es `nexo` (modo fixtures, nunca producción).
+const FIXTURE_PASSWORD = 'nexo';
+
+const FIXTURE_USERS: ProfitUserRef[] = [
+  { code: 'ARIV', name: 'ADDISON RIVERO' },
+  { code: 'AALV', name: 'ADELIS ALVAREZ' },
+  { code: 'ABON', name: 'ADELSON BONILLA' },
+  { code: 'TANRIV', name: 'TANIA RIVERO' },
+];
 
 // Columnas reales de la vista (para /sync/describe cuando corre con fixtures).
 const SOLICITUDES_COLUMNS = [
@@ -89,5 +100,18 @@ export class FixturesProfitAdapter implements ProfitAdapter {
   // En fixtures la consulta ampliada devuelve el mismo dataset determinista.
   async selectQuery(_sqlText: string, limit: number): Promise<Record<string, unknown>[]> {
     return SOLICITUDES.slice(0, limit);
+  }
+
+  // Usuarios de desarrollo (equivalentes a `VUSUARIOS`). La contraseña de
+  // fixtures es siempre `nexo`: nunca se usa en producción y queda claro que
+  // no hay contraseñas reales en este modo.
+  async authenticateUser(profitCode: string, password: string): Promise<string | null> {
+    const code = profitCode.trim().toUpperCase();
+    if (password !== FIXTURE_PASSWORD) return null;
+    return FIXTURE_USERS.some((user) => user.code === code) ? code : null;
+  }
+
+  async listUsers(): Promise<ProfitUserRef[]> {
+    return FIXTURE_USERS;
   }
 }

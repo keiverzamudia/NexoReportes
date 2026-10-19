@@ -44,13 +44,13 @@ export class SyncController {
   @Post('run-all')
   @Roles('ADMIN', 'PLANIFICADOR')
   runAll(@Req() request: AuthenticatedRequest) {
-    return this.sync.runAll({ id: request.user?.sub, email: request.user?.email });
+    return this.sync.runAll({ id: request.user?.sub, email: request.user?.code });
   }
 
   @Post('run/:domain')
   @Roles('ADMIN', 'PLANIFICADOR')
   run(@Param(new ZodValidationPipe(zDomain)) params: { domain: (typeof SYNC_DOMAINS)[number] }, @Req() request: AuthenticatedRequest) {
-    return this.sync.run(params.domain, { id: request.user?.sub, email: request.user?.email });
+    return this.sync.run(params.domain, { id: request.user?.sub, email: request.user?.code });
   }
 
   @Get('runs')

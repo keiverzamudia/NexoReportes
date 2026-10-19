@@ -15,6 +15,13 @@ export interface ProfitColumn {
   nullable: boolean;
 }
 
+// Usuario de Profit para el login (`MasterProfit.dbo.VUSUARIOS`).
+// `codigo` es CHAR con relleno: el adaptador siempre lo entrega recortado.
+export interface ProfitUserRef {
+  code: string;
+  name: string;
+}
+
 // Contrato del adaptador de Profit (SQL Server, SOLO LECTURA).
 // Todas las consultas deben ser SELECT parametrizadas; nunca INSERT/UPDATE/DELETE.
 export interface ProfitAdapter {
@@ -38,4 +45,14 @@ export interface ProfitAdapter {
   // Se usa para leer los campos que la vista actual no expone (vendedor, tipo de
   // cliente, autorizado, cantidad, almacén) sin modificar nada en Profit.
   selectQuery(sqlText: string, limit: number): Promise<Record<string, unknown>[]>;
+
+  // Autenticación: valida la contraseña de un usuario contra Profit
+  // (`<authDatabase>.dbo.autenticar`, una función de tabla que devuelve `ID`).
+  // Devuelve el id que responde Profit —debe coincidir con el código— o `null`
+  // si las credenciales no son válidas. La contraseña se descarta al volver.
+  authenticateUser(profitCode: string, password: string): Promise<string | null>;
+
+  // Usuarios de Profit (`<authDatabase>.dbo.VUSUARIOS`), ya recortados y sin
+  // duplicados, ordenados por nombre.
+  listUsers(): Promise<ProfitUserRef[]>;
 }

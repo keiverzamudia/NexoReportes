@@ -155,6 +155,8 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
     };
     const adapter: ProfitAdapter = {
       dialect: 'fixtures',
+      authenticateUser: async () => null,
+      listUsers: async () => [],
       testConnection: async () => ({ connected: true }),
       listViews: async () => [],
       describeView: async () => [],
@@ -196,6 +198,8 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
     const base = { emision: '2025-09-03', entrega: '2025-09-10', co_cli: '153064128', cli_des: 'C', pendiente: 1, uni_venta: 'SAC', Stock_03: 0, Stock_68: 0 };
     const adapter: ProfitAdapter = {
       dialect: 'fixtures',
+      authenticateUser: async () => null,
+      listUsers: async () => [],
       testConnection: async () => ({ connected: true }),
       listViews: async () => [],
       describeView: async () => [],
@@ -279,6 +283,8 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
     const prisma = createFakePrisma();
     const adapter: ProfitAdapter = {
       dialect: 'fixtures',
+      authenticateUser: async () => null,
+      listUsers: async () => [],
       testConnection: async () => ({ connected: true }),
       listViews: async () => [],
       describeView: async () => [],

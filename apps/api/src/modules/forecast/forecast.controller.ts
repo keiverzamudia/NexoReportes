@@ -41,7 +41,7 @@ export class ForecastController {
     @Body(new ZodValidationPipe(zForecastSetMonthly)) dto: ForecastSetMonthly,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.forecast.setMonthly(code, dto, { id: request.user?.sub, email: request.user?.email });
+    return this.forecast.setMonthly(code, dto, { id: request.user?.sub, email: request.user?.code });
   }
 
   @Patch(':code/weeks')

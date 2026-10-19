@@ -22,6 +22,21 @@ const envSchema = z.object({
   PROFIT_DB_REQUEST_TIMEOUT_MS: z.coerce.number().int().default(30000),
   PROFIT_DB_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
 
+  // Base donde viven `dbo.VUSUARIOS` y la función `dbo.autenticar`
+  // (suele ser MasterProfit). Se usa con nombre de tres partes.
+  PROFIT_DB_AUTH_DATABASE: z.string().min(1).default('MasterProfit'),
+
+  // Códigos de Profit que entran como ADMIN (lista separada por comas).
+  // Es la única forma de nombrar administradores sin usuarios internos.
+  ADMIN_PROFIT_CODES: z.string().default('ARIV'),
+  // Rol por defecto para los usuarios recién sincronizados.
+  DEFAULT_USER_ROLE: z
+    .enum(['ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA'])
+    .default('CONSULTA'),
+  // Sincronización diaria de usuarios de Profit.
+  PROFIT_USER_SYNC_ENABLED: z.enum(['true', 'false']).default('true'),
+  PROFIT_USER_SYNC_HOUR: z.coerce.number().int().min(0).max(23).default(3),
+
   // Única vista de origen: una fila = un renglón de solicitud
   // (pedido + cliente + artículo + pendiente + existencias por almacén).
   PROFIT_VIEW_SOLICITUDES: z.string().optional(),
@@ -58,6 +73,10 @@ export default function configuration() {
       jwtRefreshSecret: env.JWT_REFRESH_SECRET,
       jwtExpiresIn: env.JWT_EXPIRES_IN,
       jwtRefreshExpiresIn: env.JWT_REFRESH_EXPIRES_IN,
+      // La sesión viaja en cookies HttpOnly (no hay token en JavaScript).
+      cookieSecure: env.NODE_ENV === 'production',
+      accessCookie: 'nexo_at',
+      refreshCookie: 'nexo_rt',
     },
     profit: {
       dialect: env.PROFIT_DB_DIALECT,
@@ -65,11 +84,20 @@ export default function configuration() {
       database: env.PROFIT_DB_DATABASE,
       user: env.PROFIT_DB_USER,
       password: env.PROFIT_DB_PASSWORD,
+      authDatabase: env.PROFIT_DB_AUTH_DATABASE,
       requestTimeoutMs: env.PROFIT_DB_REQUEST_TIMEOUT_MS,
       maxRetries: env.PROFIT_DB_MAX_RETRIES,
       views: {
         solicitudes: env.PROFIT_VIEW_SOLICITUDES,
       },
+    },
+    users: {
+      adminCodes: env.ADMIN_PROFIT_CODES.split(',')
+        .map((code) => code.trim().toUpperCase())
+        .filter(Boolean),
+      defaultRole: env.DEFAULT_USER_ROLE,
+      syncEnabled: env.PROFIT_USER_SYNC_ENABLED === 'true',
+      syncHour: env.PROFIT_USER_SYNC_HOUR,
     },
     sync: {
       intervalSeconds: env.SYNC_INTERVAL_SECONDS,

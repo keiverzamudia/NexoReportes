@@ -1,20 +1,16 @@
 'use client';
 
 // ============================================================
-// Cliente HTTP del web app: adjunta el JWT y reintenta UNA vez
-// con /auth/refresh si el access token expiró (401).
-// Sin sesión válida lanza AuthRequiredError (la UI muestra login).
+// Cliente HTTP del web app.
+//
+// La sesión vive en cookies HttpOnly: el navegador la envía sola y el
+// JavaScript NUNCA ve un token. Al 401 se intenta refrescar una vez (la
+// cookie de refresco dura 7 días); si no se puede, se pide login.
 // ============================================================
 
-import { AuthResponse } from '@nexo/contracts';
+import type { AuthResponse, LoginCandidate, UserSummary } from '@nexo/contracts';
 
 const API_BASE = '/api';
-const SESSION_KEY = 'nexo.session';
-
-export interface Session {
-  accessToken: string;
-  refreshToken: string;
-}
 
 export class AuthRequiredError extends Error {
   constructor() {
@@ -23,82 +19,85 @@ export class AuthRequiredError extends Error {
   }
 }
 
-export function loadSession(): Session | null {
-  if (typeof window === 'undefined') return null;
-  const raw = window.localStorage.getItem(SESSION_KEY);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Session;
-    return parsed.accessToken && parsed.refreshToken ? parsed : null;
-  } catch {
-    return null;
+// Nest devuelve `{ message: string | string[] }`; se muestra tal cual.
+function messageOf(body: unknown, fallback: string): string {
+  if (body && typeof body === 'object' && 'message' in body) {
+    const message = (body as { message?: unknown }).message;
+    if (Array.isArray(message)) return message.join('. ');
+    if (typeof message === 'string' && message.trim()) return message;
   }
+  return fallback;
 }
 
-export function saveSession(session: Session): void {
-  window.localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+async function parse<T>(response: Response, fallback: string): Promise<T> {
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(messageOf(body, fallback));
+  }
+  return (await response.json()) as T;
 }
 
-export function clearSession(): void {
-  window.localStorage.removeItem(SESSION_KEY);
-}
-
-export async function login(email: string, password: string): Promise<AuthResponse> {
+export async function login(userId: string, password: string): Promise<AuthResponse> {
   const response = await fetch(`${API_BASE}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    credentials: 'include',
+    body: JSON.stringify({ userId, password }),
   });
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(body?.message ?? 'No se pudo iniciar sesión');
-  }
-  const auth = (await response.json()) as AuthResponse;
-  saveSession({ accessToken: auth.accessToken, refreshToken: auth.refreshToken });
-  return auth;
+  return parse<AuthResponse>(response, 'No se pudo iniciar sesión');
+}
+
+export async function logout(): Promise<void> {
+  await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => undefined);
+}
+
+// Autocompletado del login (público): usuarios activos de Profit.
+export async function searchLoginCandidates(q: string): Promise<LoginCandidate[]> {
+  const response = await fetch(`${API_BASE}/auth/usuarios?q=${encodeURIComponent(q)}`, {
+    credentials: 'include',
+  });
+  return parse<LoginCandidate[]>(response, 'No se pudo buscar usuarios');
 }
 
 async function tryRefresh(): Promise<boolean> {
-  const session = loadSession();
-  if (!session) return false;
-  const response = await fetch(`${API_BASE}/auth/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refreshToken: session.refreshToken }),
-  });
-  if (!response.ok) {
-    clearSession();
-    return false;
-  }
-  const auth = (await response.json()) as AuthResponse;
-  saveSession({ accessToken: auth.accessToken, refreshToken: auth.refreshToken });
-  return true;
+  const response = await fetch(`${API_BASE}/auth/refresh`, { method: 'POST', credentials: 'include' });
+  return response.ok;
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const doFetch = async (): Promise<Response> => {
-    const session = loadSession();
-    return fetch(`${API_BASE}${path}`, {
+  const doFetch = (): Promise<Response> =>
+    fetch(`${API_BASE}${path}`, {
       ...init,
+      credentials: 'include',
       headers: {
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-        ...(session ? { Authorization: `Bearer ${session.accessToken}` } : {}),
         ...(init?.headers ?? {}),
       },
     });
-  };
 
   let response = await doFetch();
   if (response.status === 401 && (await tryRefresh())) {
     response = await doFetch();
   }
   if (response.status === 401) {
-    clearSession();
     throw new AuthRequiredError();
   }
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(body?.message ?? `Error ${response.status}`);
+    const body = await response.json().catch(() => null);
+    throw new Error(messageOf(body, `Error ${response.status}`));
+  }
+  if (response.status === 204) {
+    return undefined as T;
   }
   return (await response.json()) as T;
+}
+
+// Usuario de la sesión (null si no hay sesión). Lo usa la navegación para
+// mostrar módulos de administración.
+export async function currentUser(): Promise<UserSummary | null> {
+  try {
+    return await apiFetch<UserSummary>('/auth/me');
+  } catch {
+    return null;
+  }
 }

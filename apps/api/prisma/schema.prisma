@@ -24,15 +24,18 @@ datasource db {
 
 // ---------- Autenticación y usuarios ----------
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  fullName     String
+  id          String    @id @default(cuid())
+  // Código del usuario en Profit (MasterProfit.dbo.VUSUARIOS). Es el vínculo
+  // con la autenticación: la contraseña se valida SIEMPRE en Profit
+  // (MasterProfit.dbo.autenticar); aquí no se guarda ninguna contraseña.
+  profitCode  String    @unique
+  displayName String
   // Roles: ADMIN | GERENCIA | PLANIFICADOR | ALMACEN | CONSULTA (validados en contracts)
-  role         String   @default("CONSULTA")
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  role        String    @default("CONSULTA")
+  isActive    Boolean   @default(true)
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   refreshTokens RefreshToken[]
   auditEvents   AuditEvent[]  @relation("AuditActor")

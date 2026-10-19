@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as sql from 'mssql';
-import { ProfitAdapter, ProfitColumn, ProfitConnectionTest } from './profit.adapter';
+import { ProfitAdapter, ProfitColumn, ProfitConnectionTest, ProfitUserRef } from './profit.adapter';
 
 // Identificadores de vista permitidos: solo letras, dígitos, _ y un máximo de
 // dos puntos (esquema.objeto). Bloquea cualquier intento de inyección SQL.
@@ -139,5 +139,49 @@ export class MssqlProfitAdapter implements ProfitAdapter {
     // Envuelta en tabla derivada para aplicar el TOP sin alterar el resultado.
     const result = await pool.request().query(`SELECT TOP (${safeLimit}) * FROM (${sqlText}) AS nexo_src`);
     return result.recordset as Record<string, unknown>[];
+  }
+
+  // Base donde viven `VUSUARIOS` y `autenticar` (configurable, por defecto
+  // MasterProfit). Se valida como identificador: si no, se usa el valor por
+  // defecto (nunca se interpola algo arbitrario).
+  private authDatabase(): string {
+    const configured = this.config.get<string>('profit.authDatabase') ?? 'MasterProfit';
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(configured) ? configured : 'MasterProfit';
+  }
+
+  // Login: `dbo.autenticar(@id, @password)` es una función de tabla que devuelve
+  // una sola columna `ID`. En este servidor el parámetro se llama `@id`
+  // (en otros servidores del grupo se llama `@code`). La contraseña viaja como
+  // parámetro y se descarta al volver.
+  async authenticateUser(profitCode: string, password: string): Promise<string | null> {
+    const pool = await this.getPool();
+    const result = await pool
+      .request()
+      .input('id', profitCode)
+      .input('password', password)
+      .query(`SELECT ID FROM ${this.authDatabase()}.dbo.autenticar(@id, @password)`);
+    const row = result.recordset?.[0] as { ID?: unknown } | undefined;
+    if (row?.ID === null || row?.ID === undefined) return null;
+    const id = String(row.ID).trim();
+    return id.length > 0 ? id : null;
+  }
+
+  // Usuarios de Profit: `codigo`/`nombre` son CHAR con relleno de espacios, así
+  // que se recortan aquí; nunca llegan espacios a la aplicación.
+  async listUsers(): Promise<ProfitUserRef[]> {
+    const pool = await this.getPool();
+    const result = await pool.request().query(
+      `SELECT RTRIM(codigo) AS code, RTRIM(nombre) AS name
+       FROM ${this.authDatabase()}.dbo.VUSUARIOS
+       WHERE codigo IS NOT NULL AND LTRIM(RTRIM(codigo)) <> ''
+       ORDER BY nombre`,
+    );
+    const seen = new Map<string, string>();
+    for (const raw of result.recordset as { code?: unknown; name?: unknown }[]) {
+      const code = raw.code === null || raw.code === undefined ? '' : String(raw.code).trim();
+      const name = raw.name === null || raw.name === undefined ? '' : String(raw.name).trim();
+      if (code && name && !seen.has(code)) seen.set(code, name);
+    }
+    return [...seen.entries()].map(([code, name]) => ({ code, name }));
   }
 }

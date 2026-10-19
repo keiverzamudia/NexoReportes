@@ -28,27 +28,45 @@ export function zPaginated<T extends z.ZodTypeAny>(item: T) {
 }
 
 // ---------- Autenticación ----------
+// El login es con un usuario de Profit: se elige de la lista sincronizada
+// (`userId` local) y la contraseña se valida en Profit
+// (MasterProfit.dbo.autenticar). Nunca hay contraseña local.
 export const zLoginInput = z.object({
-  email: z.string().email(),
-  password: z.string().min(8).max(200),
+  userId: z.string().min(1),
+  password: z.string().min(1).max(200),
 });
 export type LoginInput = z.infer<typeof zLoginInput>;
 
 export const zUserSummary = z.object({
   id: z.string(),
-  email: z.string().email(),
-  fullName: z.string(),
+  profitCode: z.string(),
+  displayName: z.string(),
   role: zRole,
   isActive: z.boolean(),
 });
 export type UserSummary = z.infer<typeof zUserSummary>;
 
+// Candidato del autocompletado del login (endpoint público): solo lo mínimo.
+export const zLoginCandidate = z.object({
+  id: z.string(),
+  profitCode: z.string(),
+  displayName: z.string(),
+});
+export type LoginCandidate = z.infer<typeof zLoginCandidate>;
+
+// La sesión viaja en cookies HttpOnly: la respuesta solo informa quién entró.
 export const zAuthResponse = z.object({
-  accessToken: z.string(),
-  refreshToken: z.string(),
   user: zUserSummary,
 });
 export type AuthResponse = z.infer<typeof zAuthResponse>;
+
+// Administración de usuarios: el usuario viene de Profit, aquí solo se
+// administran su rol y si puede entrar.
+export const zUpdateUserInput = z.object({
+  role: zRole.optional(),
+  isActive: z.boolean().optional(),
+});
+export type UpdateUserInput = z.infer<typeof zUpdateUserInput>;
 
 // ---------- Sincronización con Profit ----------
 export const SYNC_RUN_STATUSES = ['EN_CURSO', 'EXITOSA', 'PARCIAL', 'ERROR'] as const;
