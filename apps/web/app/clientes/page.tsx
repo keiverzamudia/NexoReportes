@@ -1,18 +1,33 @@
 'use client';
 
 // ============================================================
-// Clientes (Fase 4) — rediseño estilo Stitch.
-// Catálogo derivado de la vista de Profit. Tipo de cliente y vendedor
-// no vienen en la vista actual → "—" (nunca inventados).
+// Clientes — cartera derivada de Profit.
+//
+// «Ver pedidos» despliega los renglones pendientes del cliente **aquí mismo**
+// (no navega a otra pantalla): el detalle se pide al API al abrir la fila.
+// Tipo de cliente y vendedor no vienen en la vista actual → "—" (nunca
+// inventados).
 // ============================================================
 
-import type { Customer } from '@nexo/contracts';
+import type { Customer, OrderGroupedResponse } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, ChevronLeft, ChevronRight, Search, Users } from 'lucide-react';
-import Link from 'next/link';
+import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, Search, Users } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AppNav, LoginScreen } from '../../components/shell';
-import { Badge, Card, Column, DataTable, EmptyState, Kpi, PageHeader, TextInput } from '../../components/ui';
+import {
+  Badge,
+  Card,
+  Column,
+  DataTable,
+  EmptyState,
+  Kpi,
+  PageHeader,
+  Td,
+  TextInput,
+  Th,
+  fmtDate,
+  fmtQty,
+} from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 
 interface Paginated<T> {
@@ -24,65 +39,76 @@ interface Paginated<T> {
 
 const PAGE_SIZE = 50;
 
-// Columnas del catálogo paginado.
-const COLUMNS: Column<Customer>[] = [
-  {
-    key: 'codigo',
-    header: 'Código',
-    kind: 'id',
-    sortValue: (c) => c.externalCode,
-    render: (c) => <span className="font-bold tabular-nums text-primary">{c.externalCode}</span>,
-  },
-  { key: 'nombre', header: 'Nombre', title: (c) => c.name, sortValue: (c) => c.name, render: (c) => c.name },
-  {
-    key: 'tipo',
-    header: 'Tipo',
-    kind: 'status',
-    sortValue: (c) => c.customerType ?? '',
-    render: (c) =>
-      c.customerType ? (
-        <Badge tone="primary">{c.customerType}</Badge>
-      ) : (
-        <span className="text-outline" title="No disponible en la vista actual de Profit">
-          —
-        </span>
-      ),
-  },
-  {
-    key: 'vendedor',
-    header: 'Vendedor',
-    sortValue: (c) => c.vendor ?? '',
-    render: (c) => <span className="text-on-surface-variant">{c.vendor ?? '—'}</span>,
-  },
-  {
-    key: 'pedidos',
-    header: 'Pedidos activos',
-    align: 'right',
-    kind: 'metric',
-    sortValue: (c) => c.ordersCount,
-    render: (c) => <span className="font-bold">{c.ordersCount}</span>,
-  },
-  {
-    key: 'accion',
-    header: ' ',
-    align: 'right',
-    kind: 'action',
-    render: (c) =>
-      c.ordersCount > 0 ? (
-        <Link
-          href={`/pedidos?cliente=${encodeURIComponent(c.externalCode)}`}
-          className="font-semibold text-primary-container hover:underline"
-        >
-          Ver pedidos
-        </Link>
-      ) : null,
-  },
-];
+// Columnas del catálogo paginado. La última despliega los pedidos en la fila.
+function buildColumns(expanded: string | null, onToggle: (id: string) => void): Column<Customer>[] {
+  return [
+    {
+      key: 'codigo',
+      header: 'Código',
+      kind: 'id',
+      sortValue: (c) => c.externalCode,
+      render: (c) => <span className="font-bold tabular-nums text-primary">{c.externalCode}</span>,
+    },
+    { key: 'nombre', header: 'Nombre', title: (c) => c.name, sortValue: (c) => c.name, render: (c) => c.name },
+    {
+      key: 'tipo',
+      header: 'Tipo',
+      kind: 'status',
+      sortValue: (c) => c.customerType ?? '',
+      render: (c) =>
+        c.customerType ? (
+          <Badge tone="primary">{c.customerType}</Badge>
+        ) : (
+          <span className="text-outline" title="No disponible en la vista actual de Profit">
+            —
+          </span>
+        ),
+    },
+    {
+      key: 'vendedor',
+      header: 'Vendedor',
+      sortValue: (c) => c.vendor ?? '',
+      render: (c) => <span className="text-on-surface-variant">{c.vendor ?? '—'}</span>,
+    },
+    {
+      key: 'pedidos',
+      header: 'Pedidos activos',
+      align: 'right',
+      kind: 'metric',
+      sortValue: (c) => c.ordersCount,
+      render: (c) => <span className="font-bold">{c.ordersCount}</span>,
+    },
+    {
+      key: 'accion',
+      header: ' ',
+      align: 'right',
+      kind: 'action',
+      sortValue: (c) => c.ordersCount,
+      render: (c) =>
+        c.ordersCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => onToggle(c.id)}
+            aria-expanded={expanded === c.id}
+            className="inline-flex items-center gap-space-2xs font-semibold text-primary-container hover:underline"
+          >
+            {expanded === c.id ? (
+              <ChevronDown aria-hidden className="size-4" />
+            ) : (
+              <ChevronRight aria-hidden className="size-4" />
+            )}
+            {expanded === c.id ? 'Ocultar' : 'Ver pedidos'}
+          </button>
+        ) : null,
+    },
+  ];
+}
 
 export default function ClientesPage() {
   const [tick, setTick] = useState(0);
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const params = new URLSearchParams();
   if (q.trim()) params.set('q', q.trim());
@@ -94,6 +120,11 @@ export default function ClientesPage() {
     queryFn: () => apiFetch<Paginated<Customer>>(`/customers?${params.toString()}`),
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
+
+  const columns = useMemo(
+    () => buildColumns(expanded, (id) => setExpanded((previous) => (previous === id ? null : id))),
+    [expanded],
+  );
 
   const withOrders = useMemo(() => (data?.items ?? []).filter((c) => c.ordersCount > 0).length, [data]);
 
@@ -111,7 +142,7 @@ export default function ClientesPage() {
           eyebrow="Comercial · Cartera de clientes"
           icon={Users}
           title="Clientes"
-          subtitle="Catálogo de clientes con pedidos sincronizados desde Profit y acceso directo a sus solicitudes."
+          subtitle="Catálogo de clientes con pedidos sincronizados desde Profit. «Ver pedidos» despliega sus renglones pendientes en la misma pantalla."
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
               <Kpi label="Clientes" value={data ? new Intl.NumberFormat('es-VE').format(data.total) : '—'} icon={Users} />
@@ -129,6 +160,7 @@ export default function ClientesPage() {
               onChange={(v) => {
                 setQ(v);
                 setPage(1);
+                setExpanded(null);
               }}
               placeholder="Buscar por código o nombre…"
               ariaLabel="Buscar cliente"
@@ -146,9 +178,11 @@ export default function ClientesPage() {
         {data && (
           <Card className="overflow-hidden">
             <DataTable
-              columns={COLUMNS}
+              columns={columns}
               rows={data.items}
               rowKey={(c) => c.id}
+              expandedKey={expanded}
+              renderExpanded={(customer) => <ClientePedidos customer={customer} />}
               empty={
                 <EmptyState
                   icon={Users}
@@ -165,14 +199,20 @@ export default function ClientesPage() {
                 </span>
                 <div className="flex items-center gap-space-sm">
                   <button
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    onClick={() => {
+                      setPage((p) => Math.max(1, p - 1));
+                      setExpanded(null);
+                    }}
                     disabled={page <= 1}
                     className="flex h-9 items-center gap-space-2xs rounded-lg border border-outline-variant px-space-md transition-colors hover:bg-surface-container-low disabled:opacity-40"
                   >
                     <ChevronLeft aria-hidden className="size-4" /> Anterior
                   </button>
                   <button
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    onClick={() => {
+                      setPage((p) => Math.min(totalPages, p + 1));
+                      setExpanded(null);
+                    }}
                     disabled={page >= totalPages}
                     className="flex h-9 items-center gap-space-2xs rounded-lg border border-outline-variant px-space-md transition-colors hover:bg-surface-container-low disabled:opacity-40"
                   >
@@ -185,5 +225,85 @@ export default function ClientesPage() {
         )}
       </main>
     </>
+  );
+}
+
+// Renglones pendientes del cliente, desplegados dentro de su fila.
+function ClientePedidos({ customer }: { customer: Customer }) {
+  const { data, isLoading, error } = useQuery<OrderGroupedResponse>({
+    queryKey: ['customer-orders', customer.externalCode],
+    queryFn: () =>
+      apiFetch<OrderGroupedResponse>(
+        `/orders/grouped?by=cliente&customerCode=${encodeURIComponent(customer.externalCode)}`,
+      ),
+    retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
+  });
+
+  if (isLoading) {
+    return <p className="text-label-md text-on-surface-variant">Consultando pedidos…</p>;
+  }
+  if (error) {
+    return (
+      <p role="alert" className="text-label-md text-error">
+        {error instanceof Error ? error.message : 'No se pudieron consultar los pedidos'}
+      </p>
+    );
+  }
+
+  const lines = (data?.groups ?? []).flatMap((group) => group.lines);
+  if (lines.length === 0) {
+    return <p className="text-label-md text-on-surface-variant">Este cliente no tiene renglones pendientes ahora mismo.</p>;
+  }
+
+  const pendingQty = lines.reduce((sum, line) => sum + line.pendingQty, 0);
+  const pendingKg = lines.reduce((sum, line) => sum + (line.pendingKg ?? 0), 0);
+
+  return (
+    <div className="flex flex-col gap-space-sm">
+      <div className="overflow-x-auto rounded-lg bg-surface-container-lowest">
+        <table className="w-full border-collapse text-label-md">
+          <thead>
+            <tr className="border-b border-surface-container bg-surface-container">
+              <Th>Pedido</Th>
+              <Th>Entrega</Th>
+              <Th>Artículo</Th>
+              <Th align="right">Pendiente</Th>
+              <Th align="right">Kg</Th>
+              <Th>Alm.</Th>
+              <Th align="center">Aut.</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-surface-container">
+            {lines.map((line) => (
+              <tr key={`${line.orderId}#${line.productCode}`} className="hover:bg-surface-container-low">
+                <Td className="font-bold tabular-nums text-primary">{line.orderNumber}</Td>
+                <Td className="tabular-nums text-on-surface-variant">{fmtDate(line.requestedDate)}</Td>
+                <Td>
+                  <span className="block max-w-[26rem] truncate" title={line.description ?? ''}>
+                    <span className="font-bold text-primary">{line.productCode}</span>
+                    <span className="text-on-surface-variant"> · {line.description ?? '—'}</span>
+                  </span>
+                </Td>
+                <Td align="right" className={`tabular-nums font-bold ${line.pendingQty < 0 ? 'text-error' : 'text-on-surface'}`}>
+                  {fmtQty(line.pendingQty, 0)}
+                </Td>
+                <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(line.pendingKg, 0)}</Td>
+                <Td className="text-on-surface-variant">{line.warehouseCode ?? '—'}</Td>
+                <Td align="center">
+                  {line.authorized === null ? (
+                    <span className="text-outline">—</span>
+                  ) : (
+                    <Badge tone={line.authorized ? 'success' : 'muted'}>{line.authorized ? 'SÍ' : 'NO'}</Badge>
+                  )}
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-label-sm text-on-surface-variant">
+        {lines.length} renglón(es) · {fmtQty(pendingQty, 0)} unid. pendientes · {fmtQty(pendingKg, 0)} kg
+      </p>
+    </div>
   );
 }

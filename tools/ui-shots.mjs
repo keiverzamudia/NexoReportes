@@ -154,6 +154,12 @@ const SCENARIOS = [
     ],
   },
   { name: 'clientes', path: '/clientes', devices: ['desktop', 'phone'] },
+  {
+    name: 'clientes-pedidos',
+    path: '/clientes',
+    devices: ['desktop', 'phone'],
+    steps: [{ tag: 'ver-pedidos', js: clickByText('Ver pedidos') }],
+  },
 ];
 
 // ---------- navegador ----------
@@ -237,17 +243,26 @@ if (!executable) {
   process.exit(1);
 }
 
-const login = await fetch(`${API}/api/auth/login`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ email: flag('email', 'admin@nexo.local'), password: flag('password', 'CambiarAdmin123!') }),
-}).catch(() => null);
-if (!login || !login.ok) {
-  console.error(`No se pudo autenticar en ${API}/api/auth/login (¿está corriendo la API?).`);
-  process.exit(1);
+// Credenciales de Profit para las capturas autenticadas. Sin ellas se captura
+// la pantalla de login (que es justo lo que hay que revisar).
+const USER_CODE = flag('user', process.env.NEXO_USER ?? '');
+const USER_PASSWORD = flag('password', process.env.NEXO_PASS ?? '');
+let appLogin = null;
+if (USER_CODE && USER_PASSWORD) {
+  const candidates = await fetch(`${API}/api/auth/usuarios?q=${encodeURIComponent(USER_CODE)}`)
+    .then((response) => (response.ok ? response.json() : []))
+    .catch(() => []);
+  const match =
+    candidates.find((candidate) => candidate.profitCode.toUpperCase() === USER_CODE.toUpperCase()) ?? candidates[0];
+  if (!match) {
+    console.error(`No se encontró el usuario ${USER_CODE} en el padrón sincronizado.`);
+    process.exit(1);
+  }
+  appLogin = { userId: match.id, password: USER_PASSWORD };
+  console.log(`Login: ${match.displayName} (${match.profitCode})`);
+} else {
+  console.log('Sin NEXO_USER/NEXO_PASS: se capturan las pantallas sin sesión (login).');
 }
-const auth = await login.json();
-const session = JSON.stringify({ accessToken: auth.accessToken, refreshToken: auth.refreshToken });
 
 const userDir = mkdtempSync(join(tmpdir(), 'ui-shots-'));
 const proc = spawn(
@@ -360,7 +375,16 @@ for (const scenario of SCENARIOS) {
     await sleep(2200);
 
     if (!bootstrapped) {
-      await evaluate(`localStorage.setItem('nexo.session', ${JSON.stringify(session)})`);
+      if (appLogin) {
+        // El login se hace DESDE la página para que el navegador guarde la
+        // cookie HttpOnly: el JavaScript de la app nunca ve el token.
+        const status = await evaluate(
+          `fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: ${JSON.stringify(
+            JSON.stringify(appLogin),
+          )} }).then((response) => response.status)`,
+        );
+        if (status !== 200) console.error(`⚠ Login en la app falló (HTTP ${status}).`);
+      }
       bootstrapped = true;
       await send('Page.navigate', { url: `${APP}${scenario.path}` });
       for (let i = 0; i < 80; i += 1) {
