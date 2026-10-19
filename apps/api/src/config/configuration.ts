@@ -13,6 +13,8 @@ const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(16, 'JWT_REFRESH_SECRET debe tener al menos 16 caracteres'),
   JWT_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
+  // Cookies de sesión: marcar `Secure` solo cuando se sirve por HTTPS.
+  AUTH_COOKIE_SECURE: z.enum(['true', 'false']).default('false'),
 
   PROFIT_DB_SERVER: z.string().optional(),
   PROFIT_DB_DATABASE: z.string().optional(),
@@ -74,7 +76,8 @@ export default function configuration() {
       jwtExpiresIn: env.JWT_EXPIRES_IN,
       jwtRefreshExpiresIn: env.JWT_REFRESH_EXPIRES_IN,
       // La sesión viaja en cookies HttpOnly (no hay token en JavaScript).
-      cookieSecure: env.NODE_ENV === 'production',
+      // Poner en true SOLO si el sitio se sirve por HTTPS.
+      cookieSecure: env.AUTH_COOKIE_SECURE === 'true',
       accessCookie: 'nexo_at',
       refreshCookie: 'nexo_rt',
     },
