@@ -5,9 +5,9 @@
 //
 //  · Conmutador Por cliente / Por producto (acordeón de 1 abierto).
 //  · SWITCH de simulación:
-//      - "Solo disponible": despacho tipo real; asigna únicamente lo que
+//      - "Solo despachable": despacho tipo real; asigna únicamente lo que
 //        hay en existencia y lo demás queda como faltante.
-//      - "Demanda total": descuenta todo lo pedido (puede quedar negativo).
+//      - "Solicitado total": descuenta todo lo pedido (puede quedar negativo).
 //  · Orden por PRIORIDAD (fecha de entrega más próxima y existencia).
 //  · Plan de despacho: lista priorizada de lo seleccionado (asignado/faltante).
 //  · Gráficas de decisión: cobertura por producto y cobertura global (kg).
@@ -46,8 +46,8 @@ const AUTH_OPTIONS = [
 ];
 
 const MODE_OPTIONS: { value: DispatchMode; label: string }[] = [
-  { value: 'disponible', label: 'Solo disponible' },
-  { value: 'total', label: 'Demanda total' },
+  { value: 'disponible', label: 'Solo despachable' },
+  { value: 'total', label: 'Solicitado total' },
 ];
 
 const SORT_OPTIONS: { value: DispatchSort; label: string }[] = [
@@ -174,7 +174,7 @@ export default function PedidosPage() {
     return map;
   }, [groups]);
 
-  // Información agregada por producto (existencia, demanda, kg por unidad).
+  // Información agregada por producto (existencia, solicitado, kg por unidad).
   const productInfo = useMemo(() => {
     const map = new Map<string, { units: number; demandUnits: number; demandKg: number; kgPerUnit: number | null; description: string }>();
     for (const g of groups) {
@@ -245,16 +245,43 @@ export default function PedidosPage() {
   }, [groups, queueIndex]);
 
   // --- Gráficas ---
+  // Cobertura por producto EN VIVO: lo marcado se «compromete» y descuenta la
+  // existencia de ese artículo; el resto de sus pedidos pasa a faltante / «sin
+  // existencia». Los KPIs de arriba siguen siendo globales (todo lo pedido).
   const coverageChart = useMemo(() => {
+    // Comprometido por producto: únicamente renglones marcados.
+    const committed = new Map<string, { units: number; pending: number }>();
+    for (const e of queue) {
+      if (!e.selected) continue;
+      const ref = lineByKey.get(e.key);
+      if (!ref) continue;
+      const acc = committed.get(ref.line.productCode) ?? { units: 0, pending: 0 };
+      acc.units += e.assignedQty;
+      acc.pending += e.pendingQty;
+      committed.set(ref.line.productCode, acc);
+    }
+
     const rows = [...productInfo.entries()]
       .map(([code, e]) => {
         const kpu = e.kgPerUnit ?? 0;
-        const covered = e.demandUnits <= 0 ? 0 : Math.min(e.units, e.demandUnits);
-        const missing = e.demandUnits <= 0 ? 0 : Math.max(0, e.demandUnits - e.units);
-        return { code, description: e.description, coveredKg: Math.round(covered * kpu), missingKg: Math.round(missing * kpu) };
+        const c = committed.get(code) ?? { units: 0, pending: 0 };
+        // Existencia libre = existencia − comprometido. Con ella se cubre lo
+        // que todavía no se ha marcado.
+        const freeStock = Math.max(0, e.units - c.units);
+        const unmarkedDemand = Math.max(0, e.demandUnits - c.pending);
+        const available = Math.min(freeStock, unmarkedDemand);
+        // Faltante = solicitado que no está comprometido ni se puede cubrir.
+        const missing = Math.max(0, e.demandUnits - c.units - available);
+        return {
+          code,
+          description: e.description,
+          committedKg: Math.round(c.units * kpu),
+          availableKg: Math.round(available * kpu),
+          missingKg: Math.round(missing * kpu),
+        };
       })
-      .filter((r) => r.coveredKg + r.missingKg > 0)
-      .sort((a, b) => b.coveredKg + b.missingKg - (a.coveredKg + a.missingKg))
+      .filter((r) => r.committedKg + r.availableKg + r.missingKg > 0)
+      .sort((a, b) => b.committedKg + b.availableKg + b.missingKg - (a.committedKg + a.availableKg + a.missingKg))
       .slice(0, 12)
       .reverse();
     return {
@@ -280,11 +307,12 @@ export default function PedidosPage() {
         axisTick: { show: false },
       },
       series: [
-        { name: 'Despachable', type: 'bar', stack: 't', data: rows.map((r) => r.coveredKg), color: C.navy, barMaxWidth: 10, itemStyle: { borderRadius: [3, 0, 0, 3] } },
+        { name: 'Comprometido', type: 'bar', stack: 't', data: rows.map((r) => r.committedKg), color: C.navy, barMaxWidth: 10, itemStyle: { borderRadius: [3, 0, 0, 3] } },
+        { name: 'Despachable', type: 'bar', stack: 't', data: rows.map((r) => r.availableKg), color: '#6f93b8', barMaxWidth: 10 },
         { name: 'Faltante', type: 'bar', stack: 't', data: rows.map((r) => r.missingKg), color: C.red, barMaxWidth: 10, itemStyle: { borderRadius: [0, 3, 3, 0] } },
       ],
     };
-  }, [productInfo]);
+  }, [productInfo, queue, lineByKey]);
 
   const donutChart = useMemo(() => {
     const covered = Math.round(liveSummary.assignedKg);
@@ -314,7 +342,9 @@ export default function PedidosPage() {
   }
 
   const hasFilters = Boolean(q || status || customerType || vendor || authorized || emisionDesde || emisionHasta || entregaDesde || entregaHasta || customerCode);
-  const coveragePct = Math.round(liveSummary.coverage * 100);
+  // El % acompaña a los kg de las tarjetas (mismo universo global).
+  const totalDemandKg = liveSummary.assignedKg + liveSummary.missingKg;
+  const coveragePct = totalDemandKg > 0 ? Math.round((liveSummary.assignedKg / totalDemandKg) * 100) : 100;
 
   function resetFilters() {
     setQ('');
@@ -330,8 +360,8 @@ export default function PedidosPage() {
     if (typeof window !== 'undefined') window.history.replaceState(null, '', '/pedidos');
   }
 
-  // Renglones seleccionables de un grupo: en «Solo disponible», únicamente los
-  // que tienen existencia para despachar (completo o parcial). En «Demanda
+  // Renglones seleccionables de un grupo: en «Solo despachable», únicamente los
+  // que tienen existencia para despachar (completo o parcial). En «Solicitado
   // total» no se restringe: esa simulación sobregira el stock a propósito.
   function dispatchableKeys(group: OrderGroup): string[] {
     return group.lines.map(lineKey).filter((k) => mode === 'total' || (queueByKey.get(k)?.dispatchable ?? false));
@@ -391,7 +421,7 @@ export default function PedidosPage() {
           subtitle="Simula qué puedes despachar hoy con tu existencia real. Marca renglones para armar el plan de despacho; se ordena por prioridad y nunca escribe en Profit."
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
-              <Kpi label="Despachable" value={fmtQty(liveSummary.assignedKg, 0)} suffix="kg" tone="primary" hint={`${coveragePct}% de la demanda`} />
+              <Kpi label="Despachable" value={fmtQty(liveSummary.assignedKg, 0)} suffix="kg" tone="primary" hint={`${coveragePct}% del solicitado`} />
               <Kpi label="Faltante" value={fmtQty(liveSummary.missingKg, 0)} suffix="kg" tone="danger" />
               <Kpi label="Pendiente" value={fmtQty(liveSummary.pendingQty, 0)} suffix="unid." tone="muted" />
             </div>
@@ -422,7 +452,7 @@ export default function PedidosPage() {
 
             <div className="grid grid-cols-1 gap-space-md sm:grid-cols-2 xl:w-[58%]">
               <div className="rounded-lg bg-surface p-space-sm">
-                <div className="mb-space-xs font-semibold uppercase text-label-sm text-outline">Cobertura por producto (kg)</div>
+                <div className="mb-space-xs font-semibold uppercase text-label-sm text-outline">Cobertura por producto (kg) · en vivo</div>
                 <EChart option={coverageChart} height={220} ariaLabel="Cobertura por producto en kilogramos" />
               </div>
               <div className="rounded-lg bg-surface p-space-sm">
@@ -475,7 +505,7 @@ export default function PedidosPage() {
           <Card className="overflow-hidden">
             <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-surface-container bg-surface-container-low px-space-md py-space-sm">
               <div className="flex flex-wrap items-center gap-space-md">
-                <span className="font-bold uppercase text-label-md text-primary">Plan de despacho · {mode === 'disponible' ? 'solo disponible' : 'demanda total'}</span>
+                <span className="font-bold uppercase text-label-md text-primary">Plan de despacho · {mode === 'disponible' ? 'solo despachable' : 'solicitado total'}</span>
                 <span className="text-label-sm text-on-surface-variant">
                   {planEntries.length} renglón(es) · turnos por entrega
                 </span>
@@ -718,7 +748,7 @@ function GroupRow({
             checked={allSelected}
             disabled={!selectable}
             onChange={onToggleGroup}
-            aria-label={selectable ? 'Seleccionar los renglones con existencia' : 'Sin existencia disponible en este grupo'}
+            aria-label={selectable ? 'Seleccionar los renglones con existencia' : 'Sin existencia para despachar en este grupo'}
             title={selectable ? undefined : 'No hay existencia para despachar en este grupo'}
             className="size-4 accent-[var(--color-primary-container)] disabled:cursor-not-allowed"
           />
@@ -797,7 +827,7 @@ function GroupRow({
                             disabled={blocked}
                             onChange={() => onToggleLine(line)}
                             aria-label="Seleccionar renglón para despacho"
-                            title={blocked ? 'Sin existencia disponible' : undefined}
+                            title={blocked ? 'Sin existencia para despachar' : undefined}
                             className="size-4 accent-[var(--color-primary-container)] disabled:cursor-not-allowed"
                           />
                         </Td>

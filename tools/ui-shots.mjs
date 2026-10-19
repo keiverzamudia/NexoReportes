@@ -61,6 +61,24 @@ const clickFirstGroupToggle = `(() => { const b = document.querySelector('table 
 const checkGroupCheckbox = (index = 0) =>
   `(() => { const boxes = [...document.querySelectorAll('table tbody tr td:nth-child(1) input[type="checkbox"]:not([disabled])')]; const box = boxes[${index}]; if (!box) return false; box.click(); return true; })()`;
 
+// Marca el checkbox de grupo del cliente cuyo nombre contenga `name` (última
+// tabla = lista de pedidos; la primera es el plan cuando ya hay selección).
+const checkGroupByName = (name) => `(() => {
+  const tables = [...document.querySelectorAll('table')];
+  const t = tables[tables.length - 1];
+  if (!t) return false;
+  const row = [...t.querySelectorAll('tbody tr')].find((r) => (r.textContent || '').toLowerCase().includes(${JSON.stringify(
+    name.toLowerCase(),
+  )}));
+  if (!row) return false;
+  const box = row.querySelector('td:nth-child(1) input[type="checkbox"]:not([disabled])');
+  if (!box) return false;
+  box.click();
+  return true;
+})()`;
+
+const scrollTop = `(() => { window.scrollTo({ top: 0, behavior: 'instant' }); return true; })()`;
+
 // La última tabla de la página es la lista de pedidos (el plan va antes).
 const clickLastTableGroupToggle = `(() => { const tables = [...document.querySelectorAll('table')]; const t = tables[tables.length - 1]; if (!t) return false; const b = t.querySelector('tbody tr td:nth-child(2) button'); if (!b) return false; b.click(); return true; })()`;
 
@@ -159,6 +177,24 @@ const SCENARIOS = [
     path: '/clientes',
     devices: ['desktop', 'phone'],
     steps: [{ tag: 'ver-pedidos', js: clickByText('Ver pedidos') }],
+  },
+  // Descuento en vivo: al marcar un cliente la cobertura por producto se
+  // recalcula (comprometido/disponible/faltante) y los demás pedidos del
+  // artículo reflejan lo que queda.
+  {
+    name: 'pedidos-sin-descuento',
+    path: '/pedidos',
+    devices: ['desktop'],
+    steps: [{ tag: 'arriba', js: scrollTop }],
+  },
+  {
+    name: 'pedidos-descuento',
+    path: '/pedidos',
+    devices: ['desktop'],
+    steps: [
+      { tag: 'marcar-cliente', js: checkGroupByName('DISTRIBUIDORA AGROBAY') },
+      { tag: 'arriba', js: scrollTop },
+    ],
   },
 ];
 
