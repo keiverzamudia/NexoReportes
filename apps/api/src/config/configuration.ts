@@ -30,7 +30,7 @@ const envSchema = z.object({
 
   // Códigos de Profit que entran como ADMIN (lista separada por comas).
   // Es la única forma de nombrar administradores sin usuarios internos.
-  ADMIN_PROFIT_CODES: z.string().default('ARIV'),
+  ADMIN_PROFIT_CODES: z.string().default('KZAMU'),
   // Rol por defecto para los usuarios recién sincronizados.
   DEFAULT_USER_ROLE: z
     .enum(['ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA'])
@@ -45,9 +45,6 @@ const envSchema = z.object({
 
   SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(0),
   SYNC_PAGE_SIZE: z.coerce.number().int().min(100).max(50000).default(5000),
-
-  // Clave para desbloquear/cambiar el forca mensual ya fijado.
-  FORECAST_UNLOCK_KEY: z.string().min(1).default('NEXO-FORCA'),
 
   CORS_ORIGINS: z.string().default('http://localhost:4100'),
 });
@@ -107,7 +104,6 @@ export default function configuration() {
       pageSize: env.SYNC_PAGE_SIZE,
     },
     forecast: {
-      unlockKey: env.FORECAST_UNLOCK_KEY,
       productionLine: 'ABA',
     },
     cors: { origins: env.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean) },

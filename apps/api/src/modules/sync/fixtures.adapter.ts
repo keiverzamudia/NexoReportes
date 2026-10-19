@@ -38,6 +38,18 @@ const SOLICITUDES: Record<string, unknown>[] = [
   { nro_solicitud: 3580, emision: '2025-09-09', entrega: '2025-09-16', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', vendedor: 'EURIC MANABI VERGARA MELENDEZ', tipo_cliente: 'L1 EXCLUSIVOS', status_cotizacion: '0', co_art: 'ABABOV75', art_des: 'VACA LECHERA 21% ALTA ENERGIA SACO 35 KG', almacen: '6804', cantidad: 55, pendiente: 50, uni_venta: 'SAC', relacion_empaque: 35, kg: 1750, Stock_03: 120, Stock_68: 15 },
 ];
 
+// Forca mensual de desarrollo (equivalente a `dbo.xart_fore.kg_mes`).
+// Solo incluye códigos presentes en el dataset anterior para que la pantalla
+// muestre valores en modo fixtures.
+const FORECAST: Record<string, unknown>[] = [
+  { co_art: 'ABABOV58', forca_mes: 1800 },
+  { co_art: 'ABAGP13', forca_mes: 7500 },
+  { co_art: 'ABAEQUI01', forca_mes: 900 },
+  { co_art: 'ABABOV67', forca_mes: 5714 },
+  { co_art: 'ABAPOR47', forca_mes: 2275 },
+  { co_art: 'ABABOV75', forca_mes: 171 },
+];
+
 function datasetFor(viewName: string): Record<string, unknown>[] {
   const lower = viewName.toLowerCase();
   if (lower.includes('solicitud') || lower.includes('pendiente')) return SOLICITUDES;
@@ -49,6 +61,7 @@ function datasetFor(viewName: string): Record<string, unknown>[] {
 const FIXTURE_PASSWORD = 'nexo';
 
 const FIXTURE_USERS: ProfitUserRef[] = [
+  { code: 'KZAMU', name: 'KEIBER ZAMUDIA' },
   { code: 'ARIV', name: 'ADDISON RIVERO' },
   { code: 'AALV', name: 'ADELIS ALVAREZ' },
   { code: 'ABON', name: 'ADELSON BONILLA' },
@@ -97,8 +110,10 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     return datasetFor(viewName).slice(0, limit);
   }
 
-  // En fixtures la consulta ampliada devuelve el mismo dataset determinista.
-  async selectQuery(_sqlText: string, limit: number): Promise<Record<string, unknown>[]> {
+  // En fixtures la consulta ampliada devuelve el mismo dataset determinista,
+  // salvo la consulta del forca (`xart_fore`), que tiene su propio set.
+  async selectQuery(sqlText: string, limit: number): Promise<Record<string, unknown>[]> {
+    if (sqlText.toLowerCase().includes('xart_fore')) return FORECAST.slice(0, limit);
     return SOLICITUDES.slice(0, limit);
   }
 
