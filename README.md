@@ -70,3 +70,5 @@ pnpm start            # levanta API (4010) y Web (4100) juntos vía Turbo
 - [docs/ROADMAP.md](docs/ROADMAP.md) — plan por fases
 - [docs/integration/PROFIT_SQL_MAPPING.md](docs/integration/PROFIT_SQL_MAPPING.md) — mapeo de vistas Profit (pendiente de confirmación)
 - Otras guías en `docs/`
+
+- password farca NEXO-FORCA
