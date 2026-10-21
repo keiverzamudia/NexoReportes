@@ -1,0 +1,45 @@
+{
+  "autorun": false,
+  "terminals": [
+    {
+      "name": "cloudflared Reportes",
+      "cwd": "${workspaceFolder:Reportes}",
+      "command": ""
+    },
+    {
+      "name": "turbo Reportes",
+      "cwd": "${workspaceFolder:Reportes}",
+      "command": ""
+    },
+    {
+      "name": "node Taller",
+      "cwd": "${workspaceFolder:Taller}",
+      "command": ""
+    },
+    {
+      "name": "cloudflared Taller",
+      "cwd": "${workspaceFolder:Taller}",
+      "command": ""
+    },
+    {
+      "name": "node Data-Maestra",
+      "cwd": "${workspaceFolder:Data-Maestra}",
+      "command": ""
+    },
+    {
+      "name": "cloudflared Data-Maestra",
+      "cwd": "${workspaceFolder:Data-Maestra}",
+      "command": ""
+    },
+    {
+      "name": "python PaginaWeb",
+      "cwd": "${workspaceFolder:PaginaWeb}",
+      "command": ""
+    },
+    {
+      "name": "cloudflared PaginaWeb",
+      "cwd": "${workspaceFolder:PaginaWeb}",
+      "command": ""
+    }
+  ]
+}
