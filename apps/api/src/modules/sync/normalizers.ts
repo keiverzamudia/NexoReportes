@@ -84,6 +84,8 @@ export interface RawSolicitudLine {
   // que la vista actual NO exponía: se leen de una consulta ampliada de la
   // app (solo lectura). Todos anulables: si no llegan, quedan `null`.
   vendedor: string | null;
+  // Vendedor asignado al cliente en Profit (clientes.co_ven → vendedor.ven_des).
+  vendedorCliente: string | null;
   tipoCliente: string | null;
   // '0' | '1' | '2' de cotiz_c.status ('1' = autorizada).
   statusCotizacion: string | null;
@@ -153,6 +155,7 @@ export function normalizeSolicitudRow(row: Record<string, unknown>): Normalized<
       stock68: parseProfitDecimal(row.Stock_68 ?? row.stock_68),
       // Campos del reporte ampliado (opcionales; null si la fuente no los trae).
       vendedor: trimOrNull(row.vendedor),
+      vendedorCliente: trimOrNull(row.vendedor_cliente),
       tipoCliente: trimOrNull(row.tipo_cliente),
       statusCotizacion: trimOrNull(row.status_cotizacion),
       cantidad: parseProfitDecimal(row.cantidad),

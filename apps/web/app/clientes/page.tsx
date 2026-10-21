@@ -5,13 +5,13 @@
 //
 // «Ver pedidos» despliega los renglones pendientes del cliente **aquí mismo**
 // (no navega a otra pantalla): el detalle se pide al API al abrir la fila.
-// Tipo de cliente y vendedor no vienen en la vista actual → "—" (nunca
-// inventados).
+// Tipo de cliente y vendedor (clientes.co_ven) llegan desde la sync
+// ampliada; si faltan, se muestran "—" (nunca inventados).
 // ============================================================
 
 import type { Customer, OrderGroupedResponse } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, Search, Users } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, Search, ShoppingCart, Users } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AppNav, LoginScreen } from '../../components/shell';
 import {
@@ -27,6 +27,7 @@ import {
   Th,
   fmtDate,
   fmtQty,
+  useGreeting,
 } from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 
@@ -90,7 +91,7 @@ function buildColumns(expanded: string | null, onToggle: (id: string) => void): 
             type="button"
             onClick={() => onToggle(c.id)}
             aria-expanded={expanded === c.id}
-            className="inline-flex items-center gap-space-2xs font-semibold text-primary-container hover:underline"
+            className="inline-flex items-center gap-space-2xs rounded-pill border border-outline-variant/40 px-2.5 py-1 font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low"
           >
             {expanded === c.id ? (
               <ChevronDown aria-hidden className="size-4" />
@@ -109,6 +110,7 @@ export default function ClientesPage() {
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const greeting = useGreeting();
 
   const params = new URLSearchParams();
   if (q.trim()) params.set('q', q.trim());
@@ -141,20 +143,32 @@ export default function ClientesPage() {
         <PageHeader
           eyebrow="Comercial · Cartera de clientes"
           icon={Users}
+          greeting={greeting}
           title="Clientes"
           subtitle="Catálogo de clientes con pedidos sincronizados desde Profit. «Ver pedidos» despliega sus renglones pendientes en la misma pantalla."
           actions={
-            <div className="flex flex-wrap items-center gap-space-sm">
-              <Kpi label="Clientes" value={data ? new Intl.NumberFormat('es-VE').format(data.total) : '—'} icon={Users} />
-              <Kpi label="Con pedidos (pág.)" value={String(withOrders)} tone="success" />
+            <div className="flex flex-wrap items-stretch gap-space-sm">
+              <Kpi
+                label="Clientes"
+                value={data ? new Intl.NumberFormat('es-VE').format(data.total) : '—'}
+                icon={Users}
+                hint={data ? `página ${data.page} de ${totalPages}` : undefined}
+              />
+              <Kpi
+                label="Con pedidos (pág.)"
+                value={String(withOrders)}
+                tone="success"
+                icon={ShoppingCart}
+                hint={data ? `${Math.round((withOrders / Math.max(1, data.items.length)) * 100)}% de la página` : undefined}
+              />
             </div>
           }
         />
 
         <Card className="p-space-md">
-          <div className="grid grid-cols-1 gap-space-md lg:grid-cols-12">
+          <div className="grid grid-cols-1 gap-space-md lg:grid-cols-12 lg:items-center">
             <TextInput
-              className="lg:col-span-4"
+              className="lg:col-span-5"
               icon={Search}
               value={q}
               onChange={(v) => {
@@ -165,6 +179,16 @@ export default function ClientesPage() {
               placeholder="Buscar por código o nombre…"
               ariaLabel="Buscar cliente"
             />
+            <p className="text-body-md text-on-surface-variant lg:col-span-5">
+              {q.trim()
+                ? `Resultados para “${q.trim()}” en la cartera de Profit.`
+                : 'Escribe un código o un nombre para filtrar la cartera completa.'}
+            </p>
+            <div className="flex justify-start lg:col-span-2 lg:justify-end">
+              <Badge tone="muted" dot>
+                {data ? `${data.items.length} en pantalla` : 'Cargando'}
+              </Badge>
+            </div>
           </div>
         </Card>
 
@@ -177,6 +201,17 @@ export default function ClientesPage() {
 
         {data && (
           <Card className="overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-outline-variant/30 px-space-md py-space-sm">
+              <div className="flex flex-col">
+                <span className="text-title-md font-semibold text-primary">Cartera sincronizada</span>
+                <span className="text-label-sm text-on-surface-variant">
+                  {data.total} cliente{data.total === 1 ? '' : 's'} · datos de solo lectura desde Profit
+                </span>
+              </div>
+              <Badge tone="primary" dot>
+                {withOrders} con pedidos en esta página
+              </Badge>
+            </div>
             <DataTable
               columns={columns}
               rows={data.items}
@@ -193,7 +228,7 @@ export default function ClientesPage() {
             />
 
             {data.total > PAGE_SIZE && (
-              <div className="flex items-center justify-between border-t border-surface-container px-space-md py-space-sm text-body-md text-on-surface-variant">
+              <div className="flex flex-wrap items-center justify-between gap-space-sm border-t border-outline-variant/30 px-space-md py-space-sm text-body-md text-on-surface-variant">
                 <span>
                   {data.total} cliente{data.total === 1 ? '' : 's'} · página {data.page} de {totalPages}
                 </span>
@@ -204,7 +239,7 @@ export default function ClientesPage() {
                       setExpanded(null);
                     }}
                     disabled={page <= 1}
-                    className="flex h-9 items-center gap-space-2xs rounded-lg border border-outline-variant px-space-md transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                    className="flex h-9 items-center gap-space-2xs rounded-pill border border-outline-variant/50 px-space-md font-semibold transition-colors hover:bg-surface-container-low disabled:opacity-40"
                   >
                     <ChevronLeft aria-hidden className="size-4" /> Anterior
                   </button>
@@ -214,7 +249,7 @@ export default function ClientesPage() {
                       setExpanded(null);
                     }}
                     disabled={page >= totalPages}
-                    className="flex h-9 items-center gap-space-2xs rounded-lg border border-outline-variant px-space-md transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                    className="flex h-9 items-center gap-space-2xs rounded-pill border border-outline-variant/50 px-space-md font-semibold transition-colors hover:bg-surface-container-low disabled:opacity-40"
                   >
                     Siguiente <ChevronRight aria-hidden className="size-4" />
                   </button>
@@ -259,11 +294,23 @@ function ClientePedidos({ customer }: { customer: Customer }) {
   const pendingKg = lines.reduce((sum, line) => sum + (line.pendingKg ?? 0), 0);
 
   return (
-    <div className="flex flex-col gap-space-sm">
-      <div className="overflow-x-auto rounded-lg bg-surface-container-lowest">
+    <div className="flex flex-col gap-space-sm animate-fade">
+      <div className="flex flex-wrap items-center gap-space-sm">
+        <Badge tone="primary" dot>
+          {lines.length} renglón{lines.length === 1 ? '' : 'es'}
+        </Badge>
+        <Badge tone="success" dot>
+          {fmtQty(pendingQty, 0)} unid. pendientes
+        </Badge>
+        <Badge tone="muted" dot>
+          {fmtQty(pendingKg, 0)} kg
+        </Badge>
+        <span className="ml-auto text-label-sm text-on-surface-variant">Despacho sugerido por entrega más próxima</span>
+      </div>
+      <div className="overflow-x-auto rounded-xl border border-outline-variant/35 bg-surface-container-lowest shadow-soft">
         <table className="w-full border-collapse text-label-md">
           <thead>
-            <tr className="border-b border-surface-container bg-surface-container">
+            <tr className="border-b border-outline-variant/30 bg-surface-container-low/80">
               <Th>Pedido</Th>
               <Th>Entrega</Th>
               <Th>Artículo</Th>
@@ -273,9 +320,9 @@ function ClientePedidos({ customer }: { customer: Customer }) {
               <Th align="center">Aut.</Th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-surface-container">
+          <tbody className="divide-y divide-outline-variant/20">
             {lines.map((line) => (
-              <tr key={`${line.orderId}#${line.productCode}`} className="hover:bg-surface-container-low">
+              <tr key={`${line.orderId}#${line.productCode}`} className="transition-colors hover:bg-surface-container-low/70">
                 <Td className="font-bold tabular-nums text-primary">{line.orderNumber}</Td>
                 <Td className="tabular-nums text-on-surface-variant">{fmtDate(line.requestedDate)}</Td>
                 <Td>
@@ -293,7 +340,7 @@ function ClientePedidos({ customer }: { customer: Customer }) {
                   {line.authorized === null ? (
                     <span className="text-outline">—</span>
                   ) : (
-                    <Badge tone={line.authorized ? 'success' : 'muted'}>{line.authorized ? 'SÍ' : 'NO'}</Badge>
+                    <Badge tone={line.authorized ? 'success' : 'muted'} dot>{line.authorized ? 'SÍ' : 'NO'}</Badge>
                   )}
                 </Td>
               </tr>

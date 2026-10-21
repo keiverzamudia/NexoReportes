@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 // ============================================================
 // Pedidos — Simulador de despacho (estilo Stitch, modo "Operate").
@@ -16,14 +16,13 @@
 //  el navegador y NUNCA escriben en Profit.
 // ============================================================
 
-import type { OrderGroup, OrderGroupBy, OrderGroupLine, OrderGroupedResponse, OrderStatus } from '@nexo/contracts';
+import type { OrderDetail, OrderGroup, OrderGroupBy, OrderGroupLine, OrderGroupedResponse, OrderStatus } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, ChevronDown, ChevronRight, Download, Search, ShoppingCart, Trash2 } from 'lucide-react';
-import Link from 'next/link';
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, ChevronDown, ChevronRight, Download, FileText, PackageCheck, Pin, PinOff, Search, ShoppingCart, Trash2, X } from 'lucide-react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { EChart } from '../../components/EChart';
 import { AppNav, LoginScreen } from '../../components/shell';
-import { Badge, Card, CoverageBar, DateInput, Kpi, PageHeader, Select, Segmented, Td, TextInput, Th, fmtDate, fmtQty } from '../../components/ui';
+import { Badge, Card, CoverageBar, DateInput, HeroCard, Kpi, PageHeader, Select, Segmented, Skeleton, Td, TextInput, Th, fmtDate, fmtQty, useGreeting } from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 import { DispatchInput, DispatchMode, DispatchSort, QueueEntry, buildDispatchQueue, summarizeQueue } from '../../lib/dispatch';
 
@@ -63,8 +62,30 @@ const STATUS_LABEL: Record<OrderStatus, string> = {
   DESCONOCIDO: 'Desconocido',
 };
 
-// Paleta de las gráficas (identidad Nexo).
-const C = { navy: '#003366', lime: '#95C800', dark: '#001e40', red: '#dc2626', amber: '#b45309', outline: '#737780', grid: '#e1f0ff' };
+const STATUS_TONE: Record<OrderStatus, 'success' | 'muted' | 'danger' | 'default'> = {
+  ABIERTO: 'success',
+  CERRADO: 'muted',
+  CANCELADO: 'danger',
+  DESCONOCIDO: 'default',
+};
+
+// Paleta de las gráficas (identidad Nexo + acento del rediseño).
+const C = {
+  navy: '#003366',
+  lime: '#7cae00',
+  accent: '#ff7a5c',
+  outline: '#737780',
+  grid: '#e6eff9',
+  ink: '#081d2c',
+};
+
+const CHART_TOOLTIP = {
+  backgroundColor: '#001a33',
+  borderWidth: 0,
+  padding: [8, 12] as [number, number],
+  textStyle: { color: '#ffffff', fontSize: 12 },
+  extraCssText: 'border-radius:12px;box-shadow:0 16px 40px -20px rgba(0,30,64,.6);',
+};
 
 // Números compactos para los ejes (evita que se encimen): 12500 → "13k".
 function compactKg(value: number): string {
@@ -99,6 +120,7 @@ function loadSelection(): string[] {
 
 export default function PedidosPage() {
   const [tick, setTick] = useState(0);
+  const greeting = useGreeting();
   const [by, setBy] = useState<OrderGroupBy>('cliente');
   const [mode, setMode] = useState<DispatchMode>('disponible');
   const [sort, setSort] = useState<DispatchSort>('prioridad');
@@ -106,6 +128,11 @@ export default function PedidosPage() {
   const [planExpanded, setPlanExpanded] = useState<string | null>(null);
   const [selection, setSelection] = useState<string[]>([]);
   const [hydrated, setHydrated] = useState(false);
+  // El plan de despacho puede quedar fijo arriba o desplazarse con la página.
+  const [planPinned, setPlanPinned] = useState(true);
+  // Detalle de pedido en modal: la fila no abandona el simulador.
+  const [selectedOrder, setSelectedOrder] = useState<{ id: string; number: string } | null>(null);
+  const closeOrderRef = useRef<HTMLButtonElement>(null);
 
   // Filtros
   const [q, setQ] = useState('');
@@ -129,6 +156,22 @@ export default function PedidosPage() {
     if (hydrated) window.localStorage.setItem(SEL_KEY, JSON.stringify(selection));
   }, [selection, hydrated]);
 
+  // Modal de detalle: Escape, bloqueo del scroll de fondo y foco inicial.
+  useEffect(() => {
+    if (!selectedOrder) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSelectedOrder(null);
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKeyDown);
+    closeOrderRef.current?.focus();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [selectedOrder]);
+
   const params = new URLSearchParams();
   params.set('by', by);
   if (q.trim()) params.set('q', q.trim());
@@ -145,6 +188,18 @@ export default function PedidosPage() {
   const { data, isLoading, error } = useQuery<OrderGroupedResponse>({
     queryKey: ['orders-grouped', tick, by, q, status, customerType, vendor, authorized, customerCode, emisionDesde, emisionHasta, entregaDesde, entregaHasta],
     queryFn: () => apiFetch<OrderGroupedResponse>(`/orders/grouped?${params.toString()}`),
+    retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
+  });
+
+  // Detalle del pedido abierto en el modal (misma fuente que /pedidos/[id]).
+  const {
+    data: orderDetail,
+    isLoading: orderLoading,
+    error: orderError,
+  } = useQuery<OrderDetail>({
+    queryKey: ['order', selectedOrder?.id, tick],
+    queryFn: () => apiFetch<OrderDetail>(`/orders/${selectedOrder!.id}`),
+    enabled: Boolean(selectedOrder?.id),
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
 
@@ -287,29 +342,30 @@ export default function PedidosPage() {
     return {
       grid: { left: 4, right: 20, top: 8, bottom: 44, containLabel: true },
       tooltip: {
+        ...CHART_TOOLTIP,
         trigger: 'axis',
-        axisPointer: { type: 'shadow' },
+        axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(0,51,102,0.06)' } },
         valueFormatter: (v: number) => `${fmtQty(v, 0)} kg`,
       },
-      legend: { bottom: 2, icon: 'roundRect', itemWidth: 10, itemHeight: 10, textStyle: { color: C.outline, fontSize: 11 } },
+      legend: { bottom: 2, icon: 'roundRect', itemWidth: 9, itemHeight: 9, itemGap: 14, textStyle: { color: C.outline, fontSize: 11 } },
       xAxis: {
         type: 'value',
         axisLabel: { color: C.outline, fontSize: 10, formatter: (v: number) => compactKg(v) },
-        splitLine: { lineStyle: { color: C.grid } },
+        splitLine: { lineStyle: { color: C.grid, type: 'dashed' } },
         axisLine: { show: false },
         axisTick: { show: false },
       },
       yAxis: {
         type: 'category',
         data: rows.map((r) => r.code),
-        axisLabel: { color: C.dark, fontSize: 11, fontFamily: 'monospace' },
+        axisLabel: { color: C.ink, fontSize: 11, fontFamily: 'monospace' },
         axisLine: { show: false },
         axisTick: { show: false },
       },
       series: [
-        { name: 'Comprometido', type: 'bar', stack: 't', data: rows.map((r) => r.committedKg), color: C.navy, barMaxWidth: 10, itemStyle: { borderRadius: [3, 0, 0, 3] } },
-        { name: 'Despachable', type: 'bar', stack: 't', data: rows.map((r) => r.availableKg), color: '#6f93b8', barMaxWidth: 10 },
-        { name: 'Faltante', type: 'bar', stack: 't', data: rows.map((r) => r.missingKg), color: C.red, barMaxWidth: 10, itemStyle: { borderRadius: [0, 3, 3, 0] } },
+        { name: 'Comprometido', type: 'bar', stack: 't', data: rows.map((r) => r.committedKg), color: C.navy, barMaxWidth: 11, itemStyle: { borderRadius: [4, 0, 0, 4] } },
+        { name: 'Despachable', type: 'bar', stack: 't', data: rows.map((r) => r.availableKg), color: C.lime, barMaxWidth: 11 },
+        { name: 'Faltante', type: 'bar', stack: 't', data: rows.map((r) => r.missingKg), color: C.accent, barMaxWidth: 11, itemStyle: { borderRadius: [0, 4, 4, 0] } },
       ],
     };
   }, [productInfo, queue, lineByKey]);
@@ -317,20 +373,31 @@ export default function PedidosPage() {
   const donutChart = useMemo(() => {
     const covered = Math.round(liveSummary.assignedKg);
     const missing = Math.round(liveSummary.missingKg);
+    const total = covered + missing;
+    const coveredPct = total > 0 ? Math.round((covered / total) * 100) : 100;
     return {
-      tooltip: { trigger: 'item', valueFormatter: (v: number) => `${fmtQty(v, 0)} kg` },
-      legend: { bottom: 0, icon: 'circle', itemWidth: 10, itemHeight: 10, textStyle: { color: C.outline, fontSize: 11 } },
+      title: {
+        text: `${coveredPct}%`,
+        subtext: 'cobertura',
+        left: 'center',
+        top: '33%',
+        textStyle: { fontSize: 24, fontWeight: 800, color: C.navy },
+        subtextStyle: { fontSize: 10, color: C.outline, fontWeight: 600 },
+      },
+      tooltip: { ...CHART_TOOLTIP, trigger: 'item', valueFormatter: (v: number) => `${fmtQty(v, 0)} kg` },
+      legend: { bottom: 0, icon: 'circle', itemWidth: 9, itemHeight: 9, itemGap: 14, textStyle: { color: C.outline, fontSize: 11 } },
       series: [
         {
           type: 'pie',
-          radius: ['60%', '82%'],
+          radius: ['64%', '86%'],
           center: ['50%', '44%'],
           avoidLabelOverlap: true,
-          itemStyle: { borderColor: '#fff', borderWidth: 2 },
+          itemStyle: { borderColor: '#ffffff', borderWidth: 3, borderRadius: 6 },
           label: { show: false },
+          emphasis: { scale: true, scaleSize: 4 },
           data: [
             { name: 'Despachable', value: covered, itemStyle: { color: C.navy } },
-            { name: 'Faltante', value: missing, itemStyle: { color: C.red } },
+            { name: 'Faltante', value: missing, itemStyle: { color: C.accent } },
           ],
         },
       ],
@@ -381,33 +448,111 @@ export default function PedidosPage() {
     setSelection((prev) => (all ? prev.filter((k) => !keys.includes(k)) : [...new Set([...prev, ...keys])]));
   }
 
-  function exportPlan() {
-    const rows: string[][] = [['Turno', 'Pedido', 'Cliente', 'Producto', 'Descripcion', 'Pendiente', 'Asignado', 'Faltante', 'Kg asignado', 'Kg faltante', 'Entrega']];
-    for (const r of planEntries) {
-      const ref = lineByKey.get(r.key);
+  async function exportPlan() {
+    // Generación bajo demanda: xlsx solo se carga al pulsar «Exportar».
+    const XLSX = await import('xlsx');
+
+    type ClientPlan = {
+      code: string | null;
+      name: string;
+      entries: { entry: QueueEntry; line: OrderGroupLine }[];
+    };
+
+    const byClient = new Map<string, ClientPlan>();
+    for (const entry of planEntries) {
+      const ref = lineByKey.get(entry.key);
       if (!ref) continue;
-      rows.push([
-        String(r.priority),
-        ref.line.orderNumber,
-        ref.line.customerName ?? '',
-        ref.line.productCode,
-        ref.line.description ?? '',
-        String(ref.line.pendingQty),
-        String(r.assignedQty),
-        String(r.missingQty),
-        String(r.assignedKg),
-        String(r.missingKg),
-        (ref.line.requestedDate ?? '').slice(0, 10),
-      ]);
+      const key = ref.line.customerCode ?? ref.line.customerName ?? ref.group.key;
+      let client = byClient.get(key);
+      if (!client) {
+        client = { code: ref.line.customerCode, name: ref.line.customerName ?? ref.group.label, entries: [] };
+        byClient.set(key, client);
+      }
+      client.entries.push({ entry, line: ref.line });
     }
-    const csv = rows.map((line) => line.map((c) => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'plan-despacho-nexo.csv';
-    link.click();
-    URL.revokeObjectURL(url);
+    if (byClient.size === 0) return;
+
+    const clients = [...byClient.values()].sort((a, b) => a.name.localeCompare(b.name, 'es'));
+    const TABLE_HEADERS = [
+      'Turno',
+      'Pedido',
+      'Código artículo',
+      'Artículo',
+      'Pendiente (unid.)',
+      'Asignado (unid.)',
+      'Faltante (unid.)',
+      'Kg pendiente',
+      'Kg asignado',
+      'Kg faltante',
+      'Almacén',
+      'Entrega',
+      'Autorizado',
+    ];
+    const COLUMN_WIDTHS = [7, 10, 16, 46, 14, 14, 13, 12, 12, 12, 9, 11, 11];
+
+    // Una sola hoja: un bloque por cliente (encabezado + detalle).
+    const aoa: (string | number)[][] = [];
+    const merges: { s: { r: number; c: number }; e: { r: number; c: number } }[] = [];
+    const lastColumn = TABLE_HEADERS.length - 1;
+
+    aoa.push(['PLAN DE DESPACHO POR CLIENTE']);
+    aoa.push([
+      `Generado ${new Intl.DateTimeFormat('es-VE', { dateStyle: 'short', timeStyle: 'short' }).format(new Date())} · solo renglones seleccionados en el plan`,
+    ]);
+    merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: lastColumn } });
+    merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: lastColumn } });
+    aoa.push([]);
+
+    for (const client of clients) {
+      const pendingQty = client.entries.reduce((sum, item) => sum + item.entry.pendingQty, 0);
+      const assignedQty = client.entries.reduce((sum, item) => sum + item.entry.assignedQty, 0);
+      const pendingKg = client.entries.reduce((sum, item) => sum + (item.entry.pendingKg ?? 0), 0);
+      const missingKg = client.entries.reduce((sum, item) => sum + item.entry.missingKg, 0);
+
+      const headerRow = aoa.length;
+      aoa.push([
+        `CLIENTE: ${client.name}${client.code ? ` · ${client.code}` : ''} · ${client.entries.length} renglón(es) · ${fmtQty(pendingQty, 0)} pend. · ${fmtQty(assignedQty, 0)} asignado · ${fmtQty(pendingKg, 0)} kg · ${fmtQty(missingKg, 0)} kg faltante`,
+      ]);
+      merges.push({ s: { r: headerRow, c: 0 }, e: { r: headerRow, c: lastColumn } });
+      aoa.push(TABLE_HEADERS);
+
+      for (const { entry, line } of [...client.entries].sort((a, b) => a.entry.priority - b.entry.priority)) {
+        aoa.push([
+          entry.priority,
+          line.orderNumber,
+          line.productCode,
+          line.description ?? '—',
+          entry.pendingQty,
+          entry.assignedQty,
+          entry.missingQty,
+          Math.round(entry.pendingKg ?? 0),
+          Math.round(entry.assignedKg),
+          Math.round(entry.missingKg),
+          line.warehouseCode ?? '—',
+          fmtDate(line.requestedDate),
+          line.authorized === null ? '—' : line.authorized ? 'SÍ' : 'NO',
+        ]);
+      }
+
+      aoa.push([]);
+    }
+
+    const totalPendingKg = planEntries.reduce((sum, entry) => sum + (entry.pendingKg ?? 0), 0);
+    const totalAssignedKg = planEntries.reduce((sum, entry) => sum + entry.assignedKg, 0);
+    const totalMissingKg = planEntries.reduce((sum, entry) => sum + entry.missingKg, 0);
+    const totalRow = aoa.length;
+    aoa.push([
+      `TOTAL GENERAL · ${clients.length} cliente(s) · ${planEntries.length} renglón(es) · ${fmtQty(totalPendingKg, 0)} kg pendientes · ${fmtQty(totalAssignedKg, 0)} kg asignados · ${fmtQty(totalMissingKg, 0)} kg faltantes`,
+    ]);
+    merges.push({ s: { r: totalRow, c: 0 }, e: { r: totalRow, c: lastColumn } });
+
+    const sheet = XLSX.utils.aoa_to_sheet(aoa);
+    sheet['!cols'] = COLUMN_WIDTHS.map((wch) => ({ wch }));
+    sheet['!merges'] = merges;
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Plan por cliente');
+    XLSX.writeFile(workbook, 'plan-despacho-por-cliente.xlsx', { compression: true });
   }
 
   return (
@@ -417,54 +562,85 @@ export default function PedidosPage() {
         <PageHeader
           eyebrow="Ventas y CxC · Simulador de despacho"
           icon={ShoppingCart}
+          greeting={greeting}
           title="Pedidos"
           subtitle="Simula qué puedes despachar hoy con tu existencia real. Marca renglones para armar el plan de despacho; se ordena por prioridad y nunca escribe en Profit."
-          actions={
-            <div className="flex flex-wrap items-center gap-space-sm">
-              <Kpi label="Despachable" value={fmtQty(liveSummary.assignedKg, 0)} suffix="kg" tone="primary" hint={`${coveragePct}% del solicitado`} />
+        />
+
+        {/* Centro de decisión: hero + controles + gráficas */}
+        <section className="grid gap-space-md xl:grid-cols-12">
+          <div className="flex flex-col gap-space-md xl:col-span-4">
+            <HeroCard
+              label="Despachable hoy"
+              value={fmtQty(liveSummary.assignedKg, 0)}
+              suffix="kg"
+              hint={`${coveragePct}% de la demanda · ${fmtQty(liveSummary.missingKg, 0)} kg faltantes`}
+              progress={coveragePct}
+              icon={PackageCheck}
+            />
+
+            <div className="stagger grid grid-cols-2 gap-space-sm">
               <Kpi label="Faltante" value={fmtQty(liveSummary.missingKg, 0)} suffix="kg" tone="danger" />
               <Kpi label="Pendiente" value={fmtQty(liveSummary.pendingQty, 0)} suffix="unid." tone="muted" />
             </div>
-          }
-        />
 
-        {/* Panel de decisión: modo + orden + gráficas */}
-        <Card className="p-space-md">
-          <div className="flex flex-col gap-space-md xl:flex-row xl:items-start xl:justify-between">
-            <div className="flex flex-col gap-space-md">
-              <div>
-                <span className="font-semibold uppercase text-label-sm text-outline">Modo de simulación</span>
-                <div className="mt-space-xs flex flex-wrap items-center gap-space-sm">
-                  <Segmented ariaLabel="Modo de simulación" value={mode} onChange={setMode} options={MODE_OPTIONS} />
-                  <span className="text-label-sm text-on-surface-variant">
+            <Card className="p-space-md">
+              <div className="flex flex-col gap-space-sm">
+                <div>
+                  <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Modo de simulación</span>
+                  <div className="mt-space-xs flex flex-wrap items-center gap-space-sm">
+                    <Segmented ariaLabel="Modo de simulación" value={mode} onChange={setMode} options={MODE_OPTIONS} />
+                  </div>
+                  <p className="mt-space-xs text-body-sm text-on-surface-variant">
                     {mode === 'disponible' ? 'Asigna solo lo que hay; el resto queda como faltante.' : 'Descuenta todo lo pedido (puede sobregirar).'}
-                  </span>
+                  </p>
+                </div>
+                <div className="h-px bg-outline-variant/25" />
+                <div>
+                  <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Agrupar y ordenar</span>
+                  <div className="mt-space-xs flex flex-wrap items-center gap-space-sm">
+                    <Select className="w-40" ariaLabel="Agrupar por" value={by} onChange={(v) => { setBy(v as OrderGroupBy); setExpanded(null); }} options={BY_OPTIONS} />
+                    <Select className="w-full sm:w-64" ariaLabel="Orden" value={sort} onChange={(v) => setSort(v as DispatchSort)} options={SORT_OPTIONS} />
+                  </div>
                 </div>
               </div>
-              <div>
-                <span className="font-semibold uppercase text-label-sm text-outline">Agrupar y ordenar</span>
-                <div className="mt-space-xs flex flex-wrap items-center gap-space-sm">
-                  <Select className="w-40" ariaLabel="Agrupar por" value={by} onChange={(v) => { setBy(v as OrderGroupBy); setExpanded(null); }} options={BY_OPTIONS} />
-                  <Select className="w-64" ariaLabel="Orden" value={sort} onChange={(v) => setSort(v as DispatchSort)} options={SORT_OPTIONS} />
-                </div>
-              </div>
-            </div>
+            </Card>
+          </div>
 
-            <div className="grid grid-cols-1 gap-space-md sm:grid-cols-2 xl:w-[58%]">
-              <div className="rounded-lg bg-surface p-space-sm">
-                <div className="mb-space-xs font-semibold uppercase text-label-sm text-outline">Cobertura por producto (kg) · en vivo</div>
+          <Card className="p-space-md xl:col-span-8">
+            <div className="mb-space-sm flex flex-wrap items-start justify-between gap-space-sm">
+              <div>
+                <p className="text-title-md font-semibold text-primary">Cobertura en vivo</p>
+                <p className="text-label-sm text-on-surface-variant">Lo marcado se compromete y descuenta existencia; el resto pasa a faltante.</p>
+              </div>
+              <Badge tone={coveragePct >= 100 ? 'success' : coveragePct > 0 ? 'warning' : 'danger'} dot>
+                {coveragePct}% global
+              </Badge>
+            </div>
+            <div className="grid gap-space-md sm:grid-cols-2">
+              <div className="rounded-xl bg-surface/80 p-space-sm">
+                <div className="mb-space-xs font-semibold uppercase tracking-wider text-label-sm text-outline">Cobertura por producto (kg)</div>
                 <EChart option={coverageChart} height={220} ariaLabel="Cobertura por producto en kilogramos" />
               </div>
-              <div className="rounded-lg bg-surface p-space-sm">
-                <div className="mb-space-xs font-semibold uppercase text-label-sm text-outline">Cobertura global (kg)</div>
+              <div className="rounded-xl bg-surface/80 p-space-sm">
+                <div className="mb-space-xs font-semibold uppercase tracking-wider text-label-sm text-outline">Cobertura global (kg)</div>
                 <EChart option={donutChart} height={220} ariaLabel="Cobertura global en kilogramos" />
               </div>
             </div>
-          </div>
-        </Card>
+          </Card>
+        </section>
 
         {/* Filtros */}
         <Card className="p-space-md">
+          <div className="mb-space-sm flex flex-wrap items-start justify-between gap-space-sm">
+            <div>
+              <p className="text-title-md font-semibold text-primary">Filtros</p>
+              <p className="text-label-sm text-on-surface-variant">Acota la cartera; los KPIs y las gráficas se recalculan en vivo.</p>
+            </div>
+            <Badge tone={hasFilters ? 'primary' : 'muted'} dot>
+              {hasFilters ? 'filtros activos' : 'sin filtros'}
+            </Badge>
+          </div>
           <div className="grid grid-cols-1 gap-space-md md:grid-cols-2 lg:grid-cols-12">
             <TextInput className="lg:col-span-3" icon={Search} value={q} onChange={setQ} placeholder="Buscar N° de pedido o cliente…" ariaLabel="Buscar" />
             <Select className="lg:col-span-2" value={status} onChange={(v) => setStatus(v as OrderStatus | '')} options={STATUS_OPTIONS} ariaLabel="Estado" />
@@ -487,7 +663,7 @@ export default function PedidosPage() {
               <button
                 onClick={resetFilters}
                 disabled={!hasFilters}
-                className="h-9 rounded-lg border border-outline-variant px-space-md font-semibold text-body-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                className="h-9 rounded-pill border border-outline-variant/50 px-space-md font-semibold text-body-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
               >
                 Limpiar filtros
               </button>
@@ -502,20 +678,35 @@ export default function PedidosPage() {
 
         {/* Plan de despacho (agrupado como la tabla; solo si hay selección) */}
         {planEntries.length > 0 && (
-          <Card className="overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-surface-container bg-surface-container-low px-space-md py-space-sm">
+          <Card className={`overflow-hidden ${planPinned ? 'xl:sticky xl:top-[86px] xl:z-20' : ''}`}>
+            <div aria-hidden className="h-1 w-full bg-secondary-container" />
+            <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-outline-variant/30 bg-surface-container-low/70 px-space-md py-space-sm">
               <div className="flex flex-wrap items-center gap-space-md">
-                <span className="font-bold uppercase text-label-md text-primary">Plan de despacho · {mode === 'disponible' ? 'solo despachable' : 'solicitado total'}</span>
+                <span className="font-bold uppercase tracking-wider text-label-md text-primary">Plan de despacho · {mode === 'disponible' ? 'solo despachable' : 'solicitado total'}</span>
                 <span className="text-label-sm text-on-surface-variant">
                   {planEntries.length} renglón(es) · turnos por entrega
                 </span>
               </div>
-              <div className="flex items-center gap-space-sm">
+              <div className="flex flex-wrap items-center gap-space-sm">
                 <span className="tabular-nums font-bold text-secondary">{fmtQty(planSummary.assignedKg, 0)} kg asignados</span>
                 <span className={`tabular-nums font-bold ${planSummary.missingKg > 0 ? 'text-error' : 'text-outline'}`}>
                   {fmtQty(planSummary.missingKg, 0)} kg faltantes
                 </span>
-                <button onClick={exportPlan} className="flex h-9 items-center gap-space-xs rounded-lg bg-primary-container px-space-md font-semibold text-on-primary transition-colors hover:bg-primary">
+                <button
+                  type="button"
+                  onClick={() => setPlanPinned((pinned) => !pinned)}
+                  aria-pressed={planPinned}
+                  title={planPinned ? 'El plan queda fijo arriba al hacer scroll' : 'El plan se desplaza con la página'}
+                  className={`hidden h-9 items-center gap-space-xs rounded-pill border px-space-md font-semibold transition-colors xl:flex ${
+                    planPinned
+                      ? 'border-primary-container/30 bg-primary-fixed/70 text-primary hover:bg-primary-fixed'
+                      : 'border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low'
+                  }`}
+                >
+                  {planPinned ? <PinOff aria-hidden className="size-4" /> : <Pin aria-hidden className="size-4" />}
+                  <span className="hidden sm:inline">{planPinned ? 'Soltar' : 'Fijar arriba'}</span>
+                </button>
+                <button onClick={exportPlan} title="Descargar Excel con el detalle por cliente" className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary">
                   <Download aria-hidden className="size-4" /> Exportar
                 </button>
                 <button
@@ -523,7 +714,7 @@ export default function PedidosPage() {
                     setSelection([]);
                     setPlanExpanded(null);
                   }}
-                  className="flex h-9 items-center gap-space-xs rounded-lg border border-outline-variant px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
+                  className="flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-lowest"
                 >
                   <Trash2 aria-hidden className="size-4" /> Limpiar
                 </button>
@@ -532,7 +723,7 @@ export default function PedidosPage() {
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-body-md">
                 <thead>
-                  <tr className="border-b border-surface-container bg-surface-container">
+                  <tr className="border-b border-outline-variant/30 bg-surface-container-low/80">
                     <Th className="w-8" />
                     <Th>{by === 'producto' ? 'Producto' : 'Cliente'}</Th>
                     <Th align="right">Renglones</Th>
@@ -541,7 +732,7 @@ export default function PedidosPage() {
                     <Th align="right">Faltante kg</Th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-surface-container">
+                <tbody className="divide-y divide-outline-variant/20">
                   {planGroups.map((g) => {
                     const open = planExpanded === g.key;
                     return (
@@ -568,11 +759,11 @@ export default function PedidosPage() {
                         </tr>
                         {open && (
                           <tr>
-                            <td colSpan={6} className="bg-surface-container-low px-space-md py-space-sm">
-                              <div className="overflow-x-auto rounded-lg bg-surface-container-lowest">
+                            <td colSpan={6} className="bg-surface-container-low/60 px-space-md py-space-sm">
+                              <div className="overflow-x-auto rounded-xl border border-outline-variant/35 bg-surface-container-lowest">
                                 <table className="w-full border-collapse text-label-md">
                                   <thead>
-                                    <tr className="border-b border-surface-container">
+                                    <tr className="border-b border-outline-variant/30">
                                       <Th align="right" className="w-14">Turno</Th>
                                       <Th>Pedido</Th>
                                       <Th>{by === 'producto' ? 'Cliente' : 'Artículo'}</Th>
@@ -582,7 +773,7 @@ export default function PedidosPage() {
                                       <Th />
                                     </tr>
                                   </thead>
-                                  <tbody className="divide-y divide-surface-container">
+                                  <tbody className="divide-y divide-outline-variant/20">
                                     {g.entries.map((e) => {
                                       const ref = lineByKey.get(e.key);
                                       if (!ref) return null;
@@ -604,7 +795,7 @@ export default function PedidosPage() {
                                           <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(e.assignedQty, 0)}</Td>
                                           <Td align="right" className={`tabular-nums ${e.missingQty > 0 ? 'font-bold text-error' : 'text-outline'}`}>{fmtQty(e.missingQty, 0)}</Td>
                                           <Td align="right">
-                                            <button onClick={() => toggleLine(ref.line)} className="font-semibold text-primary-container hover:underline">
+                                            <button onClick={() => toggleLine(ref.line)} className="rounded-pill border border-outline-variant/40 px-2.5 py-1 font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low">
                                               Liberar
                                             </button>
                                           </Td>
@@ -635,10 +826,19 @@ export default function PedidosPage() {
 
         {data && (
           <Card className="overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-outline-variant/30 px-space-md py-space-sm">
+              <div>
+                <p className="text-title-md font-semibold text-primary">{by === 'producto' ? 'Productos en cartera' : 'Clientes en cartera'}</p>
+                <p className="text-label-sm text-on-surface-variant">Priorizados por entrega y existencia · expande un grupo para marcar renglones.</p>
+              </div>
+              <Badge tone="muted" dot>
+                {orderedGroups.length} grupo{orderedGroups.length === 1 ? '' : 's'}
+              </Badge>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-body-md">
                 <thead>
-                  <tr className="border-b border-surface-container bg-surface-container">
+                  <tr className="border-b border-outline-variant/30 bg-surface-container-low/80">
                     <Th className="w-8" />
                     <Th>{by === 'producto' ? 'Producto' : 'Cliente'}</Th>
                     <Th>Cobertura</Th>
@@ -648,7 +848,7 @@ export default function PedidosPage() {
                     <Th align="right">Pendiente kg</Th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-surface-container">
+                <tbody className="divide-y divide-outline-variant/20">
                   {orderedGroups.length === 0 && (
                     <tr>
                       <Td align="center" className="py-space-xl text-on-surface-variant">
@@ -682,13 +882,14 @@ export default function PedidosPage() {
                         onToggleGroup={() => toggleGroup(group)}
                         onToggleLine={toggleLine}
                         onToggleOpen={() => setExpanded(isOpen ? null : group.key)}
+                        onOpenOrder={(id, number) => setSelectedOrder({ id, number })}
                       />
                     );
                   })}
                 </tbody>
               </table>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-space-sm border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
+            <div className="flex flex-wrap items-center justify-between gap-space-sm border-t border-outline-variant/30 px-space-md py-space-sm text-label-sm text-on-surface-variant">
               <span>
                 {orderedGroups.length} grupo{orderedGroups.length === 1 ? '' : 's'} · pendiente {fmtQty(liveSummary.pendingQty, 0)} unid. / {fmtQty(liveSummary.pendingKg, 0)} kg
               </span>
@@ -697,6 +898,177 @@ export default function PedidosPage() {
           </Card>
         )}
       </main>
+
+      {selectedOrder && (
+        <div
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSelectedOrder(null);
+          }}
+          className="animate-fade fixed inset-0 z-50 flex items-end justify-center bg-primary/35 p-space-sm backdrop-blur-sm sm:items-center sm:p-space-lg"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="order-modal-title"
+            className="animate-rise relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-card border border-outline-variant/40 bg-surface-container-lowest shadow-hero"
+          >
+            <div aria-hidden className="h-1 w-full shrink-0 bg-secondary-container" />
+
+            <header className="flex shrink-0 flex-wrap items-start justify-between gap-space-md border-b border-outline-variant/30 px-space-md py-space-md sm:px-space-lg">
+              <div className="flex min-w-0 items-start gap-space-sm">
+                <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary-container text-secondary-container shadow-soft">
+                  <FileText aria-hidden className="size-5" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-label-sm font-semibold uppercase tracking-[0.14em] text-outline">
+                    Ventas y CxC · Solicitud {orderDetail?.order.externalNumber ?? selectedOrder.number}
+                  </p>
+                  <h2 id="order-modal-title" className="truncate text-headline-md text-primary">
+                    Pedido {orderDetail?.order.externalNumber ?? selectedOrder.number}
+                  </h2>
+                  <p className="truncate text-body-md text-on-surface-variant">
+                    {orderDetail
+                      ? `${orderDetail.order.customerName ?? 'Cliente desconocido'}${orderDetail.order.customerCode ? ` (${orderDetail.order.customerCode})` : ''}`
+                      : 'Cargando detalle…'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-space-sm">
+                {orderDetail && (
+                  <Badge tone={STATUS_TONE[orderDetail.order.status]} dot>
+                    {STATUS_LABEL[orderDetail.order.status]}
+                  </Badge>
+                )}
+                <button
+                  ref={closeOrderRef}
+                  type="button"
+                  onClick={() => setSelectedOrder(null)}
+                  aria-label="Cerrar detalle del pedido"
+                  className="grid size-9 place-items-center rounded-full border border-outline-variant/50 text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-primary"
+                >
+                  <X aria-hidden className="size-4" />
+                </button>
+              </div>
+            </header>
+
+            <div className="flex-1 overflow-y-auto p-space-md sm:p-space-lg">
+              {orderLoading && (
+                <div className="flex flex-col gap-space-md">
+                  <div className="grid grid-cols-2 gap-space-sm md:grid-cols-4">
+                    {Array.from({ length: 4 }).map((_, index) => (
+                      <Skeleton key={index} className="h-20 rounded-xl" />
+                    ))}
+                  </div>
+                  <Skeleton className="h-6 w-56 rounded-pill" />
+                  <Skeleton className="h-56 rounded-xl" />
+                </div>
+              )}
+
+              {orderError && !(orderError instanceof AuthRequiredError) && (
+                <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
+                  <AlertTriangle aria-hidden className="size-4" />{' '}
+                  {orderError instanceof Error ? orderError.message : 'No se pudo consultar el pedido'}
+                </p>
+              )}
+
+              {orderDetail && (
+                <div className="flex flex-col gap-space-md">
+                  <div className="grid grid-cols-2 gap-space-sm md:grid-cols-4">
+                    <div className="rounded-xl bg-surface-container-low/70 p-space-sm">
+                      <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Emisión</p>
+                      <p className="mt-space-2xs text-title-md font-bold text-primary">{fmtDate(orderDetail.order.orderDate)}</p>
+                    </div>
+                    <div className="rounded-xl bg-surface-container-low/70 p-space-sm">
+                      <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Entrega comprometida</p>
+                      <p className="mt-space-2xs text-title-md font-bold text-primary">{fmtDate(orderDetail.order.requestedDate)}</p>
+                    </div>
+                    <div className="rounded-xl bg-surface-container-low/70 p-space-sm">
+                      <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Vendedor</p>
+                      <p className="mt-space-2xs break-words text-title-md font-bold leading-tight text-primary">{orderDetail.order.vendor ?? '—'}</p>
+                    </div>
+                    <div className="rounded-xl bg-surface-container-low/70 p-space-sm">
+                      <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Tipo de cliente</p>
+                      <p className="mt-space-2xs break-words text-title-md font-bold leading-tight text-primary">{orderDetail.order.customerType ?? '—'}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-space-sm">
+                    <Badge tone="primary" dot>
+                      {fmtQty(orderDetail.order.linesCount, 0)} renglones
+                    </Badge>
+                    <Badge tone={orderDetail.order.totalPendingQty < 0 ? 'danger' : 'warning'} dot>
+                      {fmtQty(orderDetail.order.totalPendingQty, 0)} unidades pendientes
+                    </Badge>
+                  </div>
+
+                  <div className="overflow-hidden rounded-xl border border-outline-variant/35">
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[820px] border-collapse text-body-md">
+                        <thead>
+                          <tr className="border-b border-outline-variant/30 bg-surface-container-low/80">
+                            <Th align="right">#</Th>
+                            <Th>Código</Th>
+                            <Th>Descripción</Th>
+                            <Th>Unid.</Th>
+                            <Th align="right">Cantidad</Th>
+                            <Th align="right">Pendiente</Th>
+                            <Th align="right">Kg</Th>
+                            <Th>Alm.</Th>
+                            <Th align="right">Stock 03</Th>
+                            <Th align="right">Stock 68</Th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-outline-variant/20">
+                          {orderDetail.lines.length === 0 && (
+                            <tr>
+                              <Td align="center" colSpan={10} className="py-space-xl text-on-surface-variant">
+                                El pedido no tiene renglones sincronizados.
+                              </Td>
+                            </tr>
+                          )}
+                          {orderDetail.lines.map((line) => (
+                            <tr key={line.lineNumber} className="transition-colors hover:bg-surface-container-low/70">
+                              <Td align="right" className="tabular-nums text-on-surface-variant">{line.lineNumber}</Td>
+                              <Td className="font-bold tabular-nums text-primary">{line.productCode}</Td>
+                              <Td className="max-w-md truncate" title={line.description ?? ''}>{line.description ?? '—'}</Td>
+                              <Td className="text-on-surface-variant">{line.uom ?? '—'}</Td>
+                              <Td align="right" className="tabular-nums text-outline">{fmtQty(line.quantity, 0)}</Td>
+                              <Td align="right" className={`tabular-nums font-bold ${line.pendingQty < 0 ? 'text-error' : 'text-on-surface'}`}>
+                                {fmtQty(line.pendingQty, 2)}
+                              </Td>
+                              <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(line.pendingKg, 0)}</Td>
+                              <Td className="tabular-nums text-on-surface-variant">{line.warehouseCode ?? '—'}</Td>
+                              <Td align="right" className="tabular-nums">{fmtQty(line.stock03, 0)}</Td>
+                              <Td align="right" className="tabular-nums">{fmtQty(line.stock68, 0)}</Td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <p className="text-label-sm normal-case text-on-surface-variant">
+                    Valores crudos de Profit (cotización + renglones). «Autorizado» = cotización con estado 1. Los pendientes
+                    negativos son sobre-compromisos reales del ERP. Cualquier «—» significa que la fuente no expone el dato.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <footer className="flex shrink-0 flex-wrap items-center justify-between gap-space-sm border-t border-outline-variant/30 bg-surface-container-low/60 px-space-md py-space-sm sm:px-space-lg">
+              <span className="text-label-sm normal-case text-on-surface-variant">Solo lectura · datos sincronizados desde Profit</span>
+              <button
+                type="button"
+                onClick={() => setSelectedOrder(null)}
+                className="h-9 rounded-pill bg-primary-container px-space-lg font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary"
+              >
+                Cerrar
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -718,6 +1090,7 @@ function GroupRow({
   onToggleGroup,
   onToggleLine,
   onToggleOpen,
+  onOpenOrder,
 }: {
   group: OrderGroup;
   by: OrderGroupBy;
@@ -736,12 +1109,14 @@ function GroupRow({
   onToggleGroup: () => void;
   onToggleLine: (line: OrderGroupLine) => void;
   onToggleOpen: () => void;
+  /** Abre el detalle del pedido en un modal, sin salir del simulador. */
+  onOpenOrder: (orderId: string, orderNumber: string) => void;
 }) {
   const coveragePct = Math.round(coverage * 100);
   const tone = coveragePct >= 100 ? 'success' : coveragePct > 0 ? 'warning' : 'danger';
   return (
     <>
-      <tr className={`transition-colors ${selectedCount > 0 ? 'bg-primary-fixed/50' : 'hover:bg-surface-container-low'}`}>
+      <tr className={`transition-colors ${selectedCount > 0 ? 'bg-secondary-container/15' : 'hover:bg-surface-container-low/70'}`}>
         <Td>
           <input
             type="checkbox"
@@ -761,7 +1136,7 @@ function GroupRow({
                 <span className="truncate font-semibold text-on-surface">{group.label}</span>
                 {selectedCount > 0 && (
                   <span
-                    className="shrink-0 rounded bg-primary-container px-space-xs text-label-sm font-bold text-on-primary"
+                    className="shrink-0 rounded-pill bg-primary-container px-2 py-0.5 text-label-sm font-bold text-on-primary"
                     title="Renglones marcados para despacho en este grupo"
                   >
                     {selectedCount}
@@ -778,7 +1153,7 @@ function GroupRow({
         </Td>
         <Td>
           <div className="flex min-w-[7rem] items-center gap-space-sm">
-            <CoverageBar ratio={coverage} className="w-16" />
+            <CoverageBar ratio={coverage} className="w-20" />
             <Badge tone={tone}>{coveragePct}%</Badge>
           </div>
         </Td>
@@ -790,11 +1165,11 @@ function GroupRow({
 
       {isOpen && (
         <tr>
-          <td colSpan={7} className="bg-surface-container-low px-space-md py-space-sm">
-            <div className="overflow-x-auto rounded-lg bg-surface-container-lowest">
+          <td colSpan={7} className="bg-surface-container-low/60 px-space-md py-space-sm">
+            <div className="overflow-x-auto rounded-xl border border-outline-variant/35 bg-surface-container-lowest">
               <table className="w-full border-collapse text-label-md">
                 <thead>
-                  <tr className="border-b border-surface-container">
+                  <tr className="border-b border-outline-variant/30">
                     <Th className="w-8" />
                     <Th>Pedido</Th>
                     <Th>{by === 'producto' ? 'Cliente' : 'Entrega'}</Th>
@@ -809,7 +1184,7 @@ function GroupRow({
                     <Th />
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-surface-container">
+                <tbody className="divide-y divide-outline-variant/20">
                   {[...group.lines]
                     .sort((a, b) => (queueByKey.get(lineKey(a))?.sortIndex ?? 0) - (queueByKey.get(lineKey(b))?.sortIndex ?? 0))
                     .map((line) => {
@@ -872,7 +1247,13 @@ function GroupRow({
                           {line.authorized === null ? <span className="text-outline">—</span> : <Badge tone={line.authorized ? 'success' : 'muted'}>{line.authorized ? 'SÍ' : 'NO'}</Badge>}
                         </Td>
                         <Td align="right">
-                          <Link href={`/pedidos/${line.orderId}`} className="font-semibold text-primary-container hover:underline">Ver</Link>
+                          <button
+                            type="button"
+                            onClick={() => onOpenOrder(line.orderId, line.orderNumber)}
+                            className="rounded-pill border border-outline-variant/40 px-2.5 py-1 font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low"
+                          >
+                            Ver
+                          </button>
                         </Td>
                       </tr>
                     );

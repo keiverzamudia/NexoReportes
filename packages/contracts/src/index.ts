@@ -384,11 +384,11 @@ export const zApiError = z.object({
 export type ApiError = z.infer<typeof zApiError>;
 
 // ============================================================
-// Forca (pronóstico de producción). Datos PROPIOS de Nexo:
-// nunca se escriben en Profit.
-//   - Forca MENSUAL por artículo (se bloquea con clave especial).
-//   - Reparto en 4 semanas (bloques 1-7 / 8-14 / 15-21 / 22-fin)
-//     con un factor `pct` por semana (100 = reparto parejo), editable.
+// Forca (pronóstico de producción).
+//   - Forca MENSUAL por artículo: se lee de Profit (`xart_fore.kg_mes`),
+//     sin conversión. Solo lectura.
+//   - Reparto en 4 semanas (bloques 1-7 / 8-14 / 15-21 / 22-fin), editable
+//     en Nexo. Por defecto = forca mensual / 4.
 // ============================================================
 export const FORECAST_WEEK_INDEXES = [1, 2, 3, 4] as const;
 
@@ -397,15 +397,6 @@ const zMonth = z.coerce.number().int().min(1).max(12);
 
 export const zForecastQuery = z.object({ year: zYear, month: zMonth });
 export type ForecastQuery = z.infer<typeof zForecastQuery>;
-
-export const zForecastSetMonthly = z.object({
-  year: zYear,
-  month: zMonth,
-  monthlyQty: z.coerce.number().min(0),
-  // Requerida solo si el forca del mes ya está fijado (bloqueado).
-  unlockKey: z.string().optional(),
-});
-export type ForecastSetMonthly = z.infer<typeof zForecastSetMonthly>;
 
 export const zForecastSetWeeks = z.object({
   year: zYear,
@@ -440,10 +431,10 @@ export const zForecastRow = z.object({
   stockTotal: z.number(),
   demandMonthQty: z.number(),
   demandMonthKg: z.number(),
+  // Forca mensual leído de Profit (`xart_fore.kg_mes`), sin conversión.
   monthlyQty: z.number(),
   // Promedio sugerido por semana = forca mensual / 4 (valor por defecto de `weeks`).
   averageQty: z.number(),
-  locked: z.boolean(),
   weeks: z.array(zForecastWeekRow),
   weeksTotalQty: z.number(),
 });
@@ -454,7 +445,8 @@ export const zForecastResponse = z.object({
   month: z.number().int(),
   weekRanges: z.array(zForecastWeekRange),
   rows: z.array(zForecastRow),
-  unlockProtected: z.boolean(),
+  // false = no se pudo leer `xart_fore`; la UI avisa y muestra 0.
+  profitForcaAvailable: z.boolean(),
 });
 export type ForecastResponse = z.infer<typeof zForecastResponse>;
 

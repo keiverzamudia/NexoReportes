@@ -8,9 +8,9 @@
 // anclada y tarjetas en teléfono.
 // ============================================================
 
-import { ChevronDown, ChevronUp, Inbox } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, ChevronDown, ChevronUp, Inbox } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { Fragment, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(' ');
@@ -21,27 +21,43 @@ export function PageHeader({
   icon: Icon,
   title,
   subtitle,
+  greeting,
   actions,
 }: {
   eyebrow: string;
   icon: LucideIcon;
   title: string;
   subtitle?: string;
+  /** Saludo contextual («Buenos días»); se calcula en el cliente. */
+  greeting?: string;
   actions?: ReactNode;
 }) {
   return (
     <header className="flex flex-col gap-space-lg xl:flex-row xl:items-end xl:justify-between">
       <div className="min-w-0">
-        <div className="mb-space-2xs flex items-center gap-space-xs font-bold uppercase tracking-wider text-primary text-label-md">
-          <Icon aria-hidden className="size-[18px]" />
-          <span>{eyebrow}</span>
+        <div className="mb-space-xs flex items-center gap-space-xs">
+          <span className="inline-flex items-center gap-space-2xs rounded-pill bg-primary-container/10 px-space-sm py-1 font-bold uppercase tracking-[0.14em] text-label-sm text-primary">
+            <Icon aria-hidden className="size-3.5" />
+            <span>{eyebrow}</span>
+          </span>
         </div>
-        <h1 className="text-display-lg leading-none italic tracking-tight text-primary">{title}</h1>
-        {subtitle && <p className="mt-space-2xs max-w-3xl text-body-md text-on-surface-variant">{subtitle}</p>}
+        {greeting && <p className="text-label-lg font-medium text-on-surface-variant">{greeting}</p>}
+        <h1 className="text-display-lg leading-[1.05] tracking-tight text-primary">{title}</h1>
+        {subtitle && <p className="mt-space-xs max-w-3xl text-body-md text-on-surface-variant">{subtitle}</p>}
       </div>
-      {actions && <div className="flex flex-wrap items-center gap-space-sm self-start xl:self-auto">{actions}</div>}
+      {actions && <div className="flex flex-wrap items-stretch gap-space-sm self-start xl:self-auto">{actions}</div>}
     </header>
   );
+}
+
+/** Saludo por hora del día, resuelto tras montar para no romper la hidratación. */
+export function useGreeting(): string {
+  const [greeting, setGreeting] = useState('');
+  useEffect(() => {
+    const hour = new Date().getHours();
+    setGreeting(hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches');
+  }, []);
+  return greeting;
 }
 
 type Tone = 'default' | 'primary' | 'success' | 'danger' | 'warning' | 'muted';
@@ -55,6 +71,22 @@ const TONE_TEXT: Record<Tone, string> = {
   muted: 'text-on-surface-variant',
 };
 
+export function TrendPill({ value, tone = 'up' }: { value: string; tone?: 'up' | 'down' | 'neutral' }) {
+  const style =
+    tone === 'up'
+      ? 'bg-success-container text-on-success-container'
+      : tone === 'down'
+        ? 'bg-critical-container text-on-critical-container'
+        : 'bg-surface-container text-on-surface-variant';
+  const Arrow = tone === 'down' ? ArrowDownRight : ArrowUpRight;
+  return (
+    <span className={cx('inline-flex items-center gap-0.5 rounded-pill px-2 py-0.5 text-label-sm font-bold tabular-nums', style)}>
+      {tone !== 'neutral' && <Arrow aria-hidden className="size-3" />}
+      {value}
+    </span>
+  );
+}
+
 export function Kpi({
   label,
   value,
@@ -62,6 +94,9 @@ export function Kpi({
   hint,
   tone = 'primary',
   icon: Icon,
+  trend,
+  trendTone = 'up',
+  accent = false,
 }: {
   label: string;
   value: string;
@@ -69,24 +104,116 @@ export function Kpi({
   hint?: string;
   tone?: Tone;
   icon?: LucideIcon;
+  /** Variación mostrada en una píldora (p. ej. «+6%»). */
+  trend?: string;
+  trendTone?: 'up' | 'down' | 'neutral';
+  /** Tarjeta destacada en navy (una por pantalla como máximo). */
+  accent?: boolean;
 }) {
+  if (accent) {
+    return (
+      <div className="relative min-w-[180px] overflow-hidden rounded-card bg-hero p-space-md text-white shadow-hero">
+        <span aria-hidden className="pointer-events-none absolute -right-10 -top-12 size-32 rounded-full bg-secondary-container/20 blur-2xl" />
+        <div className="relative flex items-start justify-between gap-space-sm">
+          <span className="text-label-sm font-semibold uppercase tracking-[0.12em] text-white/70">{label}</span>
+          {Icon && (
+            <span className="grid size-7 place-items-center rounded-lg bg-white/10 text-secondary-container">
+              <Icon aria-hidden className="size-4" />
+            </span>
+          )}
+        </div>
+        <div className="relative mt-space-xs flex items-baseline gap-1 tabular-nums text-headline-lg font-black text-secondary-container">
+          {value}
+          {suffix && <span className="text-label-sm font-semibold text-white/60">{suffix}</span>}
+        </div>
+        {(trend || hint) && (
+          <div className="relative mt-space-xs flex flex-wrap items-center gap-space-xs">
+            {trend && <TrendPill value={trend} tone={trendTone} />}
+            {hint && <span className="text-label-sm text-white/60">{hint}</span>}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className="min-w-[140px] rounded-xl bg-surface-container-lowest px-space-md py-space-sm shadow-sm">
-      <div className="flex items-center justify-between gap-space-sm">
-        <span className="font-semibold uppercase text-label-sm text-outline">{label}</span>
-        {Icon && <Icon aria-hidden className="size-[18px] text-primary" />}
+    <div className="group min-w-[150px] rounded-card border border-outline-variant/35 bg-surface-container-lowest p-space-md shadow-soft transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lift">
+      <div className="flex items-start justify-between gap-space-sm">
+        <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">{label}</span>
+        {Icon && (
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-primary-fixed/70 text-primary">
+            <Icon aria-hidden className="size-4" />
+          </span>
+        )}
       </div>
-      <div className={`tabular-nums font-black text-headline-lg ${TONE_TEXT[tone]}`}>
+      <div className={cx('mt-space-xs flex items-baseline gap-1 tabular-nums text-headline-lg font-black', TONE_TEXT[tone])}>
         {value}
-        {suffix && <span className="ml-space-xs font-normal text-label-sm text-outline">{suffix}</span>}
+        {suffix && <span className="ml-space-2xs text-label-sm font-medium text-outline">{suffix}</span>}
       </div>
-      {hint && <div className="text-label-sm text-on-surface-variant">{hint}</div>}
+      {(trend || hint) && (
+        <div className="mt-space-2xs flex flex-wrap items-center gap-space-xs">
+          {trend && <TrendPill value={trend} tone={trendTone} />}
+          {hint && <span className="text-label-sm text-on-surface-variant">{hint}</span>}
+        </div>
+      )}
     </div>
   );
 }
 
 export function Card({ children, className }: { children: ReactNode; className?: string }) {
-  return <section className={`rounded-xl bg-surface-container-lowest shadow-sm ${className ?? ''}`}>{children}</section>;
+  return (
+    <section className={cx('rounded-card border border-outline-variant/35 bg-surface-container-lowest shadow-soft', className ?? '')}>
+      {children}
+    </section>
+  );
+}
+
+/** Tarjeta protagonista (cifra grande sobre navy) al estilo del hero del video. */
+export function HeroCard({
+  label,
+  value,
+  suffix,
+  hint,
+  progress,
+  icon: Icon,
+  footer,
+}: {
+  label: string;
+  value: string;
+  suffix?: string;
+  hint?: string;
+  /** 0–100. Dibuja la barra de progreso cuando se indica. */
+  progress?: number;
+  icon?: LucideIcon;
+  footer?: ReactNode;
+}) {
+  const pct = Math.max(0, Math.min(100, Number.isFinite(progress) ? progress! : 0));
+  return (
+    <section className="relative isolate overflow-hidden rounded-card bg-hero p-space-lg text-white shadow-hero animate-rise">
+      <span aria-hidden className="pointer-events-none absolute -right-16 -top-20 size-56 rounded-full bg-secondary-container/20 blur-3xl" />
+      <span aria-hidden className="pointer-events-none absolute -bottom-24 -left-12 size-52 rounded-full bg-accent/20 blur-3xl" />
+      <div className="relative flex flex-col gap-space-sm">
+        <span className="inline-flex w-fit items-center gap-space-2xs rounded-pill bg-white/10 px-space-sm py-1 text-label-sm font-semibold uppercase tracking-[0.12em] text-white/80">
+          {Icon && <Icon aria-hidden className="size-3.5 text-secondary-container" />}
+          {label}
+        </span>
+        <div className="flex items-end gap-space-sm">
+          <span className="tabular-nums text-[2.75rem] font-black leading-none tracking-tight text-secondary-container">{value}</span>
+          {suffix && <span className="pb-1 text-label-lg font-semibold text-white/60">{suffix}</span>}
+        </div>
+        {progress !== undefined && (
+          <div className="h-2 w-full overflow-hidden rounded-pill bg-white/15" role="presentation">
+            <div
+              className="h-full rounded-pill bg-secondary-container transition-[width] duration-700 ease-out"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+        )}
+        {hint && <p className="text-label-md text-white/60">{hint}</p>}
+        {footer}
+      </div>
+    </section>
+  );
 }
 
 const BADGE: Record<Tone, string> = {
@@ -98,15 +225,16 @@ const BADGE: Record<Tone, string> = {
   muted: 'bg-surface-container-low text-on-surface-variant',
 };
 
-export function Badge({ children, tone = 'default' }: { children: ReactNode; tone?: Tone }) {
+export function Badge({ children, tone = 'default', dot = false }: { children: ReactNode; tone?: Tone; dot?: boolean }) {
   return (
-    <span className={`inline-flex items-center rounded px-space-sm py-space-2xs font-bold uppercase text-label-sm ${BADGE[tone]}`}>
+    <span className={`inline-flex items-center gap-1 rounded-pill px-2.5 py-1 font-bold uppercase text-label-sm ${BADGE[tone]}`}>
+      {dot && <span aria-hidden className="size-1.5 rounded-full bg-current" />}
       {children}
     </span>
   );
 }
 
-// Input de filtro denso (36px) según DESIGN.md.
+// Input de filtro (40px) del rediseño V14.
 export function TextInput({
   value,
   onChange,
@@ -124,14 +252,14 @@ export function TextInput({
 }) {
   return (
     <div className={`relative ${className ?? ''}`}>
-      {Icon && <Icon aria-hidden className="absolute left-3 top-1/2 size-[18px] -translate-y-1/2 text-outline" />}
+      {Icon && <Icon aria-hidden className="absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-outline" />}
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         aria-label={ariaLabel ?? placeholder}
-        className={`h-9 w-full rounded-lg bg-surface text-body-md text-on-surface placeholder:text-outline focus:outline-none focus:ring-2 focus:ring-primary-container ${
-          Icon ? 'pl-9 pr-space-md' : 'px-space-sm'
+        className={`h-10 w-full rounded-xl border border-outline-variant/50 bg-surface-container-lowest text-body-md text-on-surface placeholder:text-outline transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-secondary-container/70 ${
+          Icon ? 'pl-10 pr-space-md' : 'px-space-sm'
         }`}
       />
     </div>
@@ -156,7 +284,7 @@ export function Select({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       aria-label={ariaLabel}
-      className={`h-9 w-full cursor-pointer rounded-lg bg-surface px-space-sm text-body-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container ${className ?? ''}`}
+      className={`h-10 w-full cursor-pointer rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-sm text-body-md text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-secondary-container/70 ${className ?? ''}`}
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
@@ -184,7 +312,7 @@ export function DateInput({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       aria-label={ariaLabel}
-      className={`h-9 rounded-lg bg-surface px-space-sm text-body-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container ${className ?? ''}`}
+      className={`h-10 rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-sm text-body-md text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-secondary-container/70 ${className ?? ''}`}
     />
   );
 }
@@ -217,8 +345,25 @@ export function Segmented<T extends string>({
   options: { value: T; label: string }[];
   ariaLabel?: string;
 }) {
+  const index = Math.max(
+    0,
+    options.findIndex((option) => option.value === value),
+  );
   return (
-    <div role="tablist" aria-label={ariaLabel} className="inline-flex rounded-lg bg-surface-container p-space-2xs">
+    <div
+      role="tablist"
+      aria-label={ariaLabel}
+      className="relative inline-grid rounded-pill bg-surface-container p-1"
+      style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+    >
+      <span
+        aria-hidden
+        className="absolute inset-y-1 left-1 rounded-pill bg-primary-container shadow-soft transition-transform duration-300 ease-out"
+        style={{
+          width: `calc((100% - 0.5rem) / ${options.length})`,
+          transform: `translateX(${index * 100}%)`,
+        }}
+      />
       {options.map((o) => (
         <button
           key={o.value}
@@ -226,8 +371,8 @@ export function Segmented<T extends string>({
           role="tab"
           aria-selected={value === o.value}
           onClick={() => onChange(o.value)}
-          className={`h-8 rounded-md px-space-md text-label-md transition-colors ${
-            value === o.value ? 'bg-primary-container text-on-primary shadow-sm' : 'text-on-surface-variant hover:bg-surface-container-low'
+          className={`relative z-[1] h-8 w-full whitespace-nowrap rounded-pill px-space-md text-label-md font-semibold transition-colors ${
+            value === o.value ? 'text-on-primary' : 'text-on-surface-variant hover:text-primary'
           }`}
         >
           {o.label}
@@ -242,8 +387,11 @@ export function CoverageBar({ ratio, className }: { ratio: number; className?: s
   const pct = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0));
   const tone = pct >= 0.999 ? 'var(--color-secondary)' : pct > 0 ? 'var(--color-warning)' : 'var(--color-critical)';
   return (
-    <div className={`h-1.5 w-full overflow-hidden rounded-full bg-surface-container-highest ${className ?? ''}`}>
-      <div className="h-full rounded-full transition-all" style={{ width: `${pct * 100}%`, backgroundColor: tone }} />
+    <div className={`h-2 w-full overflow-hidden rounded-pill bg-surface-container-high ${className ?? ''}`}>
+      <div
+        className="h-full rounded-pill transition-all duration-500 ease-out"
+        style={{ width: `${pct * 100}%`, backgroundColor: tone, boxShadow: `0 0 12px ${tone}55` }}
+      />
     </div>
   );
 }
@@ -401,7 +549,7 @@ export function DataTable<T>({
         <table className="w-full border-collapse text-body-md">
           <caption className="sr-only">Tabla de datos</caption>
           <thead>
-            <tr className="border-b border-surface-container">
+            <tr className="border-b border-outline-variant/30">
               {columns.map((c, index) => {
                 const active = sort?.key === c.key;
                 const ariaSort = active ? (sort?.dir === 'asc' ? 'ascending' : 'descending') : undefined;
@@ -411,10 +559,10 @@ export function DataTable<T>({
                     scope="col"
                     aria-sort={ariaSort}
                     className={cx(
-                      'whitespace-nowrap bg-surface-container px-space-sm py-space-sm font-semibold uppercase tracking-wider text-label-sm text-outline',
-                      sticky && 'sticky top-0 z-10',
+                      'whitespace-nowrap bg-surface-container-low/80 px-space-sm py-space-sm font-semibold uppercase tracking-wider text-label-sm text-outline',
+                      sticky && 'sticky top-0 z-10 backdrop-blur',
                       ALIGN[c.align ?? 'left'],
-                      index === 0 && cx('left-0 border-r border-surface-container', sticky ? 'z-20' : 'z-[1]'),
+                      index === 0 && cx('left-0 border-r border-outline-variant/25', sticky ? 'z-20' : 'z-[1]'),
                       c.className,
                     )}
                   >
@@ -442,26 +590,26 @@ export function DataTable<T>({
               })}
             </tr>
           </thead>
-          <tbody className="divide-y divide-surface-container">
+          <tbody className="divide-y divide-outline-variant/20">
             {sorted.map((row) => {
               const key = rowKey(row);
               const isOpen = expandedKey != null && expandedKey === key;
               return (
                 <Fragment key={key}>
-                  <tr className={cx('group transition-colors', isOpen ? 'bg-surface-container-low' : 'hover:bg-surface-container-low')}>
+                  <tr className={cx('group transition-colors', isOpen ? 'bg-surface-container-low' : 'hover:bg-surface-container-low/70')}>
                     {columns.map((c, index) => (
                       <td
                         key={c.key}
                         title={c.title?.(row)}
                         className={cx(
-                          'px-space-sm py-space-xs align-middle',
+                          'px-space-sm py-2.5 align-middle',
                           ALIGN[c.align ?? 'left'],
                           c.align === 'right' && NUMERIC,
                           // Si la columna declara `title` es porque su texto puede ser
                           // largo: se trunca con elipsis y el completo sale en el title.
                           c.title && 'max-w-[20rem] truncate',
                           index === 0 &&
-                            'sticky left-0 z-[1] border-r border-surface-container bg-surface-container-lowest font-semibold text-primary group-hover:bg-surface-container-low',
+                            'sticky left-0 z-[1] border-r border-outline-variant/20 bg-surface-container-lowest font-semibold text-primary group-hover:bg-surface-container-low/70',
                           isOpen && index === 0 && 'bg-surface-container-low',
                           c.className,
                         )}
@@ -486,12 +634,12 @@ export function DataTable<T>({
       </div>
 
       {/* ---------- Teléfono: tarjetas ---------- */}
-      <ul className="flex flex-col divide-y divide-surface-container md:hidden">
+      <ul className="flex flex-col divide-y divide-outline-variant/20 md:hidden">
         {sorted.map((row) => {
           const key = rowKey(row);
           const isOpen = expandedKey != null && expandedKey === key;
           return (
-            <li key={key} className={cx('flex flex-col gap-space-sm px-space-lg py-space-md', isOpen && 'bg-surface-container-low')}>
+            <li key={key} className={cx('flex flex-col gap-space-sm px-space-lg py-space-md transition-colors', isOpen && 'bg-surface-container-low')}>
               <div className="flex items-start justify-between gap-space-sm">
                 <div className="flex min-w-0 flex-col gap-space-2xs">
                   {idCols.map((c) => (

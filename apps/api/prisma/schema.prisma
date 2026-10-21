@@ -243,12 +243,14 @@ model InventorySnapshotLine {
 }
 
 // ============================================================
-// Forca (pronóstico de producción) — datos PROPIOS de Nexo,
-// nunca se escriben en Profit.
-//   Forecast      = forca MENSUAL por artículo (bloqueable con clave)
+// Forca (pronóstico de producción).
+//   Forecast      = cabecera por artículo/mes. `monthlyQty` guarda el valor
+//                   de Profit (`xart_fore.kg_mes`) vigente cuando se editaron
+//                   las semanas: sirve para detectar si Profit lo cambió.
+//                   El mensual NO se captura en Nexo. `locked`/`lockedAt` se
+//                   conservan por compatibilidad y ya no se usan.
 //   ForecastWeek  = reparto por semana (bloques 1-7 / 8-14 / 15-21 / 22-fin)
-//                   con una CANTIDAD editable. Por defecto se llena con el
-//                   promedio = forca mensual / 4 y el usuario la ajusta.
+//                   con una CANTIDAD editable. Por defecto = forca mensual / 4.
 // ============================================================
 model Forecast {
   id          String    @id @default(cuid())

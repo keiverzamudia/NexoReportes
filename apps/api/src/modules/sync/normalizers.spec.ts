@@ -24,6 +24,7 @@ const REAL_ROW = {
   Stock_68: 0,
   // Campos del reporte ampliado (con padding, como en Profit).
   vendedor: 'MEIDY CRISTINA ARIAS VIDAL' + ' '.repeat(20),
+  vendedor_cliente: 'MEIDY CRISTINA ARIAS VIDAL' + ' '.repeat(20),
   tipo_cliente: 'L1 EXCLUSIVOS' + ' '.repeat(20),
   status_cotizacion: '1',
   cantidad: 217,
@@ -77,6 +78,7 @@ describe('normalizeSolicitudRow', () => {
       stock03: 273,
       stock68: 0,
       vendedor: 'MEIDY CRISTINA ARIAS VIDAL',
+      vendedorCliente: 'MEIDY CRISTINA ARIAS VIDAL',
       tipoCliente: 'L1 EXCLUSIVOS',
       statusCotizacion: '1',
       cantidad: 217,
@@ -98,6 +100,7 @@ describe('normalizeSolicitudRow', () => {
     expect(result.ok).toBe(true);
     expect(sinCampos.ok).toBe(true);
     expect(sinCampos.value?.vendedor).toBeNull();
+    expect(sinCampos.value?.vendedorCliente).toBeNull();
     expect(sinCampos.value?.tipoCliente).toBeNull();
     expect(sinCampos.value?.statusCotizacion).toBeNull();
     expect(sinCampos.value?.cantidad).toBeNull();

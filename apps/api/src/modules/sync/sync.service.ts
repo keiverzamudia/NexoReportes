@@ -36,6 +36,7 @@ SELECT
     f.co_cli                  AS co_cli,
     cl.cli_des                AS cli_des,
     v.ven_des                 AS vendedor,
+    cv.ven_des                AS vendedor_cliente,
     RTRIM(cl.tipo) + ' ' + RTRIM(tc.des_tipo) AS tipo_cliente,
     f.status                  AS status_cotizacion,
     r.co_art                  AS co_art,
@@ -56,6 +57,7 @@ INNER JOIN dbo.reng_cac AS r  ON r.fact_num = f.fact_num
 INNER JOIN dbo.art     AS a   ON a.co_art   = r.co_art
 INNER JOIN dbo.clientes AS cl ON cl.co_cli  = f.co_cli
 LEFT JOIN  dbo.vendedor AS v  ON v.co_ven   = f.co_ven
+LEFT JOIN  dbo.vendedor AS cv ON cv.co_ven  = cl.co_ven
 LEFT JOIN  dbo.tipo_cli AS tc ON tc.tip_cli = cl.tipo
 WHERE f.anulada = 0 AND f.status <> '2' AND r.pendiente > 0
 `;
@@ -432,8 +434,9 @@ export class SyncService {
   }
 
   // Clientes derivados: un cliente por co_cli distinto.
-  // El tipo de cliente llega del reporte ampliado (tipo_cli.des_tipo); si no
-  // viene, se conserva el valor previo (nunca se inventa ni se borra con null).
+  // El tipo de cliente (tipo_cli.des_tipo) y el vendedor asignado al cliente
+  // (clientes.co_ven → vendedor.ven_des) llegan del reporte ampliado; si no
+  // vienen, se conserva el valor previo (nunca se inventa ni se borra con null).
   private async syncCustomers(lines: RawSolicitudLine[], seen: Set<string>): Promise<number> {
     const now = new Date();
     const byCode = new Map<string, RawSolicitudLine>();
@@ -443,17 +446,21 @@ export class SyncService {
     let count = 0;
     for (const [code, line] of byCode) {
       seen.add(code);
+      // Vendedor ASIGNADO AL CLIENTE (clientes.co_ven). Se usa como respaldo el
+      // vendedor del pedido si la consulta ampliada no expone el primero.
+      const vendor = line.vendedorCliente ?? line.vendedor;
       await this.prisma.customer.upsert({
         where: { externalCode: code },
         update: {
           name: line.cliDes,
-          // Tipo de cliente (reporte ampliado); no se borra con null.
+          // Campos del reporte ampliado; no se borran con null.
+          ...(vendor ? { vendor } : {}),
           ...(line.tipoCliente ? { customerType: line.tipoCliente } : {}),
           isActive: true,
           removedAt: null,
           lastSyncedAt: now,
         },
-        create: { externalCode: code, name: line.cliDes, customerType: line.tipoCliente, lastSyncedAt: now },
+        create: { externalCode: code, name: line.cliDes, vendor, customerType: line.tipoCliente, lastSyncedAt: now },
       });
       count += 1;
     }

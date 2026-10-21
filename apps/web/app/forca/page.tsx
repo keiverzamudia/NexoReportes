@@ -3,17 +3,17 @@
 // ============================================================
 // Forca — pronóstico de producción (línea ABA = alimentos balanceados).
 //
-//  · Pestaña «Asignador»: forca MENSUAL por artículo (se fija y queda
-//    bloqueado; para cambiarlo pide la clave especial) + CANTIDAD por cada
-//    una de las 4 semanas. Por defecto se llena con el PROMEDIO
-//    (forca mensual / 4) y esa cantidad se ajusta semana a semana.
+//  · Pestaña «Asignador»: forca MENSUAL por artículo leído de Profit
+//    (`xart_fore.kg_mes`, sin conversión; solo lectura) + CANTIDAD por cada
+//    una de las 4 semanas. Por defecto las semanas se llenan con el PROMEDIO
+//    (forca mensual / 4) y es lo único que se ajusta en Nexo.
 //  · Pestaña «Reporte»: se elige la SEMANA a evaluar (o «Todas»). Para una
 //    semana se muestra, por artículo, el forca y además los mismos campos de
-//    la tabla de Disponibilidad (Stock 03/68, Existencia, Demanda,
-//    Disponible, A producir, kg, Neto, Estado), calculados con el motor de
-//    disponibilidad sobre la demanda objetivo = max(forca, demanda).
+//    la tabla de Disponibilidad (Stock 03/68, Existencia, Solicitado,
+//    Despachable, A producir, kg, Neto, Estado), calculados con el motor de
+//    disponibilidad sobre el solicitado objetivo = max(forca, solicitado).
 //
-//  Datos propios de Nexo: NUNCA se escribe en Profit.
+//  Forca mensual: Profit. Semanas: Nexo. NUNCA se escribe en Profit.
 // ============================================================
 
 import type {
@@ -26,7 +26,7 @@ import type {
   ForecastWeekRange,
 } from '@nexo/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CalendarRange, Check, Download, Lock, Save, Search } from 'lucide-react';
+import { AlertTriangle, CalendarRange, Download, Save, Search } from 'lucide-react';
 import { Fragment, useMemo, useState } from 'react';
 import { EChart } from '../../components/EChart';
 import { AppNav, LoginScreen } from '../../components/shell';
@@ -51,7 +51,7 @@ const STATUS_LABEL: Record<AvailabilityStatus, string> = {
   DISPONIBLE: 'Cubierto',
   PARCIAL: 'Parcial',
   FALTANTE: 'Faltante',
-  SIN_DEMANDA: 'Sin forca ni demanda',
+  SIN_DEMANDA: 'Sin forca ni solicitado',
 };
 
 const STATUS_TONE: Record<AvailabilityStatus, 'success' | 'warning' | 'danger' | 'muted'> = {
@@ -142,7 +142,7 @@ export default function ForcaPage() {
           eyebrow="Producción · Alimentos balanceados (línea ABA)"
           icon={CalendarRange}
           title="Forca"
-          subtitle="Pronóstico mensual por artículo repartido en las semanas del mes por cantidad. Al fijar el mes queda bloqueado (se cambia con clave); las cantidades por semana siguen editables."
+          subtitle="Forca mensual por artículo ."
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
               <Kpi label="Artículos" value={String(rows.length)} icon={CalendarRange} />
@@ -182,7 +182,7 @@ export default function ForcaPage() {
                 <TextInput icon={Search} value={search} onChange={setSearch} placeholder="Buscar artículo…" ariaLabel="Buscar artículo" />
                 <label className="flex items-center gap-space-xs text-body-md text-on-surface-variant">
                   <input type="checkbox" checked={onlyDemand} onChange={(e) => setOnlyDemand(e.target.checked)} className="size-4 accent-[var(--color-primary-container)]" />
-                  Solo con demanda
+                  Solo con solicitado
                 </label>
               </div>
             )}
@@ -192,6 +192,13 @@ export default function ForcaPage() {
         {error && !(error instanceof AuthRequiredError) && (
           <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
             <AlertTriangle aria-hidden className="size-4" /> {error instanceof Error ? error.message : 'Error al consultar'}
+          </p>
+        )}
+
+        {tab === 'asignador' && forecast.data && !forecast.data.profitForcaAvailable && (
+          <p role="status" className="flex items-center gap-space-sm text-body-md text-amber-700">
+            <AlertTriangle aria-hidden className="size-4" /> No se pudo leer el forca desde Profit (
+            <code>xart_fore</code>); los artículos se muestran en 0.
           </p>
         )}
 
@@ -210,8 +217,8 @@ export default function ForcaPage() {
                 />
                 <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
                   Semanas del mes: {weeks.map((w) => w.label).join(' · ')}. Las cantidades de cada semana se llenan por
-                  defecto con el <strong>promedio = forca mes / 4</strong> y son libremente editables. «Fijar mes» guarda el
-                  forca mensual (y pide clave si ya estaba fijado).
+                  defecto con el <strong>promedio = forca mes / 4</strong> y son libremente editables. El forca mensual se
+                  administra en Profit (<code>xart_fore</code>); aquí no se modifica.
                 </div>
               </Card>
             )}
@@ -229,14 +236,12 @@ export default function ForcaPage() {
   );
 }
 
-// ---------- Asignador: forca mensual + cantidad por semana ----------
+// ---------- Asignador: forca de Profit + cantidad por semana ----------
 // Una sola tabla (DataTable) para todos los artículos. El borrador de cada fila
 // vive aquí, para que la tabla del PC y la tarjeta del teléfono compartan el
 // mismo estado sin duplicar el editor.
 interface RowEdit {
-  monthly: string;
   qtys: string[];
-  unlocked: boolean;
 }
 
 function ForcaAsignador({
@@ -260,9 +265,7 @@ function ForcaAsignador({
 
   const editOf = (row: ForecastRow): RowEdit =>
     edits[row.productCode] ?? {
-      monthly: String(row.monthlyQty),
       qtys: row.weeks.map((w) => String(w.qty)),
-      unlocked: false,
     };
 
   const patch = (row: ForecastRow, part: Partial<RowEdit>) =>
@@ -280,30 +283,7 @@ function ForcaAsignador({
     setOk((p) => ({ ...p, [code]: false }));
   };
 
-  // Mismas llamadas que antes: PUT del forca mensual (pide clave si estaba
-  // fijado) y PATCH de las cantidades por semana.
-  const saveMonthly = useMutation<void, Error, { row: ForecastRow; monthlyQty: number }>({
-    mutationFn: async ({ row, monthlyQty }) => {
-      let unlockKey: string | undefined;
-      if (row.locked) {
-        const typed = window.prompt('El forca de ese mes ya está fijado. Ingresa la clave especial para cambiarlo:') ?? undefined;
-        if (!typed) throw new Error('Cambio cancelado: falta la clave especial.');
-        unlockKey = typed;
-      }
-      await apiFetch(`/forecast/${encodeURIComponent(row.productCode)}`, {
-        method: 'PUT',
-        body: JSON.stringify({ year, month, monthlyQty, unlockKey }),
-      });
-    },
-    onMutate: ({ row }) => markPending(row.productCode),
-    onSuccess: (_data, { row }) => {
-      clearEdit(row.productCode);
-      setOk((p) => ({ ...p, [row.productCode]: true }));
-      onSaved();
-    },
-    onError: (err, { row }) => setFail((p) => ({ ...p, [row.productCode]: err.message })),
-  });
-
+  // Guarda SOLO las cantidades por semana. El forca mensual viene de Profit.
   const saveWeeks = useMutation<void, Error, { row: ForecastRow; qtys: string[] }>({
     mutationFn: async ({ row, qtys }) =>
       apiFetch(`/forecast/${encodeURIComponent(row.productCode)}/weeks`, {
@@ -323,9 +303,7 @@ function ForcaAsignador({
     onError: (err, { row }) => setFail((p) => ({ ...p, [row.productCode]: err.message })),
   });
 
-  const busyOf = (code: string) =>
-    (saveMonthly.isPending && saveMonthly.variables?.row.productCode === code) ||
-    (saveWeeks.isPending && saveWeeks.variables?.row.productCode === code);
+  const busyOf = (code: string) => saveWeeks.isPending && saveWeeks.variables?.row.productCode === code;
 
   const columns: Column<ForecastRow>[] = [
     {
@@ -355,7 +333,7 @@ function ForcaAsignador({
     },
     {
       key: 'demandaMes',
-      header: 'Demanda mes',
+      header: 'Solicitado mes',
       align: 'right',
       sortValue: (r) => r.demandMonthQty,
       render: (r) => (
@@ -366,31 +344,11 @@ function ForcaAsignador({
       key: 'forcaMes',
       header: 'Forca mes',
       align: 'right',
-      render: (r) => {
-        const edit = editOf(r);
-        const editable = !r.locked || edit.unlocked;
-        return (
-          <div className="flex items-center justify-end gap-space-xs">
-            <input
-              value={edit.monthly}
-              onChange={(ev) => patch(r, { monthly: ev.target.value })}
-              disabled={!editable}
-              inputMode="decimal"
-              className="h-9 w-20 rounded-lg bg-surface px-space-sm text-right tabular-nums text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container disabled:cursor-not-allowed disabled:opacity-60"
-              aria-label={`Forca mensual de ${r.productCode}`}
-            />
-            {r.locked && !edit.unlocked && (
-              <button
-                onClick={() => patch(r, { unlocked: true })}
-                title="El mes está fijado; habilita para cambiar (pedirá la clave)"
-                className="flex h-8 items-center gap-space-2xs rounded-md border border-outline-variant px-space-sm text-label-sm font-semibold text-on-surface-variant hover:bg-surface-container-low"
-              >
-                <Lock aria-hidden className="size-3.5" /> Fijado
-              </button>
-            )}
-          </div>
-        );
-      },
+      render: (r) => (
+        <span className="font-semibold tabular-nums text-on-surface" title="Valor leído de Profit (xart_fore.kg_mes)">
+          {fmtQty(r.monthlyQty, 0)}
+        </span>
+      ),
     },
     {
       key: 'promedio',
@@ -431,10 +389,10 @@ function ForcaAsignador({
       header: 'Estado',
       align: 'center',
       kind: 'status',
-      sortValue: (r) => (r.locked ? 'Fijado' : 'Sin fijar'),
+      sortValue: (r) => (r.monthlyQty > 0 ? 'Profit' : 'Sin forca'),
       render: (r) => (
         <span className="whitespace-nowrap">
-          <Badge tone={r.locked ? 'primary' : 'muted'}>{r.locked ? 'Fijado' : 'Sin fijar'}</Badge>
+          <Badge tone={r.monthlyQty > 0 ? 'primary' : 'muted'}>{r.monthlyQty > 0 ? 'Profit' : 'Sin forca'}</Badge>
         </span>
       ),
     },
@@ -445,28 +403,17 @@ function ForcaAsignador({
       kind: 'action',
       render: (r) => {
         const edit = editOf(r);
-        const editable = !r.locked || edit.unlocked;
         const busy = busyOf(r.productCode);
         return (
           <div className="flex flex-col items-end gap-space-2xs">
-            <div className="flex flex-col items-end gap-space-2xs">
-              <button
-                onClick={() => saveMonthly.mutate({ row: r, monthlyQty: parseNumber(edit.monthly) })}
-                disabled={busy || !editable}
-                title="Fijar / guardar el forca del mes. Si cambia el valor, el reparto semanal vuelve al promedio."
-                className="flex h-8 items-center gap-space-2xs whitespace-nowrap rounded-md bg-primary-container px-space-sm text-label-sm font-semibold text-on-primary hover:bg-primary disabled:opacity-50"
-              >
-                {r.locked && !edit.unlocked ? <Lock aria-hidden className="size-3.5" /> : <Check aria-hidden className="size-3.5" />} Fijar mes
-              </button>
-              <button
-                onClick={() => saveWeeks.mutate({ row: r, qtys: edit.qtys })}
-                disabled={busy}
-                title="Guardar las cantidades por semana (siempre editable)"
-                className="flex h-8 items-center gap-space-2xs whitespace-nowrap rounded-md border border-outline-variant px-space-sm text-label-sm font-semibold text-on-surface-variant hover:bg-surface-container-low disabled:opacity-50"
-              >
-                <Save aria-hidden className="size-3.5" /> Semanas
-              </button>
-            </div>
+            <button
+              onClick={() => saveWeeks.mutate({ row: r, qtys: edit.qtys })}
+              disabled={busy}
+              title="Guardar las cantidades por semana"
+              className="flex h-8 items-center gap-space-2xs whitespace-nowrap rounded-md border border-outline-variant px-space-sm text-label-sm font-semibold text-on-surface-variant hover:bg-surface-container-low disabled:opacity-50"
+            >
+              <Save aria-hidden className="size-3.5" /> Semanas
+            </button>
             {ok[r.productCode] && <span className="text-label-sm text-success">Guardado</span>}
             {fail[r.productCode] && <span className="max-w-[16rem] text-label-sm text-error">{fail[r.productCode]}</span>}
           </div>
@@ -521,7 +468,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
       },
       yAxis: { type: 'value', axisLabel: { color: C.outline, fontSize: 10 }, splitLine: { lineStyle: { color: C.grid } } },
       series: [
-        { name: 'Demanda', type: 'bar', data: weeks.map((w) => rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.demandQty ?? 0), 0)), color: C.navy, barMaxWidth: 26 },
+        { name: 'Solicitado', type: 'bar', data: weeks.map((w) => rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.demandQty ?? 0), 0)), color: C.navy, barMaxWidth: 26 },
         { name: 'A producir', type: 'bar', data: weeks.map((w) => rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.toProduceQty ?? 0), 0)), color: C.red, barMaxWidth: 26 },
       ],
     }),
@@ -608,7 +555,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           },
           {
             key: `s${w.weekIndex}dem`,
-            header: `S${w.weekIndex} Dem.`,
+            header: `S${w.weekIndex} Solic.`,
             align: 'right' as const,
             sortValue: (r: ForecastPlanRow) => weekOf(r)?.demandQty ?? 0,
             render: (r: ForecastPlanRow) => <span title={w.label}>{fmtQty(weekOf(r)?.demandQty ?? 0, 0)}</span>,
@@ -674,8 +621,8 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         render: (e) => <span className="font-bold">{fmtQty(e.row.stockTotal, 0)}</span>,
       },
       {
-        key: 'demanda',
-        header: 'Demanda',
+        key: 'solicitado',
+        header: 'Solicitado',
         align: 'right',
         kind: 'metric',
         sortValue: (e) => e.week.demandQty,
@@ -689,8 +636,8 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         render: (e) => <span className="font-semibold text-on-surface">{fmtQty(e.week.forcaQty, 0)}</span>,
       },
       {
-        key: 'disponible',
-        header: 'Disponible',
+        key: 'despachable',
+        header: 'Despachable',
         align: 'right',
         kind: 'metric',
         sortValue: (e) => e.week.availableQty,
@@ -758,13 +705,13 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
   function exportCsv() {
     const header = ['Codigo', 'Descripcion', 'Unid', 'Stock 03', 'Stock 68', 'Existencia'];
     if (weekIndex === null) {
-      for (const w of weeks) header.push(`${w.label} Forca`, `${w.label} Demanda`, `${w.label} A producir`);
+      for (const w of weeks) header.push(`${w.label} Forca`, `${w.label} Solicitado`, `${w.label} A producir`);
     } else {
       header.push(
         `S${weekIndex} Forca`,
-        `S${weekIndex} Demanda`,
+        `S${weekIndex} Solicitado`,
         'Objetivo',
-        'Disponible',
+        'Despachable',
         'A producir',
         'A producir (kg)',
         'Excedente',
@@ -810,8 +757,8 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
     <>
       <div className="grid grid-cols-1 gap-space-md lg:grid-cols-12">
         <Card className="p-space-md lg:col-span-7">
-          <div className="mb-space-xs font-semibold uppercase text-label-sm text-outline">Demanda vs a producir por semana (unidades)</div>
-          <EChart option={chart} height={230} ariaLabel="Demanda versus producción por semana" />
+          <div className="mb-space-xs font-semibold uppercase text-label-sm text-outline">Solicitado vs a producir por semana (unidades)</div>
+          <EChart option={chart} height={230} ariaLabel="Solicitado versus producción por semana" />
         </Card>
         <Card className="flex flex-col justify-between gap-space-md p-space-md lg:col-span-5">
           <label className="flex flex-col gap-space-2xs">
@@ -825,7 +772,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           </label>
           <div className="grid grid-cols-2 gap-space-sm">
             <Kpi label={weekIndex === null ? 'Forca del mes' : 'Forca de la semana'} value={fmtQty(totals.forca, 0)} suffix="unid." tone="primary" />
-            <Kpi label={weekIndex === null ? 'Demanda del mes' : 'Demanda de la semana'} value={fmtQty(totals.demand, 0)} suffix="unid." />
+            <Kpi label={weekIndex === null ? 'Solicitado del mes' : 'Solicitado de la semana'} value={fmtQty(totals.demand, 0)} suffix="unid." />
             <Kpi label="A producir" value={fmtQty(totals.toProduce, 0)} suffix="unid." tone="danger" />
             <Kpi label="A producir en kg" value={fmtQty(totals.toProduceKg, 0)} suffix="kg" tone="danger" />
           </div>
@@ -836,9 +783,9 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             <Download aria-hidden className="size-4" /> Exportar plan (CSV)
           </button>
           <p className="text-label-sm text-on-surface-variant">
-            <strong>Objetivo de la semana = el mayor entre el forca y la demanda.</strong> Con eso:{' '}
+            <strong>Objetivo de la semana = el mayor entre el forca y el solicitado.</strong> Con eso:{' '}
             <strong>a producir = max(0, objetivo − existencia)</strong> y, si sobra stock, la diferencia se muestra como{' '}
-            <strong>Excedente</strong>. Existencia, disponible y estado usan el mismo cálculo que la vista de
+            <strong>Excedente</strong>. Existencia, despachable y estado usan el mismo cálculo que la vista de
             Disponibilidad por Producto.
           </p>
         </Card>
@@ -906,7 +853,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             <span className="font-semibold text-error">Rojo</span> = falta producir ·{' '}
             <span className="font-semibold text-success">Verde</span> = sobra stock. «A producir» = max(0, objetivo −
             existencia) y «Excedente» = max(0, existencia − objetivo): <strong>nunca hay los dos a la vez</strong>. El
-            objetivo de la semana es el <strong>mayor entre el forca semanal y la demanda</strong>. Un 0 en «A producir»
+            objetivo de la semana es el <strong>mayor entre el forca semanal y el solicitado</strong>. Un 0 en «A producir»
             significa que la existencia ya cubre el objetivo (mira el «Excedente»).
           </div>
         </Card>

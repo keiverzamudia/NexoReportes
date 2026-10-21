@@ -51,6 +51,11 @@
   --color-error-container: #ffdad6;
   --color-on-error-container: #93000a;
 
+  /* Acento cálido del rediseño (solo hero y detalles puntuales) */
+  --color-accent: #ff7a5c;
+  --color-accent-container: #ffe6df;
+  --color-on-accent-container: #7a2410;
+
   /* Semántica funcional (DESIGN.md: crítico / advertencia / ok) */
   --color-critical: #dc2626;
   --color-critical-container: #fee2e2;
@@ -65,6 +70,13 @@
   /* Sombras (contención estructural, no decorativa) */
   --shadow-card: 0 1px 2px 0 rgb(23 43 58 / 0.06);
   --shadow-float: 0 4px 12px -2px rgb(23 43 58 / 0.08), 0 2px 6px -1px rgb(23 43 58 / 0.04);
+
+  /* Rediseño V14: radios, profundidad y hero */
+  --radius-card: 1.25rem;
+  --radius-pill: 999px;
+  --shadow-soft: 0 1px 2px 0 rgb(8 29 44 / 0.04), 0 14px 34px -26px rgb(8 29 44 / 0.35);
+  --shadow-lift: 0 2px 6px -2px rgb(8 29 44 / 0.08), 0 20px 44px -30px rgb(0 30 64 / 0.45);
+  --shadow-hero: 0 26px 60px -34px rgb(0 30 64 / 0.7);
 
   /* Espaciado (nombres usados por los mockups Stitch) */
   --spacing-space-2xs: 0.125rem;
@@ -131,6 +143,8 @@
 @layer base {
   body {
     background-color: var(--color-surface);
+    background-image: radial-gradient(1100px 520px at 100% -8%, #e9f3ff 0%, transparent 62%);
+    background-attachment: fixed;
     color: var(--color-on-surface);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
@@ -153,5 +167,65 @@
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================
+   Rediseño V14 — superficies y movimiento.
+   Todo es CSS: no se agregaron dependencias de animación.
+   ============================================================ */
+
+@keyframes nexo-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes nexo-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@layer utilities {
+  .bg-hero {
+    background-image:
+      radial-gradient(120% 130% at 0% 0%, #0b4a86 0%, #003366 46%, #001a33 100%);
+  }
+
+  .animate-rise {
+    animation: nexo-rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .animate-fade {
+    animation: nexo-fade 0.4s ease-out both;
+  }
+
+  /* Aparición escalonada de tarjetas. */
+  .stagger > * {
+    animation: nexo-rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .stagger > *:nth-child(2) {
+    animation-delay: 60ms;
+  }
+  .stagger > *:nth-child(3) {
+    animation-delay: 120ms;
+  }
+  .stagger > *:nth-child(4) {
+    animation-delay: 180ms;
+  }
+  .stagger > *:nth-child(5) {
+    animation-delay: 240ms;
+  }
+  .stagger > *:nth-child(6) {
+    animation-delay: 300ms;
   }
 }

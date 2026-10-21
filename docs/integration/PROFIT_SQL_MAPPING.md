@@ -93,7 +93,8 @@ Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
 | `Stock_68` | `InventorySnapshotLine.qty` (`Stock 68`) | `parseProfitDecimal` | anulable | `null` → no se crea línea | IMPLEMENTADO |
 | *(no expuesto)* | `Product.family` | — | — | `null` (la vista/consulta no lo trae) | NO DISPONIBLE |
 | `clientes.tipo` + `tipo_cli.des_tipo` | `Customer.customerType` / `SalesOrder.customerType` | `RTRIM(tipo) + ' ' + RTRIM(des_tipo)` | anulable | conserva el valor previo si no llega | IMPLEMENTADO (15/10/2026) |
-| `vendedor.ven_des` | `SalesOrder.vendor` | `trim` | anulable | `null` (no se inventa) | IMPLEMENTADO (15/10/2026) |
+| `cotiz_c.co_ven` → `vendedor.ven_des` | `SalesOrder.vendor` | `trim` | anulable | `null` (no se inventa) | IMPLEMENTADO (15/10/2026) |
+| `clientes.co_ven` → `vendedor.ven_des` | `Customer.vendor` | `trim` | anulable | conserva el valor previo si no llega | IMPLEMENTADO (19/10/2026) |
 | `cotiz_c.status` | `SalesOrder.authorized` / `statusRaw` | `'1'` → `true`, `'0'`/`'2'` → `false`, ausente → `null` | anulable | `null` | IMPLEMENTADO (15/10/2026) |
 | `reng_cac.total_art` | `SalesOrderLine.quantity` | `parseProfitDecimal` | anulable | `0` | IMPLEMENTADO (15/10/2026) |
 | `reng_cac.co_alma` | `SalesOrderLine.warehouses` | `trim` | anulable | `null` | IMPLEMENTADO (15/10/2026) |
@@ -134,6 +135,7 @@ SELECT
     f.fact_num AS nro_solicitud, f.fec_emis AS emision, f.fec_venc AS entrega,
     f.co_cli, cl.cli_des,
     v.ven_des AS vendedor,
+    cv.ven_des AS vendedor_cliente,
     RTRIM(cl.tipo) + ' ' + RTRIM(tc.des_tipo) AS tipo_cliente,
     f.status AS status_cotizacion,
     r.co_art, a.art_des, r.co_alma AS almacen, r.total_art AS cantidad,
@@ -146,6 +148,7 @@ JOIN      dbo.reng_cac r  ON r.fact_num = f.fact_num
 JOIN      dbo.art      a  ON a.co_art   = r.co_art
 JOIN      dbo.clientes cl ON cl.co_cli  = f.co_cli
 LEFT JOIN dbo.vendedor v  ON v.co_ven   = f.co_ven
+LEFT JOIN dbo.vendedor cv ON cv.co_ven  = cl.co_ven
 LEFT JOIN dbo.tipo_cli tc ON tc.tip_cli = cl.tipo
 WHERE f.anulada = 0 AND f.status <> '2' AND r.pendiente > 0;
 ```
@@ -154,3 +157,36 @@ WHERE f.anulada = 0 AND f.status <> '2' AND r.pendiente > 0;
 - Solo `SELECT`; el adaptador rechaza cualquier consulta con `;` o palabras de escritura.
 - Si una columna no llegara, el normalizador la deja en `null` (se muestra «—»); nunca rompe ni inventa.
 - `object_definition` y el sondeo se hicieron con el usuario de solo lectura.
+
+---
+
+## Forca mensual (23/10/2026) — `dbo.xart_fore`
+
+El módulo **Forca** ya no captura el mensual en Nexo: lo lee de Profit con una
+consulta de solo lectura (`ForecastService`), sin conversión de unidades.
+
+| Tabla | Columnas | Uso |
+|---|---|---|
+| `dbo.xart_fore` | `nom` (varchar 150), `kg_mes` (int), `kg_sem` (int) | Forca por artículo: `kg_mes` se usa **tal cual** como cantidad mensual. `kg_sem` se ignora (las semanas se reparten en Nexo como `kg_mes / 4`). |
+| `dbo.art` | `co_art`, `art_des`, `anulado` | Cruce por descripción: `RTRIM(art_des) = RTRIM(xart_fore.nom)`. |
+
+```sql
+SELECT RTRIM(a.co_art) AS co_art, f.kg_mes AS forca_mes
+FROM dbo.xart_fore AS f
+INNER JOIN dbo.art AS a
+        ON RTRIM(LTRIM(a.art_des)) = RTRIM(LTRIM(f.nom))
+       AND a.anulado = 0
+```
+
+Notas:
+- `xart_fore` no tiene `co_art` ni columna de mes: es una foto del **mes en
+  curso**. Para cualquier otro mes el forca se muestra en 0.
+- Los 40 artículos de la tabla pertenecen a la línea `ABA`; los ABA sin fila en
+  `xart_fore` quedan en 0.
+- Si producción agrega artículos, la descripción debe coincidir con
+  `art.art_des` (o, idealmente, agregar `co_art` a `xart_fore`).
+- La suma de `kg_mes` (1.888.000 en octubre 2026) coincide con
+  `dbo.xmeta_toneladas` de ese mes (1.888 t).
+- En Nexo solo se persisten las cantidades por semana (`ForecastWeek`); nunca
+  se escribe en Profit.
+

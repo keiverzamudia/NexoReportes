@@ -102,7 +102,7 @@ describe('SalesService.orderDetail', () => {
 });
 
 describe('SalesService.listCustomers', () => {
-  it('expone tipo/vendedor nulos (no vienen en la vista) y el conteo de pedidos', async () => {
+  it('expone tipo/vendedor nulos cuando la sync no los trae y el conteo de pedidos', async () => {
     const prisma = createFakePrisma([], [
       { id: 'c1', externalCode: '153064128', name: 'JOSEF HENDRIX', customerType: null, vendor: null, isActive: true },
     ]);

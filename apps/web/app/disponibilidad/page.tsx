@@ -2,7 +2,7 @@
 
 // ============================================================
 // Disponibilidad por Producto (Fase 3) — rediseño estilo Stitch.
-// Existencia física (última fotografía) − demanda pendiente de pedidos
+// Existencia física (última fotografía) − solicitado pendiente de pedidos
 // activos. Estado: DISPONIBLE | PARCIAL | FALTANTE | SIN_DEMANDA.
 // ============================================================
 
@@ -27,10 +27,10 @@ import {
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 
 const STATUS_LABEL: Record<AvailabilityStatus, string> = {
-  DISPONIBLE: 'Disponible',
+  DISPONIBLE: 'Despachable',
   PARCIAL: 'Parcial',
   FALTANTE: 'Faltante',
-  SIN_DEMANDA: 'Sin demanda',
+  SIN_DEMANDA: 'Sin solicitado',
 };
 
 const STATUS_TONE: Record<AvailabilityStatus, 'success' | 'warning' | 'danger' | 'muted'> = {
@@ -42,11 +42,18 @@ const STATUS_TONE: Record<AvailabilityStatus, 'success' | 'warning' | 'danger' |
 
 const STATUS_OPTIONS = [
   { value: '', label: 'Estado: Todos' },
-  { value: 'FALTANTE', label: 'Faltante' },
-  { value: 'PARCIAL', label: 'Parcial' },
-  { value: 'DISPONIBLE', label: 'Disponible' },
-  { value: 'SIN_DEMANDA', label: 'Sin demanda' },
+  { value: 'FALTANTE', label: 'Faltante (incluye parcial)' },
+  { value: 'DISPONIBLE', label: 'Despachable' },
+  { value: 'SIN_DEMANDA', label: 'Sin solicitado' },
 ];
+
+// El filtro «Faltante» agrupa los estados FALTANTE y PARCIAL; cada fila
+// conserva su etiqueta original en la tabla.
+function matchesStatus(rowStatus: AvailabilityStatus, filter: AvailabilityStatus | ''): boolean {
+  if (!filter) return true;
+  if (filter === 'FALTANTE') return rowStatus === 'FALTANTE' || rowStatus === 'PARCIAL';
+  return rowStatus === filter;
+}
 
 // Presentación del artículo en Profit (`uni_venta`): SAC = saco, KG = granel.
 // Mismo criterio que en Forca.
@@ -99,16 +106,16 @@ const COLUMNS: Column<AvailabilityRow>[] = [
     render: (r) => <span className="font-bold">{fmtQty(r.stockTotal, 0)}</span>,
   },
   {
-    key: 'demanda',
-    header: 'Demanda',
+    key: 'solicitado',
+    header: 'Solicitado',
     align: 'right',
     kind: 'metric',
     sortValue: (r) => r.demandQty,
     render: (r) => fmtQty(r.demandQty, 0),
   },
   {
-    key: 'disponible',
-    header: 'Disponible',
+    key: 'despachable',
+    header: 'Despachable',
     align: 'right',
     kind: 'metric',
     sortValue: (r) => r.availableQty,
@@ -168,7 +175,7 @@ export default function DisponibilidadPage() {
     return all.filter(
       (r) =>
         matchesUnit(r.uom, unit) &&
-        (!status || r.status === status) &&
+        matchesStatus(r.status, status) &&
         (!needle || r.productCode.toLowerCase().includes(needle) || r.description.toLowerCase().includes(needle)),
     );
   }, [data, search, status, unit]);
@@ -179,7 +186,7 @@ export default function DisponibilidadPage() {
       productos: all.length,
       faltantes: all.filter((r) => r.status === 'FALTANTE').length,
       parciales: all.filter((r) => r.status === 'PARCIAL').length,
-      disponibles: all.filter((r) => r.status === 'DISPONIBLE').length,
+      despachables: all.filter((r) => r.status === 'DISPONIBLE').length,
       toProduceKg: all.reduce((acc, r) => acc + (r.toProduceKg ?? 0), 0),
     };
   }, [data]);
@@ -193,18 +200,22 @@ export default function DisponibilidadPage() {
       <AppNav />
       <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg md:p-space-xl">
         <PageHeader
-          eyebrow="Módulo de Existencias y Demanda Neta"
+          eyebrow="Módulo de Existencias y Solicitado"
           icon={Boxes}
           title="Disponibilidad por Producto"
-          subtitle={`Existencias físicas en almacenes vs. demanda pendiente de pedidos activos. Fotografía de inventario: ${fmtDateTime(
+          subtitle={`Existencias físicas en almacenes vs. solicitado pendiente de pedidos activos. Fotografía de inventario: ${fmtDateTime(
             data?.snapshotAt ?? null,
           )}${data?.source === 'fixtures' ? ' · DATOS DE DESARROLLO (fixtures)' : ''}`}
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
               <Kpi label="Productos" value={String(kpis.productos)} icon={Boxes} />
-              <Kpi label="Faltante" value={String(kpis.faltantes)} tone="danger" />
-              <Kpi label="Parcial" value={String(kpis.parciales)} tone="warning" />
-              <Kpi label="Disponible" value={String(kpis.disponibles)} tone="success" />
+              <Kpi
+                label="Faltante"
+                value={String(kpis.faltantes + kpis.parciales)}
+                tone="danger"
+                hint={`${kpis.faltantes} sin existencia · ${kpis.parciales} parciales`}
+              />
+              <Kpi label="Despachable" value={String(kpis.despachables)} tone="success" hint="cubren todo el solicitado" />
               <Kpi label="A producir" value={fmtQty(kpis.toProduceKg, 0)} suffix="kg" tone="danger" />
             </div>
           }
@@ -255,10 +266,19 @@ export default function DisponibilidadPage() {
                 />
               }
             />
-            <div className="flex items-center gap-space-sm border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
-              <PackageSearch aria-hidden className="size-4" />
-              {rows.length} de {data.rows.length} productos · unidades en la unidad de venta de cada producto (SAC/KG), no se
-              mezclan entre sí.
+            <div className="flex items-start gap-space-sm border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
+              <PackageSearch aria-hidden className="mt-0.5 size-4 shrink-0" />
+              <div className="flex flex-col gap-space-2xs">
+                <span>
+                  {rows.length} de {data.rows.length} productos · unidades en la unidad de venta de cada producto (SAC/KG),
+                  no se mezclan entre sí.
+                </span>
+                <span>
+                  <strong className="text-on-surface">Despachable</strong> = parte del solicitado que cubre la existencia
+                  actual (mínimo entre existencia y solicitado). No es el stock libre: eso es{' '}
+                  <strong className="text-on-surface">Neto</strong> (existencia − solicitado).
+                </span>
+              </div>
             </div>
           </Card>
         )}

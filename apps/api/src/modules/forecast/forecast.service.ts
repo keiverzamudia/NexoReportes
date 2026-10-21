@@ -1,5 +1,4 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import {
   FORECAST_WEEK_INDEXES,
   ForecastPlanResponse,
@@ -7,7 +6,6 @@ import {
   ForecastPlanWeek,
   ForecastResponse,
   ForecastRow,
-  ForecastSetMonthly,
   ForecastSetWeeks,
   ForecastWeekRange,
   ForecastWeekRow,
@@ -16,15 +14,18 @@ import {
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
 import { computeAvailability } from '../availability/availability.engine';
+import { ProfitAdapter, PROFIT_ADAPTER } from '../sync/profit.adapter';
 
 // ============================================================
-// Forca (pronóstico de producción). Datos PROPIOS de Nexo Producción:
-// NO se escribe nada en Profit (solo se lee para stock/pedidos/artículos).
+// Forca (pronóstico de producción).
 //
-//  · El FORCA MENSUAL por artículo se fija y queda BLOQUEADO; para
-//    cambiarlo se exige la clave especial (FORECAST_UNLOCK_KEY).
+//  · El FORCA MENSUAL por artículo se lee de Profit (`dbo.xart_fore`) TAL
+//    CUAL, sin conversión: producción mantiene ahí el valor en la unidad de
+//    venta del artículo (saco/unidad). Es solo lectura; Nexo nunca lo escribe.
+//  · `xart_fore` no tiene código ni mes: se cruza por descripción y aplica al
+//    mes en curso.
 //  · Cada semana (4 bloques) tiene una CANTIDAD editable. Por defecto se
-//    llena con el PROMEDIO = forca mensual / 4.
+//    llena con el PROMEDIO = forca mensual / 4; aquí solo se ajustan semanas.
 //  · El Reporte reutiliza el MISMO motor de disponibilidad que la vista
 //    «Disponibilidad por Producto», con la demanda OBJETIVO de la semana
 //    (max(forca de la semana, demanda de la semana)).
@@ -56,6 +57,19 @@ export const WEEK_BOUNDS = [
 const WAREHOUSE_03 = 'Stock 03';
 const WAREHOUSE_68 = 'Stock 68';
 
+// Forca mensual mantenido por producción en Profit (`COR_A3.dbo.xart_fore`).
+// `kg_mes` se usa TAL CUAL (sin convertir): producción lo deja en la unidad de
+// venta del artículo. `kg_sem` no se usa: las semanas se reparten en Nexo como
+// mensual / 4 y se ajustan aquí. La tabla no tiene código ni mes, por eso se
+// cruza por descripción (RTRIM) y se aplica solo al mes en curso.
+const PROFIT_FORCA_SQL = `
+SELECT RTRIM(a.co_art) AS co_art, f.kg_mes AS forca_mes
+FROM dbo.xart_fore AS f
+INNER JOIN dbo.art AS a
+        ON RTRIM(LTRIM(a.art_des)) = RTRIM(LTRIM(f.nom))
+       AND a.anulado = 0
+`;
+
 export function weekIndexOf(day: number): number {
   if (day <= 7) return 1;
   if (day <= 14) return 2;
@@ -77,10 +91,12 @@ function warehouseQty(list: InventoryByWarehouse[], code: string): number {
 
 @Injectable()
 export class ForecastService {
+  private readonly logger = new Logger(ForecastService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
-    private readonly config: ConfigService,
+    @Inject(PROFIT_ADAPTER) private readonly profit: ProfitAdapter,
   ) {}
 
   async list(year: number, month: number): Promise<ForecastResponse> {
@@ -89,15 +105,23 @@ export class ForecastService {
       orderBy: { externalCode: 'asc' },
     });
 
-    const [stock, demand] = await Promise.all([this.stockIndex(), this.demandBuckets(year, month)]);
+    const [stock, demand, forca] = await Promise.all([
+      this.stockIndex(),
+      this.demandBuckets(year, month),
+      this.profitForcaIndex(year, month),
+    ]);
     const forecasts = await this.prisma.forecast.findMany({ where: { year, month }, include: { weeks: true } });
     const byCode = new Map(forecasts.map((f) => [f.productCode, f]));
     const ranges = weekRanges(year, month);
 
     const rows: ForecastRow[] = products.map((p) => {
       const f = byCode.get(p.externalCode);
-      const monthlyQty = f ? num(f.monthlyQty) : 0;
-      const weeks = this.computeWeeks(monthlyQty, f?.weeks ?? []);
+      // El mensual SIEMPRE manda desde Profit. El valor local sólo se usa para
+      // saber si las semanas guardadas se editaron sobre este mismo mensual.
+      const monthlyQty = forca.byCode.get(p.externalCode) ?? 0;
+      const storedMonthly = f ? num(f.monthlyQty) : null;
+      const useStoredWeeks = f !== undefined && storedMonthly === monthlyQty;
+      const weeks = this.computeWeeks(monthlyQty, f?.weeks ?? [], useStoredWeeks);
       const demandMonth = demand.byProduct.get(p.externalCode) ?? { qty: 0, kg: 0 };
       return {
         productCode: p.externalCode,
@@ -110,63 +134,27 @@ export class ForecastService {
         demandMonthKg: round3(demandMonth.kg),
         monthlyQty: round3(monthlyQty),
         averageQty: round3(monthlyQty / WEEK_BOUNDS.length),
-        locked: f?.locked ?? false,
         weeks,
         weeksTotalQty: round3(weeks.reduce((acc, w) => acc + w.qty, 0)),
       };
     });
 
-    return { year, month, weekRanges: ranges, rows, unlockProtected: true };
+    return { year, month, weekRanges: ranges, rows, profitForcaAvailable: forca.available };
   }
 
-  // Fija el forca mensual. Si ya estaba fijado, exige la clave especial.
-  // Al cambiar el mensual, el reparto semanal vuelve al PROMEDIO (mensual / 4).
-  async setMonthly(productCode: string, dto: ForecastSetMonthly, actor?: { id?: string; email?: string }) {
-    const existing = await this.prisma.forecast.findUnique({
-      where: { productCode_year_month: { productCode, year: dto.year, month: dto.month } },
-    });
-    if (existing?.locked) {
-      const key = this.config.get<string>('forecast.unlockKey');
-      if (!dto.unlockKey || dto.unlockKey !== key) {
-        throw new ForbiddenException('El forca de ese mes ya está fijado. Ingresa la clave especial para cambiarlo.');
-      }
-    }
-
-    const saved = await this.prisma.forecast.upsert({
-      where: { productCode_year_month: { productCode, year: dto.year, month: dto.month } },
-      update: { monthlyQty: dto.monthlyQty, locked: true, lockedAt: new Date(), updatedBy: actor?.email ?? null },
-      create: {
-        productCode,
-        year: dto.year,
-        month: dto.month,
-        monthlyQty: dto.monthlyQty,
-        locked: true,
-        lockedAt: new Date(),
-        updatedBy: actor?.email ?? null,
-      },
-    });
-
-    // Si el forca mensual cambió, se reinicia el reparto al promedio; si es el
-    // mismo valor (sólo bloqueo/confirmación) se respeta el ajuste semanal.
-    const previous = existing ? num(existing.monthlyQty) : null;
-    const resetWeeks = previous === null || previous !== dto.monthlyQty;
-    await this.ensureWeeks(saved.id, dto.monthlyQty, resetWeeks);
-
-    await this.audit.record({
-      actorId: actor?.id ?? null,
-      actorEmail: actor?.email ?? null,
-      action: 'FORECAST_SET_MONTHLY',
-      entityType: 'Forecast',
-      entityId: saved.id,
-      context: { productCode, year: dto.year, month: dto.month, monthlyQty: dto.monthlyQty, resetWeeks, unlocked: Boolean(existing?.locked) },
-    });
-    const weeks = await this.weeksOf(saved.id, dto.monthlyQty);
-    return { ok: true, productCode, year: dto.year, month: dto.month, monthlyQty: dto.monthlyQty, locked: true, weeks };
-  }
-
-  // Cambia SOLO las cantidades por semana (siempre permitido, sin clave).
+  // Cambia SOLO las cantidades por semana. El forca mensual no se edita aquí:
+  // se toma de Profit y se guarda como "snapshot" para detectar si cambió.
   async setWeeks(productCode: string, dto: ForecastSetWeeks) {
-    const forecast = await this.ensureForecast(productCode, dto.year, dto.month);
+    const forca = await this.profitForcaIndex(dto.year, dto.month);
+    if (!forca.available) {
+      throw new ServiceUnavailableException('No se pudo leer el forca de Profit (xart_fore). Intenta de nuevo.');
+    }
+    const monthlyQty = forca.byCode.get(productCode) ?? 0;
+    const forecast = await this.prisma.forecast.upsert({
+      where: { productCode_year_month: { productCode, year: dto.year, month: dto.month } },
+      update: { monthlyQty, locked: false, lockedAt: null },
+      create: { productCode, year: dto.year, month: dto.month, monthlyQty, locked: false },
+    });
     for (const w of dto.weeks) {
       await this.prisma.forecastWeek.upsert({
         where: { forecastId_weekIndex: { forecastId: forecast.id, weekIndex: w.weekIndex } },
@@ -174,13 +162,15 @@ export class ForecastService {
         create: { forecastId: forecast.id, weekIndex: w.weekIndex, qty: w.qty },
       });
     }
+    // Crea las semanas que falten con el promedio (no pisa las recién guardadas).
+    await this.ensureWeeks(forecast.id, monthlyQty, false);
     await this.audit.record({
       action: 'FORECAST_SET_WEEKS',
       entityType: 'Forecast',
       entityId: forecast.id,
-      context: { productCode, year: dto.year, month: dto.month, weeks: dto.weeks },
+      context: { productCode, year: dto.year, month: dto.month, monthlyQty, weeks: dto.weeks },
     });
-    const weeks = await this.weeksOf(forecast.id, num(forecast.monthlyQty));
+    const weeks = await this.weeksOf(forecast.id, monthlyQty);
     return { ok: true, productCode, year: dto.year, month: dto.month, weeks };
   }
 
@@ -253,30 +243,51 @@ export class ForecastService {
 
   // ---------- auxiliares ----------
 
-  // Cantidades por semana: usa lo guardado; si aún no se repartió (filas en
-  // cero, p. ej. recién creadas) se usa el PROMEDIO del mes (forca / 4).
-  private computeWeeks(monthlyQty: number, stored: { weekIndex: number; qty: unknown }[]): ForecastWeekRow[] {
+  // Cantidades por semana. `useStored=false` (el forca de Profit cambió o no
+  // hay fila local) devuelve el PROMEDIO del mes; si es true respeta lo editado.
+  private computeWeeks(monthlyQty: number, stored: { weekIndex: number; qty: unknown }[], useStored: boolean): ForecastWeekRow[] {
     const average = monthlyQty / WEEK_BOUNDS.length;
-    const distributed = stored.some((w) => num(w.qty) !== 0);
     return FORECAST_WEEK_INDEXES.map((weekIndex) => {
       const found = stored.find((w) => w.weekIndex === weekIndex);
-      return { weekIndex, qty: round3(distributed && found ? num(found.qty) : average) };
+      return { weekIndex, qty: round3(useStored && found ? num(found.qty) : average) };
     });
   }
 
   private async weeksOf(forecastId: string, monthlyQty: number): Promise<ForecastWeekRow[]> {
     const stored = await this.prisma.forecastWeek.findMany({ where: { forecastId } });
-    return this.computeWeeks(monthlyQty, stored);
+    return this.computeWeeks(monthlyQty, stored, true);
   }
 
-  private async ensureForecast(productCode: string, year: number, month: number) {
-    const forecast = await this.prisma.forecast.upsert({
-      where: { productCode_year_month: { productCode, year, month } },
-      update: {},
-      create: { productCode, year, month, monthlyQty: 0 },
-    });
-    await this.ensureWeeks(forecast.id, num(forecast.monthlyQty), false);
-    return forecast;
+  // `xart_fore` es una foto del mes en curso (no tiene columna de mes). Para
+  // cualquier otro mes se devuelve 0 sin consultar Profit.
+  private isCurrentMonth(year: number, month: number): boolean {
+    const now = new Date();
+    return now.getFullYear() === year && now.getMonth() + 1 === month;
+  }
+
+  // Forca mensual por artículo desde Profit (`xart_fore.kg_mes`), SIN conversión.
+  // Si la consulta falla, se devuelve el mapa vacío y `available=false` para que
+  // la UI avise en lugar de mostrar valores inventados.
+  private async profitForcaIndex(year: number, month: number): Promise<{ byCode: Map<string, number>; available: boolean }> {
+    if (!this.isCurrentMonth(year, month)) {
+      return { byCode: new Map(), available: true };
+    }
+    try {
+      const rows = await this.profit.selectQuery(PROFIT_FORCA_SQL, 5000);
+      const byCode = new Map<string, number>();
+      for (const raw of rows) {
+        const code = String(raw.co_art ?? '').trim();
+        if (!code) continue;
+        if (byCode.has(code)) {
+          this.logger.warn(`xart_fore trae más de una fila para ${code}; se usa la última.`);
+        }
+        byCode.set(code, num(raw.forca_mes));
+      }
+      return { byCode, available: true };
+    } catch (error) {
+      this.logger.warn(`No se pudo leer el forca de Profit (xart_fore): ${error instanceof Error ? error.message : 'error desconocido'}`);
+      return { byCode: new Map(), available: false };
+    }
   }
 
   // Crea las 4 semanas. `reset=true` reescribe el promedio; `false` sólo crea
