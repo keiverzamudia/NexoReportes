@@ -324,7 +324,12 @@ function ClientePedidos({ customer }: { customer: Customer }) {
             {lines.map((line) => (
               <tr key={`${line.orderId}#${line.productCode}`} className="transition-colors hover:bg-surface-container-low/70">
                 <Td className="font-bold tabular-nums text-primary">{line.orderNumber}</Td>
-                <Td className="tabular-nums text-on-surface-variant">{fmtDate(line.requestedDate)}</Td>
+                <Td
+                  className={`tabular-nums ${line.tentativeDate ? 'font-semibold text-secondary' : 'text-on-surface-variant'}`}
+                  title={line.tentativeDate ? `Original: ${fmtDate(line.requestedDate)}` : undefined}
+                >
+                  {fmtDate(line.tentativeDate ?? line.requestedDate)}
+                </Td>
                 <Td>
                   <span className="block max-w-[26rem] truncate" title={line.description ?? ''}>
                     <span className="font-bold text-primary">{line.productCode}</span>

@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { SalesService } from './sales.service';
 
 // Fake mínimo de Prisma: sólo los métodos que usa SalesService.
+// Stub de la capa de fechas: estos tests cubren sólo la lectura de pedidos.
+const deliveryDates = { resolveForLines: async () => new Map<string, string>() } as never;
+
 function createFakePrisma(orders: any[], customers: any[] = []) {
   return {
     $transaction: (ops: Promise<unknown>[]) => Promise.all(ops),
@@ -59,7 +62,7 @@ function order(id: string, externalNumber: string, pendings: number[], extra: Re
 describe('SalesService.listOrders — total pendiente de la lista', () => {
   it('suma los pendientes de los renglones (regresión: antes devolvía 0)', async () => {
     const prisma = createFakePrisma([order('o1', '3346', [3]), order('o2', '3451', [217, 10])]);
-    const service = new SalesService(prisma);
+    const service = new SalesService(prisma, deliveryDates);
 
     const result = await service.listOrders({ page: 1, pageSize: 25 });
 
@@ -71,7 +74,7 @@ describe('SalesService.listOrders — total pendiente de la lista', () => {
 
   it('conserva el signo del sobre-compromiso en el total del pedido', async () => {
     const prisma = createFakePrisma([order('o1', '3561', [-247])]);
-    const service = new SalesService(prisma);
+    const service = new SalesService(prisma, deliveryDates);
 
     const result = await service.listOrders({ page: 1, pageSize: 25 });
 
@@ -82,7 +85,7 @@ describe('SalesService.listOrders — total pendiente de la lista', () => {
 describe('SalesService.orderDetail', () => {
   it('devuelve el encabezado y los renglones con su kg crudo', async () => {
     const prisma = createFakePrisma([order('o1', '3346', [3, -1])]);
-    const service = new SalesService(prisma);
+    const service = new SalesService(prisma, deliveryDates);
 
     const detail = await service.orderDetail('o1');
 
@@ -95,7 +98,7 @@ describe('SalesService.orderDetail', () => {
 
   it('falla con NotFound si el pedido no existe', async () => {
     const prisma = createFakePrisma([]);
-    const service = new SalesService(prisma);
+    const service = new SalesService(prisma, deliveryDates);
 
     await expect(service.orderDetail('no-existe')).rejects.toThrow(/no existe/);
   });
@@ -106,7 +109,7 @@ describe('SalesService.listCustomers', () => {
     const prisma = createFakePrisma([], [
       { id: 'c1', externalCode: '153064128', name: 'JOSEF HENDRIX', customerType: null, vendor: null, isActive: true },
     ]);
-    const service = new SalesService(prisma);
+    const service = new SalesService(prisma, deliveryDates);
 
     const result = await service.listCustomers({ page: 1, pageSize: 50 });
 

@@ -12,12 +12,20 @@
 // Al marcar un renglón se descuenta el stock y la cola se recalcula: si el
 // que era 2º se queda sin existencia, baja y entra otro que sí la tiene.
 //
+// El orden de PRESENTACIÓN de los grupos («prioridad» o «cobertura») se decide
+// en la página; aquí la asignación siempre respeta la entrega más próxima.
+//
 // La vista muestra: marcados fijos en su sitio, luego los despachables en
 // turno y al final los que quedaron sin existencia.
 // ============================================================
 
 export type DispatchMode = 'disponible' | 'total';
-export type DispatchSort = 'prioridad' | 'disponibilidad' | 'pendiente';
+// Orden de PRESENTACIÓN de los grupos en la página. La asignación de stock
+// siempre prioriza la entrega más próxima, para que el % de cobertura refleje
+// realmente lo que se puede cumplir en esa fecha.
+//   'prioridad' → grupos por su mejor turno en la cola (entrega + existencia).
+//   'cobertura' → grupos por el % de cobertura mostrado (100% → 0%).
+export type DispatchSort = 'prioridad' | 'cobertura';
 
 export interface DispatchInput {
   key: string;
@@ -65,19 +73,12 @@ function kgPerUnit(line: DispatchInput): number | null {
   return line.pendingKg / line.pendingQty;
 }
 
-function compare(sort: DispatchSort) {
-  return (a: DispatchInput, b: DispatchInput): number => {
-    if (sort === 'pendiente') return b.pendingQty - a.pendingQty;
-    if (sort === 'disponibilidad') {
-      if (b.stockTotal !== a.stockTotal) return b.stockTotal - a.stockTotal;
-      return timeOf(a.requestedDate) - timeOf(b.requestedDate);
-    }
-    // 'prioridad': entrega más próxima primero; a igual fecha, más existencia.
-    const byDate = timeOf(a.requestedDate) - timeOf(b.requestedDate);
-    if (byDate !== 0) return byDate;
-    if (b.stockTotal !== a.stockTotal) return b.stockTotal - a.stockTotal;
-    return b.pendingQty - a.pendingQty;
-  };
+function compare(a: DispatchInput, b: DispatchInput): number {
+  // Entrega más próxima primero; a igual fecha, más existencia y luego más pendiente.
+  const byDate = timeOf(a.requestedDate) - timeOf(b.requestedDate);
+  if (byDate !== 0) return byDate;
+  if (b.stockTotal !== a.stockTotal) return b.stockTotal - a.stockTotal;
+  return b.pendingQty - a.pendingQty;
 }
 
 // Asigna stock (mutando `remaining`) a las líneas en el ORDEN RECIBIDO.
@@ -97,15 +98,14 @@ function allocateOrdered(
   return out;
 }
 
-function sortLines(lines: DispatchInput[], sort: DispatchSort): DispatchInput[] {
-  return [...lines].sort(compare(sort));
+function sortLines(lines: DispatchInput[]): DispatchInput[] {
+  return [...lines].sort(compare);
 }
 
 export function buildDispatchQueue(
   inputs: DispatchInput[],
   selectedKeys: string[],
   mode: DispatchMode,
-  sort: DispatchSort,
 ): QueueEntry[] {
   const selectedSet = new Set(selectedKeys);
   const selected = inputs.filter((l) => selectedSet.has(l.key));
@@ -123,7 +123,7 @@ export function buildDispatchQueue(
   const markIndex = new Map(selectedKeys.map((k, i) => [k, i]));
   const selectedInMarkOrder = [...selected].sort((a, b) => (markIndex.get(a.key) ?? 0) - (markIndex.get(b.key) ?? 0));
   const selectedAlloc = allocateOrdered(selectedInMarkOrder, remaining, mode);
-  const unselectedAlloc = allocateOrdered(sortLines(unselected, sort), remaining, mode);
+  const unselectedAlloc = allocateOrdered(sortLines(unselected), remaining, mode);
 
   // Turno para el Plan de despacho: entrega más próxima; a igual fecha, orden de marcado.
   const selectedPriority = new Map<string, number>();

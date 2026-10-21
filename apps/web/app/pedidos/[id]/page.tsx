@@ -3,7 +3,7 @@
 // ============================================================
 // Detalle de pedido (Fase 4) — estilo Stitch.
 // Renglones sincronizados desde Profit con pendiente, kg y las
-// existencias del artículo en los almacenes Stock 03 / Stock 68.
+// existencias del artículo en los almacenes Stock 03 / Stock 9999 / Stock 68.
 // ============================================================
 
 import type { OrderDetail, OrderStatus } from '@nexo/contracts';
@@ -100,6 +100,7 @@ export default function PedidoDetallePage() {
                       <Th align="right">Kg</Th>
                       <Th>Alm.</Th>
                       <Th align="right">Stock 03</Th>
+                      <Th align="right">Stock 9999</Th>
                       <Th align="right">Stock 68</Th>
                     </tr>
                   </thead>
@@ -124,6 +125,7 @@ export default function PedidoDetallePage() {
                         <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(line.pendingKg, 0)}</Td>
                         <Td className="tabular-nums text-on-surface-variant">{line.warehouseCode ?? '—'}</Td>
                         <Td align="right" className="tabular-nums">{fmtQty(line.stock03, 0)}</Td>
+                        <Td align="right" className="tabular-nums">{fmtQty(line.stock9999, 0)}</Td>
                         <Td align="right" className="tabular-nums">{fmtQty(line.stock68, 0)}</Td>
                       </tr>
                     ))}

@@ -8,7 +8,8 @@
 //      - "Solo despachable": despacho tipo real; asigna únicamente lo que
 //        hay en existencia y lo demás queda como faltante.
 //      - "Solicitado total": descuenta todo lo pedido (puede quedar negativo).
-//  · Orden por PRIORIDAD (fecha de entrega más próxima y existencia).
+//  · Orden de la cartera: «Prioridad: entrega + existencia» o
+//    «Cobertura sobre fecha de entrega» (100% → 0%, según el % de la tabla).
 //  · Plan de despacho: lista priorizada de lo seleccionado (asignado/faltante).
 //  · Gráficas de decisión: cobertura por producto y cobertura global (kg).
 //
@@ -16,14 +17,25 @@
 //  el navegador y NUNCA escriben en Profit.
 // ============================================================
 
-import type { OrderDetail, OrderGroup, OrderGroupBy, OrderGroupLine, OrderGroupedResponse, OrderStatus } from '@nexo/contracts';
+import type {
+  DeliveryDateApplyResponse,
+  OrderDetail,
+  OrderGroup,
+  OrderGroupBy,
+  OrderGroupLine,
+  OrderGroupedResponse,
+  OrderStatus,
+} from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, ChevronDown, ChevronRight, Download, FileText, PackageCheck, Pin, PinOff, Search, ShoppingCart, Trash2, X } from 'lucide-react';
+import { AlertTriangle, CalendarRange, ChevronDown, ChevronRight, Download, FileText, PackageCheck, Pin, PinOff, Search, ShoppingCart, Trash2, X } from 'lucide-react';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { DeliveryDateButton } from '../../components/DeliveryDate';
+import { DeliveryDateDialog } from '../../components/DeliveryDateDialog';
+import type { DeliveryDateTarget, DeliveryDateTargetItem } from '../../components/DeliveryDateDialog';
 import { EChart } from '../../components/EChart';
 import { AppNav, LoginScreen } from '../../components/shell';
 import { Badge, Card, CoverageBar, DateInput, HeroCard, Kpi, PageHeader, Select, Segmented, Skeleton, Td, TextInput, Th, fmtDate, fmtQty, useGreeting } from '../../components/ui';
-import { AuthRequiredError, apiFetch } from '../../lib/api';
+import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
 import { DispatchInput, DispatchMode, DispatchSort, QueueEntry, buildDispatchQueue, summarizeQueue } from '../../lib/dispatch';
 
 const STATUS_OPTIONS = [
@@ -51,8 +63,7 @@ const MODE_OPTIONS: { value: DispatchMode; label: string }[] = [
 
 const SORT_OPTIONS: { value: DispatchSort; label: string }[] = [
   { value: 'prioridad', label: 'Prioridad: entrega + existencia' },
-  { value: 'disponibilidad', label: 'Mayor existencia primero' },
-  { value: 'pendiente', label: 'Mayor pendiente primero' },
+  { value: 'cobertura', label: 'Cobertura sobre fecha de entrega' },
 ];
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
@@ -101,12 +112,6 @@ function lineKey(line: OrderGroupLine): string {
   return `${line.orderId}#${line.productCode}`;
 }
 
-function timeOf(iso: string | null): number {
-  if (!iso) return Number.POSITIVE_INFINITY;
-  const t = new Date(iso).getTime();
-  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
-}
-
 function loadSelection(): string[] {
   if (typeof window === 'undefined') return [];
   try {
@@ -123,7 +128,7 @@ export default function PedidosPage() {
   const greeting = useGreeting();
   const [by, setBy] = useState<OrderGroupBy>('cliente');
   const [mode, setMode] = useState<DispatchMode>('disponible');
-  const [sort, setSort] = useState<DispatchSort>('prioridad');
+  const [sort, setSort] = useState<DispatchSort>('cobertura');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [planExpanded, setPlanExpanded] = useState<string | null>(null);
   const [selection, setSelection] = useState<string[]>([]);
@@ -147,6 +152,27 @@ export default function PedidosPage() {
   const [customerCode, setCustomerCode] = useState(() =>
     typeof window === 'undefined' ? '' : (new URLSearchParams(window.location.search).get('cliente') ?? ''),
   );
+
+  // Fechas tentativas: selección por grupo del plan + modal de asignación.
+  const [dateSelection, setDateSelection] = useState<{ groupKey: string; keys: string[] } | null>(null);
+  const [dateTarget, setDateTarget] = useState<DeliveryDateTarget | null>(null);
+  const [dateToast, setDateToast] = useState<string | null>(null);
+
+  const { data: sessionUser } = useQuery({
+    queryKey: ['me'],
+    queryFn: currentUser,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const canEditDates = Boolean(
+    sessionUser && ['ADMIN', 'GERENCIA', 'PLANIFICADOR'].includes(sessionUser.role),
+  );
+
+  useEffect(() => {
+    if (!dateToast) return;
+    const id = window.setTimeout(() => setDateToast(null), 3600);
+    return () => window.clearTimeout(id);
+  }, [dateToast]);
 
   useEffect(() => {
     setSelection(loadSelection());
@@ -214,10 +240,11 @@ export default function PedidosPage() {
           productCode: l.productCode,
           pendingQty: l.pendingQty,
           pendingKg: l.pendingKg,
-          requestedDate: l.requestedDate,
+          // La fecha efectiva manda: tentativa si existe, original si no.
+          requestedDate: l.tentativeDate ?? l.requestedDate,
           orderNumber: l.orderNumber,
           customerName: l.customerName,
-          stockTotal: (l.stock03 ?? 0) + (l.stock68 ?? 0),
+          stockTotal: (l.stock03 ?? 0) + (l.stock9999 ?? 0) + (l.stock68 ?? 0),
         })),
       ),
     [groups],
@@ -236,7 +263,7 @@ export default function PedidosPage() {
       for (const l of g.lines) {
         let e = map.get(l.productCode);
         if (!e) {
-          e = { units: (l.stock03 ?? 0) + (l.stock68 ?? 0), demandUnits: 0, demandKg: 0, kgPerUnit: null, description: l.description ?? l.productCode };
+          e = { units: (l.stock03 ?? 0) + (l.stock9999 ?? 0) + (l.stock68 ?? 0), demandUnits: 0, demandKg: 0, kgPerUnit: null, description: l.description ?? l.productCode };
           map.set(l.productCode, e);
         }
         e.demandUnits += l.pendingQty;
@@ -248,7 +275,7 @@ export default function PedidosPage() {
   }, [groups]);
 
   // Cola de despacho: stock vivo, marcados fijos y el resto en turno.
-  const queue = useMemo(() => buildDispatchQueue(dispatchInputs, selection, mode, sort), [dispatchInputs, selection, mode, sort]);
+  const queue = useMemo(() => buildDispatchQueue(dispatchInputs, selection, mode), [dispatchInputs, selection, mode]);
   const queueByKey = useMemo(() => new Map(queue.map((e) => [e.key, e])), [queue]);
   const queueIndex = useMemo(() => new Map(queue.map((e) => [e.key, e.sortIndex])), [queue]);
   const liveSummary = useMemo(() => summarizeQueue(queue), [queue]);
@@ -269,35 +296,165 @@ export default function PedidosPage() {
 
   const planEntries = useMemo(() => queue.filter((e) => e.selected).sort((a, b) => a.priority - b.priority), [queue]);
   const planSummary = useMemo(() => summarizeQueue(planEntries), [planEntries]);
+  // Totales físicos del plan: SACOS (solo renglones en unidad de venta SAC) y
+  // KG (peso asignado de todos los renglones). Sirven para saber de un vistazo
+  // si el despacho seleccionado es viable para el cliente.
+  const planSacks = useMemo(() => {
+    let sacks = 0;
+    for (const e of planEntries) {
+      const ref = lineByKey.get(e.key);
+      if (ref?.line.uom === 'SAC') sacks += e.assignedQty;
+    }
+    return sacks;
+  }, [planEntries, lineByKey]);
 
   // Plan agrupado igual que la tabla (por cliente o por producto), 1 abierto.
   const planGroups = useMemo(() => {
     const map = new Map<
       string,
-      { key: string; label: string; code: string | null; entries: QueueEntry[]; pendingQty: number; assignedQty: number; assignedKg: number; missingKg: number }
+      {
+        key: string;
+        label: string;
+        code: string | null;
+        entries: QueueEntry[];
+        pendingQty: number;
+        sacks: number;
+        assignedKg: number;
+        missingKg: number;
+      }
     >();
     for (const e of planEntries) {
       const ref = lineByKey.get(e.key);
       if (!ref) continue;
       let g = map.get(ref.group.key);
       if (!g) {
-        g = { key: ref.group.key, label: ref.group.label, code: ref.group.code, entries: [], pendingQty: 0, assignedQty: 0, assignedKg: 0, missingKg: 0 };
+        g = { key: ref.group.key, label: ref.group.label, code: ref.group.code, entries: [], pendingQty: 0, sacks: 0, assignedKg: 0, missingKg: 0 };
         map.set(ref.group.key, g);
       }
       g.entries.push(e);
       g.pendingQty += e.pendingQty;
-      g.assignedQty += e.assignedQty;
+      // Sacos: solo renglones en unidad de venta SAC (los KG van a granel).
+      if (ref.line.uom === 'SAC') g.sacks += e.assignedQty;
       g.assignedKg += e.assignedKg;
       g.missingKg += e.missingKg;
     }
     return [...map.values()].map((g) => ({ ...g, entries: [...g.entries].sort((a, b) => a.priority - b.priority) }));
   }, [planEntries, lineByKey]);
 
-  // Orden de grupos por la posición de su mejor renglón en la cola.
+  // --- Fecha tentativa: selección y modal ---------------------------------
+  // La selección es por grupo para no mezclar clientes en una misma fecha.
+  // Si se libera un renglón del plan, la selección se poda automáticamente.
+  useEffect(() => {
+    setDateSelection((previous) => {
+      if (!previous) return previous;
+      const valid = new Set(planEntries.map((entry) => entry.key));
+      const keys = previous.keys.filter((key) => valid.has(key));
+      if (keys.length === previous.keys.length) return previous;
+      return keys.length > 0 ? { ...previous, keys } : null;
+    });
+  }, [planEntries]);
+
+  function dateKeysFor(groupKey: string): string[] {
+    return dateSelection?.groupKey === groupKey ? dateSelection.keys : [];
+  }
+
+  function toggleDateLine(groupKey: string, key: string) {
+    setDateSelection((previous) => {
+      const sameGroup = previous?.groupKey === groupKey;
+      const keys = sameGroup ? previous.keys : [];
+      const next = keys.includes(key) ? keys.filter((item) => item !== key) : [...keys, key];
+      return next.length > 0 ? { groupKey, keys: next } : null;
+    });
+  }
+
+  function toggleDateGroup(groupKey: string, keys: string[]) {
+    setDateSelection((previous) => {
+      const sameGroup = previous?.groupKey === groupKey;
+      const all = sameGroup && keys.length > 0 && keys.every((key) => previous.keys.includes(key));
+      return all ? null : { groupKey, keys };
+    });
+  }
+
+  function targetFromLines(lines: OrderGroupLine[], kind: DeliveryDateTarget['kind'], title: string): DeliveryDateTarget | null {
+    if (lines.length === 0) return null;
+    const first = lines[0]!;
+    // La API identifica el renglón por pedido + artículo; se deduplica igual.
+    const items: DeliveryDateTargetItem[] = [
+      ...new Map(
+        lines.map((line) => [
+          `${line.orderNumber}#${line.productCode}`,
+          {
+            orderNumber: line.orderNumber,
+            productCode: line.productCode,
+            description: line.description,
+            requestedDate: line.requestedDate,
+            tentativeDate: line.tentativeDate,
+          } satisfies DeliveryDateTargetItem,
+        ]),
+      ).values(),
+    ];
+    return {
+      kind,
+      title,
+      customerName: first.customerName ?? '—',
+      customerCode: first.customerCode,
+      items,
+    };
+  }
+
+  function openDateEditor(lines: OrderGroupLine[], kind: DeliveryDateTarget['kind'], title: string) {
+    if (!canEditDates) return;
+    const target = targetFromLines(lines, kind, title);
+    if (target) setDateTarget(target);
+  }
+
+  function handleDateSaved(result: DeliveryDateApplyResponse, mode: 'set' | 'restore') {
+    const changed = result.updated + result.restored;
+    let message: string;
+    if (changed === 0) {
+      message = 'Sin cambios: la fecha ya estaba así.';
+    } else if (mode === 'restore') {
+      message = `Fecha original restaurada en ${result.restored} renglón(es).`;
+    } else if (result.updated > 0 && result.restored > 0) {
+      message = `Fecha actualizada en ${result.updated} renglón(es) y restaurada en ${result.restored}.`;
+    } else if (result.updated > 0) {
+      message = `Fecha tentativa actualizada en ${result.updated} renglón(es).`;
+    } else {
+      message = `Fecha original restaurada en ${result.restored} renglón(es).`;
+    }
+    setDateToast(message);
+    setDateSelection(null);
+    setDateTarget(null);
+  }
+
+  // Cobertura de cada grupo = asignado / pendiente. Es EXACTAMENTE el % que
+  // muestra la columna «Cobertura» (en unidades) de la tabla.
+  const groupCoverage = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const g of groups) {
+      const pendingQty = g.lines.reduce((a, l) => a + l.pendingQty, 0);
+      const assignedQty = g.lines.reduce((a, l) => a + (queueByKey.get(lineKey(l))?.assignedQty ?? 0), 0);
+      map.set(g.key, pendingQty > 0 ? assignedQty / pendingQty : 1);
+    }
+    return map;
+  }, [groups, queueByKey]);
+
+  // Orden de grupos:
+  //  · 'prioridad' → por la posición de su mejor renglón en la cola.
+  //  · 'cobertura' → por el % mostrado (100% → 0%), sin mirar la fecha; a igual
+  //    %, por nombre para que el orden sea estable.
   const orderedGroups = useMemo(() => {
     const rank = (g: OrderGroup) => Math.min(...g.lines.map((l) => queueIndex.get(lineKey(l)) ?? Number.MAX_SAFE_INTEGER));
-    return [...groups].sort((a, b) => rank(a) - rank(b));
-  }, [groups, queueIndex]);
+    return [...groups].sort((a, b) => {
+      if (sort === 'cobertura') {
+        const pct = (g: OrderGroup) => Math.round((groupCoverage.get(g.key) ?? 1) * 100);
+        const byPct = pct(b) - pct(a);
+        if (byPct !== 0) return byPct;
+        return a.label.localeCompare(b.label, 'es');
+      }
+      return rank(a) - rank(b);
+    });
+  }, [groups, queueIndex, sort, groupCoverage]);
 
   // --- Gráficas ---
   // Cobertura por producto EN VIVO: lo marcado se «compromete» y descuenta la
@@ -424,6 +581,7 @@ export default function PedidosPage() {
     setEntregaDesde('');
     setEntregaHasta('');
     setCustomerCode('');
+    setDateSelection(null);
     if (typeof window !== 'undefined') window.history.replaceState(null, '', '/pedidos');
   }
 
@@ -486,9 +644,10 @@ export default function PedidosPage() {
       'Kg faltante',
       'Almacén',
       'Entrega',
+      'Original Profit',
       'Autorizado',
     ];
-    const COLUMN_WIDTHS = [7, 10, 16, 46, 14, 14, 13, 12, 12, 12, 9, 11, 11];
+    const COLUMN_WIDTHS = [7, 10, 16, 46, 14, 14, 13, 12, 12, 12, 9, 11, 13, 11];
 
     // Una sola hoja: un bloque por cliente (encabezado + detalle).
     const aoa: (string | number)[][] = [];
@@ -505,13 +664,15 @@ export default function PedidosPage() {
 
     for (const client of clients) {
       const pendingQty = client.entries.reduce((sum, item) => sum + item.entry.pendingQty, 0);
-      const assignedQty = client.entries.reduce((sum, item) => sum + item.entry.assignedQty, 0);
       const pendingKg = client.entries.reduce((sum, item) => sum + (item.entry.pendingKg ?? 0), 0);
+      const assignedKg = client.entries.reduce((sum, item) => sum + item.entry.assignedKg, 0);
       const missingKg = client.entries.reduce((sum, item) => sum + item.entry.missingKg, 0);
+      // Sacos: solo renglones cuya unidad de venta es SAC (los KG van a granel).
+      const sacks = client.entries.reduce((sum, item) => sum + (item.line.uom === 'SAC' ? item.entry.assignedQty : 0), 0);
 
       const headerRow = aoa.length;
       aoa.push([
-        `CLIENTE: ${client.name}${client.code ? ` · ${client.code}` : ''} · ${client.entries.length} renglón(es) · ${fmtQty(pendingQty, 0)} pend. · ${fmtQty(assignedQty, 0)} asignado · ${fmtQty(pendingKg, 0)} kg · ${fmtQty(missingKg, 0)} kg faltante`,
+        `CLIENTE: ${client.name}${client.code ? ` · ${client.code}` : ''} · ${client.entries.length} renglón(es) · ${fmtQty(sacks, 0)} sacos · ${fmtQty(assignedKg, 0)} kg asignados · ${fmtQty(pendingQty, 0)} pend. · ${fmtQty(pendingKg, 0)} kg · ${fmtQty(missingKg, 0)} kg faltante`,
       ]);
       merges.push({ s: { r: headerRow, c: 0 }, e: { r: headerRow, c: lastColumn } });
       aoa.push(TABLE_HEADERS);
@@ -529,6 +690,7 @@ export default function PedidosPage() {
           Math.round(entry.assignedKg),
           Math.round(entry.missingKg),
           line.warehouseCode ?? '—',
+          fmtDate(line.tentativeDate ?? line.requestedDate),
           fmtDate(line.requestedDate),
           line.authorized === null ? '—' : line.authorized ? 'SÍ' : 'NO',
         ]);
@@ -540,9 +702,13 @@ export default function PedidosPage() {
     const totalPendingKg = planEntries.reduce((sum, entry) => sum + (entry.pendingKg ?? 0), 0);
     const totalAssignedKg = planEntries.reduce((sum, entry) => sum + entry.assignedKg, 0);
     const totalMissingKg = planEntries.reduce((sum, entry) => sum + entry.missingKg, 0);
+    const totalSacks = planEntries.reduce(
+      (sum, entry) => sum + (lineByKey.get(entry.key)?.line.uom === 'SAC' ? entry.assignedQty : 0),
+      0,
+    );
     const totalRow = aoa.length;
     aoa.push([
-      `TOTAL GENERAL · ${clients.length} cliente(s) · ${planEntries.length} renglón(es) · ${fmtQty(totalPendingKg, 0)} kg pendientes · ${fmtQty(totalAssignedKg, 0)} kg asignados · ${fmtQty(totalMissingKg, 0)} kg faltantes`,
+      `TOTAL GENERAL · ${clients.length} cliente(s) · ${planEntries.length} renglón(es) · ${fmtQty(totalSacks, 0)} sacos · ${fmtQty(totalAssignedKg, 0)} kg asignados · ${fmtQty(totalPendingKg, 0)} kg pendientes · ${fmtQty(totalMissingKg, 0)} kg faltantes`,
     ]);
     merges.push({ s: { r: totalRow, c: 0 }, e: { r: totalRow, c: lastColumn } });
 
@@ -599,8 +765,8 @@ export default function PedidosPage() {
                 <div>
                   <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Agrupar y ordenar</span>
                   <div className="mt-space-xs flex flex-wrap items-center gap-space-sm">
-                    <Select className="w-40" ariaLabel="Agrupar por" value={by} onChange={(v) => { setBy(v as OrderGroupBy); setExpanded(null); }} options={BY_OPTIONS} />
-                    <Select className="w-full sm:w-64" ariaLabel="Orden" value={sort} onChange={(v) => setSort(v as DispatchSort)} options={SORT_OPTIONS} />
+                    <Select className="w-40" ariaLabel="Agrupar por" value={by} onChange={(v) => { setBy(v as OrderGroupBy); setExpanded(null); setPlanExpanded(null); setDateSelection(null); }} options={BY_OPTIONS} />
+                    <Select className="w-full sm:w-72" ariaLabel="Orden" value={sort} onChange={(v) => setSort(v as DispatchSort)} options={SORT_OPTIONS} />
                   </div>
                 </div>
               </div>
@@ -686,9 +852,25 @@ export default function PedidosPage() {
                 <span className="text-label-sm text-on-surface-variant">
                   {planEntries.length} renglón(es) · turnos por entrega
                 </span>
+                <div
+                  className="flex shrink-0 flex-col gap-0.5 rounded-xl bg-surface-container-lowest/80 px-space-md py-1"
+                  title="Totales de lo que se despacha con los renglones seleccionados: sacos (artículos SAC) y peso en kg"
+                >
+                  <span className="text-label-sm font-semibold uppercase tracking-wider text-outline">Lleva</span>
+                  <span className="flex flex-wrap items-baseline gap-space-sm tabular-nums">
+                    <span className="flex items-baseline gap-1">
+                      <span className="text-data-tabular-lg font-bold text-primary">{fmtQty(planSacks, 0)}</span>
+                      <span className="text-label-sm font-semibold text-outline">sacos</span>
+                    </span>
+                    <span aria-hidden className="text-outline-variant">·</span>
+                    <span className="flex items-baseline gap-1">
+                      <span className="text-data-tabular-lg font-bold text-secondary">{fmtQty(planSummary.assignedKg, 0)}</span>
+                      <span className="text-label-sm font-semibold text-outline">kg</span>
+                    </span>
+                  </span>
+                </div>
               </div>
               <div className="flex flex-wrap items-center gap-space-sm">
-                <span className="tabular-nums font-bold text-secondary">{fmtQty(planSummary.assignedKg, 0)} kg asignados</span>
                 <span className={`tabular-nums font-bold ${planSummary.missingKg > 0 ? 'text-error' : 'text-outline'}`}>
                   {fmtQty(planSummary.missingKg, 0)} kg faltantes
                 </span>
@@ -713,6 +895,7 @@ export default function PedidosPage() {
                   onClick={() => {
                     setSelection([]);
                     setPlanExpanded(null);
+                    setDateSelection(null);
                   }}
                   className="flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-lowest"
                 >
@@ -728,17 +911,35 @@ export default function PedidosPage() {
                     <Th>{by === 'producto' ? 'Producto' : 'Cliente'}</Th>
                     <Th align="right">Renglones</Th>
                     <Th align="right">Pendiente</Th>
-                    <Th align="right">Asignado</Th>
+                    <Th align="right">Sacos</Th>
+                    <Th align="right">Kg</Th>
                     <Th align="right">Faltante kg</Th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-outline-variant/20">
                   {planGroups.map((g) => {
                     const open = planExpanded === g.key;
+                    const groupKeys = g.entries.map((entry) => entry.key);
+                    const selectedKeys = dateKeysFor(g.key);
+                    const selectedCount = selectedKeys.length;
+                    const allSelected = groupKeys.length > 0 && selectedCount === groupKeys.length;
+                    const selectedDateLines = selectedKeys
+                      .map((key) => lineByKey.get(key)?.line)
+                      .filter((line): line is OrderGroupLine => Boolean(line));
+                    const selectableGroup = canEditDates && by === 'cliente';
                     return (
                       <Fragment key={g.key}>
                         <tr className="transition-colors hover:bg-surface-container-low">
-                          <Td />
+                          <Td>
+                            {selectedCount > 0 && (
+                              <span
+                                className="grid size-5 place-items-center rounded-full bg-primary-container text-[10px] font-bold text-on-primary"
+                                title={`${selectedCount} renglón(es) seleccionado(s) para fecha`}
+                              >
+                                {selectedCount}
+                              </span>
+                            )}
+                          </Td>
                           <Td>
                             <button onClick={() => setPlanExpanded(open ? null : g.key)} className="flex items-start gap-space-sm text-left">
                               {open ? (
@@ -754,18 +955,71 @@ export default function PedidosPage() {
                           </Td>
                           <Td align="right" className="tabular-nums">{g.entries.length}</Td>
                           <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(g.pendingQty, 0)}</Td>
-                          <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(g.assignedQty, 0)}</Td>
+                          <Td
+                            align="right"
+                            className={`tabular-nums font-semibold ${g.sacks > 0 ? 'text-primary' : 'text-outline'}`}
+                            title={`${fmtQty(g.sacks, 0)} sacos (solo artículos SAC)`}
+                          >
+                            {fmtQty(g.sacks, 0)}
+                          </Td>
+                          <Td
+                            align="right"
+                            className={`tabular-nums font-bold ${g.assignedKg > 0 ? 'text-secondary' : 'text-outline'}`}
+                            title={`${fmtQty(g.assignedKg, 0)} kg asignados`}
+                          >
+                            {fmtQty(g.assignedKg, 0)}
+                          </Td>
                           <Td align="right" className={`tabular-nums font-bold ${g.missingKg > 0 ? 'text-error' : 'text-outline'}`}>{fmtQty(g.missingKg, 0)}</Td>
                         </tr>
                         {open && (
                           <tr>
-                            <td colSpan={6} className="bg-surface-container-low/60 px-space-md py-space-sm">
+                            <td colSpan={7} className="bg-surface-container-low/60 px-space-md py-space-sm">
+                              {selectableGroup && (
+                                <div className="mb-space-xs flex flex-wrap items-center justify-between gap-space-xs">
+                                  <p className="text-label-sm text-on-surface-variant">
+                                    {selectedCount > 0
+                                      ? `${selectedCount} renglón(es) seleccionado(s) para fecha tentativa.`
+                                      : 'Selecciona renglones para asignarles una fecha tentativa.'}
+                                  </p>
+                                  <div className="flex items-center gap-space-xs">
+                                    {selectedCount > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setDateSelection(null)}
+                                        className="h-8 rounded-pill px-space-sm text-label-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-lowest"
+                                      >
+                                        Limpiar
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      disabled={selectedCount === 0}
+                                      onClick={() => openDateEditor(selectedDateLines, 'seleccion', 'Fecha de los seleccionados')}
+                                      className="flex h-8 items-center gap-space-xs rounded-pill bg-primary-container px-space-sm font-semibold text-label-md text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-40"
+                                    >
+                                      <CalendarRange aria-hidden className="size-3.5" /> Asignar fecha
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
                               <div className="overflow-x-auto rounded-xl border border-outline-variant/35 bg-surface-container-lowest">
                                 <table className="w-full border-collapse text-label-md">
                                   <thead>
                                     <tr className="border-b border-outline-variant/30">
+                                      <Th className="w-8">
+                                        {selectableGroup && (
+                                          <input
+                                            type="checkbox"
+                                            checked={allSelected}
+                                            onChange={() => toggleDateGroup(g.key, groupKeys)}
+                                            aria-label="Seleccionar todos los renglones del grupo para fecha tentativa"
+                                            className="size-4 accent-[var(--color-primary-container)]"
+                                          />
+                                        )}
+                                      </Th>
                                       <Th align="right" className="w-14">Turno</Th>
                                       <Th>Pedido</Th>
+                                      <Th>Entrega</Th>
                                       <Th>{by === 'producto' ? 'Cliente' : 'Artículo'}</Th>
                                       <Th align="right">Pend.</Th>
                                       <Th align="right">Asignado</Th>
@@ -777,10 +1031,42 @@ export default function PedidosPage() {
                                     {g.entries.map((e) => {
                                       const ref = lineByKey.get(e.key);
                                       if (!ref) return null;
+                                      const checked = selectedKeys.includes(e.key);
+                                      const editKeys = checked && selectedDateLines.length > 0 ? selectedKeys : [e.key];
+                                      const editLines = editKeys
+                                        .map((key) => lineByKey.get(key)?.line)
+                                        .filter((line): line is OrderGroupLine => Boolean(line));
+                                      const editMode: DeliveryDateTarget['kind'] = checked && selectedDateLines.length > 0 ? 'seleccion' : 'renglon';
                                       return (
-                                        <tr key={e.key} className="transition-colors hover:bg-surface-container-low">
+                                        <tr
+                                          key={e.key}
+                                          className={`transition-colors ${
+                                            checked ? 'bg-primary-fixed/25' : 'hover:bg-surface-container-low'
+                                          }`}
+                                        >
+                                          <Td>
+                                            {selectableGroup && (
+                                              <input
+                                                type="checkbox"
+                                                checked={checked}
+                                                onChange={() => toggleDateLine(g.key, e.key)}
+                                                aria-label={`Seleccionar ${ref.line.productCode} para fecha tentativa`}
+                                                title="Seleccionar para asignar fecha tentativa"
+                                                className="size-4 accent-[var(--color-primary-container)]"
+                                              />
+                                            )}
+                                          </Td>
                                           <Td align="right" className="tabular-nums font-bold text-primary">{e.priority}</Td>
                                           <Td className="tabular-nums text-on-surface-variant">{ref.line.orderNumber}</Td>
+                                          <Td>
+                                            <DeliveryDateButton
+                                              tentativeDate={ref.line.tentativeDate}
+                                              originalDate={ref.line.requestedDate}
+                                              onEdit={() => openDateEditor(editLines, editMode, editMode === 'seleccion' ? 'Fecha de los seleccionados' : 'Fecha del producto')}
+                                              canEdit={canEditDates}
+                                              label={`Fecha de entrega de ${ref.line.productCode}`}
+                                            />
+                                          </Td>
                                           <Td>
                                             {by === 'producto' ? (
                                               <span className="block max-w-[18rem] truncate">{ref.line.customerName ?? '—'}</span>
@@ -829,7 +1115,11 @@ export default function PedidosPage() {
             <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-outline-variant/30 px-space-md py-space-sm">
               <div>
                 <p className="text-title-md font-semibold text-primary">{by === 'producto' ? 'Productos en cartera' : 'Clientes en cartera'}</p>
-                <p className="text-label-sm text-on-surface-variant">Priorizados por entrega y existencia · expande un grupo para marcar renglones.</p>
+                <p className="text-label-sm text-on-surface-variant">
+                  {sort === 'cobertura'
+                    ? 'Ordenados por cobertura (100% → 0%) · expande un grupo para marcar renglones.'
+                    : 'Priorizados por entrega y existencia · expande un grupo para marcar renglones.'}
+                </p>
               </div>
               <Badge tone="muted" dot>
                 {orderedGroups.length} grupo{orderedGroups.length === 1 ? '' : 's'}
@@ -859,10 +1149,7 @@ export default function PedidosPage() {
                   {orderedGroups.map((group) => {
                     const candidates = dispatchableKeys(group);
                     const allSelected = candidates.length > 0 && candidates.every((k) => selection.includes(k));
-                    const pendingQty = group.lines.reduce((a, l) => a + l.pendingQty, 0);
-                    const assignedQty = group.lines.reduce((a, l) => a + (queueByKey.get(lineKey(l))?.assignedQty ?? 0), 0);
-                    const coverage = pendingQty > 0 ? assignedQty / pendingQty : 1;
-                    const earliest = group.lines.reduce((min, l) => Math.min(min, timeOf(l.requestedDate)), Number.POSITIVE_INFINITY);
+                    const coverage = groupCoverage.get(group.key) ?? 1;
                     const isOpen = expanded === group.key;
                     return (
                       <GroupRow
@@ -874,15 +1161,17 @@ export default function PedidosPage() {
                         selectable={candidates.length > 0}
                         selectedCount={group.lines.filter((l) => selection.includes(lineKey(l))).length}
                         coverage={coverage}
-                        earliest={Number.isFinite(earliest) ? new Date(earliest).toISOString() : null}
                         selection={selection}
                         mode={mode}
                         queueByKey={queueByKey}
                         liveStock={liveStock}
+                        canEditDates={canEditDates}
                         onToggleGroup={() => toggleGroup(group)}
                         onToggleLine={toggleLine}
                         onToggleOpen={() => setExpanded(isOpen ? null : group.key)}
                         onOpenOrder={(id, number) => setSelectedOrder({ id, number })}
+                        onEditGroupDate={() => openDateEditor(group.lines, 'cliente', 'Fecha del cliente')}
+                        onEditLineDate={(line) => openDateEditor([line], 'renglon', 'Fecha del producto')}
                       />
                     );
                   })}
@@ -982,6 +1271,21 @@ export default function PedidosPage() {
                     <div className="rounded-xl bg-surface-container-low/70 p-space-sm">
                       <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Entrega comprometida</p>
                       <p className="mt-space-2xs text-title-md font-bold text-primary">{fmtDate(orderDetail.order.requestedDate)}</p>
+                      {(() => {
+                        const dates = [
+                          ...new Set(
+                            orderDetail.lines
+                              .map((line) => line.tentativeDate)
+                              .filter((value): value is string => Boolean(value)),
+                          ),
+                        ].sort();
+                        if (dates.length === 0) return null;
+                        return (
+                          <p className="mt-space-2xs text-label-sm font-semibold text-secondary">
+                            Tentativa: {dates.length === 1 ? fmtDate(dates[0]!) : `${dates.length} fechas`}
+                          </p>
+                        );
+                      })()}
                     </div>
                     <div className="rounded-xl bg-surface-container-low/70 p-space-sm">
                       <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Vendedor</p>
@@ -1016,13 +1320,14 @@ export default function PedidosPage() {
                             <Th align="right">Kg</Th>
                             <Th>Alm.</Th>
                             <Th align="right">Stock 03</Th>
+                            <Th align="right">Stock 9999</Th>
                             <Th align="right">Stock 68</Th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-outline-variant/20">
                           {orderDetail.lines.length === 0 && (
                             <tr>
-                              <Td align="center" colSpan={10} className="py-space-xl text-on-surface-variant">
+                              <Td align="center" colSpan={11} className="py-space-xl text-on-surface-variant">
                                 El pedido no tiene renglones sincronizados.
                               </Td>
                             </tr>
@@ -1040,6 +1345,7 @@ export default function PedidosPage() {
                               <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(line.pendingKg, 0)}</Td>
                               <Td className="tabular-nums text-on-surface-variant">{line.warehouseCode ?? '—'}</Td>
                               <Td align="right" className="tabular-nums">{fmtQty(line.stock03, 0)}</Td>
+                              <Td align="right" className="tabular-nums">{fmtQty(line.stock9999, 0)}</Td>
                               <Td align="right" className="tabular-nums">{fmtQty(line.stock68, 0)}</Td>
                             </tr>
                           ))}
@@ -1069,6 +1375,23 @@ export default function PedidosPage() {
           </div>
         </div>
       )}
+
+      <DeliveryDateDialog
+        open={Boolean(dateTarget)}
+        target={dateTarget}
+        onClose={() => setDateTarget(null)}
+        onSaved={handleDateSaved}
+      />
+
+      {dateToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-4 left-1/2 z-[85] -translate-x-1/2 rounded-pill bg-primary px-space-lg py-2 text-label-md font-semibold text-on-primary shadow-lift"
+        >
+          {dateToast}
+        </div>
+      )}
     </>
   );
 }
@@ -1082,15 +1405,17 @@ function GroupRow({
   selectable,
   selectedCount,
   coverage,
-  earliest,
   selection,
   mode,
   queueByKey,
   liveStock,
+  canEditDates,
   onToggleGroup,
   onToggleLine,
   onToggleOpen,
   onOpenOrder,
+  onEditGroupDate,
+  onEditLineDate,
 }: {
   group: OrderGroup;
   by: OrderGroupBy;
@@ -1100,20 +1425,49 @@ function GroupRow({
   selectable: boolean;
   selectedCount: number;
   coverage: number;
-  earliest: string | null;
   selection: string[];
   mode: DispatchMode;
   queueByKey: Map<string, QueueEntry>;
   /** Existencia viva por producto (ya descontado lo marcado). */
   liveStock: Map<string, number>;
+  canEditDates: boolean;
   onToggleGroup: () => void;
   onToggleLine: (line: OrderGroupLine) => void;
   onToggleOpen: () => void;
   /** Abre el detalle del pedido en un modal, sin salir del simulador. */
   onOpenOrder: (orderId: string, orderNumber: string) => void;
+  onEditGroupDate: () => void;
+  onEditLineDate: (line: OrderGroupLine) => void;
 }) {
   const coveragePct = Math.round(coverage * 100);
   const tone = coveragePct >= 100 ? 'success' : coveragePct > 0 ? 'warning' : 'danger';
+  // Resumen de fecha del grupo: si hay tentativas, se muestra la más próxima
+  // en verde; el tooltip conserva el rango original y las fechas mezcladas.
+  const tentativeCount = group.lines.filter((line) => line.tentativeDate).length;
+  const distinctTentativeDates = new Set(
+    group.lines.map((line) => line.tentativeDate).filter((value): value is string => Boolean(value)),
+  ).size;
+  const originalDates = [...new Set(group.lines.map((line) => line.requestedDate).filter((value): value is string => Boolean(value)))].sort();
+  // La fecha del grupo es la PRÓXIMA entrega efectiva (tentativa u original).
+  // Si esa próxima entrega es tentativa, va en verde; si no, queda normal y
+  // el tooltip avisa cuántos renglones tienen fecha tentativa.
+  const effectiveDates = group.lines
+    .map((line) => line.tentativeDate ?? line.requestedDate)
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  const earliestEffective = effectiveDates[0] ?? null;
+  const earliestLine = earliestEffective
+    ? group.lines.find((line) => (line.tentativeDate ?? line.requestedDate) === earliestEffective)
+    : undefined;
+  const earliestIsTentative = Boolean(earliestLine?.tentativeDate);
+  const earliestOriginal = originalDates[0] ?? null;
+  const latestOriginal = originalDates.length > 0 ? originalDates[originalDates.length - 1]! : null;
+  const dateHint =
+    tentativeCount > 0 && tentativeCount < group.lines.length
+      ? `${tentativeCount} de ${group.lines.length} con fecha tentativa`
+      : distinctTentativeDates > 1
+        ? `${distinctTentativeDates} fechas tentativas`
+        : undefined;
   return (
     <>
       <tr className={`transition-colors ${selectedCount > 0 ? 'bg-secondary-container/15' : 'hover:bg-surface-container-low/70'}`}>
@@ -1129,27 +1483,44 @@ function GroupRow({
           />
         </Td>
         <Td>
-          <button onClick={onToggleOpen} className="flex items-start gap-space-sm text-left">
-            {isOpen ? <ChevronDown aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" /> : <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-outline" />}
-            <span className="flex min-w-0 flex-col">
-              <span className="flex items-center gap-space-xs">
-                <span className="truncate font-semibold text-on-surface">{group.label}</span>
-                {selectedCount > 0 && (
-                  <span
-                    className="shrink-0 rounded-pill bg-primary-container px-2 py-0.5 text-label-sm font-bold text-on-primary"
-                    title="Renglones marcados para despacho en este grupo"
-                  >
-                    {selectedCount}
-                  </span>
-                )}
+          <div className="flex min-w-0 flex-col">
+            <button onClick={onToggleOpen} className="flex items-start gap-space-sm text-left">
+              {isOpen ? <ChevronDown aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" /> : <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-outline" />}
+              <span className="flex min-w-0 flex-col">
+                <span className="flex items-center gap-space-xs">
+                  <span className="truncate font-semibold text-on-surface">{group.label}</span>
+                  {selectedCount > 0 && (
+                    <span
+                      className="shrink-0 rounded-pill bg-primary-container px-2 py-0.5 text-label-sm font-bold text-on-primary"
+                      title="Renglones marcados para despacho en este grupo"
+                    >
+                      {selectedCount}
+                    </span>
+                  )}
+                </span>
               </span>
-              <span className="text-label-sm tabular-nums text-outline">
-                {group.code ?? ''}
-                {earliest ? ` · entrega ${fmtDate(earliest)}` : ''}
-                {!selectable && <span className="ml-space-xs font-bold uppercase text-critical">sin existencia</span>}
-              </span>
-            </span>
-          </button>
+            </button>
+            <div className="ml-7 mt-0.5 flex flex-wrap items-center gap-x-space-xs text-label-sm">
+              {group.code && <span className="tabular-nums text-outline">{group.code}</span>}
+              {group.code && <span className="text-outline">·</span>}
+              {by === 'cliente' ? (
+                <DeliveryDateButton
+                  tentativeDate={earliestIsTentative ? earliestEffective : null}
+                  originalDate={earliestOriginal}
+                  originalTo={latestOriginal}
+                  onEdit={onEditGroupDate}
+                  canEdit={canEditDates}
+                  label={`Fecha de entrega de ${group.label}`}
+                  hint={dateHint}
+                />
+              ) : (
+                <span className={earliestIsTentative ? 'font-semibold text-secondary' : 'text-outline'}>
+                  {fmtDate(earliestEffective)}
+                </span>
+              )}
+              {!selectable && <span className="font-bold uppercase text-critical">sin existencia</span>}
+            </div>
+          </div>
         </Td>
         <Td>
           <div className="flex min-w-[7rem] items-center gap-space-sm">
@@ -1172,8 +1543,8 @@ function GroupRow({
                   <tr className="border-b border-outline-variant/30">
                     <Th className="w-8" />
                     <Th>Pedido</Th>
-                    <Th>{by === 'producto' ? 'Cliente' : 'Entrega'}</Th>
-                    {by === 'cliente' && <Th>Artículo</Th>}
+                    <Th>Entrega</Th>
+                    <Th>{by === 'producto' ? 'Cliente' : 'Artículo'}</Th>
                     <Th align="right">Pend.</Th>
                     <Th align="right">Kg</Th>
                     <Th>Alm.</Th>
@@ -1207,10 +1578,20 @@ function GroupRow({
                           />
                         </Td>
                         <Td className="font-bold tabular-nums text-primary">{line.orderNumber}</Td>
-                        <Td className="tabular-nums text-on-surface-variant">
-                          {by === 'producto' ? <span className="block max-w-[16rem] truncate">{line.customerName ?? '—'}</span> : fmtDate(line.requestedDate)}
+                        <Td>
+                          <DeliveryDateButton
+                            tentativeDate={line.tentativeDate}
+                            originalDate={line.requestedDate}
+                            onEdit={() => onEditLineDate(line)}
+                            canEdit={canEditDates}
+                            label={`Fecha de entrega de ${line.productCode}`}
+                          />
                         </Td>
-                        {by === 'cliente' && (
+                        {by === 'producto' ? (
+                          <Td>
+                            <span className="block max-w-[16rem] truncate">{line.customerName ?? '—'}</span>
+                          </Td>
+                        ) : (
                           <Td>
                             <span className="block max-w-[22rem] truncate" title={line.description ?? ''}>
                               <span className="font-bold text-primary">{line.productCode}</span>
@@ -1231,10 +1612,10 @@ function GroupRow({
                         <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(line.pendingKg, 0)}</Td>
                         <Td className="tabular-nums text-on-surface-variant">{line.warehouseCode ?? '—'}</Td>
                         <Td align="right" className="tabular-nums">
-                          {fmtQty((line.stock03 ?? 0) + (line.stock68 ?? 0), 0)}
-                          <span className="ml-space-xs text-label-sm text-outline">({fmtQty(line.stock03, 0)}/{fmtQty(line.stock68, 0)})</span>
+                          {fmtQty((line.stock03 ?? 0) + (line.stock9999 ?? 0) + (line.stock68 ?? 0), 0)}
+                          <span className="ml-space-xs text-label-sm text-outline">({fmtQty(line.stock03, 0)}/{fmtQty(line.stock9999, 0)}/{fmtQty(line.stock68, 0)})</span>
                           {(() => {
-                            const total = (line.stock03 ?? 0) + (line.stock68 ?? 0);
+                            const total = (line.stock03 ?? 0) + (line.stock9999 ?? 0) + (line.stock68 ?? 0);
                             const live = liveStock.get(line.productCode);
                             if (live === undefined || live === total) return null;
                             return <span className="ml-space-xs text-label-sm font-semibold text-primary">· quedan {fmtQty(live, 0)}</span>;

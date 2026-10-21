@@ -7,7 +7,7 @@
 // Uso (con `pnpm start` corriendo):
 //   node tools/ui-shots.mjs                       # todo, escritorio + teléfono
 //   node tools/ui-shots.mjs --device phone        # solo el teléfono
-//   node tools/ui-shots.mjs --only forca          # solo escenarios que contengan "forca"
+//   node tools/ui-shots.mjs --only forecast          # solo escenarios que contengan "forecast"
 //   node tools/ui-shots.mjs --full                # además, página completa
 //
 // Salida: PNGs + `manifest.json` con las mediciones de cada captura:
@@ -113,16 +113,16 @@ const SCENARIOS = [
     devices: ['phone'],
     steps: [{ tag: 'abrir-filtros', js: clickByText('Filtros') }],
   },
-  { name: 'forca-asignador', path: '/forca', devices: ['desktop', 'phone'] },
+  { name: 'forecast-asignador', path: '/forecast', devices: ['desktop', 'phone'] },
   {
-    name: 'forca-reporte',
-    path: '/forca',
+    name: 'forecast-reporte',
+    path: '/forecast',
     devices: ['desktop', 'phone'],
     steps: [{ tag: 'tab-reporte', js: clickByText('Reporte') }],
   },
   {
-    name: 'forca-asignador-vermas',
-    path: '/forca',
+    name: 'forecast-asignador-vermas',
+    path: '/forecast',
     devices: ['phone'],
     steps: [{ tag: 'abrir-vermas', js: `(() => { const d = document.querySelector('details'); if (!d) return false; d.open = true; return true; })()` }],
   },
@@ -156,8 +156,8 @@ const SCENARIOS = [
     ],
   },
   {
-    name: 'forca-asignador-guardar',
-    path: '/forca',
+    name: 'forecast-asignador-guardar',
+    path: '/forecast',
     devices: ['desktop'],
     steps: [{ tag: 'guardar-semanas', js: clickByText('Semanas') }],
   },

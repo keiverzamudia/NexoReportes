@@ -212,7 +212,7 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
 
 const NAV_LINKS = [
   { href: '/disponibilidad', label: 'Disponibilidad', icon: Boxes },
-  { href: '/forca', label: 'Forca', icon: CalendarRange },
+  { href: '/forecast', label: 'Forecast', icon: CalendarRange },
   { href: '/pedidos', label: 'Pedidos', icon: ShoppingCart },
   { href: '/clientes', label: 'Clientes', icon: Users },
 ] as const;

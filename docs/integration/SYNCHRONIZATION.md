@@ -17,7 +17,7 @@ Dominios: `PRODUCTOS`, `CLIENTES`, `PEDIDOS`, `PEDIDOS_DETALLE`, `EXISTENCIAS`, 
 
 **Fuente única:** todas las corridas leen la misma vista aplanada
 `PROFIT_VIEW_SOLICITUDES` (`COR_A3.dbo.Solicitudes_Pendientes_Clientes`: una fila = un
-renglón de solicitud con cliente, artículo, pendiente y existencias `Stock_03`/`Stock_68`).
+renglón de solicitud con cliente, artículo, pendiente y existencias `Stock_03`/`Stock_9999`/`Stock_68`).
 Cada dominio se **deriva** de esas filas (ver tabla de derivación en `PROFIT_SQL_MAPPING.md`);
 no existen vistas por dominio.
 

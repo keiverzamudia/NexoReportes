@@ -14,6 +14,7 @@ type ProfitViewsConfig = { solicitudes?: string };
 // Códigos derivados de los nombres reales de columna (Stock_03 → Stock 03).
 const STOCK_COLUMNS = [
   { column: 'stock03', code: 'Stock 03' },
+  { column: 'stock9999', code: 'Stock 9999' },
   { column: 'stock68', code: 'Stock 68' },
 ] as const;
 
@@ -51,6 +52,7 @@ SELECT
     a.uni_relac               AS relacion_empaque,
     r.pendiente * a.uni_relac AS kg,
     (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = r.co_art AND sa.co_alma = '03')   AS Stock_03,
+    (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = r.co_art AND sa.co_alma = '9999') AS Stock_9999,
     (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = r.co_art AND sa.co_alma = '6804') AS Stock_68
 FROM dbo.cotiz_c AS f
 INNER JOIN dbo.reng_cac AS r  ON r.fact_num = f.fact_num
@@ -63,7 +65,7 @@ WHERE f.anulada = 0 AND f.status <> '2' AND r.pendiente > 0
 `;
 
 // Catálogo COMPLETO de la línea de producción (ABA = alimentos balanceados),
-// para poder pronosticar (Forca) sobre los 130 artículos y no solo sobre los
+// para poder pronosticar (Forecast) sobre los 130 artículos y no solo sobre los
 // que hoy tienen pedido. Solo lectura.
 const PRODUCTION_PRODUCTS_SQL = `
 SELECT RTRIM(a.co_art) AS co_art, a.art_des, a.uni_venta, a.uni_relac,
@@ -399,7 +401,7 @@ export class SyncService {
     }
 
     // Catálogo COMPLETO de la línea de producción (incluso sin pedido), para
-    // que el módulo Forca trabaje sobre los artículos reales de producción.
+    // que el módulo Forecast trabaje sobre los artículos reales de producción.
     if (this.profit.dialect === 'mssql') {
       const pageSize = this.config.get<number>('sync.pageSize') ?? 5000;
       const rows = await this.profit.selectQuery(PRODUCTION_PRODUCTS_SQL, pageSize);

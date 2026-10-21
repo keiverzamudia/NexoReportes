@@ -242,6 +242,7 @@ export function TextInput({
   icon: Icon,
   ariaLabel,
   className,
+  maxLength,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -249,6 +250,7 @@ export function TextInput({
   icon?: LucideIcon;
   ariaLabel?: string;
   className?: string;
+  maxLength?: number;
 }) {
   return (
     <div className={`relative ${className ?? ''}`}>
@@ -258,6 +260,7 @@ export function TextInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         aria-label={ariaLabel ?? placeholder}
+        maxLength={maxLength}
         className={`h-10 w-full rounded-xl border border-outline-variant/50 bg-surface-container-lowest text-body-md text-on-surface placeholder:text-outline transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-secondary-container/70 ${
           Icon ? 'pl-10 pr-space-md' : 'px-space-sm'
         }`}
@@ -300,11 +303,13 @@ export function DateInput({
   onChange,
   ariaLabel,
   className,
+  autoFocus = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   ariaLabel: string;
   className?: string;
+  autoFocus?: boolean;
 }) {
   return (
     <input
@@ -312,6 +317,7 @@ export function DateInput({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       aria-label={ariaLabel}
+      autoFocus={autoFocus}
       className={`h-10 rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-sm text-body-md text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-secondary-container/70 ${className ?? ''}`}
     />
   );
@@ -404,7 +410,9 @@ export function fmtQty(value: number | null | undefined, decimals = 2): string {
 
 export function fmtDate(iso: string | null | undefined): string {
   if (!iso) return '—';
-  return new Intl.DateTimeFormat('es-VE', { dateStyle: 'short' }).format(new Date(iso));
+  // Las fechas de negocio (emisión/entrega) se guardan como medianoche UTC.
+  // Formatearlas en UTC evita que en Venezuela (UTC−4) se muestre el día anterior.
+  return new Intl.DateTimeFormat('es-VE', { dateStyle: 'short', timeZone: 'UTC' }).format(new Date(iso));
 }
 
 // ---------- Tabla única ----------

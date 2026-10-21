@@ -190,6 +190,7 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
     const prisma = createFakePrisma();
     await serviceWith(new FixturesProfitAdapter(), prisma).run('ALMACENES');
     expect(prisma.tables.warehouses.has('Stock 03')).toBe(true);
+    expect(prisma.tables.warehouses.has('Stock 9999')).toBe(true);
     expect(prisma.tables.warehouses.has('Stock 68')).toBe(true);
   });
 
@@ -273,12 +274,12 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
     await service.run('ALMACENES');
     const run = await service.run('EXISTENCIAS');
     expect(run.status).toBe('EXITOSA');
-    // 6 artículos × 2 almacenes (todas las columnas con dato en fixtures).
-    expect(prisma.tables.snapshotLines.length).toBe(12);
+    // 6 artículos × 3 almacenes (todas las columnas con dato en fixtures).
+    expect(prisma.tables.snapshotLines.length).toBe(18);
 
     // Corrida posterior crea OTRA fotografía (no muta la anterior).
     await service.run('EXISTENCIAS');
-    expect(prisma.tables.snapshotLines.length).toBe(24);
+    expect(prisma.tables.snapshotLines.length).toBe(36);
   });
 
   it('una fila inválida no enmascara la corrida: se registra como error', async () => {

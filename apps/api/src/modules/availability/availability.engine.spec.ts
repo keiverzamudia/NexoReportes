@@ -89,12 +89,12 @@ describe('computeAvailability — conservación de signos (sobre-compromiso)', (
 });
 
 describe('computeAvailability — existencia combinada y redondeo', () => {
-  it('suma la existencia de todos los almacenes', () => {
+  it('suma la existencia de todos los almacenes (03 + 9999 + 68)', () => {
     const row = computeAvailability(
-      input({ demandQty: 3, stockByWarehouse: stock({ 'Stock 03': 5, 'Stock 68': 2 }) }),
+      input({ demandQty: 3, stockByWarehouse: stock({ 'Stock 03': 5, 'Stock 9999': 4, 'Stock 68': 2 }) }),
     );
-    expect(row.stockTotal).toBe(7);
-    expect(row.stockByWarehouse).toHaveLength(2);
+    expect(row.stockTotal).toBe(11);
+    expect(row.stockByWarehouse).toHaveLength(3);
     expect(row.status).toBe('DISPONIBLE');
   });
 

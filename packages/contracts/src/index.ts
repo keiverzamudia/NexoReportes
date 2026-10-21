@@ -255,10 +255,13 @@ export const zOrderLine = z.object({
   quantity: z.number().nullable(),
   pendingQty: z.number(),
   pendingKg: z.number().nullable(),
+  // Fecha tentativa local (capa Nexo). null = usar requestedDate.
+  tentativeDate: z.string().nullable(),
   // Almacén que surte el renglón (reng_cac.co_alma, p. ej. "6804").
   warehouseCode: z.string().nullable(),
   // Existencias del artículo por almacén (última fotografía de inventario).
   stock03: z.number().nullable(),
+  stock9999: z.number().nullable(),
   stock68: z.number().nullable(),
 });
 export type OrderLine = z.infer<typeof zOrderLine>;
@@ -300,7 +303,9 @@ export const zOrderQuery = zPaginationQuery.extend({
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Debe ser yyyy-MM-dd')
     .optional(),
-  // Fecha de entrega comprometida (inclusive) en formato ISO 'yyyy-MM-dd'.
+  // Fecha de entrega (inclusive) en formato ISO 'yyyy-MM-dd'.
+  // En /orders/grouped se compara contra la fecha efectiva:
+  // tentativa local si existe, original de Profit si no.
   entregaDesde: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Debe ser yyyy-MM-dd')
@@ -328,6 +333,8 @@ export const zOrderGroupLine = z.object({
   customerCode: z.string().nullable(),
   customerName: z.string().nullable(),
   requestedDate: z.string().nullable(),
+  // Fecha tentativa local (capa Nexo). null = usar requestedDate.
+  tentativeDate: z.string().nullable(),
   authorized: z.boolean().nullable(),
   productCode: z.string(),
   description: z.string().nullable(),
@@ -337,6 +344,7 @@ export const zOrderGroupLine = z.object({
   pendingKg: z.number().nullable(),
   warehouseCode: z.string().nullable(),
   stock03: z.number().nullable(),
+  stock9999: z.number().nullable(),
   stock68: z.number().nullable(),
 });
 export type OrderGroupLine = z.infer<typeof zOrderGroupLine>;
@@ -364,6 +372,34 @@ export const zOrderGroupedResponse = z.object({
 });
 export type OrderGroupedResponse = z.infer<typeof zOrderGroupedResponse>;
 
+// ---------- Fecha tentativa local (capa Nexo, nunca Profit) ----------
+// Un renglón = pedido + artículo. La selección del plan envía varios ítems.
+export const zDeliveryDateItem = z.object({
+  orderNumber: z.string().trim().min(1).max(20),
+  productCode: z.string().trim().min(1).max(40),
+});
+export type DeliveryDateItem = z.infer<typeof zDeliveryDateItem>;
+
+export const zDeliveryDateSetInput = z.object({
+  items: z.array(zDeliveryDateItem).min(1).max(500),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Debe ser yyyy-MM-dd'),
+  note: z.string().trim().max(240).optional(),
+});
+export type DeliveryDateSetInput = z.infer<typeof zDeliveryDateSetInput>;
+
+export const zDeliveryDateRestoreInput = z.object({
+  items: z.array(zDeliveryDateItem).min(1).max(500),
+  note: z.string().trim().max(240).optional(),
+});
+export type DeliveryDateRestoreInput = z.infer<typeof zDeliveryDateRestoreInput>;
+
+export const zDeliveryDateApplyResponse = z.object({
+  updated: z.number().int(),
+  restored: z.number().int(),
+  unchanged: z.number().int(),
+});
+export type DeliveryDateApplyResponse = z.infer<typeof zDeliveryDateApplyResponse>;
+
 // ---------- Salud del sistema ----------
 export const zHealthResponse = z.object({
   status: z.enum(['ok', 'degraded']),
@@ -384,11 +420,11 @@ export const zApiError = z.object({
 export type ApiError = z.infer<typeof zApiError>;
 
 // ============================================================
-// Forca (pronóstico de producción).
-//   - Forca MENSUAL por artículo: se lee de Profit (`xart_fore.kg_mes`),
+// Forecast (pronóstico de producción).
+//   - Forecast MENSUAL por artículo: se lee de Profit (`xart_fore.kg_mes`),
 //     sin conversión. Solo lectura.
 //   - Reparto en 4 semanas (bloques 1-7 / 8-14 / 15-21 / 22-fin), editable
-//     en Nexo. Por defecto = forca mensual / 4.
+//     en Nexo. Por defecto = forecast mensual / 4.
 // ============================================================
 export const FORECAST_WEEK_INDEXES = [1, 2, 3, 4] as const;
 
@@ -431,9 +467,9 @@ export const zForecastRow = z.object({
   stockTotal: z.number(),
   demandMonthQty: z.number(),
   demandMonthKg: z.number(),
-  // Forca mensual leído de Profit (`xart_fore.kg_mes`), sin conversión.
+  // Forecast mensual leído de Profit (`xart_fore.kg_mes`), sin conversión.
   monthlyQty: z.number(),
-  // Promedio sugerido por semana = forca mensual / 4 (valor por defecto de `weeks`).
+  // Promedio sugerido por semana = forecast mensual / 4 (valor por defecto de `weeks`).
   averageQty: z.number(),
   weeks: z.array(zForecastWeekRow),
   weeksTotalQty: z.number(),
@@ -446,23 +482,23 @@ export const zForecastResponse = z.object({
   weekRanges: z.array(zForecastWeekRange),
   rows: z.array(zForecastRow),
   // false = no se pudo leer `xart_fore`; la UI avisa y muestra 0.
-  profitForcaAvailable: z.boolean(),
+  profitForecastAvailable: z.boolean(),
 });
 export type ForecastResponse = z.infer<typeof zForecastResponse>;
 
 // Reporte/plan de producción semanal.
-// Cada semana trae, además del forca, los mismos campos de la tabla de
+// Cada semana trae, además del forecast, los mismos campos de la tabla de
 // Disponibilidad por Producto (existencia, disponible, a producir, neto,
 // estado) calculados con el motor de disponibilidad sobre la demanda OBJETIVO
-// = max(forca de la semana, demanda de la semana).
+// = max(forecast de la semana, demanda de la semana).
 export const zForecastPlanWeek = z.object({
   weekIndex: z.number().int(),
-  // Forca asignado a esa semana (cantidad editable en el Asignador).
-  forcaQty: z.number(),
+  // Forecast asignado a esa semana (cantidad editable en el Asignador).
+  forecastQty: z.number(),
   // Demanda real de pedidos activos cuya entrega cae en esa semana.
   demandQty: z.number(),
   demandKg: z.number(),
-  // Objetivo de la semana = max(forca, demanda). Es la "demanda" que usa el
+  // Objetivo de la semana = max(forecast, demanda). Es la "demanda" que usa el
   // motor de disponibilidad.
   objectiveQty: z.number(),
   // Campos de disponibilidad por producto (misma semántica que /availability).
@@ -480,11 +516,12 @@ export const zForecastPlanRow = z.object({
   uom: z.string(),
   category: z.string().nullable(),
   kgPerUom: z.number().nullable(),
-  // Existencia global y desglose por almacén (Stock 03 / Stock 68).
+  // Existencia global y desglose por almacén (Stock 03 / Stock 9999 / Stock 68).
   stockTotal: z.number(),
   stock03: z.number(),
+  stock9999: z.number(),
   stock68: z.number(),
-  forcaMonthQty: z.number(),
+  forecastMonthQty: z.number(),
   averageQty: z.number(),
   demandMonthQty: z.number(),
   productionMonthQty: z.number(),
@@ -499,7 +536,7 @@ export const zForecastPlanResponse = z.object({
   weekRanges: z.array(zForecastWeekRange),
   rows: z.array(zForecastPlanRow),
   totals: z.object({
-    forcaQty: z.number(),
+    forecastQty: z.number(),
     demandQty: z.number(),
     productionQty: z.number(),
     productionKg: z.number(),

@@ -13,6 +13,7 @@ import {
   OrderSummary,
 } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
+import { DeliveryDatesService, deliveryDateKey } from './delivery-dates.service';
 
 // ============================================================
 // Pedidos y clientes (Fase 4): consulta de lo ya sincronizado.
@@ -37,6 +38,19 @@ function toDate(value: Date | null): string | null {
   return value ? value.toISOString() : null;
 }
 
+function toDateOnly(value: Date | null): string | null {
+  return value ? value.toISOString().slice(0, 10) : null;
+}
+
+// Compara fechas de negocio (yyyy-MM-dd) sin pasar por zonas horarias.
+function inDateRange(value: string | null, from?: string, to?: string): boolean {
+  if (!from && !to) return true;
+  if (!value) return false;
+  // Las fechas tentativas llegan como ISO completo; se comparan por día.
+  const day = value.slice(0, 10);
+  return (!from || day >= from) && (!to || day <= to);
+}
+
 // Cantidad solicitada: 0 se reporta como "sin dato" (null) para no confundir
 // con una cantidad real de cero (la fuente siempre trae pendiente > 0).
 function toQuantityOrNull(value: unknown): number | null {
@@ -57,7 +71,9 @@ function dateRange(from?: string, to?: string) {
 type OrderFilters = Omit<OrderQuery, 'page' | 'pageSize'>;
 
 // Construye el `where` de pedidos a partir de los filtros compartidos.
-function orderWhere(query: OrderFilters): Prisma.SalesOrderWhereInput {
+// En la agrupación la entrega se filtra después, porque puede ser tentativa.
+function orderWhere(query: OrderFilters, options: { includeDeliveryDate?: boolean } = {}): Prisma.SalesOrderWhereInput {
+  const includeDeliveryDate = options.includeDeliveryDate ?? true;
   const emision = dateRange(query.emisionDesde, query.emisionHasta);
   const entrega = dateRange(query.entregaDesde, query.entregaHasta);
   return {
@@ -68,7 +84,7 @@ function orderWhere(query: OrderFilters): Prisma.SalesOrderWhereInput {
     ...(query.vendor ? { vendor: { contains: query.vendor } } : {}),
     ...(query.authorized ? { authorized: query.authorized === 'SI' } : {}),
     ...(Object.keys(emision).length ? { orderDate: emision } : {}),
-    ...(Object.keys(entrega).length ? { requestedDate: entrega } : {}),
+    ...(includeDeliveryDate && Object.keys(entrega).length ? { requestedDate: entrega } : {}),
     ...(query.q
       ? {
           OR: [
@@ -83,7 +99,10 @@ function orderWhere(query: OrderFilters): Prisma.SalesOrderWhereInput {
 
 @Injectable()
 export class SalesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly deliveryDates: DeliveryDatesService,
+  ) {}
 
   async listCustomers(query: CustomerQuery) {
     const where = {
@@ -182,11 +201,18 @@ export class SalesService {
 
     const productCodes = order.lines.map((l) => l.productCode);
     const totalPendingQty = order.lines.reduce((acc, l) => acc + toNumber(l.pendingQty), 0);
-    const stock = await this.stockByProduct(productCodes);
+    const [stock, tentative] = await Promise.all([
+      this.stockByProduct(productCodes),
+      this.deliveryDates.resolveForLines(
+        order.lines.map((line) => ({ orderNumber: order.externalNumber, productCode: line.productCode })),
+      ),
+    ]);
 
     return {
       order: this.toSummary(order, order.lines.length, totalPendingQty),
-      lines: order.lines.map((l) => this.toLine(l, stock)),
+      lines: order.lines.map((l) =>
+        this.toLine(l, stock, tentative.get(deliveryDateKey(order.externalNumber, l.productCode)) ?? null),
+      ),
     };
   }
 
@@ -196,14 +222,28 @@ export class SalesService {
   // ~cientos de renglones) para responder en una sola pasada.
   // ============================================================
   async listGrouped(query: OrderGroupQuery): Promise<OrderGroupedResponse> {
-    const where = orderWhere(query);
+    // La entrega puede ser tentativa: se filtra en memoria con la fecha
+    // efectiva (tentativa ?? original). El resto de filtros va a SQL.
+    const where = orderWhere(query, { includeDeliveryDate: false });
     const byProduct = query.by === 'producto';
 
-    const lines = await this.prisma.salesOrderLine.findMany({
+    const rawLines = await this.prisma.salesOrderLine.findMany({
       where: { order: where },
       include: { order: true },
       orderBy: [{ order: { externalNumber: 'asc' } }, { lineNumber: 'asc' }],
     });
+
+    const tentativeByLine = await this.deliveryDates.resolveForLines(
+      rawLines.map((line) => ({ orderNumber: line.order.externalNumber, productCode: line.productCode })),
+    );
+    const lines = rawLines.filter((line) =>
+      inDateRange(
+        tentativeByLine.get(deliveryDateKey(line.order.externalNumber, line.productCode)) ??
+          toDateOnly(line.order.requestedDate),
+        query.entregaDesde,
+        query.entregaHasta,
+      ),
+    );
 
     const stock = await this.stockByProduct(lines.map((l) => l.productCode));
 
@@ -252,6 +292,7 @@ export class SalesService {
         customerCode: line.order.customerCode,
         customerName: line.order.customerName,
         requestedDate: toDate(line.order.requestedDate),
+        tentativeDate: tentativeByLine.get(deliveryDateKey(line.order.externalNumber, line.productCode)) ?? null,
         authorized: line.order.authorized,
         productCode: line.productCode,
         description: line.description,
@@ -261,6 +302,7 @@ export class SalesService {
         pendingKg,
         warehouseCode: line.warehouses,
         stock03: stock.get(line.productCode)?.s03 ?? null,
+        stock9999: stock.get(line.productCode)?.s9999 ?? null,
         stock68: stock.get(line.productCode)?.s68 ?? null,
       });
     }
@@ -296,10 +338,11 @@ export class SalesService {
           include: { lines: { where: { productCode: { in: codes } } } },
         })
       : null;
-    const stock = new Map<string, { s03: number | null; s68: number | null }>();
+    const stock = new Map<string, { s03: number | null; s9999: number | null; s68: number | null }>();
     for (const l of snapshot?.lines ?? []) {
-      const entry = stock.get(l.productCode) ?? { s03: null, s68: null };
+      const entry = stock.get(l.productCode) ?? { s03: null, s9999: null, s68: null };
       if (l.warehouseCode === 'Stock 03') entry.s03 = toNumberOrNull(l.qty);
+      if (l.warehouseCode === 'Stock 9999') entry.s9999 = toNumberOrNull(l.qty);
       if (l.warehouseCode === 'Stock 68') entry.s68 = toNumberOrNull(l.qty);
       stock.set(l.productCode, entry);
     }
@@ -317,7 +360,8 @@ export class SalesService {
       pendingKg: unknown;
       warehouses: string | null;
     },
-    stock: Map<string, { s03: number | null; s68: number | null }>,
+    stock: Map<string, { s03: number | null; s9999: number | null; s68: number | null }>,
+    tentativeDate: string | null,
   ): OrderLine {
     return {
       lineNumber: line.lineNumber,
@@ -327,8 +371,10 @@ export class SalesService {
       quantity: toQuantityOrNull(line.quantity),
       pendingQty: toNumber(line.pendingQty),
       pendingKg: toNumberOrNull(line.pendingKg),
+      tentativeDate,
       warehouseCode: line.warehouses,
       stock03: stock.get(line.productCode)?.s03 ?? null,
+      stock9999: stock.get(line.productCode)?.s9999 ?? null,
       stock68: stock.get(line.productCode)?.s68 ?? null,
     };
   }

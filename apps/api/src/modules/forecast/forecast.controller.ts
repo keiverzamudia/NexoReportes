@@ -12,7 +12,7 @@ import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { ForecastService } from './forecast.service';
 
-// Forca (pronóstico de producción): el mensual se lee de Profit (solo lectura)
+// Forecast (pronóstico de producción): el mensual se lee de Profit (solo lectura)
 // y en Nexo solo se capturan las cantidades por semana. Nunca escribe en Profit.
 @ApiTags('forecast')
 @ApiBearerAuth()

@@ -17,18 +17,18 @@ import { computeAvailability } from '../availability/availability.engine';
 import { ProfitAdapter, PROFIT_ADAPTER } from '../sync/profit.adapter';
 
 // ============================================================
-// Forca (pronóstico de producción).
+// Forecast (pronóstico de producción).
 //
-//  · El FORCA MENSUAL por artículo se lee de Profit (`dbo.xart_fore`) TAL
+//  · El FORECAST MENSUAL por artículo se lee de Profit (`dbo.xart_fore`) TAL
 //    CUAL, sin conversión: producción mantiene ahí el valor en la unidad de
 //    venta del artículo (saco/unidad). Es solo lectura; Nexo nunca lo escribe.
 //  · `xart_fore` no tiene código ni mes: se cruza por descripción y aplica al
 //    mes en curso.
 //  · Cada semana (4 bloques) tiene una CANTIDAD editable. Por defecto se
-//    llena con el PROMEDIO = forca mensual / 4; aquí solo se ajustan semanas.
+//    llena con el PROMEDIO = forecast mensual / 4; aquí solo se ajustan semanas.
 //  · El Reporte reutiliza el MISMO motor de disponibilidad que la vista
 //    «Disponibilidad por Producto», con la demanda OBJETIVO de la semana
-//    (max(forca de la semana, demanda de la semana)).
+//    (max(forecast de la semana, demanda de la semana)).
 // ============================================================
 
 function round3(value: number): number {
@@ -55,15 +55,16 @@ export const WEEK_BOUNDS = [
 
 // Almacenes reales de la compañía (mismos códigos que la vista de Disponibilidad).
 const WAREHOUSE_03 = 'Stock 03';
+const WAREHOUSE_9999 = 'Stock 9999';
 const WAREHOUSE_68 = 'Stock 68';
 
-// Forca mensual mantenido por producción en Profit (`COR_A3.dbo.xart_fore`).
+// Forecast mensual mantenido por producción en Profit (`COR_A3.dbo.xart_fore`).
 // `kg_mes` se usa TAL CUAL (sin convertir): producción lo deja en la unidad de
 // venta del artículo. `kg_sem` no se usa: las semanas se reparten en Nexo como
 // mensual / 4 y se ajustan aquí. La tabla no tiene código ni mes, por eso se
 // cruza por descripción (RTRIM) y se aplica solo al mes en curso.
-const PROFIT_FORCA_SQL = `
-SELECT RTRIM(a.co_art) AS co_art, f.kg_mes AS forca_mes
+const PROFIT_FORECAST_SQL = `
+SELECT RTRIM(a.co_art) AS co_art, f.kg_mes AS forecast_mes
 FROM dbo.xart_fore AS f
 INNER JOIN dbo.art AS a
         ON RTRIM(LTRIM(a.art_des)) = RTRIM(LTRIM(f.nom))
@@ -105,10 +106,10 @@ export class ForecastService {
       orderBy: { externalCode: 'asc' },
     });
 
-    const [stock, demand, forca] = await Promise.all([
+    const [stock, demand, forecast] = await Promise.all([
       this.stockIndex(),
       this.demandBuckets(year, month),
-      this.profitForcaIndex(year, month),
+      this.profitForecastIndex(year, month),
     ]);
     const forecasts = await this.prisma.forecast.findMany({ where: { year, month }, include: { weeks: true } });
     const byCode = new Map(forecasts.map((f) => [f.productCode, f]));
@@ -118,7 +119,7 @@ export class ForecastService {
       const f = byCode.get(p.externalCode);
       // El mensual SIEMPRE manda desde Profit. El valor local sólo se usa para
       // saber si las semanas guardadas se editaron sobre este mismo mensual.
-      const monthlyQty = forca.byCode.get(p.externalCode) ?? 0;
+      const monthlyQty = forecast.byCode.get(p.externalCode) ?? 0;
       const storedMonthly = f ? num(f.monthlyQty) : null;
       const useStoredWeeks = f !== undefined && storedMonthly === monthlyQty;
       const weeks = this.computeWeeks(monthlyQty, f?.weeks ?? [], useStoredWeeks);
@@ -139,53 +140,53 @@ export class ForecastService {
       };
     });
 
-    return { year, month, weekRanges: ranges, rows, profitForcaAvailable: forca.available };
+    return { year, month, weekRanges: ranges, rows, profitForecastAvailable: forecast.available };
   }
 
-  // Cambia SOLO las cantidades por semana. El forca mensual no se edita aquí:
+  // Cambia SOLO las cantidades por semana. El forecast mensual no se edita aquí:
   // se toma de Profit y se guarda como "snapshot" para detectar si cambió.
   async setWeeks(productCode: string, dto: ForecastSetWeeks) {
-    const forca = await this.profitForcaIndex(dto.year, dto.month);
-    if (!forca.available) {
-      throw new ServiceUnavailableException('No se pudo leer el forca de Profit (xart_fore). Intenta de nuevo.');
+    const forecast = await this.profitForecastIndex(dto.year, dto.month);
+    if (!forecast.available) {
+      throw new ServiceUnavailableException('No se pudo leer el forecast de Profit (xart_fore). Intenta de nuevo.');
     }
-    const monthlyQty = forca.byCode.get(productCode) ?? 0;
-    const forecast = await this.prisma.forecast.upsert({
+    const monthlyQty = forecast.byCode.get(productCode) ?? 0;
+    const forecastRow = await this.prisma.forecast.upsert({
       where: { productCode_year_month: { productCode, year: dto.year, month: dto.month } },
       update: { monthlyQty, locked: false, lockedAt: null },
       create: { productCode, year: dto.year, month: dto.month, monthlyQty, locked: false },
     });
     for (const w of dto.weeks) {
       await this.prisma.forecastWeek.upsert({
-        where: { forecastId_weekIndex: { forecastId: forecast.id, weekIndex: w.weekIndex } },
+        where: { forecastId_weekIndex: { forecastId: forecastRow.id, weekIndex: w.weekIndex } },
         update: { qty: w.qty },
-        create: { forecastId: forecast.id, weekIndex: w.weekIndex, qty: w.qty },
+        create: { forecastId: forecastRow.id, weekIndex: w.weekIndex, qty: w.qty },
       });
     }
     // Crea las semanas que falten con el promedio (no pisa las recién guardadas).
-    await this.ensureWeeks(forecast.id, monthlyQty, false);
+    await this.ensureWeeks(forecastRow.id, monthlyQty, false);
     await this.audit.record({
       action: 'FORECAST_SET_WEEKS',
       entityType: 'Forecast',
-      entityId: forecast.id,
+      entityId: forecastRow.id,
       context: { productCode, year: dto.year, month: dto.month, monthlyQty, weeks: dto.weeks },
     });
-    const weeks = await this.weeksOf(forecast.id, monthlyQty);
+    const weeks = await this.weeksOf(forecastRow.id, monthlyQty);
     return { ok: true, productCode, year: dto.year, month: dto.month, weeks };
   }
 
   // Reporte: plan de producción semanal por artículo, con los campos de la
   // tabla de Disponibilidad por Producto calculados sobre la demanda objetivo
-  // de cada semana (max(forca, demanda)).
+  // de cada semana (max(forecast, demanda)).
   async plan(year: number, month: number): Promise<ForecastPlanResponse> {
     const [list, stock, demand] = await Promise.all([this.list(year, month), this.stockIndex(), this.demandBuckets(year, month)]);
 
     const rows: ForecastPlanRow[] = list.rows.map((r) => {
       const stockInfo = stock.get(r.productCode) ?? { total: 0, byWarehouse: [] };
       const weeks: ForecastPlanWeek[] = list.weekRanges.map((range) => {
-        const forcaQty = r.weeks.find((w) => w.weekIndex === range.weekIndex)?.qty ?? 0;
+        const forecastQty = r.weeks.find((w) => w.weekIndex === range.weekIndex)?.qty ?? 0;
         const dem = demand.byProductWeek.get(`${r.productCode}#${range.weekIndex}`) ?? { qty: 0, kg: 0 };
-        const objectiveQty = round3(Math.max(forcaQty, dem.qty));
+        const objectiveQty = round3(Math.max(forecastQty, dem.qty));
         // Mismo motor que la vista «Disponibilidad por Producto».
         const availability = computeAvailability({
           productCode: r.productCode,
@@ -198,7 +199,7 @@ export class ForecastService {
         });
         return {
           weekIndex: range.weekIndex,
-          forcaQty: round3(forcaQty),
+          forecastQty: round3(forecastQty),
           demandQty: round3(dem.qty),
           demandKg: round3(dem.kg),
           objectiveQty,
@@ -217,8 +218,9 @@ export class ForecastService {
         kgPerUom: r.kgPerUom,
         stockTotal: stockInfo.total,
         stock03: warehouseQty(stockInfo.byWarehouse, WAREHOUSE_03),
+        stock9999: warehouseQty(stockInfo.byWarehouse, WAREHOUSE_9999),
         stock68: warehouseQty(stockInfo.byWarehouse, WAREHOUSE_68),
-        forcaMonthQty: r.monthlyQty,
+        forecastMonthQty: r.monthlyQty,
         averageQty: r.averageQty,
         demandMonthQty: r.demandMonthQty,
         productionMonthQty: round3(weeks.reduce((acc, w) => acc + w.toProduceQty, 0)),
@@ -233,7 +235,7 @@ export class ForecastService {
       weekRanges: list.weekRanges,
       rows,
       totals: {
-        forcaQty: round3(rows.reduce((acc, r) => acc + r.forcaMonthQty, 0)),
+        forecastQty: round3(rows.reduce((acc, r) => acc + r.forecastMonthQty, 0)),
         demandQty: round3(rows.reduce((acc, r) => acc + r.demandMonthQty, 0)),
         productionQty: round3(rows.reduce((acc, r) => acc + r.productionMonthQty, 0)),
         productionKg: round3(rows.reduce((acc, r) => acc + r.productionMonthKg, 0)),
@@ -243,7 +245,7 @@ export class ForecastService {
 
   // ---------- auxiliares ----------
 
-  // Cantidades por semana. `useStored=false` (el forca de Profit cambió o no
+  // Cantidades por semana. `useStored=false` (el forecast de Profit cambió o no
   // hay fila local) devuelve el PROMEDIO del mes; si es true respeta lo editado.
   private computeWeeks(monthlyQty: number, stored: { weekIndex: number; qty: unknown }[], useStored: boolean): ForecastWeekRow[] {
     const average = monthlyQty / WEEK_BOUNDS.length;
@@ -265,15 +267,15 @@ export class ForecastService {
     return now.getFullYear() === year && now.getMonth() + 1 === month;
   }
 
-  // Forca mensual por artículo desde Profit (`xart_fore.kg_mes`), SIN conversión.
+  // Forecast mensual por artículo desde Profit (`xart_fore.kg_mes`), SIN conversión.
   // Si la consulta falla, se devuelve el mapa vacío y `available=false` para que
   // la UI avise en lugar de mostrar valores inventados.
-  private async profitForcaIndex(year: number, month: number): Promise<{ byCode: Map<string, number>; available: boolean }> {
+  private async profitForecastIndex(year: number, month: number): Promise<{ byCode: Map<string, number>; available: boolean }> {
     if (!this.isCurrentMonth(year, month)) {
       return { byCode: new Map(), available: true };
     }
     try {
-      const rows = await this.profit.selectQuery(PROFIT_FORCA_SQL, 5000);
+      const rows = await this.profit.selectQuery(PROFIT_FORECAST_SQL, 5000);
       const byCode = new Map<string, number>();
       for (const raw of rows) {
         const code = String(raw.co_art ?? '').trim();
@@ -281,11 +283,11 @@ export class ForecastService {
         if (byCode.has(code)) {
           this.logger.warn(`xart_fore trae más de una fila para ${code}; se usa la última.`);
         }
-        byCode.set(code, num(raw.forca_mes));
+        byCode.set(code, num(raw.forecast_mes));
       }
       return { byCode, available: true };
     } catch (error) {
-      this.logger.warn(`No se pudo leer el forca de Profit (xart_fore): ${error instanceof Error ? error.message : 'error desconocido'}`);
+      this.logger.warn(`No se pudo leer el forecast de Profit (xart_fore): ${error instanceof Error ? error.message : 'error desconocido'}`);
       return { byCode: new Map(), available: false };
     }
   }

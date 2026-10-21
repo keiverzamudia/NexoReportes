@@ -1,19 +1,19 @@
 'use client';
 
 // ============================================================
-// Forca — pronóstico de producción (línea ABA = alimentos balanceados).
+// Forecast — pronóstico de producción (línea ABA = alimentos balanceados).
 //
-//  · Pestaña «Asignador»: forca MENSUAL por artículo leído de Profit
+//  · Pestaña «Asignador»: forecast MENSUAL por artículo leído de Profit
 //    (`xart_fore.kg_mes`, sin conversión; solo lectura) + CANTIDAD por cada
 //    una de las 4 semanas. Por defecto las semanas se llenan con el PROMEDIO
-//    (forca mensual / 4) y es lo único que se ajusta en Nexo.
+//    (forecast mensual / 4) y es lo único que se ajusta en Nexo.
 //  · Pestaña «Reporte»: se elige la SEMANA a evaluar (o «Todas»). Para una
-//    semana se muestra, por artículo, el forca y además los mismos campos de
-//    la tabla de Disponibilidad (Stock 03/68, Existencia, Solicitado,
+//    semana se muestra, por artículo, el forecast y además los mismos campos de
+//    la tabla de Disponibilidad (Stock 03/9999/68, Existencia, Solicitado,
 //    Despachable, A producir, kg, Neto, Estado), calculados con el motor de
-//    disponibilidad sobre el solicitado objetivo = max(forca, solicitado).
+//    disponibilidad sobre el solicitado objetivo = max(forecast, solicitado).
 //
-//  Forca mensual: Profit. Semanas: Nexo. NUNCA se escribe en Profit.
+//  Forecast mensual: Profit. Semanas: Nexo. NUNCA se escribe en Profit.
 // ============================================================
 
 import type {
@@ -26,14 +26,16 @@ import type {
   ForecastWeekRange,
 } from '@nexo/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CalendarRange, Download, Save, Search } from 'lucide-react';
-import { Fragment, useMemo, useState } from 'react';
+import { AlertTriangle, Boxes, CalendarRange, Download, LineChart, RotateCcw, Save, Search } from 'lucide-react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { EChart } from '../../components/EChart';
+import { ProductPicker } from '../../components/ProductPicker';
 import { AppNav, LoginScreen } from '../../components/shell';
 import {
   Badge,
   Card,
   Column,
+  CoverageBar,
   DataTable,
   EmptyState,
   Kpi,
@@ -45,13 +47,24 @@ import {
 } from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 
-const C = { navy: '#003366', red: '#dc2626', lime: '#95C800', outline: '#737780', grid: '#e1f0ff' };
+const C = {
+  navy: '#003366',
+  navyLight: '#1d5a96',
+  red: '#dc2626',
+  redLight: '#f87171',
+  lime: '#95C800',
+  limeDark: '#4b6700',
+  outline: '#737780',
+  grid: '#e1f0ff',
+  ink: '#081d2c',
+  surface: '#ffffff',
+};
 
 const STATUS_LABEL: Record<AvailabilityStatus, string> = {
   DISPONIBLE: 'Cubierto',
   PARCIAL: 'Parcial',
   FALTANTE: 'Faltante',
-  SIN_DEMANDA: 'Sin forca ni solicitado',
+  SIN_DEMANDA: 'Sin forecast ni solicitado',
 };
 
 const STATUS_TONE: Record<AvailabilityStatus, 'success' | 'warning' | 'danger' | 'muted'> = {
@@ -90,7 +103,20 @@ function parseNumber(value: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-export default function ForcaPage() {
+// Formato compacto para ejes y etiquetas de barra: 950 · 12,4 k · 1,9 M.
+// El tooltip siempre muestra el valor exacto con separador de miles.
+function compactQty(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) {
+    return `${new Intl.NumberFormat('es-VE', { maximumFractionDigits: 1 }).format(value / 1_000_000)} M`;
+  }
+  if (abs >= 10_000) {
+    return `${new Intl.NumberFormat('es-VE', { maximumFractionDigits: 1 }).format(value / 1_000)} k`;
+  }
+  return fmtQty(value, 0);
+}
+
+export default function ForecastPage() {
   const [tick, setTick] = useState(0);
   const [tab, setTab] = useState<Tab>('asignador');
   const [ym, setYm] = useState(currentMonthValue);
@@ -132,7 +158,7 @@ export default function ForcaPage() {
   }
 
   const weeks = forecast.data?.weekRanges ?? [];
-  const totalForca = (forecast.data?.rows ?? []).reduce((a, r) => a + r.monthlyQty, 0);
+  const totalForecast = (forecast.data?.rows ?? []).reduce((a, r) => a + r.monthlyQty, 0);
 
   return (
     <>
@@ -141,12 +167,12 @@ export default function ForcaPage() {
         <PageHeader
           eyebrow="Producción · Alimentos balanceados (línea ABA)"
           icon={CalendarRange}
-          title="Forca"
-          subtitle="Forca mensual por artículo ."
+          title="Forecast"
+          subtitle="Forecast mensual por artículo ."
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
               <Kpi label="Artículos" value={String(rows.length)} icon={CalendarRange} />
-              <Kpi label="Forca del mes" value={fmtQty(totalForca, 0)} suffix="unid." tone="primary" />
+              <Kpi label="Forecast del mes" value={fmtQty(totalForecast, 0)} suffix="unid." tone="primary" />
             </div>
           }
         />
@@ -195,9 +221,9 @@ export default function ForcaPage() {
           </p>
         )}
 
-        {tab === 'asignador' && forecast.data && !forecast.data.profitForcaAvailable && (
+        {tab === 'asignador' && forecast.data && !forecast.data.profitForecastAvailable && (
           <p role="status" className="flex items-center gap-space-sm text-body-md text-amber-700">
-            <AlertTriangle aria-hidden className="size-4" /> No se pudo leer el forca desde Profit (
+            <AlertTriangle aria-hidden className="size-4" /> No se pudo leer el forecast desde Profit (
             <code>xart_fore</code>); los artículos se muestran en 0.
           </p>
         )}
@@ -207,7 +233,7 @@ export default function ForcaPage() {
             {forecast.isLoading && <p className="text-body-md text-on-surface-variant">Cargando artículos de producción…</p>}
             {forecast.data && (
               <Card className="overflow-hidden">
-                <ForcaAsignador
+                <ForecastAsignador
                   rows={rows}
                   weeks={weeks}
                   year={year}
@@ -217,7 +243,7 @@ export default function ForcaPage() {
                 />
                 <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
                   Semanas del mes: {weeks.map((w) => w.label).join(' · ')}. Las cantidades de cada semana se llenan por
-                  defecto con el <strong>promedio = forca mes / 4</strong> y son libremente editables. El forca mensual se
+                  defecto con el <strong>promedio = forecast mes / 4</strong> y son libremente editables. El forecast mensual se
                   administra en Profit (<code>xart_fore</code>); aquí no se modifica.
                 </div>
               </Card>
@@ -236,7 +262,7 @@ export default function ForcaPage() {
   );
 }
 
-// ---------- Asignador: forca de Profit + cantidad por semana ----------
+// ---------- Asignador: forecast de Profit + cantidad por semana ----------
 // Una sola tabla (DataTable) para todos los artículos. El borrador de cada fila
 // vive aquí, para que la tabla del PC y la tarjeta del teléfono compartan el
 // mismo estado sin duplicar el editor.
@@ -244,7 +270,7 @@ interface RowEdit {
   qtys: string[];
 }
 
-function ForcaAsignador({
+function ForecastAsignador({
   rows,
   weeks,
   year,
@@ -283,7 +309,7 @@ function ForcaAsignador({
     setOk((p) => ({ ...p, [code]: false }));
   };
 
-  // Guarda SOLO las cantidades por semana. El forca mensual viene de Profit.
+  // Guarda SOLO las cantidades por semana. El forecast mensual viene de Profit.
   const saveWeeks = useMutation<void, Error, { row: ForecastRow; qtys: string[] }>({
     mutationFn: async ({ row, qtys }) =>
       apiFetch(`/forecast/${encodeURIComponent(row.productCode)}/weeks`, {
@@ -341,8 +367,8 @@ function ForcaAsignador({
       ),
     },
     {
-      key: 'forcaMes',
-      header: 'Forca mes',
+      key: 'forecastMes',
+      header: 'Forecast mes',
       align: 'right',
       render: (r) => (
         <span className="font-semibold tabular-nums text-on-surface" title="Valor leído de Profit (xart_fore.kg_mes)">
@@ -389,10 +415,10 @@ function ForcaAsignador({
       header: 'Estado',
       align: 'center',
       kind: 'status',
-      sortValue: (r) => (r.monthlyQty > 0 ? 'Profit' : 'Sin forca'),
+      sortValue: (r) => (r.monthlyQty > 0 ? 'Profit' : 'Sin forecast'),
       render: (r) => (
         <span className="whitespace-nowrap">
-          <Badge tone={r.monthlyQty > 0 ? 'primary' : 'muted'}>{r.monthlyQty > 0 ? 'Profit' : 'Sin forca'}</Badge>
+          <Badge tone={r.monthlyQty > 0 ? 'primary' : 'muted'}>{r.monthlyQty > 0 ? 'Profit' : 'Sin forecast'}</Badge>
         </span>
       ),
     },
@@ -439,13 +465,35 @@ function ForcaAsignador({
 }
 
 // ---------- Reporte / plan de producción ----------
+// Acción de fila: enfocar ese artículo en la gráfica sin salir de la tabla.
+function FocusProductButton({ code, onClick }: { code: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`Ver ${code} en la gráfica`}
+      title={`Ver ${code} en la gráfica`}
+      className="grid size-6 shrink-0 place-items-center rounded-md text-outline transition-colors hover:bg-surface-container hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70"
+    >
+      <LineChart aria-hidden className="size-3.5" />
+    </button>
+  );
+}
+
 function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilter }) {
   const weeks = data.weekRanges;
-  const rows = useMemo(() => data.rows.filter((r) => unit === 'ALL' || r.uom === unit), [data, unit]);
+  const allRows = useMemo(() => data.rows.filter((r) => unit === 'ALL' || r.uom === unit), [data, unit]);
   const today = new Date();
   const isCurrentMonth = today.getFullYear() === data.year && today.getMonth() + 1 === data.month;
   const defaultWeek = isCurrentMonth ? String(weekIndexOf(today.getDate())) : '1';
   const [selected, setSelected] = useState<string>(defaultWeek);
+  const [productCode, setProductCode] = useState<string | null>(null);
+
+  // Si cambia la presentación (SAC/KG) y el producto elegido deja de existir
+  // en el filtro, volvemos al consolidado global en lugar de dejar la vista vacía.
+  useEffect(() => {
+    if (productCode && !allRows.some((row) => row.productCode === productCode)) setProductCode(null);
+  }, [allRows, productCode]);
 
   const weekOptions = [
     ...weeks.map((w) => ({ value: String(w.weekIndex), label: `Semana ${w.weekIndex} (${w.from.slice(8)}-${w.to.slice(8)})` })),
@@ -454,35 +502,208 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
   const weekIndex = selected === 'all' ? null : Number(selected);
   const selectedRange = weeks.find((w) => w.weekIndex === weekIndex) ?? null;
 
-  const chart = useMemo(
-    () => ({
-      grid: { left: 8, right: 16, top: 10, bottom: 40, containLabel: true },
-      tooltip: { trigger: 'axis', valueFormatter: (v: number) => `${fmtQty(v, 0)} unid.` },
-      legend: { bottom: 2, icon: 'roundRect', itemWidth: 10, itemHeight: 10, textStyle: { color: C.outline, fontSize: 11 } },
+  // Alcance del reporte: consolidado de todos los artículos o uno solo.
+  const productOptions = useMemo(
+    () =>
+      [...allRows]
+        .sort((a, b) => a.productCode.localeCompare(b.productCode, 'es'))
+        .map((row) => ({ value: row.productCode, description: row.description, uom: row.uom })),
+    [allRows],
+  );
+  const selectedProduct = productCode ? (allRows.find((row) => row.productCode === productCode) ?? null) : null;
+  const rows = useMemo(() => (selectedProduct ? [selectedProduct] : allRows), [allRows, selectedProduct]);
+
+  // Serie semanal (agregada al alcance elegido).
+  const chartData = useMemo(
+    () =>
+      weeks.map((week) => {
+        let demand = 0;
+        let toProduce = 0;
+        let forecast = 0;
+        for (const row of rows) {
+          const weekRow = row.weeks.find((entry) => entry.weekIndex === week.weekIndex);
+          if (!weekRow) continue;
+          demand += weekRow.demandQty;
+          toProduce += weekRow.toProduceQty;
+          forecast += weekRow.forecastQty;
+        }
+        return { week, demand, toProduce, forecast };
+      }),
+    [rows, weeks],
+  );
+
+  const hasForecast = chartData.some((entry) => entry.forecast > 0);
+
+  const chart = useMemo(() => {
+    // Barras de la semana evaluada a plena opacidad + borde lima; el resto se
+    // atenúa para que la lectura sea inmediata sin perder el contexto del mes.
+    const barData = (key: 'demand' | 'toProduce') =>
+      chartData.map((entry, index) => {
+        const isSelected = weekIndex !== null && weeks[index]?.weekIndex === weekIndex;
+        return {
+          value: entry[key],
+          itemStyle: {
+            opacity: weekIndex === null || isSelected ? 1 : 0.62,
+            ...(isSelected ? { borderColor: C.lime, borderWidth: 2 } : {}),
+          },
+        };
+      });
+
+    const barLabel = {
+      show: true,
+      position: 'top',
+      distance: 10,
+      color: '#43474f',
+      fontSize: 10,
+      fontWeight: 600,
+      formatter: (params: { value?: unknown }) => {
+        const value = Number(params.value);
+        return Number.isFinite(value) && value > 0 ? compactQty(value) : '';
+      },
+    };
+
+    return {
+      animationDuration: 450,
+      animationDurationUpdate: 300,
+      grid: { left: 4, right: 16, top: 40, bottom: 8, containLabel: true },
+      tooltip: {
+        trigger: 'axis',
+        confine: true,
+        axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(0, 51, 102, 0.05)' } },
+        backgroundColor: C.surface,
+        borderColor: '#c3c6d1',
+        borderWidth: 1,
+        padding: [10, 12],
+        textStyle: { color: C.ink, fontSize: 12 },
+        extraCssText: 'border-radius:12px;box-shadow:0 18px 40px -28px rgba(8,29,44,.5);',
+        formatter: (params: { dataIndex: number }[]) => {
+          const first = params[0];
+          const entry = first ? chartData[first.dataIndex] : undefined;
+          if (!entry) return '';
+          const line = (label: string, value: number, color: string) =>
+            `<div style="display:flex;justify-content:space-between;gap:20px;margin-top:5px;">
+              <span style="display:inline-flex;align-items:center;gap:6px;color:#43474f;">
+                <span style="width:8px;height:8px;border-radius:2px;background:${color};"></span>${label}
+              </span>
+              <strong style="font-variant-numeric:tabular-nums;color:${C.ink};">${fmtQty(value, 0)} unid.</strong>
+            </div>`;
+          return `<div style="min-width:210px;">
+            <div style="font-weight:700;color:#001e40;margin-bottom:2px;">Semana ${entry.week.weekIndex}
+              <span style="font-weight:400;color:${C.outline};font-size:11px;">(${entry.week.from.slice(8)}-${entry.week.to.slice(8)})</span>
+            </div>
+            ${line('Solicitado', entry.demand, C.navy)}
+            ${line('A producir', entry.toProduce, C.red)}
+            ${hasForecast ? line('Forecast', entry.forecast, C.limeDark) : ''}
+          </div>`;
+        },
+      },
+      legend: {
+        top: 0,
+        right: 0,
+        icon: 'roundRect',
+        itemWidth: 10,
+        itemHeight: 10,
+        itemGap: 14,
+        textStyle: { color: C.outline, fontSize: 11 },
+      },
       xAxis: {
         type: 'category',
-        data: weeks.map((w) => w.label),
-        axisLabel: { color: C.outline, fontSize: 11 },
+        data: weeks.map((week) => week.label),
+        axisLabel: {
+          color: C.outline,
+          fontSize: 11,
+          margin: 12,
+          formatter: (label: string, index: number) =>
+            weekIndex !== null && weeks[index]?.weekIndex === weekIndex ? `{active|${label}}` : label,
+          rich: { active: { color: C.navy, fontWeight: 700, fontSize: 11 } },
+        },
         axisLine: { show: false },
         axisTick: { show: false },
       },
-      yAxis: { type: 'value', axisLabel: { color: C.outline, fontSize: 10 }, splitLine: { lineStyle: { color: C.grid } } },
+      yAxis: {
+        type: 'value',
+        axisLabel: { color: C.outline, fontSize: 10, formatter: (value: number) => compactQty(value) },
+        splitLine: { lineStyle: { color: C.grid, type: [4, 4] } },
+        splitNumber: 4,
+      },
       series: [
-        { name: 'Solicitado', type: 'bar', data: weeks.map((w) => rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.demandQty ?? 0), 0)), color: C.navy, barMaxWidth: 26 },
-        { name: 'A producir', type: 'bar', data: weeks.map((w) => rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.toProduceQty ?? 0), 0)), color: C.red, barMaxWidth: 26 },
+        {
+          name: 'Solicitado',
+          type: 'bar',
+          data: barData('demand'),
+          barMaxWidth: 30,
+          barGap: '18%',
+          barCategoryGap: '42%',
+          itemStyle: {
+            borderRadius: [7, 7, 0, 0],
+            color: {
+              type: 'linear',
+              x: 0,
+              y: 0,
+              x2: 0,
+              y2: 1,
+              colorStops: [
+                { offset: 0, color: C.navyLight },
+                { offset: 1, color: C.navy },
+              ],
+            },
+          },
+          emphasis: { focus: 'series' },
+          label: barLabel,
+          labelLayout: { hideOverlap: true },
+        },
+        {
+          name: 'A producir',
+          type: 'bar',
+          data: barData('toProduce'),
+          barMaxWidth: 30,
+          itemStyle: {
+            borderRadius: [7, 7, 0, 0],
+            color: {
+              type: 'linear',
+              x: 0,
+              y: 0,
+              x2: 0,
+              y2: 1,
+              colorStops: [
+                { offset: 0, color: C.redLight },
+                { offset: 1, color: C.red },
+              ],
+            },
+          },
+          emphasis: { focus: 'series' },
+          label: barLabel,
+          labelLayout: { hideOverlap: true },
+        },
+        ...(hasForecast
+          ? [
+              {
+                name: 'Forecast',
+                type: 'line',
+                data: chartData.map((entry) => entry.forecast),
+                color: C.limeDark,
+                smooth: 0.25,
+                showSymbol: false,
+                lineStyle: { width: 2, type: 'dashed', color: C.limeDark },
+                itemStyle: { color: C.limeDark },
+                z: 1,
+              },
+            ]
+          : []),
       ],
-    }),
-    [rows, weeks],
-  );
+    };
+  }, [chartData, hasForecast, weekIndex, weeks]);
 
   // Totales de la semana elegida (o del mes si se ven todas), ya filtrados.
   const totals = useMemo(() => {
     if (weekIndex === null) {
       return {
-        forca: rows.reduce((a, r) => a + r.forcaMonthQty, 0),
+        forecast: rows.reduce((a, r) => a + r.forecastMonthQty, 0),
         demand: rows.reduce((a, r) => a + r.demandMonthQty, 0),
         toProduce: rows.reduce((a, r) => a + r.productionMonthQty, 0),
         toProduceKg: rows.reduce((a, r) => a + r.productionMonthKg, 0),
+        objective: 0,
+        available: 0,
         // El excedente es stock, no se acumula semana a semana: se mide contra
         // el objetivo más alto del mes.
         excedente: rows.reduce(
@@ -495,13 +716,18 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
       .map((r) => ({ row: r, week: r.weeks.find((w) => w.weekIndex === weekIndex) }))
       .filter((x): x is { row: ForecastPlanRow; week: ForecastPlanWeek } => Boolean(x.week));
     return {
-      forca: ws.reduce((a, x) => a + x.week.forcaQty, 0),
+      forecast: ws.reduce((a, x) => a + x.week.forecastQty, 0),
       demand: ws.reduce((a, x) => a + x.week.demandQty, 0),
       toProduce: ws.reduce((a, x) => a + x.week.toProduceQty, 0),
       toProduceKg: ws.reduce((a, x) => a + (x.week.toProduceKg ?? 0), 0),
+      objective: ws.reduce((a, x) => a + x.week.objectiveQty, 0),
+      available: ws.reduce((a, x) => a + x.week.availableQty, 0),
       excedente: ws.reduce((a, x) => a + Math.max(0, x.row.stockTotal - x.week.objectiveQty), 0),
     };
   }, [rows, weekIndex]);
+
+  // Cobertura de la semana evaluada: despachable sobre objetivo.
+  const coverage = weekIndex !== null && totals.objective > 0 ? Math.min(1, totals.available / totals.objective) : 0;
 
   // Filas con la semana elegida (las que no la tienen se omiten, como antes).
   const weekEntries = useMemo(
@@ -510,6 +736,33 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         .map((row) => ({ row, week: row.weeks.find((w) => w.weekIndex === weekIndex) }))
         .filter((e): e is { row: ForecastPlanRow; week: ForecastPlanWeek } => Boolean(e.week)),
     [rows, weekIndex],
+  );
+
+  const empty = (
+    <EmptyState
+      icon={CalendarRange}
+      title={
+        selectedProduct
+          ? `Sin datos de ${selectedProduct.productCode} en esta vista`
+          : 'Sin artículos para la presentación elegida'
+      }
+      description={
+        selectedProduct
+          ? `${selectedProduct.description} no tiene semanas calculadas en este mes.`
+          : 'Prueba otra presentación (Saco / Granel) o vuelve al consolidado global.'
+      }
+      action={
+        selectedProduct ? (
+          <button
+            type="button"
+            onClick={() => setProductCode(null)}
+            className="inline-flex h-9 items-center gap-space-xs rounded-lg bg-primary-container px-space-md font-semibold text-on-primary hover:bg-primary"
+          >
+            <RotateCcw aria-hidden className="size-4" /> Volver a la vista global
+          </button>
+        ) : undefined
+      }
+    />
   );
 
   // Vista consolidada del mes: la matriz de semanas en columnas planas, para
@@ -522,10 +775,15 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         kind: 'id',
         sortValue: (r) => r.productCode,
         render: (r) => (
-          <span className="flex min-w-0 flex-col">
-            <span className="font-bold tabular-nums text-primary">{r.productCode}</span>
-            <span className="max-w-[15rem] truncate text-label-sm text-on-surface-variant" title={r.description}>
-              {r.description}
+          <span className="flex min-w-0 items-center gap-space-xs">
+            {productCode !== r.productCode && (
+              <FocusProductButton code={r.productCode} onClick={() => setProductCode(r.productCode)} />
+            )}
+            <span className="flex min-w-0 flex-col">
+              <span className="font-bold tabular-nums text-primary">{r.productCode}</span>
+              <span className="max-w-[15rem] truncate text-label-sm text-on-surface-variant" title={r.description}>
+                {r.description}
+              </span>
             </span>
           </span>
         ),
@@ -542,14 +800,14 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         const weekOf = (r: ForecastPlanRow) => r.weeks.find((x) => x.weekIndex === w.weekIndex);
         return [
           {
-            key: `s${w.weekIndex}forca`,
-            header: `S${w.weekIndex} Forca`,
+            key: `s${w.weekIndex}forecast`,
+            header: `S${w.weekIndex} Forecast`,
             align: 'right' as const,
             className: 'border-l border-surface-container',
-            sortValue: (r: ForecastPlanRow) => weekOf(r)?.forcaQty ?? 0,
+            sortValue: (r: ForecastPlanRow) => weekOf(r)?.forecastQty ?? 0,
             render: (r: ForecastPlanRow) => (
               <span className="text-on-surface-variant" title={w.label}>
-                {fmtQty(weekOf(r)?.forcaQty ?? 0, 0)}
+                {fmtQty(weekOf(r)?.forecastQty ?? 0, 0)}
               </span>
             ),
           },
@@ -586,7 +844,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         render: (r) => <span className="font-bold text-primary">{fmtQty(r.productionMonthQty, 0)}</span>,
       },
     ],
-    [weeks],
+    [weeks, productCode],
   );
 
   // Reporte de una semana: los mismos campos de la vista de Disponibilidad.
@@ -597,7 +855,14 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         header: 'Código',
         kind: 'id',
         sortValue: (e) => e.row.productCode,
-        render: (e) => <span className="font-bold tabular-nums text-primary">{e.row.productCode}</span>,
+        render: (e) => (
+          <span className="flex items-center gap-space-xs">
+            {productCode !== e.row.productCode && (
+              <FocusProductButton code={e.row.productCode} onClick={() => setProductCode(e.row.productCode)} />
+            )}
+            <span className="font-bold tabular-nums text-primary">{e.row.productCode}</span>
+          </span>
+        ),
       },
       {
         key: 'descripcion',
@@ -611,6 +876,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
       },
       { key: 'unid', header: 'Unid.', render: (e) => <span className="text-on-surface-variant">{e.row.uom}</span> },
       { key: 'stock03', header: 'Stock 03', align: 'right', sortValue: (e) => e.row.stock03, render: (e) => fmtQty(e.row.stock03, 0) },
+      { key: 'stock9999', header: 'Stock 9999', align: 'right', sortValue: (e) => e.row.stock9999, render: (e) => fmtQty(e.row.stock9999, 0) },
       { key: 'stock68', header: 'Stock 68', align: 'right', sortValue: (e) => e.row.stock68, render: (e) => fmtQty(e.row.stock68, 0) },
       {
         key: 'existencia',
@@ -629,11 +895,11 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         render: (e) => fmtQty(e.week.demandQty, 0),
       },
       {
-        key: 'forcaSem',
-        header: 'Forca sem.',
+        key: 'forecastSem',
+        header: 'Forecast sem.',
         align: 'right',
-        sortValue: (e) => e.week.forcaQty,
-        render: (e) => <span className="font-semibold text-on-surface">{fmtQty(e.week.forcaQty, 0)}</span>,
+        sortValue: (e) => e.week.forecastQty,
+        render: (e) => <span className="font-semibold text-on-surface">{fmtQty(e.week.forecastQty, 0)}</span>,
       },
       {
         key: 'despachable',
@@ -645,19 +911,33 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
       },
       {
         key: 'aProducir',
-        header: 'A producir',
+        header: 'A producir (SAC)',
         align: 'right',
         sortValue: (e) => e.week.toProduceQty,
-        render: (e) => (
-          <span
-            className={e.week.toProduceQty > 0 ? 'font-bold text-error' : 'text-outline'}
-            title={`Objetivo ${fmtQty(e.week.objectiveQty, 0)} − existencia ${fmtQty(e.row.stockTotal, 0)} → ${
-              e.week.toProduceQty > 0 ? `faltan ${fmtQty(e.week.toProduceQty, 0)}` : 'la existencia cubre el objetivo'
-            }`}
-          >
-            {fmtQty(e.week.toProduceQty, 0)}
-          </span>
-        ),
+        render: (e) => {
+          // SOLO los artículos a granel (KG) muestran 0 tachado: no se producen
+          // en sacos. Los artículos SAC conservan su 0 real.
+          if (e.row.uom !== 'SAC') {
+            return (
+              <span
+                className="text-outline line-through decoration-1"
+                title="No aplica: el artículo se produce a granel (kg)"
+              >
+                0
+              </span>
+            );
+          }
+          return (
+            <span
+              className={e.week.toProduceQty > 0 ? 'font-bold text-error' : 'text-outline'}
+              title={`Objetivo ${fmtQty(e.week.objectiveQty, 0)} − existencia ${fmtQty(e.row.stockTotal, 0)} → ${
+                e.week.toProduceQty > 0 ? `faltan ${fmtQty(e.week.toProduceQty, 0)}` : 'la existencia cubre el objetivo'
+              }`}
+            >
+              {fmtQty(e.week.toProduceQty, 0)}
+            </span>
+          );
+        },
       },
       {
         key: 'aProducirKg',
@@ -699,20 +979,20 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         render: (e) => <Badge tone={STATUS_TONE[e.week.status]}>{STATUS_LABEL[e.week.status]}</Badge>,
       },
     ],
-    [],
+    [productCode],
   );
 
   function exportCsv() {
-    const header = ['Codigo', 'Descripcion', 'Unid', 'Stock 03', 'Stock 68', 'Existencia'];
+    const header = ['Codigo', 'Descripcion', 'Unid', 'Stock 03', 'Stock 9999', 'Stock 68', 'Existencia'];
     if (weekIndex === null) {
-      for (const w of weeks) header.push(`${w.label} Forca`, `${w.label} Solicitado`, `${w.label} A producir`);
+      for (const w of weeks) header.push(`${w.label} Forecast`, `${w.label} Solicitado`, `${w.label} A producir`);
     } else {
       header.push(
-        `S${weekIndex} Forca`,
+        `S${weekIndex} Forecast`,
         `S${weekIndex} Solicitado`,
         'Objetivo',
         'Despachable',
-        'A producir',
+        'A producir (SAC)',
         'A producir (kg)',
         'Excedente',
         'Estado',
@@ -720,16 +1000,16 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
     }
     header.push('Prod mes (unid)', 'Prod mes (kg)');
     const body = rows.map((r) => {
-      const out: string[] = [r.productCode, r.description, r.uom, String(r.stock03), String(r.stock68), String(r.stockTotal)];
+      const out: string[] = [r.productCode, r.description, r.uom, String(r.stock03), String(r.stock9999), String(r.stock68), String(r.stockTotal)];
       if (weekIndex === null) {
         for (const w of weeks) {
           const wk = r.weeks.find((x) => x.weekIndex === w.weekIndex);
-          out.push(String(wk?.forcaQty ?? 0), String(wk?.demandQty ?? 0), String(wk?.toProduceQty ?? 0));
+          out.push(String(wk?.forecastQty ?? 0), String(wk?.demandQty ?? 0), String(wk?.toProduceQty ?? 0));
         }
       } else {
         const wk = r.weeks.find((x) => x.weekIndex === weekIndex);
         out.push(
-          String(wk?.forcaQty ?? 0),
+          String(wk?.forecastQty ?? 0),
           String(wk?.demandQty ?? 0),
           String(wk?.objectiveQty ?? 0),
           String(wk?.availableQty ?? 0),
@@ -748,19 +1028,94 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
     const link = document.createElement('a');
     link.href = url;
     const suffix = weekIndex === null ? 'todas' : `s${weekIndex}`;
-    link.download = `plan-produccion-${data.year}-${String(data.month).padStart(2, '0')}-${suffix}.csv`;
+    const scope = selectedProduct ? `-${selectedProduct.productCode.replace(/[^\w-]+/g, '_')}` : '';
+    link.download = `plan-produccion-${data.year}-${String(data.month).padStart(2, '0')}-${suffix}${scope}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   }
 
   return (
     <>
-      <div className="grid grid-cols-1 gap-space-md lg:grid-cols-12">
-        <Card className="p-space-md lg:col-span-7">
-          <div className="mb-space-xs font-semibold uppercase text-label-sm text-outline">Solicitado vs a producir por semana (unidades)</div>
-          <EChart option={chart} height={230} ariaLabel="Solicitado versus producción por semana" />
+      <div className="grid grid-cols-1 items-start gap-space-md lg:grid-cols-12">
+        <Card className="min-w-0 p-space-md lg:col-span-7">
+          <div className="flex flex-wrap items-start justify-between gap-space-sm">
+            <div className="min-w-0">
+              <div className="font-semibold uppercase text-label-sm text-outline">
+                Solicitado vs a producir por semana (unidades)
+              </div>
+              <p className="mt-space-2xs text-label-sm text-on-surface-variant">
+                {selectedProduct ? (
+                  <>
+                    <strong className="text-on-surface">{selectedProduct.productCode}</strong> ·{' '}
+                    {selectedProduct.description}
+                  </>
+                ) : (
+                  <>{allRows.length} artículos · consolidado</>
+                )}
+                {' · '}
+                {weekIndex === null ? (
+                  '4 semanas del mes'
+                ) : (
+                  <>
+                    <strong className="text-on-surface">Semana {weekIndex}</strong> resaltada
+                  </>
+                )}
+              </p>
+            </div>
+            {selectedProduct && (
+              <button
+                type="button"
+                onClick={() => setProductCode(null)}
+                className="inline-flex h-8 shrink-0 items-center gap-space-xs rounded-lg border border-outline-variant/50 px-space-sm text-label-md font-semibold text-primary-container transition-colors hover:bg-surface-container-low"
+              >
+                <RotateCcw aria-hidden className="size-3.5" /> Ver global
+              </button>
+            )}
+          </div>
+
+          <div className="mt-space-sm flex flex-col gap-space-xs sm:max-w-md">
+            <span className="font-semibold uppercase text-label-sm text-outline">Producto en la gráfica</span>
+            <ProductPicker
+              value={productCode}
+              onChange={setProductCode}
+              options={productOptions}
+              allLabel={`Todos los productos (${allRows.length})`}
+            />
+          </div>
+
+          <EChart
+            option={chart}
+            height={selectedProduct ? 320 : 300}
+            ariaLabel={
+              selectedProduct
+                ? `Solicitado versus producción por semana de ${selectedProduct.productCode}`
+                : 'Solicitado versus producción por semana (todos los artículos)'
+            }
+            className="mt-space-sm"
+          />
         </Card>
-        <Card className="flex flex-col justify-between gap-space-md p-space-md lg:col-span-5">
+
+        <Card className="flex min-w-0 flex-col gap-space-md p-space-md lg:col-span-5">
+          {selectedProduct && (
+            <div className="flex items-start gap-space-sm rounded-xl border border-primary-fixed bg-surface-container-low p-space-sm">
+              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary-container text-on-primary">
+                <Boxes aria-hidden className="size-4" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-space-xs">
+                  <span className="font-bold tabular-nums text-primary">{selectedProduct.productCode}</span>
+                  <Badge tone="muted">{selectedProduct.uom}</Badge>
+                  <span className="text-label-sm text-on-surface-variant">
+                    Stock {fmtQty(selectedProduct.stockTotal, 0)}
+                  </span>
+                </div>
+                <p className="truncate text-label-sm text-on-surface-variant" title={selectedProduct.description}>
+                  {selectedProduct.description}
+                </p>
+              </div>
+            </div>
+          )}
+
           <label className="flex flex-col gap-space-2xs">
             <span className="font-semibold uppercase text-label-sm text-outline">Semana a evaluar</span>
             <Select value={selected} onChange={setSelected} options={weekOptions} ariaLabel="Semana a evaluar" />
@@ -770,23 +1125,46 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
                 : 'Vista consolidada de todo el mes.'}
             </span>
           </label>
-          <div className="grid grid-cols-2 gap-space-sm">
-            <Kpi label={weekIndex === null ? 'Forca del mes' : 'Forca de la semana'} value={fmtQty(totals.forca, 0)} suffix="unid." tone="primary" />
+
+          <div className="grid grid-cols-1 gap-space-sm sm:grid-cols-2">
+            <Kpi label={weekIndex === null ? 'Forecast del mes' : 'Forecast de la semana'} value={fmtQty(totals.forecast, 0)} suffix="unid." tone="primary" />
             <Kpi label={weekIndex === null ? 'Solicitado del mes' : 'Solicitado de la semana'} value={fmtQty(totals.demand, 0)} suffix="unid." />
             <Kpi label="A producir" value={fmtQty(totals.toProduce, 0)} suffix="unid." tone="danger" />
             <Kpi label="A producir en kg" value={fmtQty(totals.toProduceKg, 0)} suffix="kg" tone="danger" />
           </div>
+
+          {weekIndex !== null && (
+            <div className="rounded-xl border border-outline-variant/35 bg-surface/70 p-space-sm">
+              <div className="flex items-baseline justify-between gap-space-sm">
+                <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">
+                  Cobertura de la semana
+                </span>
+                <span
+                  className={`text-title-md font-bold tabular-nums ${
+                    coverage >= 0.999 ? 'text-success' : coverage > 0 ? 'text-warning' : 'text-error'
+                  }`}
+                >
+                  {fmtQty(coverage * 100, 0)}%
+                </span>
+              </div>
+              <CoverageBar ratio={coverage} className="mt-space-xs" />
+              <div className="mt-space-2xs flex items-center justify-between gap-space-sm text-label-sm text-on-surface-variant">
+                <span>Despachable {fmtQty(totals.available, 0)}</span>
+                <span>Objetivo {fmtQty(totals.objective, 0)}</span>
+              </div>
+            </div>
+          )}
+
           <button
             onClick={exportCsv}
+            title={selectedProduct ? `Exportar solo ${selectedProduct.productCode}` : 'Exportar el consolidado'}
             className="flex h-9 items-center justify-center gap-space-xs rounded-lg bg-primary-container px-space-md font-semibold text-on-primary hover:bg-primary"
           >
             <Download aria-hidden className="size-4" /> Exportar plan (CSV)
           </button>
           <p className="text-label-sm text-on-surface-variant">
-            <strong>Objetivo de la semana = el mayor entre el forca y el solicitado.</strong> Con eso:{' '}
-            <strong>a producir = max(0, objetivo − existencia)</strong> y, si sobra stock, la diferencia se muestra como{' '}
-            <strong>Excedente</strong>. Existencia, despachable y estado usan el mismo cálculo que la vista de
-            Disponibilidad por Producto.
+            <strong>Objetivo = el mayor entre el forecast y el solicitado.</strong> A producir = max(0, objetivo −
+            existencia); si sobra stock se muestra como <strong>Excedente</strong>.
           </p>
         </Card>
       </div>
@@ -797,13 +1175,13 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             columns={monthColumns}
             rows={rows}
             rowKey={(r) => r.productCode}
-            empty={<EmptyState icon={CalendarRange} title="Sin artículos para la presentación elegida" />}
+            empty={empty}
             footer={
               <tr className="border-t-2 border-surface-container bg-surface-container-low font-bold">
                 <td className="px-space-sm py-space-xs uppercase text-label-sm text-outline">Totales</td>
                 <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtQty(rows.reduce((a, r) => a + r.stockTotal, 0), 0)}</td>
                 {weeks.map((w) => {
-                  const f = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.forcaQty ?? 0), 0);
+                  const f = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.forecastQty ?? 0), 0);
                   const dem = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.demandQty ?? 0), 0);
                   const prod = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.toProduceQty ?? 0), 0);
                   return (
@@ -825,6 +1203,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
             Semanas del mes: {weeks.map((w) => w.label).join(' · ')}. Cada semana se ordena al pulsar su encabezado y el
             artículo queda fijo al desplazar a la derecha.
+            {!selectedProduct && ' Usa el icono de gráfica de una fila para enfocar ese artículo.'}
           </div>
         </Card>
       ) : (
@@ -833,14 +1212,14 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             columns={weekColumns}
             rows={weekEntries}
             rowKey={(e) => e.row.productCode}
-            empty={<EmptyState icon={CalendarRange} title="Sin artículos para la presentación elegida" />}
+            empty={empty}
             footer={
               <tr className="border-t-2 border-surface-container bg-surface-container-low font-bold">
-                <td colSpan={6} className="px-space-sm py-space-xs uppercase text-label-sm text-outline">
+                <td colSpan={7} className="px-space-sm py-space-xs uppercase text-label-sm text-outline">
                   Totales de la semana
                 </td>
                 <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtQty(totals.demand, 0)}</td>
-                <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtQty(totals.forca, 0)}</td>
+                <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtQty(totals.forecast, 0)}</td>
                 <td />
                 <td className="px-space-sm py-space-xs text-right tabular-nums text-error">{fmtQty(totals.toProduce, 0)}</td>
                 <td className="px-space-sm py-space-xs text-right tabular-nums text-error">{fmtQty(totals.toProduceKg, 0)}</td>
@@ -853,8 +1232,10 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             <span className="font-semibold text-error">Rojo</span> = falta producir ·{' '}
             <span className="font-semibold text-success">Verde</span> = sobra stock. «A producir» = max(0, objetivo −
             existencia) y «Excedente» = max(0, existencia − objetivo): <strong>nunca hay los dos a la vez</strong>. El
-            objetivo de la semana es el <strong>mayor entre el forca semanal y el solicitado</strong>. Un 0 en «A producir»
-            significa que la existencia ya cubre el objetivo (mira el «Excedente»).
+            objetivo de la semana es el <strong>mayor entre el forecast semanal y el solicitado</strong>. Un 0 en «A producir»
+            significa que la existencia ya cubre el objetivo (mira el «Excedente»). En «A producir (SAC)», el{' '}
+            <span className="line-through decoration-1">0</span> tachado corresponde a artículos a granel (KG), que no se
+            producen en sacos.
           </div>
         </Card>
       )}

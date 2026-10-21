@@ -141,7 +141,16 @@
 }
 
 @layer base {
+  html {
+    /* Igual que body: evita que una tabla ancha expanda el viewport móvil. */
+    overflow-x: clip;
+  }
+
   body {
+    /* Las tablas anchas ya tienen su propio scroll interno. Evita que una
+       tabla o la navegación ensanchen el viewport del teléfono (y que los
+       modales fixed se salgan de la pantalla). */
+    overflow-x: clip;
     background-color: var(--color-surface);
     background-image: radial-gradient(1100px 520px at 100% -8%, #e9f3ff 0%, transparent 62%);
     background-attachment: fixed;

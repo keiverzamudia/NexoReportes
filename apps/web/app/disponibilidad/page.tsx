@@ -56,7 +56,7 @@ function matchesStatus(rowStatus: AvailabilityStatus, filter: AvailabilityStatus
 }
 
 // Presentación del artículo en Profit (`uni_venta`): SAC = saco, KG = granel.
-// Mismo criterio que en Forca.
+// Mismo criterio que en Forecast.
 type UnitFilter = 'ALL' | 'SAC' | 'KG';
 
 const UNIT_OPTIONS: { value: UnitFilter; label: string }[] = [
@@ -79,6 +79,26 @@ function stockOf(row: AvailabilityRow, warehouseCode: string): number | null {
   return row.stockByWarehouse.find((w) => w.warehouseCode === warehouseCode)?.qty ?? null;
 }
 
+// «A producir (SAC)»: SOLO los artículos a granel (KG) muestran un 0 tachado,
+// porque no se producen en sacos. Los artículos SAC mantienen su 0 normal.
+function renderToProduceSacs(row: AvailabilityRow) {
+  if (row.uom !== 'SAC') {
+    return (
+      <span
+        className="text-on-surface-variant line-through decoration-1"
+        title="No aplica: el artículo se produce a granel (kg)"
+      >
+        0
+      </span>
+    );
+  }
+  return (
+    <span className={row.toProduceQty > 0 ? 'font-bold text-error' : 'text-on-surface-variant'}>
+      {fmtQty(row.toProduceQty, 0)}
+    </span>
+  );
+}
+
 const COLUMNS: Column<AvailabilityRow>[] = [
   {
     key: 'codigo',
@@ -95,8 +115,27 @@ const COLUMNS: Column<AvailabilityRow>[] = [
     render: (r) => r.description,
   },
   { key: 'unid', header: 'Unid.', render: (r) => <span className="text-on-surface-variant">{r.uom}</span> },
-  { key: 'stock03', header: 'Stock 03', align: 'right', render: (r) => fmtQty(stockOf(r, 'Stock 03'), 0) },
-  { key: 'stock68', header: 'Stock 68', align: 'right', render: (r) => fmtQty(stockOf(r, 'Stock 68'), 0) },
+  {
+    key: 'stock03',
+    header: 'Stock 03',
+    align: 'right',
+    sortValue: (r) => stockOf(r, 'Stock 03') ?? 0,
+    render: (r) => fmtQty(stockOf(r, 'Stock 03'), 0),
+  },
+  {
+    key: 'stock9999',
+    header: 'Stock 9999',
+    align: 'right',
+    sortValue: (r) => stockOf(r, 'Stock 9999') ?? 0,
+    render: (r) => fmtQty(stockOf(r, 'Stock 9999'), 0),
+  },
+  {
+    key: 'stock68',
+    header: 'Stock 68',
+    align: 'right',
+    sortValue: (r) => stockOf(r, 'Stock 68') ?? 0,
+    render: (r) => fmtQty(stockOf(r, 'Stock 68'), 0),
+  },
   {
     key: 'existencia',
     header: 'Existencia',
@@ -123,12 +162,10 @@ const COLUMNS: Column<AvailabilityRow>[] = [
   },
   {
     key: 'aProducir',
-    header: 'A producir',
+    header: 'A producir (SAC)',
     align: 'right',
     sortValue: (r) => r.toProduceQty,
-    render: (r) => (
-      <span className={r.toProduceQty > 0 ? 'font-bold text-error' : 'text-on-surface-variant'}>{fmtQty(r.toProduceQty, 0)}</span>
-    ),
+    render: renderToProduceSacs,
   },
   {
     key: 'aProducirKg',
@@ -142,7 +179,7 @@ const COLUMNS: Column<AvailabilityRow>[] = [
   },
   {
     key: 'neto',
-    header: 'Neto',
+    header: 'Neto (unid.)',
     align: 'right',
     sortValue: (r) => r.netQty,
     render: (r) => <span className={r.netQty < 0 ? 'text-error' : ''}>{fmtQty(r.netQty, 0)}</span>,
@@ -162,6 +199,8 @@ export default function DisponibilidadPage() {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<AvailabilityStatus | ''>('');
   const [unit, setUnit] = useState<UnitFilter>('ALL');
+  // El KPI «A producir» se puede ver en kg (por defecto) o en toneladas.
+  const [inTons, setInTons] = useState(false);
 
   const { data, isLoading, error } = useQuery<AvailabilityResponse>({
     queryKey: ['availability', tick],
@@ -216,7 +255,27 @@ export default function DisponibilidadPage() {
                 hint={`${kpis.faltantes} sin existencia · ${kpis.parciales} parciales`}
               />
               <Kpi label="Despachable" value={String(kpis.despachables)} tone="success" hint="cubren todo el solicitado" />
-              <Kpi label="A producir" value={fmtQty(kpis.toProduceKg, 0)} suffix="kg" tone="danger" />
+              <div className="relative">
+                <Kpi
+                  label="A producir"
+                  value={inTons ? fmtQty(kpis.toProduceKg / 1000, 2) : fmtQty(kpis.toProduceKg, 0)}
+                  suffix={inTons ? 't' : 'kg'}
+                  tone="danger"
+                />
+                <label
+                  className="absolute right-2 top-2 flex cursor-pointer items-center gap-1 text-label-sm font-semibold uppercase tracking-wider text-outline"
+                  title="Mostrar el total a producir en toneladas"
+                >
+                  <input
+                    type="checkbox"
+                    checked={inTons}
+                    onChange={(e) => setInTons(e.target.checked)}
+                    aria-label="Mostrar a producir en toneladas"
+                    className="size-3.5 cursor-pointer accent-[var(--color-primary-container)]"
+                  />
+                  Ton
+                </label>
+              </div>
             </div>
           }
         />
@@ -271,12 +330,18 @@ export default function DisponibilidadPage() {
               <div className="flex flex-col gap-space-2xs">
                 <span>
                   {rows.length} de {data.rows.length} productos · unidades en la unidad de venta de cada producto (SAC/KG),
-                  no se mezclan entre sí.
+                  no se mezclan entre sí. <strong className="text-on-surface">Existencia</strong> = Stock 03 + Stock 9999 +
+                  Stock 68.
                 </span>
                 <span>
                   <strong className="text-on-surface">Despachable</strong> = parte del solicitado que cubre la existencia
                   actual (mínimo entre existencia y solicitado). No es el stock libre: eso es{' '}
                   <strong className="text-on-surface">Neto</strong> (existencia − solicitado).
+                </span>
+                <span>
+                  <strong className="text-on-surface">A producir (SAC)</strong>: el{' '}
+                  <span className="line-through decoration-1">0</span> tachado corresponde a artículos a granel (KG),
+                  que no se producen en sacos; en los artículos SAC el 0 es una cantidad real.
                 </span>
               </div>
             </div>

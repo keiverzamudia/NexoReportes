@@ -215,6 +215,50 @@ model SalesOrderLine {
 }
 
 // Fotografía coherente de inventario por ejecución de sincronización.
+// Fecha de entrega TENTATIVA por renglón de pedido (pedido + artículo).
+// Es una capa local: NUNCA se escribe en Profit ni reemplaza requestedDate.
+// La fecha original sigue viviendo en SalesOrder.requestedDate.
+model DeliveryDateOverride {
+  id            String   @id @default(cuid())
+  orderNumber   String
+  productCode   String
+  customerCode  String?
+  tentativeDate DateTime
+  note          String?
+  createdById   String?
+  createdByCode String?
+  updatedById   String?
+  updatedByCode String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([orderNumber, productCode])
+  @@index([customerCode])
+  @@index([tentativeDate])
+}
+
+// Historial de cada asignación/restauración de fecha tentativa.
+// `batchId` agrupa los cambios hechos en una misma acción masiva.
+model DeliveryDateChange {
+  id            String   @id @default(cuid())
+  batchId       String?
+  orderNumber   String
+  productCode   String
+  customerCode  String?
+  previousDate  DateTime?
+  newDate       DateTime?
+  // SET | UPDATE | RESTORE
+  action        String
+  note          String?
+  changedById   String?
+  changedByCode String?
+  changedAt     DateTime @default(now())
+
+  @@index([changedAt])
+  @@index([customerCode, changedAt])
+  @@index([orderNumber, productCode])
+}
+
 model InventorySnapshot {
   id      String   @id @default(cuid())
   takenAt DateTime @default(now())
@@ -243,14 +287,14 @@ model InventorySnapshotLine {
 }
 
 // ============================================================
-// Forca (pronóstico de producción).
+// Forecast (pronóstico de producción).
 //   Forecast      = cabecera por artículo/mes. `monthlyQty` guarda el valor
 //                   de Profit (`xart_fore.kg_mes`) vigente cuando se editaron
 //                   las semanas: sirve para detectar si Profit lo cambió.
 //                   El mensual NO se captura en Nexo. `locked`/`lockedAt` se
 //                   conservan por compatibilidad y ya no se usan.
 //   ForecastWeek  = reparto por semana (bloques 1-7 / 8-14 / 15-21 / 22-fin)
-//                   con una CANTIDAD editable. Por defecto = forca mensual / 4.
+//                   con una CANTIDAD editable. Por defecto = forecast mensual / 4.
 // ============================================================
 model Forecast {
   id          String    @id @default(cuid())
@@ -276,7 +320,7 @@ model ForecastWeek {
   forecast   Forecast @relation(fields: [forecastId], references: [id], onDelete: Cascade)
   // 1..4 = bloques de días 1-7, 8-14, 15-21, 22-fin.
   weekIndex  Int
-  // Cantidad asignada a la semana (por defecto = forca mensual / 4).
+  // Cantidad asignada a la semana (por defecto = forecast mensual / 4).
   qty        Decimal  @default(0)
 
   @@unique([forecastId, weekIndex])
