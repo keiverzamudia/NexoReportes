@@ -39,6 +39,68 @@ const SOLICITUDES: Record<string, unknown>[] = [
   { nro_solicitud: 3580, emision: '2025-09-09', entrega: '2025-09-16', co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', vendedor_cliente: 'MEIDY CRISTINA ARIAS VIDAL', vendedor: 'EURIC MANABI VERGARA MELENDEZ', tipo_cliente: 'L1 EXCLUSIVOS', status_cotizacion: '0', co_art: 'ABABOV75', art_des: 'VACA LECHERA 21% ALTA ENERGIA SACO 35 KG', almacen: '6804', cantidad: 55, pendiente: 50, uni_venta: 'SAC', relacion_empaque: 35, kg: 1750, Stock_03: 120, Stock_9999: 8, Stock_68: 15 },
 ];
 
+// ============================================================
+// Estado de cuenta de desarrollo (equivalente a `dbo.docum_cc`).
+// Refleja la forma real: FACT suma y ADEL/N-CR restan; `saldo_us` es el
+// saldo pendiente del documento y `monto_us` su monto original. Los días
+// vencidos vienen resueltos porque en SQL Server los calcula DATEDIFF.
+// ============================================================
+const FIXTURE_STATEMENT_AS_OF = '2026-10-22T10:00:00.000Z';
+const FIXTURE_BS_RATE = 880;
+
+const DOCUMENTOS_PENDIENTES: Array<{
+  co_cli: string;
+  cli_des: string;
+  tipo_doc: string;
+  nro_doc: number;
+  fec_emis: string;
+  fec_venc: string;
+  dias_venc: number;
+  monto_us: number;
+  saldo_us: number;
+  signo: number;
+}> = [
+  { co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', tipo_doc: 'FACT', nro_doc: 50001001, fec_emis: '2026-09-28T00:00:00.000Z', fec_venc: '2026-10-05T00:00:00.000Z', dias_venc: 17, monto_us: 7750, saldo_us: 175.71, signo: 1 },
+  { co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', tipo_doc: 'ADEL', nro_doc: 55532, fec_emis: '2026-10-08T00:00:00.000Z', fec_venc: '2026-10-08T00:00:00.000Z', dias_venc: 14, monto_us: 20841.79, saldo_us: 0, signo: -1 },
+  { co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', tipo_doc: 'FACT', nro_doc: 50001002, fec_emis: '2026-10-13T00:00:00.000Z', fec_venc: '2026-10-20T00:00:00.000Z', dias_venc: 2, monto_us: 13500, saldo_us: 13500, signo: 1 },
+  { co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', tipo_doc: 'FACT', nro_doc: 50001003, fec_emis: '2026-10-20T00:00:00.000Z', fec_venc: '2026-10-20T00:00:00.000Z', dias_venc: 2, monto_us: 7750, saldo_us: 7517.5, signo: 1 },
+  { co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', tipo_doc: 'ADEL', nro_doc: 56220, fec_emis: '2026-10-20T00:00:00.000Z', fec_venc: '2026-10-20T00:00:00.000Z', dias_venc: 2, monto_us: 21017.5, saldo_us: 21017.5, signo: -1 },
+  { co_cli: '153064128', cli_des: 'JOSEF HENDRIX HERNANDEZ REYES', tipo_doc: 'ADEL', nro_doc: 56221, fec_emis: '2026-10-20T00:00:00.000Z', fec_venc: '2026-10-20T00:00:00.000Z', dias_venc: 2, monto_us: 175.71, saldo_us: 175.71, signo: -1 },
+  { co_cli: '505835220', cli_des: 'AGRO INVERSIONES MP, C.A', tipo_doc: 'FACT', nro_doc: 50002001, fec_emis: '2026-10-10T00:00:00.000Z', fec_venc: '2026-10-18T00:00:00.000Z', dias_venc: 4, monto_us: 9600, saldo_us: 9600, signo: 1 },
+  { co_cli: '505835220', cli_des: 'AGRO INVERSIONES MP, C.A', tipo_doc: 'ADEL', nro_doc: 57001, fec_emis: '2026-10-15T00:00:00.000Z', fec_venc: '2026-10-15T00:00:00.000Z', dias_venc: 7, monto_us: 3000, saldo_us: 3000, signo: -1 },
+];
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function statementRows(params: Record<string, unknown> = {}, limit = 1000): Record<string, unknown>[] {
+  const code = String(params.co_cli ?? '').trim().toUpperCase();
+  const includeSettled = Number(params.incluir_saldados ?? 0) === 1;
+  const currency = String(params.moneda ?? 'USD').toUpperCase() === 'BS' ? 'BS' : 'USD';
+  return DOCUMENTOS_PENDIENTES.filter(
+    (row) => row.co_cli.toUpperCase() === code && (includeSettled || row.saldo_us > 0),
+  )
+    .sort((a, b) => b.fec_emis.localeCompare(a.fec_emis) || b.tipo_doc.localeCompare(a.tipo_doc) || b.nro_doc - a.nro_doc)
+    .slice(0, limit)
+    .map((row) => {
+      const factor = currency === 'BS' ? FIXTURE_BS_RATE : 1;
+      return {
+        co_cli: row.co_cli,
+        cli_des: row.cli_des,
+        tipo_doc: row.tipo_doc,
+        nro_doc: row.nro_doc,
+        fec_emis: row.fec_emis,
+        fec_venc: row.fec_venc,
+        dias_venc: row.dias_venc,
+        monto: round2(row.monto_us * factor),
+        saldo: round2(row.saldo_us * factor),
+        signo: row.signo,
+        as_of: FIXTURE_STATEMENT_AS_OF,
+      };
+    });
+}
+
 // Forecast mensual de desarrollo (equivalente a `dbo.xart_fore.kg_mes`).
 // Solo incluye códigos presentes en el dataset anterior para que la pantalla
 // muestre valores en modo fixtures.
@@ -113,9 +175,18 @@ export class FixturesProfitAdapter implements ProfitAdapter {
   }
 
   // En fixtures la consulta ampliada devuelve el mismo dataset determinista,
-  // salvo la consulta del forecast (`xart_fore`), que tiene su propio set.
-  async selectQuery(sqlText: string, limit: number): Promise<Record<string, unknown>[]> {
-    if (sqlText.toLowerCase().includes('xart_fore')) return FORECAST.slice(0, limit);
+  // salvo las consultas con fuente propia: forecast (`xart_fore`) y estado de
+  // cuenta (`docum_cc` / `Documentos_Pendientes`).
+  async selectQuery(
+    sqlText: string,
+    limit: number,
+    params: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>[]> {
+    const lower = sqlText.toLowerCase();
+    if (lower.includes('xart_fore')) return FORECAST.slice(0, limit);
+    if (lower.includes('docum_cc') || lower.includes('documentos_pendientes')) {
+      return statementRows(params, limit);
+    }
     return SOLICITUDES.slice(0, limit);
   }
 

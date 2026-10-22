@@ -4,8 +4,8 @@ import { zPaginationQuery } from '@nexo/contracts';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { Roles } from '../auth/roles.decorator';
-import { RolesGuard } from '../auth/roles.guard';
+import { RequirePermission } from '../permissions/permissions.decorator';
+import { PermissionsGuard } from '../permissions/permissions.guard';
 import { AuditService } from './audit.service';
 
 const zAuditQuery = zPaginationQuery.extend({
@@ -15,12 +15,12 @@ const zAuditQuery = zPaginationQuery.extend({
 @ApiTags('audit')
 @ApiBearerAuth()
 @Controller('audit')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class AuditController {
   constructor(private readonly audit: AuditService) {}
 
   @Get()
-  @Roles('ADMIN', 'GERENCIA')
+  @RequirePermission('auditoria:read')
   list(@Query(new ZodValidationPipe(zAuditQuery)) query: { page: number; pageSize: number; entityType?: string }) {
     return this.audit.list(query);
   }

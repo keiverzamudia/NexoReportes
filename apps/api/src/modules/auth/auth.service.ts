@@ -13,6 +13,7 @@ import { User } from '@prisma/client';
 import { createHash, randomBytes } from 'node:crypto';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
+import { PermissionsService } from '../permissions/permissions.service';
 import { PROFIT_ADAPTER, ProfitAdapter } from '../sync/profit.adapter';
 
 // ============================================================
@@ -64,6 +65,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly audit: AuditService,
+    private readonly permissions: PermissionsService,
     @Inject(PROFIT_ADAPTER) private readonly profit: ProfitAdapter,
   ) {}
 
@@ -210,13 +212,24 @@ export class AuthService {
     });
   }
 
-  /** Datos del usuario autenticado (para la navegación y el módulo Usuarios). */
+  /**
+   * Datos del usuario autenticado (para la navegación y el módulo Usuarios).
+   * Incluye los permisos efectivos: el web filtra el menú y las acciones con
+   * ellos, y los cambios de rol aplican en la siguiente consulta.
+   */
   async me(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new UnauthorizedException('Sesión inválida');
     }
-    return { ...this.summary(user), lastLoginAt: user.lastLoginAt };
+    const access = await this.permissions.resolve(userId);
+    return {
+      ...this.summary(user),
+      roleName: access?.roleName ?? user.role,
+      baseRole: access?.baseRole ?? 'CONSULTA',
+      permissions: access?.permissions ?? [],
+      lastLoginAt: user.lastLoginAt,
+    };
   }
 
   private async issueTokens(user: User): Promise<IssuedSession> {

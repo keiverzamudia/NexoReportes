@@ -7,9 +7,10 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { zRole } from '@nexo/contracts';
+import { Role, UserPermissionOverride, permissionKey } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
+import { PermissionsService } from '../permissions/permissions.service';
 import { PROFIT_ADAPTER, ProfitAdapter, ProfitUserRef } from '../sync/profit.adapter';
 
 // ============================================================
@@ -40,6 +41,7 @@ export class UsersService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly config: ConfigService,
+    private readonly permissionService: PermissionsService,
     @Inject(PROFIT_ADAPTER) private readonly profit: ProfitAdapter,
   ) {}
 
@@ -146,7 +148,11 @@ export class UsersService {
    * distinga mayúsculas y acentos de escritura.
    */
   async list(query: ListUsersQuery) {
-    const items = await this.prisma.user.findMany({ orderBy: { displayName: 'asc' } });
+    const [items, roles] = await Promise.all([
+      this.prisma.user.findMany({ orderBy: { displayName: 'asc' } }),
+      this.prisma.role.findMany({ select: { code: true, name: true } }),
+    ]);
+    const roleNames = new Map(roles.map((role) => [role.code, role.name]));
     const needle = (query.q ?? '').trim().toLowerCase();
     const role = query.role?.trim();
     const filtered = items.filter((user) => {
@@ -163,6 +169,7 @@ export class UsersService {
     return {
       items: filtered.map((user) => ({
         ...user,
+        roleName: roleNames.get(user.role) ?? user.role,
         // Administrador declarado por entorno: la UI deshabilita sus controles.
         protected: adminCodes.has(user.profitCode.toUpperCase()),
       })),
@@ -180,13 +187,14 @@ export class UsersService {
     if (!user) {
       throw new NotFoundException('Usuario no encontrado');
     }
-    if (data.role) {
-      zRole.parse(data.role);
+    const role = data.role?.trim().toUpperCase();
+    if (role && !(await this.permissionService.roleExists(role))) {
+      throw new NotFoundException(`El rol ${role} no existe`);
     }
     // El administrador declarado por entorno no se puede degradar ni bloquear
     // desde la aplicación: si no, se podría dejar el sistema sin ADMIN.
     const isProtectedAdmin = this.adminCodes().has(user.profitCode.toUpperCase());
-    if (isProtectedAdmin && ((data.role !== undefined && data.role !== 'ADMIN') || data.isActive === false)) {
+    if (isProtectedAdmin && ((role !== undefined && role !== 'ADMIN') || data.isActive === false)) {
       throw new ForbiddenException(
         'Ese usuario es administrador por configuración (ADMIN_PROFIT_CODES): no se puede degradar ni desactivar.',
       );
@@ -194,7 +202,7 @@ export class UsersService {
     const updated = await this.prisma.user.update({
       where: { id },
       data: {
-        ...(data.role !== undefined ? { role: data.role } : {}),
+        ...(role !== undefined ? { role } : {}),
         ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
       },
     });
@@ -205,11 +213,109 @@ export class UsersService {
       entityId: id,
       context: {
         profitCode: updated.profitCode,
-        role: data.role ?? null,
+        previousRole: user.role,
+        role: role ?? null,
         isActive: data.isActive ?? null,
       },
     });
     return updated;
+  }
+
+  /**
+   * Permisos de un usuario: lo que concede su rol, sus excepciones y el
+   * resultado efectivo. Las excepciones permiten/niegan acciones concretas.
+   */
+  async userPermissions(id: string) {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('Usuario no encontrado');
+
+    const [role, rolePermissions, rows, access] = await Promise.all([
+      this.prisma.role.findUnique({ where: { code: user.role } }),
+      this.permissionService.rolePermissions(user.role),
+      this.prisma.userPermission.findMany({
+        where: { userId: id },
+        orderBy: [{ module: 'asc' }, { action: 'asc' }],
+      }),
+      this.permissionService.resolve(id),
+    ]);
+
+    return {
+      userId: user.id,
+      role: user.role,
+      roleName: role?.name ?? user.role,
+      baseRole: (role?.baseRole ?? 'CONSULTA') as Role,
+      rolePermissions,
+      overrides: rows.map((row) => ({
+        module: row.module,
+        action: row.action,
+        allowed: row.allowed,
+      })) as UserPermissionOverride[],
+      permissions: access?.permissions ?? [],
+    };
+  }
+
+  /** Reemplaza las excepciones del usuario (vacío = heredar todo del rol). */
+  async setUserPermissions(
+    id: string,
+    overrides: UserPermissionOverride[],
+    actor?: { id?: string },
+  ) {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('Usuario no encontrado');
+    if (user.role === 'ADMIN') {
+      throw new ForbiddenException('El rol ADMIN siempre tiene todos los permisos: no admite excepciones.');
+    }
+    if (this.adminCodes().has(user.profitCode.toUpperCase())) {
+      throw new ForbiddenException(
+        'Ese usuario es administrador por configuración (ADMIN_PROFIT_CODES): no admite excepciones.',
+      );
+    }
+
+    const normalized = this.permissionService.normalizeEntries(
+      overrides.map(({ module, action }) => ({ module, action })),
+    );
+    const allowedByKey = new Map(
+      overrides.map((row) => [permissionKey(row.module.trim(), row.action), row.allowed]),
+    );
+    const unique = normalized.map((entry) => ({
+      userId: id,
+      module: entry.module,
+      action: entry.action,
+      allowed: allowedByKey.get(permissionKey(entry.module, entry.action)) ?? true,
+    }));
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.userPermission.deleteMany({ where: { userId: id } });
+      if (unique.length > 0) await tx.userPermission.createMany({ data: unique });
+    });
+
+    await this.audit.record({
+      actorId: actor?.id ?? null,
+      action: 'USER_PERMISSIONS_UPDATED',
+      entityType: 'User',
+      entityId: id,
+      context: {
+        profitCode: user.profitCode,
+        role: user.role,
+        overrides: unique.map(({ module, action, allowed }) => ({ module, action, allowed })),
+      },
+    });
+    return this.userPermissions(id);
+  }
+
+  /** Elimina las excepciones: el usuario vuelve a heredar todo de su rol. */
+  async clearUserPermissions(id: string, actor?: { id?: string }) {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('Usuario no encontrado');
+    await this.prisma.userPermission.deleteMany({ where: { userId: id } });
+    await this.audit.record({
+      actorId: actor?.id ?? null,
+      action: 'USER_PERMISSIONS_RESET',
+      entityType: 'User',
+      entityId: id,
+      context: { profitCode: user.profitCode, role: user.role },
+    });
+    return this.userPermissions(id);
   }
 
   /** Usuarios activos para el autocompletado del login (solo id, código y nombre). */

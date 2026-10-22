@@ -7,9 +7,242 @@ import { z } from 'zod';
 // ============================================================
 
 // ---------- Roles y permisos ----------
+// Las 5 plantillas históricas. `baseRole` conserva la semántica fina de
+// Despacho y sirve de punto de partida al crear un rol nuevo. Los roles
+// efectivos viven en la tabla `Role` y pueden ser muchos más.
 export const ROLES = ['ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA'] as const;
 export const zRole = z.enum(ROLES);
 export type Role = z.infer<typeof zRole>;
+
+// Código de un rol dinámico (clave estable, en mayúsculas).
+export const zRoleCode = z
+  .string()
+  .trim()
+  .min(2, 'El código debe tener al menos 2 caracteres')
+  .max(40)
+  .regex(/^[A-Z][A-Z0-9_]*$/, 'Usa MAYÚSCULAS, números y guion bajo (ej. SUPERVISOR)');
+
+export const PERMISSION_ACTIONS = ['read', 'create', 'update', 'delete'] as const;
+export const zPermissionAction = z.enum(PERMISSION_ACTIONS);
+export type PermissionAction = z.infer<typeof zPermissionAction>;
+
+export interface ModuleActionDefinition {
+  action: PermissionAction;
+  /** Etiqueta contextual: en Pedidos «create» es guardar una simulación. */
+  label: string;
+}
+
+export interface AppModuleDefinition {
+  key: string;
+  label: string;
+  /** Ruta del menú; null = sin pantalla propia (solo API/botón global). */
+  href: string | null;
+  actions: ModuleActionDefinition[];
+}
+
+// Fuente única para la matriz de permisos (API y web). El orden es el del menú.
+export const APP_MODULES: AppModuleDefinition[] = [
+  {
+    key: 'disponibilidad',
+    label: 'Disponibilidad',
+    href: '/disponibilidad',
+    actions: [{ action: 'read', label: 'Ver' }],
+  },
+  {
+    key: 'forecast',
+    label: 'Forecast',
+    href: '/forecast',
+    actions: [
+      { action: 'read', label: 'Ver' },
+      { action: 'update', label: 'Editar semanas' },
+    ],
+  },
+  {
+    key: 'pedidos',
+    label: 'Pedidos',
+    href: '/pedidos',
+    actions: [
+      { action: 'read', label: 'Ver' },
+      { action: 'create', label: 'Guardar simulación' },
+      { action: 'update', label: 'Editar fechas' },
+      { action: 'delete', label: 'Eliminar simulación' },
+    ],
+  },
+  {
+    key: 'clientes',
+    label: 'Clientes',
+    href: '/clientes',
+    actions: [{ action: 'read', label: 'Ver' }],
+  },
+  {
+    key: 'despacho',
+    label: 'Despacho',
+    href: '/despacho',
+    actions: [
+      { action: 'read', label: 'Ver' },
+      { action: 'create', label: 'Publicar' },
+      { action: 'update', label: 'Operar' },
+      { action: 'delete', label: 'Anular' },
+    ],
+  },
+  {
+    key: 'usuarios',
+    label: 'Usuarios y roles',
+    href: '/usuarios',
+    actions: [
+      { action: 'read', label: 'Ver' },
+      { action: 'create', label: 'Crear roles' },
+      { action: 'update', label: 'Gestionar usuarios y permisos' },
+      { action: 'delete', label: 'Eliminar roles' },
+    ],
+  },
+  {
+    key: 'auditoria',
+    label: 'Auditoría (API)',
+    href: null,
+    actions: [{ action: 'read', label: 'Ver' }],
+  },
+  {
+    key: 'sincronizacion',
+    label: 'Sincronización (botón global)',
+    href: null,
+    actions: [{ action: 'update', label: 'Ejecutar' }],
+  },
+];
+
+export type AppModuleKey =
+  | 'disponibilidad'
+  | 'forecast'
+  | 'pedidos'
+  | 'clientes'
+  | 'despacho'
+  | 'usuarios'
+  | 'auditoria'
+  | 'sincronizacion';
+
+export interface PermissionRef {
+  module: AppModuleKey;
+  action: PermissionAction;
+}
+
+/** Clave plana usada por el JWT/sesión y el frontend: «modulo:accion». */
+export function permissionKey(module: string, action: string): string {
+  return `${module}:${action}`;
+}
+
+/** Permisos iniciales (replican el comportamiento previo basado en @Roles). */
+export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, PermissionAction]>> = {
+  ADMIN: APP_MODULES.flatMap((module) =>
+    module.actions.map(({ action }) => [module.key as AppModuleKey, action] as [AppModuleKey, PermissionAction]),
+  ),
+  GERENCIA: [
+    ['disponibilidad', 'read'],
+    ['forecast', 'read'],
+    ['forecast', 'update'],
+    ['pedidos', 'read'],
+    ['pedidos', 'create'],
+    ['pedidos', 'update'],
+    ['pedidos', 'delete'],
+    ['clientes', 'read'],
+    ['despacho', 'read'],
+    ['despacho', 'create'],
+    ['despacho', 'delete'],
+    ['auditoria', 'read'],
+    ['sincronizacion', 'update'],
+  ],
+  PLANIFICADOR: [
+    ['disponibilidad', 'read'],
+    ['forecast', 'read'],
+    ['forecast', 'update'],
+    ['pedidos', 'read'],
+    ['pedidos', 'create'],
+    ['pedidos', 'update'],
+    ['pedidos', 'delete'],
+    ['clientes', 'read'],
+    ['despacho', 'read'],
+    ['despacho', 'create'],
+    ['despacho', 'delete'],
+    ['sincronizacion', 'update'],
+  ],
+  ALMACEN: [
+    ['disponibilidad', 'read'],
+    ['forecast', 'read'],
+    ['forecast', 'update'],
+    ['pedidos', 'read'],
+    ['pedidos', 'create'],
+    ['pedidos', 'delete'],
+    ['clientes', 'read'],
+    ['despacho', 'read'],
+    ['despacho', 'update'],
+  ],
+  CONSULTA: [
+    ['disponibilidad', 'read'],
+    ['forecast', 'read'],
+    ['pedidos', 'read'],
+    ['pedidos', 'create'],
+    ['pedidos', 'delete'],
+    ['clientes', 'read'],
+  ],
+};
+
+// Matriz de permisos: cada entrada concede una acción sobre un módulo.
+export const zPermissionEntry = z.object({
+  module: z.string().trim().min(1).max(40),
+  action: zPermissionAction,
+});
+export type PermissionEntry = z.infer<typeof zPermissionEntry>;
+
+export const zRoleInput = z.object({
+  code: zRoleCode,
+  name: z.string().trim().min(1, 'El nombre es obligatorio').max(80),
+  description: z.string().trim().max(240).nullable().optional(),
+  baseRole: zRole.default('CONSULTA'),
+  permissions: z.array(zPermissionEntry).max(200).default([]),
+});
+export type RoleInput = z.infer<typeof zRoleInput>;
+
+export const zRoleUpdateInput = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    description: z.string().trim().max(240).nullable().optional(),
+    baseRole: zRole.optional(),
+    permissions: z.array(zPermissionEntry).max(200).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: 'No hay cambios que guardar' });
+export type RoleUpdateInput = z.infer<typeof zRoleUpdateInput>;
+
+export const zUserPermissionOverride = z.object({
+  module: z.string().trim().min(1).max(40),
+  action: zPermissionAction,
+  allowed: z.boolean(),
+});
+export type UserPermissionOverride = z.infer<typeof zUserPermissionOverride>;
+
+export const zUserPermissionsInput = z.object({
+  overrides: z.array(zUserPermissionOverride).max(200),
+});
+export type UserPermissionsInput = z.infer<typeof zUserPermissionsInput>;
+
+// Respuestas compuestas (sin Zod en el cliente, solo tipos).
+export interface RoleSummary {
+  code: string;
+  name: string;
+  description: string | null;
+  baseRole: Role;
+  isSystem: boolean;
+  userCount: number;
+  permissions: string[];
+}
+
+export interface UserPermissionsResponse {
+  userId: string;
+  role: string;
+  roleName: string;
+  baseRole: Role;
+  rolePermissions: string[];
+  overrides: UserPermissionOverride[];
+  permissions: string[];
+}
 
 // ---------- Paginación ----------
 export const zPaginationQuery = z.object({
@@ -41,8 +274,13 @@ export const zUserSummary = z.object({
   id: z.string(),
   profitCode: z.string(),
   displayName: z.string(),
-  role: zRole,
+  // Código del rol efectivo (puede ser un rol dinámico: COMPRAS, SUPERVISOR…).
+  role: zRoleCode,
   isActive: z.boolean(),
+  // Solo en /auth/me: nombre legible, plantilla y permisos efectivos.
+  roleName: z.string().optional(),
+  baseRole: zRole.optional(),
+  permissions: z.array(z.string()).optional(),
 });
 export type UserSummary = z.infer<typeof zUserSummary>;
 
@@ -63,7 +301,8 @@ export type AuthResponse = z.infer<typeof zAuthResponse>;
 // Administración de usuarios: el usuario viene de Profit, aquí solo se
 // administran su rol y si puede entrar.
 export const zUpdateUserInput = z.object({
-  role: zRole.optional(),
+  // Se valida contra la tabla de roles en el servicio (roles dinámicos).
+  role: zRoleCode.optional(),
   isActive: z.boolean().optional(),
 });
 export type UpdateUserInput = z.infer<typeof zUpdateUserInput>;
@@ -109,6 +348,18 @@ export const zSyncStatusResponse = z.object({
   lastSuccessfulRun: zSyncRun.nullable(),
   pendingDomains: z.array(zSyncDomain),
   message: z.string().nullable(),
+  // Frescura por dominio: qué tan viejo es cada dato y cada cuánto se refresca.
+  domains: z.array(
+    z.object({
+      domain: zSyncDomain,
+      lastRunAt: z.string().nullable(),
+      status: zSyncRunStatus.nullable(),
+      ageSeconds: z.number().int().nullable(),
+      recordsRead: z.number().int(),
+      // 0 = solo sincronización manual para ese dominio.
+      intervalSeconds: z.number().int(),
+    }),
+  ),
 });
 export type SyncStatusResponse = z.infer<typeof zSyncStatusResponse>;
 
@@ -221,6 +472,76 @@ export const zCustomerQuery = zPaginationQuery.extend({
     .optional(),
 });
 export type CustomerQuery = z.infer<typeof zCustomerQuery>;
+
+// ---------- Estado de cuenta del cliente (cartera) ----------
+// Los documentos salen de Profit en vivo (`docum_cc`), no de la base local.
+// El saldo viaja con signo: los adelantos y notas de crédito restan del total.
+export const CUSTOMER_STATEMENT_CURRENCIES = ['USD', 'BS'] as const;
+export const zCustomerStatementCurrency = z.enum(CUSTOMER_STATEMENT_CURRENCIES);
+export type CustomerStatementCurrency = z.infer<typeof zCustomerStatementCurrency>;
+
+export const zCustomerStatementQuery = z.object({
+  // Mismo filtro que «Documentos pendientes» en Profit: si se omite, solo
+  // saldo > 0; con true se incluyen los documentos ya saldados.
+  incluirSaldados: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .transform((v) => v === true || v === 'true')
+    .optional(),
+  moneda: zCustomerStatementCurrency.optional(),
+});
+export type CustomerStatementQuery = z.infer<typeof zCustomerStatementQuery>;
+
+export const zCustomerStatementRow = z.object({
+  tipoDoc: z.string(),
+  nroDoc: z.number().int(),
+  fechaEmision: z.string().nullable(),
+  fechaVencimiento: z.string().nullable(),
+  // Días transcurridos desde el vencimiento: > 0 vencido, 0 vence hoy,
+  // < 0 aún no vence. `null` si el documento no tiene fecha de vencimiento.
+  diasVencimiento: z.number().int().nullable(),
+  // Con signo: negativo cuando el documento es un crédito (ADEL, N/CR, …).
+  saldo: z.number().nullable(),
+  montoNeto: z.number().nullable(),
+  esCredito: z.boolean(),
+});
+export type CustomerStatementRow = z.infer<typeof zCustomerStatementRow>;
+
+export const zCustomerStatementTotals = z.object({
+  // Neto de los documentos listados (créditos restados).
+  saldo: z.number(),
+  // Solo documentos con saldo positivo y días vencidos > 0.
+  saldoVencido: z.number(),
+  // Valor absoluto de los créditos listados.
+  credito: z.number(),
+  documentos: z.number().int(),
+  vencidos: z.number().int(),
+  proximoVencimiento: z.string().nullable(),
+});
+export type CustomerStatementTotals = z.infer<typeof zCustomerStatementTotals>;
+
+export const zCustomerStatementCustomer = z.object({
+  code: z.string(),
+  name: z.string(),
+  customerType: z.string().nullable(),
+  vendor: z.string().nullable(),
+});
+export type CustomerStatementCustomer = z.infer<typeof zCustomerStatementCustomer>;
+
+export const zCustomerStatementSource = z.enum(['profit', 'fixtures']);
+export type CustomerStatementSource = z.infer<typeof zCustomerStatementSource>;
+
+export const zCustomerStatement = z.object({
+  customer: zCustomerStatementCustomer,
+  rows: z.array(zCustomerStatementRow),
+  totals: zCustomerStatementTotals,
+  asOf: z.string(),
+  moneda: zCustomerStatementCurrency,
+  incluyeSaldados: z.boolean(),
+  // true si se alcanzó el tope de documentos y la lista viene recortada.
+  truncated: z.boolean(),
+  source: zCustomerStatementSource,
+});
+export type CustomerStatement = z.infer<typeof zCustomerStatement>;
 
 export const ORDER_STATUSES = ['ABIERTO', 'CERRADO', 'CANCELADO', 'DESCONOCIDO'] as const;
 export const zOrderStatus = z.enum(ORDER_STATUSES);
@@ -399,6 +720,443 @@ export const zDeliveryDateApplyResponse = z.object({
   unchanged: z.number().int(),
 });
 export type DeliveryDateApplyResponse = z.infer<typeof zDeliveryDateApplyResponse>;
+
+// ============================================================
+// Simulador de despacho: escenarios guardados (Fase 6).
+//
+// La simulación vive en el navegador hasta que el usuario la guarda. Aquí
+// viaja como RECETA (qué se marcó y con qué filtros/modo) + FOTO (totales y
+// cantidades del momento). Nunca escribe en Profit.
+// ============================================================
+export const MAX_SCENARIOS = 25;
+export const MAX_SCENARIO_LINES = 5000;
+
+export const DISPATCH_MODES = ['disponible', 'total'] as const;
+export const zDispatchMode = z.enum(DISPATCH_MODES);
+export type DispatchMode = z.infer<typeof zDispatchMode>;
+
+export const DISPATCH_SORTS = ['prioridad', 'cobertura'] as const;
+export const zDispatchSort = z.enum(DISPATCH_SORTS);
+export type DispatchSort = z.infer<typeof zDispatchSort>;
+
+export const SCENARIO_KINDS = ['DRAFT', 'SAVED'] as const;
+export const zScenarioKind = z.enum(SCENARIO_KINDS);
+export type ScenarioKind = z.infer<typeof zScenarioKind>;
+
+// Filtros de la cartera que forman parte de la receta. Sin ellos la
+// repartición de stock cambia y el escenario no se reproduce.
+const zScenarioDate = z
+  .union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Debe ser yyyy-MM-dd'), z.literal('')])
+  .default('');
+
+export const zScenarioFilters = z.object({
+  q: z.string().trim().max(100).default(''),
+  status: z.union([zOrderStatus, z.literal('')]).default(''),
+  customerType: z.string().trim().max(60).default(''),
+  vendor: z.string().trim().max(100).default(''),
+  authorized: z.union([z.enum(['SI', 'NO']), z.literal('')]).default(''),
+  customerCode: z.string().trim().max(20).default(''),
+  emisionDesde: zScenarioDate,
+  emisionHasta: zScenarioDate,
+  entregaDesde: zScenarioDate,
+  entregaHasta: zScenarioDate,
+});
+export type ScenarioFilters = z.infer<typeof zScenarioFilters>;
+
+// Renglón identificado por pedido + artículo (misma convención que la fecha
+// tentativa). Sobrevive a la sincronización y es legible en la base.
+export const zScenarioLineRef = z.object({
+  orderNumber: z.string().trim().min(1).max(40),
+  productCode: z.string().trim().min(1).max(60),
+});
+export type ScenarioLineRef = z.infer<typeof zScenarioLineRef>;
+
+export const zScenarioRecipe = z.object({
+  by: zOrderGroupBy,
+  mode: zDispatchMode,
+  sort: zDispatchSort,
+  filters: zScenarioFilters,
+});
+export type ScenarioRecipe = z.infer<typeof zScenarioRecipe>;
+
+export const zScenarioTotals = z.object({
+  lines: z.number().int().min(0),
+  sacks: z.number(),
+  pendingQty: z.number(),
+  pendingKg: z.number(),
+  assignedQty: z.number(),
+  assignedKg: z.number(),
+  missingQty: z.number(),
+  missingKg: z.number(),
+  // 0..1 (kg asignados / kg de la demanda simulada).
+  coverage: z.number(),
+});
+export type ScenarioTotals = z.infer<typeof zScenarioTotals>;
+
+// Foto por renglón: permite el diff «esto cambió» sin recalcular a ciegas.
+export const zScenarioSnapshotLine = zScenarioLineRef.extend({
+  customerCode: z.string().nullable(),
+  customerName: z.string().nullable(),
+  description: z.string().nullable(),
+  uom: z.string().nullable(),
+  pendingQty: z.number(),
+  pendingKg: z.number().nullable(),
+  assignedQty: z.number(),
+  assignedKg: z.number(),
+  missingQty: z.number(),
+  missingKg: z.number(),
+  stockTotal: z.number(),
+  effectiveDate: z.string().nullable(),
+  priority: z.number().int(),
+});
+export type ScenarioSnapshotLine = z.infer<typeof zScenarioSnapshotLine>;
+
+export const zScenarioSnapshot = z.object({
+  // ISO del momento en que se tomó la foto.
+  takenAt: z.string(),
+  // Renglones totales de la cartera (con los filtros de la receta).
+  carteraLines: z.number().int().min(0).default(0),
+  totals: zScenarioTotals,
+  lines: z.array(zScenarioSnapshotLine).max(MAX_SCENARIO_LINES),
+});
+export type ScenarioSnapshot = z.infer<typeof zScenarioSnapshot>;
+
+export const zScenarioPayload = z.object({
+  recipe: zScenarioRecipe,
+  selected: z.array(zScenarioLineRef).max(MAX_SCENARIO_LINES),
+  // null en el borrador: siempre se recalcula en vivo.
+  snapshot: zScenarioSnapshot.nullable(),
+});
+export type ScenarioPayload = z.infer<typeof zScenarioPayload>;
+
+// Borrador: solo receta + renglones (sin foto) para no escribir de más.
+export const zScenarioDraftInput = z.object({
+  recipe: zScenarioRecipe,
+  selected: z.array(zScenarioLineRef).max(MAX_SCENARIO_LINES),
+});
+export type ScenarioDraftInput = z.infer<typeof zScenarioDraftInput>;
+
+export const zScenarioSaveInput = zScenarioDraftInput.extend({
+  name: z.string().trim().min(1, 'Ponle un nombre').max(80),
+  snapshot: zScenarioSnapshot,
+});
+export type ScenarioSaveInput = z.infer<typeof zScenarioSaveInput>;
+
+export const zScenarioUpdateInput = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    payload: zScenarioPayload.optional(),
+    // Versión leída por el cliente (versionado optimista).
+    version: z.number().int().min(1).optional(),
+  })
+  .refine((value) => value.name !== undefined || value.payload !== undefined, {
+    message: 'No hay cambios que guardar',
+  });
+export type ScenarioUpdateInput = z.infer<typeof zScenarioUpdateInput>;
+
+export const zScenarioRestoreInput = z.object({
+  restored: z.number().int().min(0).default(0),
+  missing: z.number().int().min(0).default(0),
+  // Diff calculado por el cliente antes de confirmar (opcional: un cliente
+  // viejo sigue funcionando y el historial queda con ceros).
+  pendingChanges: z.number().int().min(0).default(0),
+  stockChanges: z.number().int().min(0).default(0),
+  dateChanges: z.number().int().min(0).default(0),
+  carteraBefore: z.number().int().min(0).default(0),
+  carteraAfter: z.number().int().min(0).default(0),
+  beforeKg: z.number().min(0).default(0),
+  afterKg: z.number().min(0).default(0),
+  beforeCoverage: z.number().min(0).max(1).default(0),
+  afterCoverage: z.number().min(0).max(1).default(0),
+});
+export type ScenarioRestoreInput = z.infer<typeof zScenarioRestoreInput>;
+
+// Una restauración del historial visible de un escenario.
+export const zScenarioRestoreLog = z.object({
+  id: z.string(),
+  restoredAt: z.string(),
+  restoredById: z.string().nullable(),
+  restoredByName: z.string().nullable(),
+  restored: z.number().int(),
+  missing: z.number().int(),
+  pendingChanges: z.number().int(),
+  stockChanges: z.number().int(),
+  dateChanges: z.number().int(),
+  carteraBefore: z.number().int(),
+  carteraAfter: z.number().int(),
+  beforeKg: z.number(),
+  afterKg: z.number(),
+  beforeCoverage: z.number(),
+  afterCoverage: z.number(),
+});
+export type ScenarioRestoreLog = z.infer<typeof zScenarioRestoreLog>;
+
+export const zScenarioListItem = z.object({
+  id: z.string(),
+  name: z.string(),
+  kind: zScenarioKind,
+  lineCount: z.number().int(),
+  sacks: z.number(),
+  assignedKg: z.number(),
+  missingKg: z.number(),
+  // % entero (0-100) para pintar la tarjeta sin abrir el payload.
+  coverage: z.number().int(),
+  // true = hubo sync de pedidos/existencias después de guardar.
+  stale: z.boolean(),
+  version: z.number().int(),
+  restoredAt: z.string().nullable(),
+  // Cuántas veces se ha restaurado (historial visible en el modal).
+  restoreCount: z.number().int(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type ScenarioListItem = z.infer<typeof zScenarioListItem>;
+
+export const zScenarioDetail = zScenarioListItem.extend({
+  payload: zScenarioPayload,
+  // Últimas restauraciones, de la más reciente a la más antigua.
+  restores: z.array(zScenarioRestoreLog),
+});
+export type ScenarioDetail = z.infer<typeof zScenarioDetail>;
+
+export const zScenarioListResponse = z.object({
+  draft: zScenarioListItem.nullable(),
+  items: z.array(zScenarioListItem),
+  limit: z.number().int(),
+  dataVersion: z.string().nullable(),
+});
+export type ScenarioListResponse = z.infer<typeof zScenarioListResponse>;
+
+export const zScenarioDraftResponse = z.object({
+  scenario: zScenarioDetail.nullable(),
+});
+export type ScenarioDraftResponse = z.infer<typeof zScenarioDraftResponse>;
+
+// ============================================================
+// Despacho de almacén (Fase 6b): hoja de despacho + túnel de acuses.
+//
+// Un despacho nace de un escenario guardado del simulador y es la orden de
+// trabajo que el almacén ejecuta. Cada transición deja sello temporal, evento
+// en la bitácora y notificación al planificador: el «túnel» es de dos vías.
+// Nunca escribe en Profit.
+// ============================================================
+export const DISPATCH_SHEET_STATUSES = [
+  'ENVIADO',
+  'RECIBIDO',
+  'EN_PROCESO',
+  'CON_NOVEDAD',
+  'DESPACHADO',
+  'CANCELADO',
+] as const;
+export const zDispatchSheetStatus = z.enum(DISPATCH_SHEET_STATUSES);
+export type DispatchSheetStatus = z.infer<typeof zDispatchSheetStatus>;
+
+export const DISPATCH_LINE_STATUSES = ['PENDIENTE', 'CARGADO', 'PARCIAL', 'FALTANTE', 'NOVEDAD'] as const;
+export const zDispatchLineStatus = z.enum(DISPATCH_LINE_STATUSES);
+export type DispatchLineStatus = z.infer<typeof zDispatchLineStatus>;
+
+export const DISPATCH_ACK_EVENTS = ['RECIBIDO', 'EN_PROCESO'] as const;
+export const zDispatchAckEvent = z.enum(DISPATCH_ACK_EVENTS);
+export type DispatchAckEvent = z.infer<typeof zDispatchAckEvent>;
+
+export const NOTIFICATION_TYPES = [
+  'DESPACHO_ENVIADO',
+  'DESPACHO_RECIBIDO',
+  'DESPACHO_EN_PROCESO',
+  'DESPACHO_CERRADO',
+  'DESPACHO_NOVEDAD',
+  'DESPACHO_CANCELADO',
+  'MENSAJE',
+] as const;
+export const zNotificationType = z.enum(NOTIFICATION_TYPES);
+export type NotificationType = z.infer<typeof zNotificationType>;
+
+export const zDispatchSheetLine = z.object({
+  id: z.string(),
+  position: z.number().int(),
+  orderNumber: z.string(),
+  productCode: z.string(),
+  description: z.string().nullable(),
+  uom: z.string().nullable(),
+  customerCode: z.string().nullable(),
+  customerName: z.string().nullable(),
+  warehouseCode: z.string().nullable(),
+  effectiveDate: z.string().nullable(),
+  plannedQty: z.number(),
+  plannedKg: z.number(),
+  loadedQty: z.number().nullable(),
+  loadedKg: z.number().nullable(),
+  status: zDispatchLineStatus,
+  note: z.string().nullable(),
+  checkedAt: z.string().nullable(),
+  checkedByName: z.string().nullable(),
+});
+export type DispatchSheetLine = z.infer<typeof zDispatchSheetLine>;
+
+export const zDispatchSheetEvent = z.object({
+  id: z.string(),
+  // SYSTEM = transición de estado; MESSAGE = conversación entre las partes.
+  kind: z.enum(['SYSTEM', 'MESSAGE']),
+  type: z.string(),
+  body: z.string().nullable(),
+  authorId: z.string().nullable(),
+  authorCode: z.string().nullable(),
+  authorName: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type DispatchSheetEvent = z.infer<typeof zDispatchSheetEvent>;
+
+// Resumen para la bandeja (sin renglones ni bitácora).
+export const zDispatchSheetSummary = z.object({
+  id: z.string(),
+  number: z.string(),
+  title: z.string(),
+  status: zDispatchSheetStatus,
+  instructions: z.string().nullable(),
+  assignedToId: z.string().nullable(),
+  assignedToName: z.string().nullable(),
+  assignedRole: z.string(),
+  claimedById: z.string().nullable(),
+  claimedByName: z.string().nullable(),
+  claimedAt: z.string().nullable(),
+  createdById: z.string(),
+  createdByName: z.string().nullable(),
+  createdByCode: z.string().nullable(),
+  sentAt: z.string(),
+  receivedAt: z.string().nullable(),
+  receivedByName: z.string().nullable(),
+  startedAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  completedByName: z.string().nullable(),
+  canceledAt: z.string().nullable(),
+  canceledByName: z.string().nullable(),
+  plannedLines: z.number().int(),
+  plannedSacks: z.number(),
+  plannedKg: z.number(),
+  loadedSacks: z.number(),
+  loadedKg: z.number(),
+  differenceKg: z.number(),
+  linesDone: z.number().int(),
+  progress: z.number(),
+  customers: z.array(z.string()),
+  nextDeliveryDate: z.string().nullable(),
+  updatedAt: z.string(),
+  // Permisos resueltos para quien consulta (evita duplicar reglas en el web).
+  canOperate: z.boolean(),
+  canCancel: z.boolean(),
+});
+export type DispatchSheetSummary = z.infer<typeof zDispatchSheetSummary>;
+
+export const zDispatchSheetDetail = zDispatchSheetSummary.extend({
+  lines: z.array(zDispatchSheetLine),
+  events: z.array(zDispatchSheetEvent),
+});
+export type DispatchSheetDetail = z.infer<typeof zDispatchSheetDetail>;
+
+export const zDispatchSheetListResponse = z.object({
+  items: z.array(zDispatchSheetSummary),
+  total: z.number().int(),
+  // Contadores del pulso para el hero, ya resueltos por el servidor.
+  counters: z.object({
+    pending: z.number().int(),
+    inProgress: z.number().int(),
+    doneToday: z.number().int(),
+    kgPending: z.number(),
+    kgDoneToday: z.number(),
+  }),
+});
+export type DispatchSheetListResponse = z.infer<typeof zDispatchSheetListResponse>;
+
+export const zDispatchAssignee = z.object({
+  id: z.string(),
+  code: z.string(),
+  displayName: z.string(),
+  // Código del rol efectivo (dinámico).
+  role: zRoleCode,
+});
+export type DispatchAssignee = z.infer<typeof zDispatchAssignee>;
+
+// Preparación del almacén para publicar: sin operadores activos no se publica
+// (el aviso no tendría a quién llegar).
+export const zDispatchAssigneesResponse = z.object({
+  operators: z.array(zDispatchAssignee),
+  hasWarehouseOperators: z.boolean(),
+});
+export type DispatchAssigneesResponse = z.infer<typeof zDispatchAssigneesResponse>;
+
+export const zDispatchSheetQuery = z.object({
+  // all = todo lo que puedo ver · assigned = lo mío por operar · created = lo que publiqué.
+  scope: z.enum(['all', 'assigned', 'created']).default('all'),
+  status: zDispatchSheetStatus.optional(),
+  q: z.string().trim().max(80).optional(),
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+export type DispatchSheetQuery = z.infer<typeof zDispatchSheetQuery>;
+
+export const zDispatchSheetCreateInput = z.object({
+  scenarioId: z.string().min(1, 'Elige un escenario guardado'),
+  title: z.string().trim().min(1, 'Ponle un título').max(120),
+  instructions: z.string().trim().max(500).optional(),
+  // null/omitido = «todo almacén» (bandeja compartida).
+  assignedToId: z.string().min(1).nullable().optional(),
+});
+export type DispatchSheetCreateInput = z.infer<typeof zDispatchSheetCreateInput>;
+
+export const zDispatchAckInput = z.object({ event: zDispatchAckEvent });
+export type DispatchAckInput = z.infer<typeof zDispatchAckInput>;
+
+export const zDispatchLineInput = z.object({
+  loadedQty: z.coerce.number().min(0).max(1_000_000),
+  status: zDispatchLineStatus,
+  note: z.string().trim().max(240).optional(),
+});
+export type DispatchLineInput = z.infer<typeof zDispatchLineInput>;
+
+export const zDispatchCompleteInput = z.object({ note: z.string().trim().max(500).optional() });
+export type DispatchCompleteInput = z.infer<typeof zDispatchCompleteInput>;
+
+export const zDispatchCancelInput = z.object({ reason: z.string().trim().min(3, 'Indica el motivo').max(240) });
+export type DispatchCancelInput = z.infer<typeof zDispatchCancelInput>;
+
+export const zDispatchMessageInput = z.object({ body: z.string().trim().min(1).max(500) });
+export type DispatchMessageInput = z.infer<typeof zDispatchMessageInput>;
+
+// ---------- Notificaciones (campana + acuses) ----------
+export const zNotification = z.object({
+  id: z.string(),
+  type: zNotificationType,
+  title: z.string(),
+  body: z.string().nullable(),
+  entityType: z.string(),
+  entityId: z.string(),
+  linkPath: z.string(),
+  actorName: z.string().nullable(),
+  readAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type Notification = z.infer<typeof zNotification>;
+
+export const zNotificationListResponse = z.object({
+  items: z.array(zNotification),
+  unread: z.number().int(),
+});
+export type NotificationListResponse = z.infer<typeof zNotificationListResponse>;
+
+export const zNotificationReadInput = z
+  .object({
+    ids: z.array(z.string().min(1)).max(200).optional(),
+    all: z.boolean().optional(),
+  })
+  .refine((value) => value.all === true || (value.ids?.length ?? 0) > 0, {
+    message: 'Indica ids o all=true',
+  });
+export type NotificationReadInput = z.infer<typeof zNotificationReadInput>;
+
+export const zNotificationQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(12),
+});
+export type NotificationQuery = z.infer<typeof zNotificationQuery>;
 
 // ---------- Salud del sistema ----------
 export const zHealthResponse = z.object({

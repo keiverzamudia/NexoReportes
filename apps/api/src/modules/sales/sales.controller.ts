@@ -2,9 +2,11 @@ import { Body, Controller, Delete, Get, Param, Put, Query, Req, UseGuards } from
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
   CustomerQuery,
+  CustomerStatementQuery,
   OrderGroupQuery,
   OrderQuery,
   zCustomerQuery,
+  zCustomerStatementQuery,
   zDeliveryDateRestoreInput,
   zDeliveryDateSetInput,
   zOrderGroupQuery,
@@ -12,8 +14,9 @@ import {
 } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { Roles } from '../auth/roles.decorator';
-import { RolesGuard } from '../auth/roles.guard';
+import { RequireAnyPermission, RequirePermission } from '../permissions/permissions.decorator';
+import { PermissionsGuard } from '../permissions/permissions.guard';
+import { CustomerStatementService } from './customer-statement.service';
 import { DeliveryDatesService } from './delivery-dates.service';
 import { SalesService } from './sales.service';
 
@@ -22,40 +25,51 @@ import { SalesService } from './sales.service';
 @ApiTags('sales')
 @ApiBearerAuth()
 @Controller()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class SalesController {
   constructor(
     private readonly sales: SalesService,
     private readonly deliveryDates: DeliveryDatesService,
+    private readonly customerStatements: CustomerStatementService,
   ) {}
 
   @Get('customers')
-  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA')
+  @RequireAnyPermission('clientes:read', 'pedidos:read')
   listCustomers(@Query(new ZodValidationPipe(zCustomerQuery)) query: CustomerQuery) {
     return this.sales.listCustomers(query);
   }
 
+  // Estado de cuenta del cliente: cartera en vivo desde Profit (solo lectura).
+  @Get('customers/:code/statement')
+  @RequirePermission('clientes:read')
+  customerStatement(
+    @Param('code') code: string,
+    @Query(new ZodValidationPipe(zCustomerStatementQuery)) query: CustomerStatementQuery,
+  ) {
+    return this.customerStatements.statement(code, query);
+  }
+
   @Get('orders')
-  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA')
+  @RequirePermission('pedidos:read')
   listOrders(@Query(new ZodValidationPipe(zOrderQuery)) query: OrderQuery) {
     return this.sales.listOrders(query);
   }
 
   @Get('orders/grouped')
-  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA')
+  @RequirePermission('pedidos:read')
   listOrdersGrouped(@Query(new ZodValidationPipe(zOrderGroupQuery)) query: OrderGroupQuery) {
     return this.sales.listGrouped(query);
   }
 
   @Get('orders/:id')
-  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA')
+  @RequirePermission('pedidos:read')
   orderDetail(@Param('id') id: string) {
     return this.sales.orderDetail(id);
   }
 
   // Asigna/actualiza la fecha tentativa de uno o varios renglones.
   @Put('orders/delivery-date')
-  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR')
+  @RequirePermission('pedidos:update')
   setDeliveryDates(
     @Body(new ZodValidationPipe(zDeliveryDateSetInput)) body: { items: { orderNumber: string; productCode: string }[]; date: string; note?: string },
     @Req() request: AuthenticatedRequest,
@@ -68,7 +82,7 @@ export class SalesController {
 
   // Restaura la fecha original de Profit en los renglones seleccionados.
   @Delete('orders/delivery-date')
-  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR')
+  @RequirePermission('pedidos:update')
   restoreDeliveryDates(
     @Body(new ZodValidationPipe(zDeliveryDateRestoreInput)) body: { items: { orderNumber: string; productCode: string }[]; note?: string },
     @Req() request: AuthenticatedRequest,

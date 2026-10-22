@@ -2,10 +2,15 @@ import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
+import type { EffectiveAccess } from '../permissions/permissions.service';
 import { AccessTokenPayload } from './auth.service';
 import { readCookie } from './cookies';
 
-export type AuthenticatedRequest = Request & { user?: AccessTokenPayload };
+export type AuthenticatedRequest = Request & {
+  user?: AccessTokenPayload;
+  /** Lo adjunta PermissionsGuard (rol, plantilla y permisos efectivos). */
+  access?: EffectiveAccess;
+};
 
 // La sesión del navegador viaja en una cookie HttpOnly. Se mantiene el header
 // `Authorization: Bearer` como alternativa para consumidores de la API

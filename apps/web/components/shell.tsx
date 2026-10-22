@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Boxes,
   CalendarRange,
+  ClipboardList,
   Eye,
   EyeOff,
   LogIn,
@@ -20,11 +21,16 @@ import {
   ShoppingCart,
   Users,
 } from 'lucide-react';
-import { LoginCandidate } from '@nexo/contracts';
+import type { LucideIcon } from 'lucide-react';
+import { LoginCandidate, SyncStatusResponse } from '@nexo/contracts';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, currentUser, login as apiLogin, logout, searchLoginCandidates } from '../lib/api';
+import { humanAge } from '../lib/dispatch-sheet';
+import { hasPermission } from '../lib/permissions';
+import { Logo } from './Logo';
+import { NotificationsBell } from './NotificationsBell';
 import { cx } from './ui';
 
 export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
@@ -200,7 +206,10 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
           <ShieldCheck aria-hidden className="size-3.5" />
           Sincronizado con Profit
         </span>
-        <h1 className="mt-space-md text-display-lg italic tracking-tight text-primary">Nexo Producción</h1>
+        <span className="mt-space-md flex items-center justify-center">
+          <Logo width={30} height={33} />
+        </span>
+        <h1 className="mt-space-sm text-display-lg uppercase tracking-[0.06em] text-primary">San Luis</h1>
         <p className="text-body-md text-on-surface-variant">Corp. Agropecuaria Venezolana</p>
       </header>
       <div className="relative w-full">
@@ -210,22 +219,68 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-const NAV_LINKS = [
-  { href: '/disponibilidad', label: 'Disponibilidad', icon: Boxes },
-  { href: '/forecast', label: 'Forecast', icon: CalendarRange },
-  { href: '/pedidos', label: 'Pedidos', icon: ShoppingCart },
-  { href: '/clientes', label: 'Clientes', icon: Users },
-] as const;
+// Navegación por permisos: cada módulo aparece si la sesión tiene
+// `modulo:read`. El API valida exactamente lo mismo, así que ocultar el
+// enlace es solo la capa visual.
+interface NavLink {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  module: string;
+}
 
-// Solo visible para ADMIN (el API igual valida el rol).
-const ADMIN_LINK = { href: '/usuarios', label: 'Usuarios', icon: ShieldCheck } as const;
+const NAV_LINKS: NavLink[] = [
+  { href: '/disponibilidad', label: 'Disponibilidad', icon: Boxes, module: 'disponibilidad' },
+  { href: '/forecast', label: 'Forecast', icon: CalendarRange, module: 'forecast' },
+  { href: '/pedidos', label: 'Pedidos', icon: ShoppingCart, module: 'pedidos' },
+  { href: '/despacho', label: 'Despacho', icon: ClipboardList, module: 'despacho' },
+  { href: '/clientes', label: 'Clientes', icon: Users, module: 'clientes' },
+  { href: '/usuarios', label: 'Usuarios', icon: ShieldCheck, module: 'usuarios' },
+];
+
+export function linksFor(permissions: string[] | undefined): NavLink[] {
+  return NAV_LINKS.filter((link) => hasPermission(permissions, link.module, 'read'));
+}
 
 // Botón "Sincronizar": dispara una sincronización completa contra Profit y
-// refresca todos los datos de la interfaz.
-export function SyncButton() {
+// refresca todos los datos de la interfaz. Al lado muestra la FRESCURA real
+// (la edad del dato más viejo y cada cuánto se refresca cada dominio).
+export function SyncButton({ enabled = true }: { enabled?: boolean }) {
   const queryClient = useQueryClient();
   const [state, setState] = useState<'idle' | 'running' | 'ok' | 'error'>('idle');
   const [message, setMessage] = useState<string>('');
+
+  const { data: status } = useQuery<SyncStatusResponse>({
+    queryKey: ['sync-status'],
+    queryFn: () => apiFetch<SyncStatusResponse>('/sync/status'),
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: true,
+    retry: false,
+  });
+
+  // El chip sigue al dominio que mueve la operación (existencias) y se pone
+  // ámbar solo si está VENCIDO respecto a su propio intervalo. Mostrar el más
+  // viejo en absoluto alarmaría por ALMACENES o PRODUCTOS, que por diseño son
+  // lentos.
+  const domains = status?.domains ?? [];
+  const withAge = domains.filter((domain) => domain.ageSeconds !== null);
+  const stock = withAge.find((domain) => domain.domain === 'EXISTENCIAS') ?? null;
+  const tracked =
+    stock ?? (withAge.length > 0 ? withAge.reduce((a, b) => ((a.ageSeconds ?? 0) > (b.ageSeconds ?? 0) ? a : b)) : null);
+  const late = tracked
+    ? tracked.intervalSeconds > 0
+      ? (tracked.ageSeconds ?? 0) > tracked.intervalSeconds * 2
+      : (tracked.ageSeconds ?? 0) > 3600
+    : false;
+  const freshnessTitle =
+    domains
+      .map(
+        (domain) =>
+          `${domain.domain}: ${humanAge(domain.ageSeconds)}${
+            domain.intervalSeconds > 0 ? ` · cada ${humanAge(domain.intervalSeconds).replace('hace ', '')}` : ' · solo manual'
+          }`,
+      )
+      .join('\n') || 'Sin información de sincronización';
 
   async function run() {
     setState('running');
@@ -247,27 +302,34 @@ export function SyncButton() {
 
   return (
     <div className="flex items-center gap-space-sm">
-      <button
-        onClick={run}
-        disabled={state === 'running'}
-        className="flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 bg-surface-container-lowest px-space-md font-semibold text-body-md text-primary shadow-soft transition-colors hover:bg-surface-container-low disabled:opacity-60"
-        title="Sincronizar datos desde Profit"
-      >
-        <RefreshCw aria-hidden className={`size-4 ${state === 'running' ? 'animate-spin' : ''}`} />
-        <span className="hidden sm:inline">{state === 'running' ? 'Sincronizando…' : 'Sincronizar'}</span>
-      </button>
+      {enabled && (
+        <button
+          onClick={run}
+          disabled={state === 'running'}
+          className="flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 bg-surface-container-lowest px-space-md font-semibold text-body-md text-primary shadow-soft transition-colors hover:bg-surface-container-low disabled:opacity-60"
+          title="Sincronizar datos desde Profit"
+        >
+          <RefreshCw aria-hidden className={`size-4 ${state === 'running' ? 'animate-spin' : ''}`} />
+          <span className="hidden sm:inline">{state === 'running' ? 'Sincronizando…' : 'Sincronizar'}</span>
+        </button>
+      )}
+      {tracked && (
+        <span
+          title={freshnessTitle}
+          className={cx(
+            'hidden items-center gap-space-xs rounded-pill px-space-sm py-1 text-label-sm font-semibold tabular-nums lg:flex',
+            late ? 'bg-warning-container text-on-warning-container' : 'bg-surface-container text-on-surface-variant',
+          )}
+        >
+          {tracked.domain.toLowerCase()} {humanAge(tracked.ageSeconds)}
+        </span>
+      )}
       {message && (
-        <span className={`hidden text-label-sm lg:inline ${state === 'error' ? 'text-error' : 'text-success'}`}>{message}</span>
+        <span className={`hidden text-label-sm xl:inline ${state === 'error' ? 'text-error' : 'text-success'}`}>{message}</span>
       )}
     </div>
   );
 }
-
-const ROLE_LABEL: Record<string, string> = {
-  ADMIN: 'Administrador',
-  COMERCIAL: 'Comercial',
-  PRODUCCION: 'Producción',
-};
 
 function initialsOf(name: string | undefined): string {
   if (!name) return '··';
@@ -281,27 +343,33 @@ function initialsOf(name: string | undefined): string {
 
 export function AppNav() {
   const pathname = usePathname();
+  const router = useRouter();
   const queryClient = useQueryClient();
-  // Quién soy y qué rol tengo: define si aparece el módulo Usuarios.
+  // Quién soy y qué permisos tengo: define el menú y el acceso por URL.
   const { data: sessionUser } = useQuery({
     queryKey: ['me'],
     queryFn: currentUser,
-    staleTime: 60_000,
+    staleTime: 15_000,
     retry: false,
   });
-  const links = sessionUser?.role === 'ADMIN' ? [...NAV_LINKS, ADMIN_LINK] : NAV_LINKS;
+  const permissionList = useMemo(() => sessionUser?.permissions ?? [], [sessionUser?.permissions]);
+  const links = useMemo(() => linksFor(permissionList), [permissionList]);
+  const home = links[0]?.href ?? '/pedidos';
+
+  // Acceso directo por URL a un módulo sin `modulo:read`: se devuelve al
+  // primer módulo permitido (el API responde 403 de todos modos).
+  useEffect(() => {
+    if (!sessionUser || links.length === 0) return;
+    const allowed = links.some((link) => pathname === link.href || pathname.startsWith(`${link.href}/`));
+    if (!allowed) router.replace(links[0]!.href);
+  }, [sessionUser, links, pathname, router]);
 
   return (
     <header className="sticky top-0 z-30 border-b border-outline-variant/35 bg-surface-container-lowest/85 backdrop-blur-xl">
       <div className="mx-auto flex w-full max-w-[1680px] flex-wrap items-center gap-space-md px-space-md py-space-sm md:px-space-xl">
-        <Link href="/disponibilidad" className="flex shrink-0 items-center gap-space-sm" aria-label="Nexo Producción — inicio">
-          <span className="grid size-9 place-items-center rounded-xl bg-primary-container text-secondary-container shadow-soft">
-            <Boxes aria-hidden className="size-[18px]" />
-          </span>
-          <span className="flex flex-col leading-none">
-            <span className="text-title-md italic text-primary">Nexo</span>
-            <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-outline">Producción</span>
-          </span>
+        <Link href={home} className="flex shrink-0 items-center gap-space-sm" aria-label="San Luis — inicio">
+          <Logo width={25} height={29} />
+          <span className="text-title-md font-extrabold uppercase tracking-[0.12em] text-primary">San Luis</span>
         </Link>
 
         <nav aria-label="Módulos" className="order-3 w-full md:order-none md:w-auto md:flex-1">
@@ -329,7 +397,8 @@ export function AppNav() {
         </nav>
 
         <div className="ml-auto flex items-center gap-space-sm">
-          <SyncButton />
+          {sessionUser && <NotificationsBell />}
+          <SyncButton enabled={hasPermission(permissionList, 'sincronizacion', 'update')} />
           {sessionUser && (
             <div className="hidden items-center gap-space-sm rounded-pill border border-outline-variant/50 bg-surface-container-lowest py-1 pl-1 pr-space-md shadow-soft lg:flex">
               <span className="grid size-7 place-items-center rounded-full bg-primary-fixed text-label-sm font-black text-primary">
@@ -338,7 +407,7 @@ export function AppNav() {
               <span className="flex flex-col leading-none">
                 <span className="max-w-[10rem] truncate text-label-md font-semibold text-on-surface">{sessionUser.displayName}</span>
                 <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-outline">
-                  {ROLE_LABEL[sessionUser.role] ?? sessionUser.role}
+                  {sessionUser.roleName ?? sessionUser.role}
                 </span>
               </span>
             </div>

@@ -37,8 +37,57 @@ model User {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  refreshTokens RefreshToken[]
-  auditEvents   AuditEvent[]  @relation("AuditActor")
+  refreshTokens       RefreshToken[]
+  auditEvents         AuditEvent[]  @relation("AuditActor")
+  scenarios           DispatchScenario[]
+  sheetsAssigned      DispatchSheet[] @relation("SheetAssignee")
+  notifications       Notification[]  @relation("NotificationRecipient")
+  permissionOverrides UserPermission[]
+}
+
+// ============================================================
+// Roles y permisos (RBAC dinámico).
+//
+// · Role            = rol efectivo (ADMIN, GERENCIA… o uno nuevo).
+// · RolePermission  = matriz módulo × acción del rol.
+// · UserPermission  = excepción puntual del usuario sobre su rol
+//                     (allowed=true concede, false deniega; gana la excepción).
+//
+// `baseRole` es la plantilla histórica: conserva la semántica fina de Despacho
+// (bandeja compartida, reclamo, propiedad). La matriz manda en accesos.
+// ADMIN es rol de sistema: no se edita ni se borra y siempre tiene todo.
+// ============================================================
+model Role {
+  code        String           @id
+  name        String
+  description String?
+  baseRole    String           @default("CONSULTA")
+  isSystem    Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  permissions RolePermission[]
+}
+
+model RolePermission {
+  roleCode String
+  role     Role   @relation(fields: [roleCode], references: [code], onDelete: Cascade)
+  module   String
+  action   String
+
+  @@id([roleCode, module, action])
+  @@index([module, action])
+}
+
+model UserPermission {
+  id      String  @id @default(cuid())
+  userId  String
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  module  String
+  action  String
+  allowed Boolean
+
+  @@unique([userId, module, action])
+  @@index([module, action])
 }
 
 model RefreshToken {
@@ -324,4 +373,216 @@ model ForecastWeek {
   qty        Decimal  @default(0)
 
   @@unique([forecastId, weekIndex])
+}
+
+// ============================================================
+// Simulador de despacho (Fase 6): escenarios guardados.
+//
+// Un escenario tiene dos capas:
+//   · RECETA: agrupación, modo, orden, filtros y renglones marcados
+//     (pedido#artículo). Al restaurar se vuelve a ejecutar el motor de
+//     despacho con los datos de HOY.
+//   · FOTO: totales y cantidades del momento de guardar, para mostrar el
+//     diff («esto cambió») y comparar sin recalcular.
+//
+// `payload` es JSON serializado (portabilidad SQLite/PostgreSQL, igual que
+// AuditEvent.context). NUNCA escribe en Profit: es una capa local de
+// simulación.
+//
+// `kind = DRAFT` es el trabajo en curso del usuario (uno solo, `name = ''`);
+// `kind = SAVED` son los guardados con nombre (máx. 25 por usuario).
+// `dataVersion` = fingerprint de las últimas syncs de PEDIDOS y EXISTENCIAS
+// para marcar el escenario como desactualizado sin releer Profit.
+// ============================================================
+model DispatchScenario {
+  id          String   @id @default(cuid())
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name        String
+  // DRAFT | SAVED
+  kind        String   @default("SAVED")
+  payload     String
+  lineCount   Int      @default(0)
+  sacks       Decimal  @default(0)
+  assignedKg  Decimal  @default(0)
+  missingKg   Decimal  @default(0)
+  // Cobertura en % (0-100), derivada de la foto al guardar.
+  coverage    Int      @default(0)
+  dataVersion String?
+  // Versionado optimista: el cliente envía la versión que leyó.
+  version     Int      @default(1)
+  restoredAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Un borrador por usuario (name vacío) y nombres únicos por usuario.
+  @@unique([ownerId, kind, name])
+  @@index([ownerId, updatedAt])
+
+  restores DispatchScenarioRestore[]
+}
+
+// Historial visible de restauraciones de un escenario del simulador.
+// Guarda el diff que el cliente calculó antes de confirmar: así el usuario ve
+// «qué cambió» la última vez, no solo que «se restauró».
+model DispatchScenarioRestore {
+  id             String           @id @default(cuid())
+  scenarioId     String
+  scenario       DispatchScenario @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  restoredById   String?
+  restoredByCode String?
+  restoredByName String?
+  restoredAt     DateTime         @default(now())
+  // Renglones aplicados y renglones que ya no estaban en la cartera.
+  restored       Int              @default(0)
+  missing        Int              @default(0)
+  pendingChanges Int              @default(0)
+  stockChanges   Int              @default(0)
+  dateChanges    Int              @default(0)
+  carteraBefore  Int              @default(0)
+  carteraAfter   Int              @default(0)
+  beforeKg       Decimal          @default(0)
+  afterKg        Decimal          @default(0)
+  // 0..1
+  beforeCoverage Decimal          @default(0)
+  afterCoverage  Decimal          @default(0)
+  note           String?
+
+  @@index([scenarioId, restoredAt])
+}
+
+// ============================================================
+// Despacho de almacén (Fase 6b): hoja de despacho + túnel de acuses.
+//
+// Nace de un escenario guardado del simulador (`scenarioId`). El planificador
+// lo publica, el almacén lo recibe, lo carga renglón por renglón y lo cierra;
+// cada paso deja sello temporal, evento en la bitácora y notificación al otro
+// lado. `status` sigue una máquina de estados validada en el servicio.
+//
+// Nombres de personas DENORMALIZADOS (createdBy*/claimedBy*/receivedBy*/
+// completedBy*): la bitácora es histórica y debe sobrevivir a cambios de rol
+// o bajas del usuario. Solo `assignedTo` es relación (se filtra y notifica).
+// ============================================================
+model DispatchSheet {
+  id             String    @id @default(cuid())
+  // Correlativo legible: DSP-2026-0001.
+  number         String    @unique
+  title          String
+  // ENVIADO | RECIBIDO | EN_PROCESO | CON_NOVEDAD | DESPACHADO | CANCELADO
+  status         String    @default("ENVIADO")
+  instructions   String?
+  // Origen: escenario del simulador (receta + foto para comparar).
+  scenarioId     String?
+  scenarioName   String?
+  recipeJson     String?
+  photoJson      String?
+
+  assignedToId   String?
+  assignedTo     User?     @relation("SheetAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedRole   String    @default("ALMACEN")
+
+  claimedById    String?
+  claimedByCode  String?
+  claimedByName  String?
+  claimedAt      DateTime?
+
+  createdById    String
+  createdByCode  String?
+  createdByName  String?
+
+  sentAt         DateTime  @default(now())
+  receivedAt     DateTime?
+  receivedById   String?
+  receivedByName String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  completedById  String?
+  completedByName String?
+  canceledAt     DateTime?
+  canceledById   String?
+  canceledByName String?
+  cancelReason   String?
+
+  plannedLines   Int       @default(0)
+  plannedSacks   Decimal   @default(0)
+  plannedKg      Decimal   @default(0)
+  loadedSacks    Decimal   @default(0)
+  loadedKg       Decimal   @default(0)
+  differenceKg   Decimal   @default(0)
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  lines  DispatchSheetLine[]
+  events DispatchSheetEvent[]
+
+  @@index([status, sentAt])
+  @@index([assignedToId, status])
+  @@index([createdById, status])
+}
+
+model DispatchSheetLine {
+  id            String        @id @default(cuid())
+  sheetId       String
+  sheet         DispatchSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  // Turno/orden de carga que traía el plan de despacho.
+  position      Int
+  orderNumber   String
+  productCode   String
+  description   String?
+  uom           String?
+  customerCode  String?
+  customerName  String?
+  // Stock 03 | Stock 68 | Stock 9999
+  warehouseCode String?
+  // yyyy-MM-dd (texto: sin zonas horarias en fechas de negocio).
+  effectiveDate String?
+  plannedQty    Decimal       @default(0)
+  plannedKg     Decimal       @default(0)
+  // Lo que el almacén cargó de verdad.
+  loadedQty     Decimal?
+  loadedKg      Decimal?
+  // PENDIENTE | CARGADO | PARCIAL | FALTANTE | NOVEDAD
+  status        String        @default("PENDIENTE")
+  note          String?
+  checkedAt     DateTime?
+  checkedById   String?
+  checkedByName String?
+
+  @@unique([sheetId, orderNumber, productCode])
+  @@index([sheetId, position])
+}
+
+model DispatchSheetEvent {
+  id         String        @id @default(cuid())
+  sheetId    String
+  sheet      DispatchSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  // SYSTEM = transición de estado; MESSAGE = conversación entre las partes.
+  kind       String
+  type       String
+  body       String?
+  authorId   String?
+  authorCode String?
+  authorName String?
+  createdAt  DateTime      @default(now())
+
+  @@index([sheetId, createdAt])
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  recipientId String
+  recipient   User     @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  type        String
+  title       String
+  body        String?
+  entityType  String
+  entityId    String
+  linkPath    String
+  actorId     String?
+  actorName   String?
+  readAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([recipientId, readAt, createdAt])
 }

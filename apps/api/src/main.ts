@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
@@ -7,10 +8,13 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
 import { CorrelationInterceptor } from './common/correlation.interceptor';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: false });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: false });
 
   app.use(helmet());
   app.use(cookieParser());
+  // Los escenarios del simulador llevan la foto de todos los renglones
+  // marcados en el body (puede superar los 100 KB por defecto de Express).
+  app.useBodyParser('json', { limit: '2mb' });
 
   const origins = (process.env.CORS_ORIGINS ?? 'http://localhost:4100')
     .split(',')
@@ -24,7 +28,7 @@ async function bootstrap() {
   app.useGlobalInterceptors(new CorrelationInterceptor());
 
   const swaggerConfig = new DocumentBuilder()
-    .setTitle('Nexo Producción API')
+    .setTitle('SAN LUIS API')
     .setDescription('API del sistema de planificación de producción, inventarios y pedidos (datos origen: Profit Plus)')
     .setVersion('0.1.0')
     .addBearerAuth()
@@ -34,7 +38,7 @@ async function bootstrap() {
 
   const port = Number(process.env.API_PORT ?? 4000);
   await app.listen(port);
-  console.log(`Nexo Producción API escuchando en http://localhost:${port}/api (Swagger: /api/docs)`);
+  console.log(`SAN LUIS API escuchando en http://localhost:${port}/api (Swagger: /api/docs)`);
 }
 
 void bootstrap();
