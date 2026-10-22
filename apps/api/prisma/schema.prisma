@@ -515,6 +515,7 @@ model DispatchSheet {
 
   lines  DispatchSheetLine[]
   events DispatchSheetEvent[]
+  arrivals CustomerArrival[]
 
   @@index([status, sentAt])
   @@index([assignedToId, status])
@@ -567,6 +568,102 @@ model DispatchSheetEvent {
   createdAt  DateTime      @default(now())
 
   @@index([sheetId, createdAt])
+}
+
+// ============================================================
+// Llegadas de clientes (PCP)
+//
+// Se crean solas al publicar un despacho (`DispatchSheet`), un registro por
+// cliente. En planta se marca la hora de llegada con el reloj del servidor y
+// se reportan incidencias. `number` es el correlativo legible LLG-AAAA-NNNN.
+// Nombres denormalizados: la bitácora es histórica y no depende de que el
+// usuario siga activo.
+// ============================================================
+model CustomerArrival {
+  id             String        @id @default(cuid())
+  number         String        @unique
+  sheetId        String
+  sheet          DispatchSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  // Copia del despacho al momento de crear la llegada (histórico).
+  sheetNumber    String
+  sheetTitle     String
+
+  customerCode   String
+  customerName   String
+  // yyyy-MM-dd: fecha de entrega más próxima del cliente dentro del plan.
+  expectedDate   String?
+  // Pedidos del cliente incluidos en el despacho (CSV, para búsqueda y hoja).
+  orderNumbers   String
+  lineCount      Int           @default(0)
+  plannedSacks   Decimal       @default(0)
+  plannedKg      Decimal       @default(0)
+
+  // ESPERADO | EN_PLANTA | ATENDIDO | AUSENTE | CON_INCIDENCIA | CANCELADO
+  status         String        @default("ESPERADO")
+  arrivedAt      DateTime?
+  arrivedById    String?
+  arrivedByCode  String?
+  arrivedByName  String?
+  closedAt       DateTime?
+  note           String?
+
+  createdById    String?
+  createdByCode  String?
+  createdByName  String?
+  updatedById    String?
+  updatedByName  String?
+
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  incidents ArrivalIncident[]
+  events    ArrivalEvent[]
+
+  @@unique([sheetId, customerCode])
+  @@index([status, expectedDate])
+  @@index([arrivedAt])
+}
+
+model ArrivalIncident {
+  id             String          @id @default(cuid())
+  arrivalId      String
+  arrival        CustomerArrival @relation(fields: [arrivalId], references: [id], onDelete: Cascade)
+  // FALTANTE | DEMORA | DANO | DOCUMENTO | RECHAZO | OTRO
+  kind           String
+  // BAJA | MEDIA | ALTA
+  severity       String          @default("MEDIA")
+  body           String
+  // ABIERTA | RESUELTA
+  status         String          @default("ABIERTA")
+  resolution     String?
+
+  reportedById   String?
+  reportedByCode String?
+  reportedByName String?
+  resolvedById   String?
+  resolvedByName String?
+  resolvedAt     DateTime?
+
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([arrivalId, status])
+}
+
+model ArrivalEvent {
+  id         String          @id @default(cuid())
+  arrivalId  String
+  arrival    CustomerArrival @relation(fields: [arrivalId], references: [id], onDelete: Cascade)
+  // SYSTEM = hito del proceso; MESSAGE = nota libre de la contraparte.
+  kind       String          @default("SYSTEM")
+  type       String
+  body       String?
+  authorId   String?
+  authorCode String?
+  authorName String?
+  createdAt  DateTime        @default(now())
+
+  @@index([arrivalId, createdAt])
 }
 
 model Notification {

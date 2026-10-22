@@ -14,6 +14,7 @@ import { SyncModule } from './modules/sync/sync.module';
 import { ForecastModule } from './modules/forecast/forecast.module';
 import { ScenariosModule } from './modules/scenarios/scenarios.module';
 import { DispatchModule } from './modules/dispatch/dispatch.module';
+import { ArrivalsModule } from './modules/arrivals/arrivals.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { DispatchModule } from './modules/dispatch/dispatch.module';
     ForecastModule,
     ScenariosModule,
     DispatchModule,
+    ArrivalsModule,
   ],
 })
 export class AppModule {}

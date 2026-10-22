@@ -176,6 +176,14 @@ function createFakePrisma() {
 
 const audit = { record: async () => undefined } as never;
 
+// PCP: el despacho delega la creación de llegadas. Aquí se neutraliza para
+// probar solo el túnel de despacho (las llegadas tienen su propia suite).
+const arrivals = {
+  rowsForSheet: async () => [],
+  notifyExpected: async () => undefined,
+  cancelForSheet: async () => undefined,
+} as never;
+
 const planner = { id: 'u-plan', role: 'PLANIFICADOR', code: 'KZ' };
 const operator1 = { id: 'u-alm1', role: 'ALMACEN', code: 'ARIV' };
 const operator2 = { id: 'u-alm2', role: 'ALMACEN', code: 'AALV' };
@@ -236,7 +244,7 @@ function seedScenario(prisma: ReturnType<typeof createFakePrisma>, ownerId = 'u-
 }
 
 async function publish(prisma: ReturnType<typeof createFakePrisma>, assignedToId: string | null = null) {
-  const service = new DispatchService(prisma as never, audit);
+  const service = new DispatchService(prisma as never, audit, arrivals);
   seedScenario(prisma);
   return service.create(planner, {
     scenarioId: 'sc-1',
@@ -249,7 +257,7 @@ async function publish(prisma: ReturnType<typeof createFakePrisma>, assignedToId
 describe('DispatchService — publicar', () => {
   it('crea la hoja con renglones, evento, notificación y correlativo', async () => {
     const prisma = createFakePrisma();
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma);
 
     const sheet = await service.create(planner, { scenarioId: 'sc-1', title: 'Despacho lunes' });
@@ -270,7 +278,7 @@ describe('DispatchService — publicar', () => {
 
   it('rechaza publicar un escenario de otro usuario o sin plan', async () => {
     const prisma = createFakePrisma();
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma, 'u-alm1');
 
     await expect(service.create(planner, { scenarioId: 'sc-1', title: 'X' })).rejects.toThrow(/No encontramos/i);
@@ -279,7 +287,7 @@ describe('DispatchService — publicar', () => {
 
   it('exige que el operador asignado exista y sea de almacén', async () => {
     const prisma = createFakePrisma();
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma);
 
     await expect(service.create(planner, { scenarioId: 'sc-1', title: 'X', assignedToId: 'u-con' })).rejects.toThrow(
@@ -294,7 +302,7 @@ describe('DispatchService — publicar', () => {
 
   it('bloquea la publicación cuando no hay operadores de almacén activos', async () => {
     const prisma = createFakePrisma();
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma);
     // Nadie con rol ALMACEN: el aviso no tendría a quién llegar.
     prisma.state.users = prisma.state.users.map((user) => (user.role === 'ALMACEN' ? { ...user, role: 'CONSULTA' } : user));
@@ -324,7 +332,7 @@ describe('DispatchService — acuses (túnel)', () => {
   it('sella el recibo, reclama la hoja y avisa al planificador', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
 
     const received = await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
 
@@ -339,7 +347,7 @@ describe('DispatchService — acuses (túnel)', () => {
   it('es idempotente: repetir el acuse no duplica sellos ni eventos', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
 
     await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
     const eventsAfterFirst = prisma.state.events.length;
@@ -354,7 +362,7 @@ describe('DispatchService — acuses (túnel)', () => {
   it('la bandeja compartida la toma el primero: el segundo recibe 409', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
 
     await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
     await expect(service.ack(operator2, sheet.id, { event: 'RECIBIDO' })).rejects.toThrow(/ya lo tomó/i);
@@ -363,7 +371,7 @@ describe('DispatchService — acuses (túnel)', () => {
   it('no se puede pasar a EN_PROCESO sin recibir primero', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
 
     await expect(service.ack(operator1, sheet.id, { event: 'EN_PROCESO' })).rejects.toThrow(/recibir/i);
   });
@@ -371,7 +379,7 @@ describe('DispatchService — acuses (túnel)', () => {
   it('un despacho asignado a otro operador no aparece en su bandeja ni se puede operar', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma, 'u-alm1');
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
 
     // Ni en la bandeja ni por detalle: 404 para el operador equivocado.
     const inbox = await service.list(operator2, { scope: 'all' });
@@ -384,7 +392,7 @@ describe('DispatchService — acuses (túnel)', () => {
   it('un no participante no ve el despacho (404)', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
 
     await expect(service.detail(outsider, sheet.id)).rejects.toThrow(/no encontrado/i);
     // Gerencia sí lo ve (sigue el túnel).
@@ -396,7 +404,7 @@ describe('DispatchService — carga y cierre', () => {
   async function inProgress() {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
     await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
     await service.ack(operator1, sheet.id, { event: 'EN_PROCESO' });
     return { prisma, service, sheet };
@@ -461,7 +469,7 @@ describe('DispatchService — carga y cierre', () => {
   it('anular exige motivo y solo lo hace el creador o gerencia', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
 
     await expect(service.cancel(operator1, sheet.id, { reason: 'no aplica' })).rejects.toThrow(/publicó el despacho/i);
 
@@ -476,7 +484,7 @@ describe('DispatchService — bitácora y notificaciones', () => {
   it('el mensaje viaja a la contraparte y no al autor', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
     await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
 
     await service.message(planner, sheet.id, { body: 'Prioriza el pedido 408251710' });
@@ -492,7 +500,7 @@ describe('DispatchService — bitácora y notificaciones', () => {
   it('lista y marca notificaciones (idempotente)', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
 
     const inbox = await service.listNotifications(operator1, 10);
     expect(inbox.items).toHaveLength(1);
@@ -511,7 +519,7 @@ describe('DispatchService — bitácora y notificaciones', () => {
 
   it('la bandeja del planificador solo trae lo que publicó y los contadores del día', async () => {
     const prisma = createFakePrisma();
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma);
     await service.create(planner, { scenarioId: 'sc-1', title: 'Uno' });
     await service.create(planner, { scenarioId: 'sc-1', title: 'Dos' });
@@ -533,7 +541,7 @@ describe('DispatchService — bitácora y notificaciones', () => {
   it('cada acuse del túnel emite su tipo de aviso al lado correcto', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
     const typesFor = (recipientId: string) =>
       prisma.state.notifications.filter((row) => row.recipientId === recipientId).map((row) => row.type);
 
@@ -568,7 +576,7 @@ describe('DispatchService — bitácora y notificaciones', () => {
   it('un acuse repetido no vuelve a notificar', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit);
+    const service = new DispatchService(prisma as never, audit, arrivals);
 
     await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
     const afterFirst = prisma.state.notifications.length;

@@ -12,6 +12,7 @@ import {
   Boxes,
   CalendarRange,
   ClipboardList,
+  DoorOpen,
   Eye,
   EyeOff,
   LogIn,
@@ -234,6 +235,7 @@ const NAV_LINKS: NavLink[] = [
   { href: '/forecast', label: 'Forecast', icon: CalendarRange, module: 'forecast' },
   { href: '/pedidos', label: 'Pedidos', icon: ShoppingCart, module: 'pedidos' },
   { href: '/despacho', label: 'Despacho', icon: ClipboardList, module: 'despacho' },
+  { href: '/llegadas', label: 'Llegadas', icon: DoorOpen, module: 'llegadas' },
   { href: '/clientes', label: 'Clientes', icon: Users, module: 'clientes' },
   { href: '/usuarios', label: 'Usuarios', icon: ShieldCheck, module: 'usuarios' },
 ];

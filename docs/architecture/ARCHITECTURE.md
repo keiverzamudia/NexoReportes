@@ -45,6 +45,7 @@ Monorepo TypeScript (pnpm workspaces + Turborepo) con tres aplicaciones y un paq
 | `availability` | 5 | Motor de disponibilidad y faltantes |
 | `scenarios` | 6 | Simulador: escenarios por usuario (borrador + guardados con nombre), versionado optimista |
 | `dispatch` | 6 | Despacho de almacén: hoja de trabajo, acuses, bitácora y notificaciones |
+| `arrivals` | 6c | Llegadas de clientes (PCP): se crean al publicar el despacho; hora de llegada, incidencias y correcciones con rastro |
 | `production` | 7 | Planes de producción, lotes, merma, capacidad |
 | `reports` | 8 | Reportes modulares y exportación |
 
@@ -111,6 +112,39 @@ controlador.
   activo con rol `ALMACEN` (409 con explicación y botón deshabilitado en el
   modal). Así el aviso nunca se pierde «en el vacío».
 - **Nada escribe en Profit**: el despacho es una capa local de trabajo.
+
+### Llegadas de clientes (PCP)
+
+Los **registros de llegada** (`CustomerArrival`) no se crean a mano. Al
+publicar un despacho, `DispatchService.create` agrupa sus renglones por cliente
+y crea una llegada por cada uno **en el mismo `create` anidado**: o queda el
+despacho con sus llegadas, o no queda nada. De ahí nacen también el correlativo
+`LLG-AAAA-NNNN`, el total de sacos/kg y la fecha esperada (la entrega más
+próxima del cliente en el plan).
+
+- **Estados**: `ESPERADO → EN_PLANTA → { ATENDIDO | AUSENTE }`, con
+  `CON_INCIDENCIA` mientras haya una incidencia abierta y `CANCELADO` si se
+  anula el despacho antes de que el cliente llegue. Si ya había llegado, el
+  registro se conserva como atendido.
+- **La hora la sella el servidor** (`checkIn`): se guarda el instante y el
+  usuario, no lo que diga el navegador. Marcar dos veces responde 409 con la
+  hora y el nombre del primero.
+- **Incidencias** (`ArrivalIncident`): tipo (`FALTANTE`, `DEMORA`, `DANO`,
+  `DOCUMENTO`, `RECHAZO`, `OTRO`), severidad (`BAJA|MEDIA|ALTA`) y resolución
+  escrita. Al resolver la última abierta, el cliente vuelve a `EN_PLANTA` o
+  `ESPERADO` según tenga hora.
+- **Bitácora inmutable** (`ArrivalEvent`): cada hito, incidencia, nota y
+  corrección. Corregir un registro ya hecho exige `llegadas:delete` (jefe de
+  PCP o administrador) y un **motivo**; el evento guarda el antes → después.
+- **Permisos**: `llegadas:read` (ver), `create` (marcar llegada / reportar
+  incidencia), `update` (resolver y cerrar), `delete` (corregir). Los permisos
+  por defecto del módulo se siembran al arrancar para los roles que aún no los
+  tengan (`PermissionsService.seedMissingModule`), sin resucitar los que un
+  administrador haya quitado.
+- **Quién se entera**: PCP recibe `LLEGADA_ESPERADA` al publicarse el despacho;
+  el despacho recibe `LLEGADA_MARCADA` e `LLEGADA_INCIDENCIA` (campana del
+  shell, refresco cada 15 s).
+- **Nada escribe en Profit**: es la bitácora operativa de portería.
 
 ### Sincronización: cadencia y sostenibilidad
 
