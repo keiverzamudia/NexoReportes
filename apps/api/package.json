@@ -2,7 +2,7 @@
   "name": "@nexo/api",
   "version": "0.1.0",
   "private": true,
-  "description": "API NestJS de Nexo Producción (auth, integración Profit, disponibilidad, escenarios, producción y reportes)",
+  "description": "API NestJS de San Luis (auth, integración Profit, disponibilidad, escenarios, producción y reportes)",
   "scripts": {
     "dev": "nest start --watch",
     "build": "nest build",

@@ -171,7 +171,7 @@ export function DeliveryDateDialog({
               <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Fecha original de Profit</p>
               <p className="mt-space-2xs text-title-md font-bold tabular-nums text-primary">{originalLabel}</p>
               <p className="mt-space-2xs text-label-sm text-on-surface-variant">
-                No se modifica. La fecha tentativa sólo vive en Nexo.
+                No se modifica. La fecha tentativa sólo vive en San Luis.
               </p>
             </div>
 

@@ -130,14 +130,25 @@ export class MssqlProfitAdapter implements ProfitAdapter {
 
   // Consulta de solo lectura definida por la app (para campos que la vista no expone).
   // Es un SELECT controlado (constante en el código), nunca SQL del usuario.
-  async selectQuery(sqlText: string, limit: number): Promise<Record<string, unknown>[]> {
+  async selectQuery(
+    sqlText: string,
+    limit: number,
+    params: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>[]> {
     if (!READ_ONLY_SQL.test(sqlText) || FORBIDDEN_SQL.test(sqlText)) {
       throw new Error('Consulta rechazada: solo se permite un único SELECT de lectura');
     }
     const safeLimit = Math.max(1, Math.min(Math.floor(limit), 100000));
     const pool = await this.getPool();
+    const request = pool.request();
+    for (const [key, value] of Object.entries(params)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        throw new Error(`Nombre de parámetro inválido: ${key}`);
+      }
+      request.input(key, value as never);
+    }
     // Envuelta en tabla derivada para aplicar el TOP sin alterar el resultado.
-    const result = await pool.request().query(`SELECT TOP (${safeLimit}) * FROM (${sqlText}) AS nexo_src`);
+    const result = await request.query(`SELECT TOP (${safeLimit}) * FROM (${sqlText}) AS nexo_src`);
     return result.recordset as Record<string, unknown>[];
   }
 

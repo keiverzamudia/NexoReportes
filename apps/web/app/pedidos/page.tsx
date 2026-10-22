@@ -25,18 +25,41 @@ import type {
   OrderGroupLine,
   OrderGroupedResponse,
   OrderStatus,
+  ScenarioDetail,
+  ScenarioDraftInput,
+  ScenarioDraftResponse,
+  ScenarioLineRef,
+  ScenarioListResponse,
+  ScenarioRecipe,
+  ScenarioSaveInput,
+  ScenarioFilters,
 } from '@nexo/contracts';
-import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CalendarRange, ChevronDown, ChevronRight, Download, FileText, PackageCheck, Pin, PinOff, Search, ShoppingCart, Trash2, X } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle, CalendarRange, ChevronDown, ChevronRight, Download, FileText, History, PackageCheck, Pin, PinOff, Save, Search, ShoppingCart, Trash2, X } from 'lucide-react';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { DeliveryDateButton } from '../../components/DeliveryDate';
 import { DeliveryDateDialog } from '../../components/DeliveryDateDialog';
 import type { DeliveryDateTarget, DeliveryDateTargetItem } from '../../components/DeliveryDateDialog';
 import { EChart } from '../../components/EChart';
+import { RestorePreviewDialog, ScenariosDialog } from '../../components/ScenariosDialog';
+import type { RestorePreviewState } from '../../components/ScenariosDialog';
 import { AppNav, LoginScreen } from '../../components/shell';
 import { Badge, Card, CoverageBar, DateInput, HeroCard, Kpi, PageHeader, Select, Segmented, Skeleton, Td, TextInput, Th, fmtDate, fmtQty, useGreeting } from '../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
 import { DispatchInput, DispatchMode, DispatchSort, QueueEntry, buildDispatchQueue, summarizeQueue } from '../../lib/dispatch';
+import { hasPermission } from '../../lib/permissions';
+import {
+  buildLiveLines,
+  buildSnapshot,
+  diffScenario,
+  recipeFromState,
+  refsFromSelection,
+  resolveSelection,
+  restoreSummaryFromDiff,
+  scenarioQueryString,
+  toDispatchInputs,
+  totalsForEntries,
+} from '../../lib/scenario';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'Estado: Todos' },
@@ -80,11 +103,11 @@ const STATUS_TONE: Record<OrderStatus, 'success' | 'muted' | 'danger' | 'default
   DESCONOCIDO: 'default',
 };
 
-// Paleta de las gráficas (identidad Nexo + acento del rediseño).
+// Paleta de las gráficas (identidad San Luis + acento corporativo).
 const C = {
   navy: '#003366',
-  lime: '#7cae00',
-  accent: '#ff7a5c',
+  lime: '#95c800',
+  accent: '#d18700',
   outline: '#737780',
   grid: '#e6eff9',
   ink: '#081d2c',
@@ -106,6 +129,8 @@ function compactKg(value: number): string {
   return String(Math.round(value));
 }
 
+// Clave de la selección vieja (v1). Solo se lee UNA vez para migrarla al
+// borrador del servidor; después se elimina para no mezclar usuarios.
 const SEL_KEY = 'nexo.seleccion.v1';
 
 function lineKey(line: OrderGroupLine): string {
@@ -125,6 +150,7 @@ function loadSelection(): string[] {
 
 export default function PedidosPage() {
   const [tick, setTick] = useState(0);
+  const queryClient = useQueryClient();
   const greeting = useGreeting();
   const [by, setBy] = useState<OrderGroupBy>('cliente');
   const [mode, setMode] = useState<DispatchMode>('disponible');
@@ -144,7 +170,7 @@ export default function PedidosPage() {
   const [status, setStatus] = useState<OrderStatus | ''>('');
   const [customerType, setCustomerType] = useState('');
   const [vendor, setVendor] = useState('');
-  const [authorized, setAuthorized] = useState('');
+  const [authorized, setAuthorized] = useState<'SI' | 'NO' | ''>('');
   const [emisionDesde, setEmisionDesde] = useState('');
   const [emisionHasta, setEmisionHasta] = useState('');
   const [entregaDesde, setEntregaDesde] = useState('');
@@ -156,7 +182,14 @@ export default function PedidosPage() {
   // Fechas tentativas: selección por grupo del plan + modal de asignación.
   const [dateSelection, setDateSelection] = useState<{ groupKey: string; keys: string[] } | null>(null);
   const [dateTarget, setDateTarget] = useState<DeliveryDateTarget | null>(null);
-  const [dateToast, setDateToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  // Simulaciones guardadas (Fase 6): borrador por usuario + escenarios con nombre.
+  const [scenariosOpen, setScenariosOpen] = useState(false);
+  const [scenarioSaveIntent, setScenarioSaveIntent] = useState(false);
+  // Renglones del borrador que se resuelven cuando llega la cartera.
+  const [pendingRefs, setPendingRefs] = useState<ScenarioLineRef[] | null>(null);
+  const [restorePreview, setRestorePreview] = useState<RestorePreviewState | null>(null);
 
   const { data: sessionUser } = useQuery({
     queryKey: ['me'],
@@ -164,23 +197,17 @@ export default function PedidosPage() {
     staleTime: 60_000,
     retry: false,
   });
-  const canEditDates = Boolean(
-    sessionUser && ['ADMIN', 'GERENCIA', 'PLANIFICADOR'].includes(sessionUser.role),
-  );
+  // La acción «Editar fechas» de la matriz de permisos gobierna el modal.
+  const canEditDates = hasPermission(sessionUser?.permissions, 'pedidos', 'update');
 
   useEffect(() => {
-    if (!dateToast) return;
-    const id = window.setTimeout(() => setDateToast(null), 3600);
+    if (!toast) return;
+    const id = window.setTimeout(() => setToast(null), 3600);
     return () => window.clearTimeout(id);
-  }, [dateToast]);
+  }, [toast]);
 
-  useEffect(() => {
-    setSelection(loadSelection());
-    setHydrated(true);
-  }, []);
-  useEffect(() => {
-    if (hydrated) window.localStorage.setItem(SEL_KEY, JSON.stringify(selection));
-  }, [selection, hydrated]);
+  // La hidratación del borrador se hace más abajo: necesita la cartera ya
+  // cargada para resolver `pedido#artículo` → id de pedido.
 
   // Modal de detalle: Escape, bloqueo del scroll de fondo y foco inicial.
   useEffect(() => {
@@ -198,18 +225,9 @@ export default function PedidosPage() {
     };
   }, [selectedOrder]);
 
-  const params = new URLSearchParams();
-  params.set('by', by);
-  if (q.trim()) params.set('q', q.trim());
-  if (status) params.set('status', status);
-  if (customerType.trim()) params.set('customerType', customerType.trim());
-  if (vendor.trim()) params.set('vendor', vendor.trim());
-  if (authorized) params.set('authorized', authorized);
-  if (customerCode) params.set('customerCode', customerCode);
-  if (emisionDesde) params.set('emisionDesde', emisionDesde);
-  if (emisionHasta) params.set('emisionHasta', emisionHasta);
-  if (entregaDesde) params.set('entregaDesde', entregaDesde);
-  if (entregaHasta) params.set('entregaHasta', entregaHasta);
+  // Misma receta que se guarda en los escenarios: una sola fuente para el
+  // query de la cartera y para previsualizar una restauración.
+  const params = new URLSearchParams(scenarioQueryString(currentRecipe()));
 
   const { data, isLoading, error } = useQuery<OrderGroupedResponse>({
     queryKey: ['orders-grouped', tick, by, q, status, customerType, vendor, authorized, customerCode, emisionDesde, emisionHasta, entregaDesde, entregaHasta],
@@ -232,29 +250,79 @@ export default function PedidosPage() {
   const groups = useMemo(() => data?.groups ?? [], [data]);
 
   // --- Modelo de datos para la simulación ---
-  const dispatchInputs: DispatchInput[] = useMemo(
-    () =>
-      groups.flatMap((g) =>
-        g.lines.map((l) => ({
-          key: lineKey(l),
-          productCode: l.productCode,
-          pendingQty: l.pendingQty,
-          pendingKg: l.pendingKg,
-          // La fecha efectiva manda: tentativa si existe, original si no.
-          requestedDate: l.tentativeDate ?? l.requestedDate,
-          orderNumber: l.orderNumber,
-          customerName: l.customerName,
-          stockTotal: (l.stock03 ?? 0) + (l.stock9999 ?? 0) + (l.stock68 ?? 0),
-        })),
-      ),
-    [groups],
-  );
+  const dispatchInputs: DispatchInput[] = useMemo(() => toDispatchInputs(groups), [groups]);
 
   const lineByKey = useMemo(() => {
     const map = new Map<string, { line: OrderGroupLine; group: OrderGroup }>();
     for (const g of groups) for (const l of g.lines) map.set(lineKey(l), { line: l, group: g });
     return map;
   }, [groups]);
+
+  // Referencia viva para el autoguardado (evita cerrar sobre datos viejos).
+  const lineByKeyRef = useRef(lineByKey);
+  useEffect(() => {
+    lineByKeyRef.current = lineByKey;
+  }, [lineByKey]);
+
+  // ---------- Simulaciones guardadas: borrador por usuario ----------
+  // El borrador (receta + renglones) vive en el servidor: sobrevive al cierre
+  // de sesión y al cambio de equipo, y no se mezcla con otro usuario del PC.
+  const draftQuery = useQuery<ScenarioDraftResponse>({
+    queryKey: ['scenario-draft'],
+    queryFn: () => apiFetch<ScenarioDraftResponse>('/scenarios/draft'),
+    retry: false,
+    staleTime: 0,
+  });
+
+  const { data: scenarioList } = useQuery<ScenarioListResponse>({
+    queryKey: ['scenarios'],
+    queryFn: () => apiFetch<ScenarioListResponse>('/scenarios'),
+    retry: false,
+    enabled: hydrated,
+  });
+
+  // Hidratación única: primero el borrador del servidor; si no existe, se
+  // migra la selección vieja de localStorage y se borra la clave.
+  useEffect(() => {
+    if (hydrated || !draftQuery.isFetched) return;
+    const scenario = draftQuery.data?.scenario;
+    if (scenario) {
+      const recipe = scenario.payload.recipe;
+      setBy(recipe.by);
+      setMode(recipe.mode);
+      setSort(recipe.sort);
+      applyFilters(recipe.filters);
+      setPendingRefs(scenario.payload.selected);
+      return;
+    }
+    setSelection(loadSelection());
+    if (typeof window !== 'undefined') window.localStorage.removeItem(SEL_KEY);
+    setHydrated(true);
+  }, [hydrated, draftQuery.isFetched, draftQuery.data]);
+
+  // Los renglones guardados se resuelven contra la cartera ya cargada.
+  useEffect(() => {
+    if (!pendingRefs || data === undefined) return;
+    setSelection(resolveSelection(pendingRefs, buildLiveLines(data.groups)));
+    setPendingRefs(null);
+    setHydrated(true);
+  }, [pendingRefs, data]);
+
+  // Autoguardado del borrador (debounce): receta + renglones visibles.
+  // Espera a la cartera para no escribir un borrador vacío cuando la
+  // selección migrada todavía no se pudo resolver a `pedido#artículo`.
+  useEffect(() => {
+    if (!hydrated || data === undefined) return;
+    const id = window.setTimeout(() => {
+      const body: ScenarioDraftInput = {
+        recipe: currentRecipe(),
+        selected: refsFromSelection(selection, lineByKeyRef.current),
+      };
+      void apiFetch('/scenarios/draft', { method: 'PUT', body: JSON.stringify(body) }).catch(() => undefined);
+    }, 900);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, data, by, mode, sort, q, status, customerType, vendor, authorized, customerCode, emisionDesde, emisionHasta, entregaDesde, entregaHasta, selection]);
 
   // Información agregada por producto (existencia, solicitado, kg por unidad).
   const productInfo = useMemo(() => {
@@ -422,7 +490,7 @@ export default function PedidosPage() {
     } else {
       message = `Fecha original restaurada en ${result.restored} renglón(es).`;
     }
-    setDateToast(message);
+    setToast(message);
     setDateSelection(null);
     setDateTarget(null);
   }
@@ -566,9 +634,122 @@ export default function PedidosPage() {
   }
 
   const hasFilters = Boolean(q || status || customerType || vendor || authorized || emisionDesde || emisionHasta || entregaDesde || entregaHasta || customerCode);
+  const savedCount = scenarioList?.items.length ?? 0;
   // El % acompaña a los kg de las tarjetas (mismo universo global).
   const totalDemandKg = liveSummary.assignedKg + liveSummary.missingKg;
   const coveragePct = totalDemandKg > 0 ? Math.round((liveSummary.assignedKg / totalDemandKg) * 100) : 100;
+
+  // Receta actual (lo que se guarda y con lo que se consulta la cartera).
+  function currentRecipe(): ScenarioRecipe {
+    return recipeFromState({
+      by,
+      mode,
+      sort,
+      q,
+      status,
+      customerType,
+      vendor,
+      authorized,
+      customerCode,
+      emisionDesde,
+      emisionHasta,
+      entregaDesde,
+      entregaHasta,
+    });
+  }
+
+  // Aplica los filtros de una receta y cierra los acordeones abiertos.
+  function applyFilters(filters: ScenarioFilters) {
+    setQ(filters.q);
+    setStatus(filters.status);
+    setCustomerType(filters.customerType);
+    setVendor(filters.vendor);
+    setAuthorized(filters.authorized);
+    setCustomerCode(filters.customerCode);
+    setEmisionDesde(filters.emisionDesde);
+    setEmisionHasta(filters.emisionHasta);
+    setEntregaDesde(filters.entregaDesde);
+    setEntregaHasta(filters.entregaHasta);
+    setExpanded(null);
+    setPlanExpanded(null);
+    setDateSelection(null);
+  }
+
+  function openScenarios(saveIntent: boolean) {
+    setScenarioSaveIntent(saveIntent);
+    setScenariosOpen(true);
+  }
+
+  function closeScenarios() {
+    setScenariosOpen(false);
+    setScenarioSaveIntent(false);
+  }
+
+  // Guarda el plan actual con nombre (foto + receta). Lo llama el modal.
+  async function saveScenario(name: string) {
+    if (planEntries.length === 0) throw new Error('Marca al menos un renglón para guardar la simulación.');
+    const snapshot = buildSnapshot({
+      entries: planEntries,
+      lineByKey,
+      carteraLines: dispatchInputs.length,
+      takenAt: new Date(),
+    });
+    const body: ScenarioSaveInput = {
+      name,
+      recipe: currentRecipe(),
+      selected: refsFromSelection(planEntries.map((entry) => entry.key), lineByKey),
+      snapshot,
+    };
+    await apiFetch<ScenarioDetail>('/scenarios', { method: 'POST', body: JSON.stringify(body) });
+    setToast(`Simulación «${name}» guardada.`);
+  }
+
+  // Previsualiza una restauración SIN tocar la pantalla: consulta la cartera
+  // con los filtros de la receta, recalcula y abre el diff. Recién al
+  // confirmar se aplican filtros y selección.
+  async function previewRestore(detail: ScenarioDetail) {
+    const recipe = detail.payload.recipe;
+    const live = await apiFetch<OrderGroupedResponse>(`/orders/grouped?${scenarioQueryString(recipe)}`);
+    const liveLines = buildLiveLines(live.groups);
+    const keys = resolveSelection(detail.payload.selected, liveLines);
+    const inputs = toDispatchInputs(live.groups);
+    const afterQueue = buildDispatchQueue(inputs, keys, recipe.mode).filter((entry) => entry.selected);
+    // Sacos del plan recalculado: solo renglones con unidad de venta SAC.
+    const uomByKey = new Map(live.groups.flatMap((group) => group.lines.map((line) => [lineKey(line), line.uom] as const)));
+    const sacks = afterQueue.reduce((sum, entry) => sum + (uomByKey.get(entry.key) === 'SAC' ? entry.assignedQty : 0), 0);
+    const after = totalsForEntries(afterQueue, sacks);
+    const drift = diffScenario(detail.payload.snapshot, liveLines, { after, carteraAfter: inputs.length });
+    setRestorePreview({ detail, drift, keys, currentLines: planEntries.length });
+  }
+
+  function confirmRestore() {
+    if (!restorePreview) return;
+    const { detail, keys } = restorePreview;
+    const recipe = detail.payload.recipe;
+    setBy(recipe.by);
+    setMode(recipe.mode);
+    setSort(recipe.sort);
+    applyFilters(recipe.filters);
+    setSelection(keys);
+    setPlanExpanded(null);
+    setExpanded(null);
+    setDateSelection(null);
+    setRestorePreview(null);
+    const missing = detail.payload.selected.length - keys.length;
+    setToast(
+      `«${detail.name}» restaurada: ${keys.length} renglón(es)${missing > 0 ? `, ${missing} fuera de cartera` : ''}.`,
+    );
+    // El historial visible se guarda con el diff que acabamos de mostrar.
+    void apiFetch(`/scenarios/${detail.id}/restore`, {
+      method: 'POST',
+      body: JSON.stringify(restoreSummaryFromDiff(restorePreview.drift, keys.length)),
+    })
+      .then(() => {
+        void queryClient.invalidateQueries({ queryKey: ['scenarios'] });
+        void queryClient.invalidateQueries({ queryKey: ['scenario', detail.id] });
+      })
+      .catch(() => undefined);
+  }
 
   function resetFilters() {
     setQ('');
@@ -810,7 +991,7 @@ export default function PedidosPage() {
           <div className="grid grid-cols-1 gap-space-md md:grid-cols-2 lg:grid-cols-12">
             <TextInput className="lg:col-span-3" icon={Search} value={q} onChange={setQ} placeholder="Buscar N° de pedido o cliente…" ariaLabel="Buscar" />
             <Select className="lg:col-span-2" value={status} onChange={(v) => setStatus(v as OrderStatus | '')} options={STATUS_OPTIONS} ariaLabel="Estado" />
-            <Select className="lg:col-span-2" value={authorized} onChange={setAuthorized} options={AUTH_OPTIONS} ariaLabel="Autorizado" />
+            <Select className="lg:col-span-2" value={authorized} onChange={(v) => setAuthorized(v as 'SI' | 'NO' | '')} options={AUTH_OPTIONS} ariaLabel="Autorizado" />
             <TextInput className="lg:col-span-2" value={customerType} onChange={setCustomerType} placeholder="Tipo (ej. L1)" ariaLabel="Tipo de cliente" />
             <TextInput className="lg:col-span-3" value={vendor} onChange={setVendor} placeholder="Vendedor…" ariaLabel="Vendedor" />
             <div className="flex items-center gap-space-xs lg:col-span-4">
@@ -825,13 +1006,27 @@ export default function PedidosPage() {
               <span className="text-outline">–</span>
               <DateInput ariaLabel="Emisión hasta" value={emisionHasta} onChange={setEmisionHasta} className="w-full" />
             </div>
-            <div className="flex items-center lg:col-span-4">
+            <div className="flex flex-wrap items-center gap-space-xs lg:col-span-4">
               <button
                 onClick={resetFilters}
                 disabled={!hasFilters}
                 className="h-9 rounded-pill border border-outline-variant/50 px-space-md font-semibold text-body-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
               >
                 Limpiar filtros
+              </button>
+              <button
+                type="button"
+                onClick={() => openScenarios(false)}
+                title="Abrir tus simulaciones guardadas: restaurar, borrar o ver la foto"
+                className="flex h-9 items-center gap-space-xs rounded-pill border border-primary-container/30 bg-primary-fixed/50 px-space-md font-semibold text-body-md text-primary transition-colors hover:bg-primary-fixed"
+              >
+                <History aria-hidden className="size-4" />
+                Simulaciones
+                {savedCount > 0 && (
+                  <span className="grid min-w-5 place-items-center rounded-full bg-primary-container px-1.5 text-label-sm font-bold text-on-primary">
+                    {savedCount}
+                  </span>
+                )}
               </button>
             </div>
           </div>
@@ -887,6 +1082,13 @@ export default function PedidosPage() {
                 >
                   {planPinned ? <PinOff aria-hidden className="size-4" /> : <Pin aria-hidden className="size-4" />}
                   <span className="hidden sm:inline">{planPinned ? 'Soltar' : 'Fijar arriba'}</span>
+                </button>
+                <button
+                  onClick={() => openScenarios(true)}
+                  title="Guardar la simulación actual para volver a ella cuando llegue mercancía o cambien los pedidos"
+                  className="flex h-9 items-center gap-space-xs rounded-pill border border-primary-container/30 bg-primary-fixed/60 px-space-md font-semibold text-primary transition-colors hover:bg-primary-fixed"
+                >
+                  <Save aria-hidden className="size-4" /> Guardar
                 </button>
                 <button onClick={exportPlan} title="Descargar Excel con el detalle por cliente" className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary">
                   <Download aria-hidden className="size-4" /> Exportar
@@ -1376,6 +1578,33 @@ export default function PedidosPage() {
         </div>
       )}
 
+      <ScenariosDialog
+        open={scenariosOpen}
+        onClose={closeScenarios}
+        canSave={planEntries.length > 0}
+        current={{
+          lineCount: planEntries.length,
+          sacks: planSacks,
+          assignedKg: planSummary.assignedKg,
+          coverage:
+            planSummary.assignedKg + planSummary.missingKg > 0
+              ? planSummary.assignedKg / (planSummary.assignedKg + planSummary.missingKg)
+              : 1,
+        }}
+        startSaving={scenarioSaveIntent}
+        onSave={saveScenario}
+        onRestore={previewRestore}
+      />
+
+      {restorePreview && (
+        <RestorePreviewDialog
+          preview={restorePreview}
+          busy={false}
+          onCancel={() => setRestorePreview(null)}
+          onConfirm={confirmRestore}
+        />
+      )}
+
       <DeliveryDateDialog
         open={Boolean(dateTarget)}
         target={dateTarget}
@@ -1383,13 +1612,13 @@ export default function PedidosPage() {
         onSaved={handleDateSaved}
       />
 
-      {dateToast && (
+      {toast && (
         <div
           role="status"
           aria-live="polite"
           className="fixed bottom-4 left-1/2 z-[85] -translate-x-1/2 rounded-pill bg-primary px-space-lg py-2 text-label-md font-semibold text-on-primary shadow-lift"
         >
-          {dateToast}
+          {toast}
         </div>
       )}
     </>

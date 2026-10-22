@@ -8,8 +8,8 @@ import {
 } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { Roles } from '../auth/roles.decorator';
-import { RolesGuard } from '../auth/roles.guard';
+import { RequirePermission } from '../permissions/permissions.decorator';
+import { PermissionsGuard } from '../permissions/permissions.guard';
 import { ForecastService } from './forecast.service';
 
 // Forecast (pronóstico de producción): el mensual se lee de Profit (solo lectura)
@@ -17,24 +17,24 @@ import { ForecastService } from './forecast.service';
 @ApiTags('forecast')
 @ApiBearerAuth()
 @Controller('forecast')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class ForecastController {
   constructor(private readonly forecast: ForecastService) {}
 
   @Get('plan')
-  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA')
+  @RequirePermission('forecast:read')
   plan(@Query(new ZodValidationPipe(zForecastQuery)) query: ForecastQuery) {
     return this.forecast.plan(query.year, query.month);
   }
 
   @Get()
-  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA')
+  @RequirePermission('forecast:read')
   list(@Query(new ZodValidationPipe(zForecastQuery)) query: ForecastQuery) {
     return this.forecast.list(query.year, query.month);
   }
 
   @Patch(':code/weeks')
-  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN')
+  @RequirePermission('forecast:update')
   setWeeks(@Param('code') code: string, @Body(new ZodValidationPipe(zForecastSetWeeks)) dto: ForecastSetWeeks) {
     return this.forecast.setWeeks(code, dto);
   }

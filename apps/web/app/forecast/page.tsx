@@ -24,6 +24,7 @@ import type {
   ForecastResponse,
   ForecastRow,
   ForecastWeekRange,
+  UserSummary,
 } from '@nexo/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Boxes, CalendarRange, Download, LineChart, RotateCcw, Save, Search } from 'lucide-react';
@@ -45,7 +46,8 @@ import {
   TextInput,
   fmtQty,
 } from '../../components/ui';
-import { AuthRequiredError, apiFetch } from '../../lib/api';
+import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
+import { hasPermission } from '../../lib/permissions';
 
 const C = {
   navy: '#003366',
@@ -127,6 +129,14 @@ export default function ForecastPage() {
   const [yearPart, monthPart] = ym.split('-');
   const year = Number(yearPart);
   const month = Number(monthPart);
+
+  const me = useQuery<UserSummary | null>({
+    queryKey: ['me'],
+    queryFn: currentUser,
+    staleTime: 15_000,
+    retry: false,
+  });
+  const canEdit = hasPermission(me.data?.permissions, 'forecast', 'update');
 
   const forecast = useQuery<ForecastResponse>({
     queryKey: ['forecast', tick, year, month],
@@ -240,6 +250,7 @@ export default function ForecastPage() {
                   month={month}
                   onSaved={() => forecast.refetch()}
                   searching={Boolean(search) || onlyDemand}
+                  canEdit={canEdit}
                 />
                 <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
                   Semanas del mes: {weeks.map((w) => w.label).join(' · ')}. Las cantidades de cada semana se llenan por
@@ -277,6 +288,7 @@ function ForecastAsignador({
   month,
   onSaved,
   searching,
+  canEdit,
 }: {
   rows: ForecastRow[];
   weeks: ForecastWeekRange[];
@@ -284,6 +296,8 @@ function ForecastAsignador({
   month: number;
   onSaved: () => void;
   searching: boolean;
+  /** Permiso `forecast:update`: sin él la tabla es de solo lectura. */
+  canEdit: boolean;
 }) {
   const [edits, setEdits] = useState<Record<string, RowEdit>>({});
   const [ok, setOk] = useState<Record<string, boolean>>({});
@@ -395,7 +409,8 @@ function ForecastAsignador({
             value={value}
             onChange={(ev) => patch(r, { qtys: edit.qtys.map((q, idx) => (idx === pos ? ev.target.value : q)) })}
             inputMode="decimal"
-            className={`h-8 w-[4.5rem] rounded-md px-space-2xs text-right tabular-nums text-label-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container ${
+            disabled={!canEdit}
+            className={`h-8 w-[4.5rem] rounded-md px-space-2xs text-right tabular-nums text-label-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container disabled:cursor-not-allowed disabled:opacity-60 ${
               parseNumber(value) !== r.averageQty ? 'bg-amber-50 font-semibold' : 'bg-surface'
             }`}
             aria-label={`Semana ${w.weekIndex} de ${r.productCode}`}
@@ -432,14 +447,20 @@ function ForecastAsignador({
         const busy = busyOf(r.productCode);
         return (
           <div className="flex flex-col items-end gap-space-2xs">
-            <button
-              onClick={() => saveWeeks.mutate({ row: r, qtys: edit.qtys })}
-              disabled={busy}
-              title="Guardar las cantidades por semana"
-              className="flex h-8 items-center gap-space-2xs whitespace-nowrap rounded-md border border-outline-variant px-space-sm text-label-sm font-semibold text-on-surface-variant hover:bg-surface-container-low disabled:opacity-50"
-            >
-              <Save aria-hidden className="size-3.5" /> Semanas
-            </button>
+            {canEdit ? (
+              <button
+                onClick={() => saveWeeks.mutate({ row: r, qtys: edit.qtys })}
+                disabled={busy}
+                title="Guardar las cantidades por semana"
+                className="flex h-8 items-center gap-space-2xs whitespace-nowrap rounded-md border border-outline-variant px-space-sm text-label-sm font-semibold text-on-surface-variant hover:bg-surface-container-low disabled:opacity-50"
+              >
+                <Save aria-hidden className="size-3.5" /> Semanas
+              </button>
+            ) : (
+              <span className="text-label-sm text-outline" title="No tienes permiso para editar semanas">
+                Solo lectura
+              </span>
+            )}
             {ok[r.productCode] && <span className="text-label-sm text-success">Guardado</span>}
             {fail[r.productCode] && <span className="max-w-[16rem] text-label-sm text-error">{fail[r.productCode]}</span>}
           </div>

@@ -44,6 +44,11 @@ const envSchema = z.object({
   PROFIT_VIEW_SOLICITUDES: z.string().optional(),
 
   SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(0),
+  // Reloj por dominio: "EXISTENCIAS=120,PEDIDOS=300,PRODUCTOS=21600".
+  // Vacío = solo sincronización manual (comportamiento histórico).
+  SYNC_SCHEDULE: z.string().default(''),
+  // Snapshots de existencia que se conservan (los viejos se podan).
+  SYNC_SNAPSHOT_RETENTION: z.coerce.number().int().min(1).max(5000).default(240),
   SYNC_PAGE_SIZE: z.coerce.number().int().min(100).max(50000).default(5000),
 
   CORS_ORIGINS: z.string().default('http://localhost:4100'),
@@ -101,6 +106,8 @@ export default function configuration() {
     },
     sync: {
       intervalSeconds: env.SYNC_INTERVAL_SECONDS,
+      schedule: env.SYNC_SCHEDULE,
+      snapshotRetention: env.SYNC_SNAPSHOT_RETENTION,
       pageSize: env.SYNC_PAGE_SIZE,
     },
     forecast: {

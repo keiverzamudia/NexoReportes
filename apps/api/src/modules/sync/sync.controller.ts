@@ -4,8 +4,8 @@ import { SYNC_DOMAINS, zPaginationQuery } from '@nexo/contracts';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { Roles } from '../auth/roles.decorator';
-import { RolesGuard } from '../auth/roles.guard';
+import { RequirePermission } from '../permissions/permissions.decorator';
+import { PermissionsGuard } from '../permissions/permissions.guard';
 import { SyncService } from './sync.service';
 
 const zDomain = z.object({ domain: z.enum(SYNC_DOMAINS) });
@@ -13,48 +13,48 @@ const zDomain = z.object({ domain: z.enum(SYNC_DOMAINS) });
 @ApiTags('sync')
 @ApiBearerAuth()
 @Controller('sync')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class SyncController {
   constructor(private readonly sync: SyncService) {}
 
+  // La frescura del dato la ve cualquier sesión (chip del shell).
   @Get('status')
-  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR', 'ALMACEN', 'CONSULTA')
   status() {
     return this.sync.status();
   }
 
   @Get('views')
-  @Roles('ADMIN', 'PLANIFICADOR')
+  @RequirePermission('sincronizacion:update')
   views() {
     return this.sync.views();
   }
 
   @Get('describe')
-  @Roles('ADMIN', 'PLANIFICADOR')
+  @RequirePermission('sincronizacion:update')
   describe() {
     return this.sync.describe();
   }
 
   @Post('test-connection')
-  @Roles('ADMIN', 'PLANIFICADOR')
+  @RequirePermission('sincronizacion:update')
   testConnection() {
     return this.sync.testConnection();
   }
 
   @Post('run-all')
-  @Roles('ADMIN', 'PLANIFICADOR')
+  @RequirePermission('sincronizacion:update')
   runAll(@Req() request: AuthenticatedRequest) {
     return this.sync.runAll({ id: request.user?.sub, email: request.user?.code });
   }
 
   @Post('run/:domain')
-  @Roles('ADMIN', 'PLANIFICADOR')
+  @RequirePermission('sincronizacion:update')
   run(@Param(new ZodValidationPipe(zDomain)) params: { domain: (typeof SYNC_DOMAINS)[number] }, @Req() request: AuthenticatedRequest) {
     return this.sync.run(params.domain, { id: request.user?.sub, email: request.user?.code });
   }
 
   @Get('runs')
-  @Roles('ADMIN', 'GERENCIA', 'PLANIFICADOR')
+  @RequirePermission('sincronizacion:update')
   runs(@Query(new ZodValidationPipe(zPaginationQuery)) query: { page: number; pageSize: number }) {
     return this.sync.listRuns(query.page, query.pageSize);
   }

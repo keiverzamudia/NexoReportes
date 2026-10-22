@@ -60,9 +60,17 @@ pnpm start            # levanta API (4010) y Web (4100) juntos vía Turbo
 | `pnpm db:migrate` | Migraciones Prisma |
 | `pnpm db:studio` | Prisma Studio |
 
-## Roles
+## Roles y permisos
 
-`ADMIN` · `GERENCIA` · `PLANIFICADOR` · `ALMACEN` · `CONSULTA` — el control de acceso se aplica **en el servidor** (guards de NestJS).
+Roles iniciales: `ADMIN` · `GERENCIA` · `PLANIFICADOR` · `ALMACEN` · `CONSULTA`.
+Sobre ellos se pueden **crear roles nuevos** y editar su matriz **módulo × acción**
+(ver, crear, editar, eliminar) desde **Usuarios → Roles y permisos**. Cada usuario
+hereda su rol y puede tener **excepciones individuales** (permitir/denegar una
+acción concreta).
+
+`ADMIN` es de sistema (siempre todo, no editable). El control se aplica **en el
+servidor** (`PermissionsGuard`) y los cambios aplican sin cerrar sesión; el menú
+del web se filtra con los permisos que devuelve `/auth/me`.
 
 ## Documentación
 

@@ -44,7 +44,9 @@ export interface ProfitAdapter {
   // Ejecuta una consulta SQL de SOLO LECTURA definida por la app (no por el usuario).
   // Se usa para leer los campos que la vista actual no expone (vendedor, tipo de
   // cliente, autorizado, cantidad, almacén) sin modificar nada en Profit.
-  selectQuery(sqlText: string, limit: number): Promise<Record<string, unknown>[]>;
+  // `params` se bindean como parámetros (@nombre); el input del usuario nunca
+  // se interpola en el texto SQL.
+  selectQuery(sqlText: string, limit: number, params?: Record<string, unknown>): Promise<Record<string, unknown>[]>;
 
   // Autenticación: valida la contraseña de un usuario contra Profit
   // (`<authDatabase>.dbo.autenticar`, una función de tabla que devuelve `ID`).

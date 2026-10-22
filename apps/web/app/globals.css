@@ -1,9 +1,9 @@
 @import 'tailwindcss';
 
 /* ============================================================
-   Nexo Producción — Tokens del design system "Nexo Producción /
-   Molinos San Luis" (Google Stitch DESIGN.md).
-   Identidad fija: primario #003366, secundario #95C800, Rubik.
+   SAN LUIS — Tokens del design system corporativo (Grupo San Luis,
+   misma paleta que el proyecto Taller): navy #003366, lima #95C800,
+   ámbar #D18700 y Rubik.
    ============================================================ */
 
 @theme {
@@ -34,12 +34,12 @@
   --color-primary-fixed: #d5e3ff;
   --color-primary-fixed-dim: #a7c8ff;
 
-  /* Marca: secundario (lima) */
+  /* Marca: secundario (lima corporativo) */
   --color-secondary: #4b6700;
-  --color-on-secondary: #ffffff;
-  --color-secondary-container: #bbf23d;
+  --color-on-secondary: #12232e;
+  --color-secondary-container: #95c800;
   --color-on-secondary-container: #4f6c00;
-  --color-secondary-fixed: #bef440;
+  --color-secondary-fixed: #95c800;
 
   /* Terciario (menta) */
   --color-tertiary: #002416;
@@ -51,10 +51,10 @@
   --color-error-container: #ffdad6;
   --color-on-error-container: #93000a;
 
-  /* Acento cálido del rediseño (solo hero y detalles puntuales) */
-  --color-accent: #ff7a5c;
-  --color-accent-container: #ffe6df;
-  --color-on-accent-container: #7a2410;
+  /* Acento cálido corporativo (solo hero y detalles puntuales) */
+  --color-accent: #d18700;
+  --color-accent-container: #fcf2dd;
+  --color-on-accent-container: #6a4300;
 
   /* Semántica funcional (DESIGN.md: crítico / advertencia / ok) */
   --color-critical: #dc2626;

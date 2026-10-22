@@ -5,6 +5,7 @@ import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
 import { RawSolicitudLine, normalizeSolicitudRow, parseProfitDecimal, PRODUCTION_LINE } from './normalizers';
 import { ProfitAdapter, PROFIT_ADAPTER } from './profit.adapter';
+import { intervalFor, parseSyncSchedule } from './sync.schedule';
 
 // Única vista de origen (PROFIT_VIEW_SOLICITUDES). Cada dominio de sync se
 // DERIVA de las filas de esta vista; no existe una vista por dominio.
@@ -96,6 +97,31 @@ export class SyncService {
     );
     const pendingDomains = SYNC_DOMAINS.filter((domain) => !successfulDomains.has(domain));
 
+    // Frescura por dominio: qué tan viejo es cada dato y cada cuánto se refresca.
+    const schedule = parseSyncSchedule(this.config.get<string>('sync.schedule'));
+    const lastByDomain = new Map<string, (typeof runs)[number]>();
+    const runs = await this.prisma.syncRun.findMany({
+      orderBy: { startedAt: 'desc' },
+      distinct: ['domain'],
+      select: { domain: true, status: true, startedAt: true, finishedAt: true, recordsRead: true },
+    });
+    for (const run of runs) {
+      if (!lastByDomain.has(run.domain)) lastByDomain.set(run.domain, run);
+    }
+    const now = Date.now();
+    const domains = SYNC_DOMAINS.map((domain) => {
+      const run = lastByDomain.get(domain);
+      const at = run?.finishedAt ?? run?.startedAt ?? null;
+      return {
+        domain,
+        lastRunAt: at ? at.toISOString() : null,
+        status: (run?.status ?? null) as SyncStatusResponse['domains'][number]['status'],
+        ageSeconds: at ? Math.max(0, Math.floor((now - at.getTime()) / 1000)) : null,
+        recordsRead: run?.recordsRead ?? 0,
+        intervalSeconds: intervalFor(schedule, domain),
+      };
+    });
+
     let connected = false;
     let message: string | null = null;
     if (this.profit.dialect === 'fixtures') {
@@ -115,6 +141,7 @@ export class SyncService {
       lastSuccessfulRun: lastRun ? this.toSyncRun(lastRun) : null,
       pendingDomains,
       message,
+      domains,
     };
   }
 
@@ -229,16 +256,22 @@ export class SyncService {
         data: { status, finishedAt: new Date(), recordsRead, recordsUpserted, errorsCount },
       });
 
+      // Cada corrida de EXISTENCIAS crea una fotografía completa: sin poda la
+      // base crecería sin techo (una cada N minutos = miles de filas al día).
+      const pruned = domain === 'EXISTENCIAS' && status !== 'ERROR' ? await this.pruneSnapshots() : 0;
+
       await this.audit.record({
         actorId: actor?.id ?? null,
         actorEmail: actor?.email ?? null,
         action: 'SYNC_RUN',
         entityType: 'SyncRun',
         entityId: run.id,
-        context: { domain, status, recordsRead, recordsUpserted, errorsCount, missingMarked, dialect: this.profit.dialect, sourceRef: source.ref },
+        context: { domain, status, recordsRead, recordsUpserted, errorsCount, missingMarked, pruned, dialect: this.profit.dialect, sourceRef: source.ref },
       });
 
-      this.logger.log(`Sync ${domain}: ${status} (leídas=${recordsRead}, upsert=${recordsUpserted}, errores=${errorsCount}, bajas=${missingMarked})`);
+      this.logger.log(
+        `Sync ${domain}: ${status} (leídas=${recordsRead}, upsert=${recordsUpserted}, errores=${errorsCount}, bajas=${missingMarked}${pruned > 0 ? `, snapshots podados=${pruned}` : ''})`,
+      );
       return this.toSyncRun(finished);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Error desconocido';
@@ -249,6 +282,22 @@ export class SyncService {
       this.logger.error(`Sync ${domain} falló: ${message}`);
       return this.toSyncRun(failed);
     }
+  }
+
+  // Poda de fotografías de inventario: conserva las últimas N (configurable).
+  // Devuelve cuántas fotografías se eliminaron.
+  private async pruneSnapshots(): Promise<number> {
+    const keep = this.config.get<number>('sync.snapshotRetention') ?? 240;
+    const old = await this.prisma.inventorySnapshot.findMany({
+      orderBy: { takenAt: 'desc' },
+      skip: keep,
+      select: { id: true },
+    });
+    if (old.length === 0) return 0;
+    const removed = await this.prisma.inventorySnapshot.deleteMany({
+      where: { id: { in: old.map((snapshot) => snapshot.id) } },
+    });
+    return removed.count;
   }
 
   // Orden de dependencia entre dominios (todos derivan de la MISMA vista):

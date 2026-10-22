@@ -12,9 +12,9 @@ const rubik = Rubik({
 });
 
 export const metadata: Metadata = {
-  title: 'Nexo Producción — Corp. Agropecuaria Venezolana',
+  title: 'SAN LUIS — Corp. Agropecuaria Venezolana',
   description:
-    'Sistema inteligente de producción alimenticia, inventarios, pedidos, simulación y reportes sincronizado con Profit.',
+    'Sistema inteligente de producción alimenticia de San Luis: inventarios, pedidos, simulación y reportes sincronizado con Profit.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

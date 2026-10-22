@@ -275,19 +275,22 @@ export function Select({
   options,
   ariaLabel,
   className,
+  disabled,
 }: {
   value: string;
   onChange: (value: string) => void;
   options: { value: string; label: string }[];
   ariaLabel?: string;
   className?: string;
+  disabled?: boolean;
 }) {
   return (
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
       aria-label={ariaLabel}
-      className={`h-10 w-full cursor-pointer rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-sm text-body-md text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-secondary-container/70 ${className ?? ''}`}
+      disabled={disabled}
+      className={`h-10 w-full cursor-pointer rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-sm text-body-md text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-secondary-container/70 disabled:cursor-not-allowed disabled:opacity-60 ${className ?? ''}`}
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>

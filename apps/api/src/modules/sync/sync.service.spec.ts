@@ -99,6 +99,9 @@ function createFakePrisma() {
     },
     inventorySnapshot: {
       create: async ({ data }: { data: Record<string, unknown> }) => ({ id: `snap-${syncRuns.length}`, ...data }),
+      // Poda de snapshots: la corrida de EXISTENCIAS conserva los últimos N.
+      findMany: async () => [] as { id: string }[],
+      deleteMany: async () => ({ count: 0 }),
     },
     inventorySnapshotLine: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
