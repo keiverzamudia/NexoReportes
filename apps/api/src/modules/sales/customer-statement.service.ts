@@ -47,7 +47,7 @@ SELECT TOP (${QUERY_LIMIT})
   CASE WHEN @moneda = 'USD' THEN ROUND(cc.monto_net / NULLIF(cc.tasa, 0), 2) ELSE cc.monto_net END AS monto,
   CASE WHEN @moneda = 'USD' THEN ROUND(cc.saldo / NULLIF(cc.tasa, 0), 2) ELSE cc.saldo END AS saldo,
   CASE WHEN RTRIM(cc.tipo_doc) IN ('FACT', 'N/DB', 'AJPM', 'GIRO') THEN 1 ELSE -1 END AS signo,
-  GETDATE() AS as_of
+  SYSUTCDATETIME() AS as_of
 FROM dbo.docum_cc AS cc
 INNER JOIN dbo.clientes AS c ON c.co_cli = cc.co_cli
 WHERE RTRIM(cc.co_cli) = @co_cli
@@ -87,7 +87,9 @@ function isoDate(value: unknown): string | null {
 }
 
 function round2(value: number): number {
-  return Math.round(value * 100) / 100;
+  const rounded = Math.round(value * 100) / 100;
+  // Evita exponer -0 cuando los créditos igualan exactamente los débitos.
+  return Object.is(rounded, -0) ? 0 : rounded;
 }
 
 @Injectable()

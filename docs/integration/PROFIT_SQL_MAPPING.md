@@ -193,3 +193,77 @@ Notas:
 - En Nexo solo se persisten las cantidades por semana (`ForecastWeek`); nunca
   se escribe en Profit.
 
+---
+
+## Estado de cuenta de clientes (22/10/2026) — `dbo.docum_cc` + `dbo.clientes`
+
+El módulo **Clientes** abre el estado de cuenta de un cliente con la misma
+información de la pantalla «Consulta Clientes» de Profit: documentos, fecha,
+fecha de vencimiento, días vencidos, saldo y monto neto. La consulta es **en
+vivo y de solo lectura**; no se sincroniza ni se escribe nada en Profit.
+
+| Tabla / vista | Columnas usadas | Uso |
+|---|---|---|
+| `dbo.docum_cc` | `co_cli`, `tipo_doc`, `nro_doc`, `fec_emis`, `fec_venc`, `monto_net`, `saldo`, `tasa`, `anulado` | Documentos de cuentas por cobrar; origen de la fecha de vencimiento y de los montos. |
+| `dbo.clientes` | `co_cli`, `cli_des` | Nombre del cliente. |
+| `dbo.Documentos_Pendientes` | — | **Referencia** de la conversión a USD (vista sobre `docum_cc`). No se consulta directamente porque no expone `fec_venc`. |
+
+Definición real de la vista de referencia:
+
+```sql
+CREATE VIEW dbo.Documentos_Pendientes AS
+SELECT cc.co_cli, c.cli_des, cc.tipo_doc, cc.nro_doc, cc.fec_emis,
+       ROUND(cc.monto_net / cc.tasa, 2) *
+         (CASE WHEN tipo_doc IN ('FACT','N/DB','AJPM','GIRO') THEN 1 ELSE -1 END) AS Neto_us,
+       ROUND(cc.saldo / cc.tasa, 2) *
+         (CASE WHEN tipo_doc IN ('FACT','N/DB','AJPM','GIRO') THEN 1 ELSE -1 END) AS Saldo_US
+FROM dbo.docum_cc AS cc
+INNER JOIN dbo.clientes AS c ON c.co_cli = cc.co_cli
+WHERE cc.anulado = 0 AND cc.saldo > 0
+```
+
+Consulta del API (parámetros `@co_cli`, `@incluir_saldados`, `@moneda`):
+
+```sql
+SELECT TOP (1001)
+  RTRIM(cc.co_cli) AS co_cli, RTRIM(c.cli_des) AS cli_des,
+  RTRIM(cc.tipo_doc) AS tipo_doc, cc.nro_doc, cc.fec_emis, cc.fec_venc,
+  DATEDIFF(DAY, cc.fec_venc, GETDATE()) AS dias_venc,
+  CASE WHEN @moneda = 'USD' THEN ROUND(cc.monto_net / NULLIF(cc.tasa, 0), 2)
+       ELSE cc.monto_net END AS monto,
+  CASE WHEN @moneda = 'USD' THEN ROUND(cc.saldo / NULLIF(cc.tasa, 0), 2)
+       ELSE cc.saldo END AS saldo,
+  CASE WHEN RTRIM(cc.tipo_doc) IN ('FACT','N/DB','AJPM','GIRO') THEN 1 ELSE -1 END AS signo,
+  SYSUTCDATETIME() AS as_of
+FROM dbo.docum_cc AS cc
+INNER JOIN dbo.clientes AS c ON c.co_cli = cc.co_cli
+WHERE RTRIM(cc.co_cli) = @co_cli
+  AND cc.anulado = 0
+  AND (@incluir_saldados = 1 OR cc.saldo > 0)
+ORDER BY cc.fec_emis DESC, cc.tipo_doc, cc.nro_doc
+```
+
+Reglas y decisiones:
+
+- **«Documentos pendientes»** (checkbox de Profit) se traduce en `saldo > 0`.
+  Al desmarcarlo se incluyen los documentos saldados (`anulado = 0`).
+- **«Otra moneda»**: USD reproduce la fórmula de la vista; Bs usa los montos
+  originales de `docum_cc` (`monto_net` / `saldo`).
+- Los documentos que no son `FACT`, `N/DB`, `AJPM` o `GIRO` (por ejemplo
+  `ADEL` y `N/CR`) son **créditos**: restan del saldo total. En la tabla se
+  muestran en positivo, como en Profit, con un badge de crédito.
+- **No se usa `clientes.saldo`**: en la base real puede quedar en `0` aunque
+  haya facturas pendientes (verificado con el cliente `501950695`, 58.673,74
+  USD pendientes). El saldo del estado de cuenta se calcula sumando los
+  documentos listados.
+- Los días vencidos se calculan con `DATEDIFF(DAY, fec_venc, GETDATE())` para
+  usar el mismo calendario que Profit. `as_of` usa `SYSUTCDATETIME()` para que
+  el navegador muestre la hora local correcta.
+- Se limita a **1000 documentos** (se consultan 1001 para detectar el
+  recorte); el modal avisa cuando la lista viene truncada.
+- El código del cliente viaja como parámetro `@co_cli`; nunca se interpola
+  SQL del usuario. El adaptador solo acepta un `SELECT` de lectura.
+
+Endpoint: `GET /api/customers/:code/statement?incluirSaldados=&moneda=USD|BS`
+(permiso `clientes:read`).
+

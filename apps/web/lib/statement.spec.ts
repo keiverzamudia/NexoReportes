@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  formatStatementDate,
   formatStatementMoney,
   statementBalanceLabel,
   statementDaysLabel,
   statementDaysTone,
   statementDaysTitle,
   statementDocTone,
+  statementRowDaysTitle,
+  statementRowDaysTone,
   statementUpdatedAt,
 } from './statement';
 
@@ -23,6 +26,13 @@ describe('formatStatementMoney', () => {
   it('devuelve guion cuando no hay monto', () => {
     expect(formatStatementMoney(null, 'USD')).toBe('—');
     expect(formatStatementMoney(undefined, 'BS')).toBe('—');
+  });
+});
+
+describe('formatStatementDate', () => {
+  it('usa dd/mm/aaaa y respeta la medianoche UTC de Profit', () => {
+    expect(formatStatementDate('2026-10-01T00:00:00.000Z')).toBe('01/10/2026');
+    expect(formatStatementDate(null)).toBe('—');
   });
 });
 
@@ -53,6 +63,19 @@ describe('statementDocTone', () => {
     expect(statementDocTone({ tipoDoc: 'FACT', esCredito: false })).toBe('primary');
     expect(statementDocTone({ tipoDoc: 'ADEL', esCredito: true })).toBe('success');
     expect(statementDocTone({ tipoDoc: 'GIRO', esCredito: false })).toBe('muted');
+  });
+});
+
+describe('statementRowDays*', () => {
+  it('no pinta como vencido un crédito ni un documento saldado', () => {
+    expect(statementRowDaysTone({ diasVencimiento: 371, saldo: 0, esCredito: false })).toBe('muted');
+    expect(statementRowDaysTone({ diasVencimiento: 2, saldo: 500, esCredito: true })).toBe('muted');
+    expect(statementRowDaysTone({ diasVencimiento: 16, saldo: 500, esCredito: false })).toBe('danger');
+
+    expect(statementRowDaysTitle({ diasVencimiento: 371, saldo: 0, esCredito: false })).toContain(
+      'Documento saldado',
+    );
+    expect(statementRowDaysTitle({ diasVencimiento: 2, saldo: 500, esCredito: true })).toContain('Crédito');
   });
 });
 
