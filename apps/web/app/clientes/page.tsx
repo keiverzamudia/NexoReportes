@@ -11,8 +11,9 @@
 
 import type { Customer, OrderGroupedResponse } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, Search, ShoppingCart, Users } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, Receipt, Search, ShoppingCart, Users } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { CustomerStatementDialog } from '../../components/CustomerStatementDialog';
 import { AppNav, LoginScreen } from '../../components/shell';
 import {
   Badge,
@@ -40,8 +41,13 @@ interface Paginated<T> {
 
 const PAGE_SIZE = 50;
 
-// Columnas del catálogo paginado. La última despliega los pedidos en la fila.
-function buildColumns(expanded: string | null, onToggle: (id: string) => void): Column<Customer>[] {
+// Columnas del catálogo paginado. La última despliega los pedidos en la fila
+// o abre el estado de cuenta del cliente.
+function buildColumns(
+  expanded: string | null,
+  onToggle: (id: string) => void,
+  onStatement: (customer: Customer) => void,
+): Column<Customer>[] {
   return [
     {
       key: 'codigo',
@@ -81,26 +87,37 @@ function buildColumns(expanded: string | null, onToggle: (id: string) => void): 
     },
     {
       key: 'accion',
-      header: ' ',
+      header: 'Acciones',
       align: 'right',
       kind: 'action',
-      sortValue: (c) => c.ordersCount,
-      render: (c) =>
-        c.ordersCount > 0 ? (
+      render: (c) => (
+        <div className="flex flex-wrap items-center justify-end gap-space-2xs">
+          {c.ordersCount > 0 && (
+            <button
+              type="button"
+              onClick={() => onToggle(c.id)}
+              aria-expanded={expanded === c.id}
+              className="inline-flex items-center gap-space-2xs rounded-pill border border-outline-variant/40 px-2.5 py-1 font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low"
+            >
+              {expanded === c.id ? (
+                <ChevronDown aria-hidden className="size-4" />
+              ) : (
+                <ChevronRight aria-hidden className="size-4" />
+              )}
+              {expanded === c.id ? 'Ocultar' : 'Ver pedidos'}
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => onToggle(c.id)}
-            aria-expanded={expanded === c.id}
+            onClick={() => onStatement(c)}
+            title={`Ver estado de cuenta de ${c.name}`}
             className="inline-flex items-center gap-space-2xs rounded-pill border border-outline-variant/40 px-2.5 py-1 font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low"
           >
-            {expanded === c.id ? (
-              <ChevronDown aria-hidden className="size-4" />
-            ) : (
-              <ChevronRight aria-hidden className="size-4" />
-            )}
-            {expanded === c.id ? 'Ocultar' : 'Ver pedidos'}
+            <Receipt aria-hidden className="size-4" />
+            Cuenta
           </button>
-        ) : null,
+        </div>
+      ),
     },
   ];
 }
@@ -110,6 +127,7 @@ export default function ClientesPage() {
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [statementCustomer, setStatementCustomer] = useState<Customer | null>(null);
   const greeting = useGreeting();
 
   const params = new URLSearchParams();
@@ -124,7 +142,12 @@ export default function ClientesPage() {
   });
 
   const columns = useMemo(
-    () => buildColumns(expanded, (id) => setExpanded((previous) => (previous === id ? null : id))),
+    () =>
+      buildColumns(
+        expanded,
+        (id) => setExpanded((previous) => (previous === id ? null : id)),
+        (customer) => setStatementCustomer(customer),
+      ),
     [expanded],
   );
 
@@ -145,7 +168,7 @@ export default function ClientesPage() {
           icon={Users}
           greeting={greeting}
           title="Clientes"
-          subtitle="Catálogo de clientes con pedidos sincronizados desde Profit. «Ver pedidos» despliega sus renglones pendientes en la misma pantalla."
+          subtitle="Catálogo de clientes con pedidos sincronizados desde Profit. «Ver pedidos» despliega sus renglones pendientes y «Cuenta» abre su estado de cuenta de la cartera."
           actions={
             <div className="flex flex-wrap items-stretch gap-space-sm">
               <Kpi
@@ -259,6 +282,14 @@ export default function ClientesPage() {
           </Card>
         )}
       </main>
+
+      {statementCustomer && (
+        <CustomerStatementDialog
+          open
+          customer={statementCustomer}
+          onClose={() => setStatementCustomer(null)}
+        />
+      )}
     </>
   );
 }

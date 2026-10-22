@@ -161,6 +161,8 @@ export default function PedidosPage() {
   const [hydrated, setHydrated] = useState(false);
   // El plan de despacho puede quedar fijo arriba o desplazarse con la página.
   const [planPinned, setPlanPinned] = useState(true);
+  // La cabecera de la cartera se puede fijar dentro de la tabla o soltar.
+  const [portfolioPinned, setPortfolioPinned] = useState(true);
   // Detalle de pedido en modal: la fila no abandona el simulador.
   const [selectedOrder, setSelectedOrder] = useState<{ id: string; number: string } | null>(null);
   const closeOrderRef = useRef<HTMLButtonElement>(null);
@@ -1323,13 +1325,29 @@ export default function PedidosPage() {
                     : 'Priorizados por entrega y existencia · expande un grupo para marcar renglones.'}
                 </p>
               </div>
-              <Badge tone="muted" dot>
-                {orderedGroups.length} grupo{orderedGroups.length === 1 ? '' : 's'}
-              </Badge>
+              <div className="flex items-center gap-space-xs">
+                <Badge tone="muted" dot>
+                  {orderedGroups.length} grupo{orderedGroups.length === 1 ? '' : 's'}
+                </Badge>
+                <button
+                  type="button"
+                  onClick={() => setPortfolioPinned((pinned) => !pinned)}
+                  aria-pressed={portfolioPinned}
+                  title={portfolioPinned ? 'Soltar la cabecera: se desplaza con la tabla' : 'Fijar la cabecera al hacer scroll'}
+                  className={`grid size-8 shrink-0 place-items-center rounded-full border transition-all active:scale-95 ${
+                    portfolioPinned
+                      ? 'border-primary-container/25 bg-primary-fixed/70 text-primary hover:bg-primary-fixed'
+                      : 'border-transparent text-outline hover:border-outline-variant/50 hover:bg-surface-container-low hover:text-primary'
+                  }`}
+                >
+                  {portfolioPinned ? <PinOff aria-hidden className="size-4" /> : <Pin aria-hidden className="size-4" />}
+                  <span className="sr-only">{portfolioPinned ? 'Soltar cabecera' : 'Fijar cabecera'}</span>
+                </button>
+              </div>
             </div>
-            <div className="overflow-x-auto">
+            <div className={`overflow-x-auto ${portfolioPinned ? 'max-h-[min(72vh,860px)] overflow-y-auto' : ''}`}>
               <table className="w-full border-collapse text-body-md">
-                <thead>
+                <thead className={portfolioPinned ? 'sticky top-0 z-10 bg-surface-container-low/95 backdrop-blur' : undefined}>
                   <tr className="border-b border-outline-variant/30 bg-surface-container-low/80">
                     <Th className="w-8" />
                     <Th>{by === 'producto' ? 'Producto' : 'Cliente'}</Th>

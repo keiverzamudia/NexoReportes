@@ -22,6 +22,19 @@ export function formatStatementMoney(
   return `${sign}${currency === 'USD' ? '$' : 'Bs'} ${formatted}`;
 }
 
+// Fechas completas (dd/mm/aaaa) como en la consulta de Profit.
+export function formatStatementDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('es-VE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(date);
+}
+
 export function statementDaysLabel(days: number | null | undefined): string {
   if (days === null || days === undefined) return '—';
   if (days === 0) return 'Hoy';
@@ -40,6 +53,24 @@ export function statementDaysTitle(days: number | null | undefined): string {
   if (days > 0) return `Vencido hace ${days} día${days === 1 ? '' : 's'}`;
   if (days === 0) return 'Vence hoy';
   return `Vence en ${Math.abs(days)} día${Math.abs(days) === 1 ? '' : 's'}`;
+}
+
+// Un crédito o un documento ya saldado no es una deuda vencida: se muestra
+// con tono neutro aunque su fecha de emisión sea antigua.
+export function statementRowDaysTone(
+  row: Pick<CustomerStatementRow, 'diasVencimiento' | 'saldo' | 'esCredito'>,
+): StatementTone {
+  if (row.esCredito || (row.saldo ?? 0) === 0) return 'muted';
+  return statementDaysTone(row.diasVencimiento);
+}
+
+export function statementRowDaysTitle(
+  row: Pick<CustomerStatementRow, 'diasVencimiento' | 'saldo' | 'esCredito'>,
+): string {
+  const base = statementDaysTitle(row.diasVencimiento);
+  if (row.esCredito) return `Crédito. ${base}`;
+  if ((row.saldo ?? 0) === 0) return `Documento saldado. ${base}`;
+  return base;
 }
 
 export function statementDocTone(
