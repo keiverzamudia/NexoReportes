@@ -25,5 +25,9 @@ Thumbs.db
 exports/
 uploads/
 
-# Capturas de auditoría de interfaz (tools/ui-shots.mjs)
+# Capturas de auditorï¿½a de interfaz (tools/ui-shots.mjs)
 artifacts/
+
+# Despliegue: backups de PostgreSQL e importaciones de datos
+backups/
+import/

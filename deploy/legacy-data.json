@@ -1,0 +1,492 @@
+{
+  "DeliveryDateOverride": [
+    {
+      "id": "cmvij6f4901otszn86scvzkbx",
+      "orderNumber": "6782",
+      "productCode": "ABABOV67",
+      "customerCode": "500917376",
+      "tentativeDate": "2026-10-28T00:00:00.000Z",
+      "note": null,
+      "createdById": "cmvfe64fw005nszngtb1l2872",
+      "createdByCode": "999",
+      "updatedById": null,
+      "updatedByCode": null,
+      "createdAt": "2026-10-21T19:54:25.927Z",
+      "updatedAt": "2026-10-21T19:54:25.927Z"
+    },
+    {
+      "id": "cmvijqh4301p1szn878j63p5n",
+      "orderNumber": "6813",
+      "productCode": "ABAGP13",
+      "customerCode": "411226831",
+      "tentativeDate": "2026-10-22T00:00:00.000Z",
+      "note": null,
+      "createdById": "cmvfe64f4004iszngahvfv91q",
+      "createdByCode": "MARI",
+      "updatedById": null,
+      "updatedByCode": null,
+      "createdAt": "2026-10-21T20:10:01.635Z",
+      "updatedAt": "2026-10-21T20:10:01.635Z"
+    },
+    {
+      "id": "cmvijqzow01p5szn8fb4vw5sg",
+      "orderNumber": "6792",
+      "productCode": "ABABOV67",
+      "customerCode": "503527951",
+      "tentativeDate": "2026-10-22T00:00:00.000Z",
+      "note": null,
+      "createdById": "cmvfe64f4004iszngahvfv91q",
+      "createdByCode": "MARI",
+      "updatedById": null,
+      "updatedByCode": null,
+      "createdAt": "2026-10-21T20:10:25.712Z",
+      "updatedAt": "2026-10-21T20:10:25.712Z"
+    },
+    {
+      "id": "cmvijr6xj01p9szn86aq3235c",
+      "orderNumber": "6792",
+      "productCode": "ABABOV85",
+      "customerCode": "503527951",
+      "tentativeDate": "2026-10-22T00:00:00.000Z",
+      "note": null,
+      "createdById": "cmvfe64f4004iszngahvfv91q",
+      "createdByCode": "MARI",
+      "updatedById": null,
+      "updatedByCode": null,
+      "createdAt": "2026-10-21T20:10:35.095Z",
+      "updatedAt": "2026-10-21T20:10:35.095Z"
+    },
+    {
+      "id": "cmvijrf6q01pdszn8evgqjrsk",
+      "orderNumber": "6792",
+      "productCode": "ABAPOR74",
+      "customerCode": "503527951",
+      "tentativeDate": "2026-10-22T00:00:00.000Z",
+      "note": null,
+      "createdById": "cmvfe64f4004iszngahvfv91q",
+      "createdByCode": "MARI",
+      "updatedById": null,
+      "updatedByCode": null,
+      "createdAt": "2026-10-21T20:10:45.795Z",
+      "updatedAt": "2026-10-21T20:10:45.795Z"
+    },
+    {
+      "id": "cmvijrw3001phszn87w9kk4ia",
+      "orderNumber": "6803",
+      "productCode": "ABABOV75",
+      "customerCode": "315241048",
+      "tentativeDate": "2026-10-22T00:00:00.000Z",
+      "note": null,
+      "createdById": "cmvfe64f4004iszngahvfv91q",
+      "createdByCode": "MARI",
+      "updatedById": null,
+      "updatedByCode": null,
+      "createdAt": "2026-10-21T20:11:07.692Z",
+      "updatedAt": "2026-10-21T20:11:07.692Z"
+    },
+    {
+      "id": "cmvijsegq01plszn8l26elri7",
+      "orderNumber": "6820",
+      "productCode": "ABAGP13",
+      "customerCode": "406346624",
+      "tentativeDate": "2026-10-22T00:00:00.000Z",
+      "note": null,
+      "createdById": "cmvfe64f4004iszngahvfv91q",
+      "createdByCode": "MARI",
+      "updatedById": null,
+      "updatedByCode": null,
+      "createdAt": "2026-10-21T20:11:31.514Z",
+      "updatedAt": "2026-10-21T20:11:31.514Z"
+    },
+    {
+      "id": "cmvjni48y03n7sz10rfudm8fr",
+      "orderNumber": "6785",
+      "productCode": "ABAGP13",
+      "customerCode": "503815620",
+      "tentativeDate": "2026-10-24T00:00:00.000Z",
+      "note": null,
+      "createdById": "cmvfe64ed003fszngf44opzfa",
+      "createdByCode": "JANG",
+      "updatedById": null,
+      "updatedByCode": null,
+      "createdAt": "2026-10-22T14:43:16.352Z",
+      "updatedAt": "2026-10-22T14:43:16.352Z"
+    }
+  ],
+  "DeliveryDateChange": [
+    {
+      "id": "cmvigeh0u00lcszn8yps2xdhl",
+      "batchId": "207c59d9-ed5a-4da5-8e31-c5c88a980d09",
+      "orderNumber": "6819",
+      "productCode": "ABAPE16",
+      "customerCode": "294201237",
+      "previousDate": null,
+      "newDate": "0026-10-23T00:00:00.000Z",
+      "action": "SET",
+      "note": "problemas con este",
+      "changedById": "cmvfebqzt0071szngk1vtgvo9",
+      "changedByCode": "KZAMU",
+      "changedAt": "2026-10-21T18:36:42.798Z"
+    },
+    {
+      "id": "cmvigfp3w00lfszn8zygv6k9q",
+      "batchId": "ab87e395-6812-4b3e-b240-733a47eeb152",
+      "orderNumber": "6819",
+      "productCode": "ABAPE16",
+      "customerCode": "294201237",
+      "previousDate": "0026-10-23T00:00:00.000Z",
+      "newDate": null,
+      "action": "RESTORE",
+      "note": null,
+      "changedById": "cmvfebqzt0071szngk1vtgvo9",
+      "changedByCode": "KZAMU",
+      "changedAt": "2026-10-21T18:37:39.932Z"
+    },
+    {
+      "id": "cmvij6f4a01ouszn8nzzezq7i",
+      "batchId": "c60fafc3-f811-4c15-ae24-33d34ffa2976",
+      "orderNumber": "6782",
+      "productCode": "ABABOV67",
+      "customerCode": "500917376",
+      "previousDate": null,
+      "newDate": "2026-10-28T00:00:00.000Z",
+      "action": "SET",
+      "note": null,
+      "changedById": "cmvfe64fw005nszngtb1l2872",
+      "changedByCode": "999",
+      "changedAt": "2026-10-21T19:54:25.927Z"
+    },
+    {
+      "id": "cmvijqh4301p2szn8yxs2mjt4",
+      "batchId": "a1369665-20de-416a-abc5-aa3fad90c9d1",
+      "orderNumber": "6813",
+      "productCode": "ABAGP13",
+      "customerCode": "411226831",
+      "previousDate": null,
+      "newDate": "2026-10-22T00:00:00.000Z",
+      "action": "SET",
+      "note": null,
+      "changedById": "cmvfe64f4004iszngahvfv91q",
+      "changedByCode": "MARI",
+      "changedAt": "2026-10-21T20:10:01.635Z"
+    },
+    {
+      "id": "cmvijqzow01p6szn8hi2ololl",
+      "batchId": "6c65bf93-cefb-43e5-8911-19cea93a9c28",
+      "orderNumber": "6792",
+      "productCode": "ABABOV67",
+      "customerCode": "503527951",
+      "previousDate": null,
+      "newDate": "2026-10-22T00:00:00.000Z",
+      "action": "SET",
+      "note": null,
+      "changedById": "cmvfe64f4004iszngahvfv91q",
+      "changedByCode": "MARI",
+      "changedAt": "2026-10-21T20:10:25.712Z"
+    },
+    {
+      "id": "cmvijr6xj01paszn8kt094ran",
+      "batchId": "26d99580-a835-4ec5-bc52-a1554c19be2c",
+      "orderNumber": "6792",
+      "productCode": "ABABOV85",
+      "customerCode": "503527951",
+      "previousDate": null,
+      "newDate": "2026-10-22T00:00:00.000Z",
+      "action": "SET",
+      "note": null,
+      "changedById": "cmvfe64f4004iszngahvfv91q",
+      "changedByCode": "MARI",
+      "changedAt": "2026-10-21T20:10:35.095Z"
+    },
+    {
+      "id": "cmvijrf6r01peszn8kcpourqx",
+      "batchId": "226a5f57-8726-498d-9270-91dc7fda69c8",
+      "orderNumber": "6792",
+      "productCode": "ABAPOR74",
+      "customerCode": "503527951",
+      "previousDate": null,
+      "newDate": "2026-10-22T00:00:00.000Z",
+      "action": "SET",
+      "note": null,
+      "changedById": "cmvfe64f4004iszngahvfv91q",
+      "changedByCode": "MARI",
+      "changedAt": "2026-10-21T20:10:45.795Z"
+    },
+    {
+      "id": "cmvijrw3101piszn84go7flp6",
+      "batchId": "4d488c20-2830-4dbf-be34-965ef041182e",
+      "orderNumber": "6803",
+      "productCode": "ABABOV75",
+      "customerCode": "315241048",
+      "previousDate": null,
+      "newDate": "2026-10-22T00:00:00.000Z",
+      "action": "SET",
+      "note": null,
+      "changedById": "cmvfe64f4004iszngahvfv91q",
+      "changedByCode": "MARI",
+      "changedAt": "2026-10-21T20:11:07.692Z"
+    },
+    {
+      "id": "cmvijsegq01pmszn84xog6a2q",
+      "batchId": "783f77e3-5654-4c17-ae36-4789df68602b",
+      "orderNumber": "6820",
+      "productCode": "ABAGP13",
+      "customerCode": "406346624",
+      "previousDate": null,
+      "newDate": "2026-10-22T00:00:00.000Z",
+      "action": "SET",
+      "note": null,
+      "changedById": "cmvfe64f4004iszngahvfv91q",
+      "changedByCode": "MARI",
+      "changedAt": "2026-10-21T20:11:31.514Z"
+    },
+    {
+      "id": "cmvjni48y03n8sz103gbsw20l",
+      "batchId": "767df9d6-0e6c-46d0-877b-0cf0317c7359",
+      "orderNumber": "6785",
+      "productCode": "ABAGP13",
+      "customerCode": "503815620",
+      "previousDate": null,
+      "newDate": "2026-10-24T00:00:00.000Z",
+      "action": "SET",
+      "note": null,
+      "changedById": "cmvfe64ed003fszngf44opzfa",
+      "changedByCode": "JANG",
+      "changedAt": "2026-10-22T14:43:16.352Z"
+    }
+  ],
+  "Forecast": [
+    {
+      "id": "cmv9xyppr00hdszs812dscyc1",
+      "productCode": "ABABOV54",
+      "year": 2026,
+      "month": 10,
+      "monthlyQty": 400,
+      "locked": 1,
+      "lockedAt": "2026-10-15T20:22:11.038Z",
+      "updatedBy": "admin@nexo.local",
+      "createdAt": "2026-10-15T19:38:25.071Z",
+      "updatedAt": "2026-10-15T20:22:11.044Z"
+    },
+    {
+      "id": "cmv9ybjq60002sz4cf692jqhk",
+      "productCode": "ABABOV38",
+      "year": 2026,
+      "month": 10,
+      "monthlyQty": 1200,
+      "locked": 1,
+      "lockedAt": "2026-10-15T20:06:20.077Z",
+      "updatedBy": "admin@nexo.local",
+      "createdAt": "2026-10-15T19:48:23.836Z",
+      "updatedAt": "2026-10-15T20:06:20.078Z"
+    },
+    {
+      "id": "cmv9zmzbd0000sz7cx00mgr5j",
+      "productCode": "ABABOV66",
+      "year": 2026,
+      "month": 10,
+      "monthlyQty": 500,
+      "locked": 1,
+      "lockedAt": "2026-10-15T20:25:16.854Z",
+      "updatedBy": "admin@nexo.local",
+      "createdAt": "2026-10-15T20:25:16.870Z",
+      "updatedAt": "2026-10-15T20:25:16.870Z"
+    },
+    {
+      "id": "cmva04i720002sz5c5kchgram",
+      "productCode": "ABABOV67",
+      "year": 2026,
+      "month": 10,
+      "monthlyQty": 1000,
+      "locked": 1,
+      "lockedAt": "2026-10-15T20:38:54.492Z",
+      "updatedBy": "admin@nexo.local",
+      "createdAt": "2026-10-15T20:38:54.493Z",
+      "updatedAt": "2026-10-15T20:38:54.493Z"
+    },
+    {
+      "id": "cmvfmlidp0004szzsmdpivspm",
+      "productCode": "ABABOV58",
+      "year": 2026,
+      "month": 10,
+      "monthlyQty": 63000,
+      "locked": 0,
+      "lockedAt": null,
+      "updatedBy": null,
+      "createdAt": "2026-10-19T19:06:50.314Z",
+      "updatedAt": "2026-10-19T19:06:50.314Z"
+    },
+    {
+      "id": "cmvibyl5y00iuszv0bhw3pjpk",
+      "productCode": "ABAPOR74",
+      "year": 2026,
+      "month": 10,
+      "monthlyQty": 182000,
+      "locked": 0,
+      "lockedAt": null,
+      "updatedBy": null,
+      "createdAt": "2026-10-21T16:32:23.206Z",
+      "updatedAt": "2026-10-21T16:33:27.636Z"
+    }
+  ],
+  "ForecastWeek": [
+    {
+      "id": "cmv9xypqa00hfszs8pmg4mvk8",
+      "forecastId": "cmv9xyppr00hdszs812dscyc1",
+      "weekIndex": 1,
+      "qty": 200
+    },
+    {
+      "id": "cmv9xypqz00hhszs8kxzvc7gq",
+      "forecastId": "cmv9xyppr00hdszs812dscyc1",
+      "weekIndex": 2,
+      "qty": 100
+    },
+    {
+      "id": "cmv9xypro00hjszs8fiwpe500",
+      "forecastId": "cmv9xyppr00hdszs812dscyc1",
+      "weekIndex": 3,
+      "qty": 50
+    },
+    {
+      "id": "cmv9xyprx00hlszs8cyzv9ntx",
+      "forecastId": "cmv9xyppr00hdszs812dscyc1",
+      "weekIndex": 4,
+      "qty": 50
+    },
+    {
+      "id": "cmv9ybjqu0004sz4cnysy6l6r",
+      "forecastId": "cmv9ybjq60002sz4cf692jqhk",
+      "weekIndex": 1,
+      "qty": 300
+    },
+    {
+      "id": "cmv9ybjr30006sz4cw5y6b4og",
+      "forecastId": "cmv9ybjq60002sz4cf692jqhk",
+      "weekIndex": 2,
+      "qty": 300
+    },
+    {
+      "id": "cmv9ybjrb0008sz4c6c6354jt",
+      "forecastId": "cmv9ybjq60002sz4cf692jqhk",
+      "weekIndex": 3,
+      "qty": 300
+    },
+    {
+      "id": "cmv9ybjrk000asz4cd1m06pwr",
+      "forecastId": "cmv9ybjq60002sz4cf692jqhk",
+      "weekIndex": 4,
+      "qty": 300
+    },
+    {
+      "id": "cmv9zmzcp0002sz7c4byl9tvv",
+      "forecastId": "cmv9zmzbd0000sz7cx00mgr5j",
+      "weekIndex": 1,
+      "qty": 125
+    },
+    {
+      "id": "cmv9zmzd80004sz7cpm1y4jrq",
+      "forecastId": "cmv9zmzbd0000sz7cx00mgr5j",
+      "weekIndex": 2,
+      "qty": 125
+    },
+    {
+      "id": "cmv9zmzdl0006sz7cahzp4wgg",
+      "forecastId": "cmv9zmzbd0000sz7cx00mgr5j",
+      "weekIndex": 3,
+      "qty": 125
+    },
+    {
+      "id": "cmv9zmzdw0008sz7ck5l1qu1e",
+      "forecastId": "cmv9zmzbd0000sz7cx00mgr5j",
+      "weekIndex": 4,
+      "qty": 125
+    },
+    {
+      "id": "cmva04i7i0004sz5c8wris83u",
+      "forecastId": "cmva04i720002sz5c5kchgram",
+      "weekIndex": 1,
+      "qty": 250
+    },
+    {
+      "id": "cmva04i7s0006sz5ct9kzwq1r",
+      "forecastId": "cmva04i720002sz5c5kchgram",
+      "weekIndex": 2,
+      "qty": 250
+    },
+    {
+      "id": "cmva04i810008sz5cpbaipnp5",
+      "forecastId": "cmva04i720002sz5c5kchgram",
+      "weekIndex": 3,
+      "qty": 250
+    },
+    {
+      "id": "cmva04i8a000asz5co9md16wz",
+      "forecastId": "cmva04i720002sz5c5kchgram",
+      "weekIndex": 4,
+      "qty": 250
+    },
+    {
+      "id": "cmvfmlieh0006szzsvzhfngtq",
+      "forecastId": "cmvfmlidp0004szzsmdpivspm",
+      "weekIndex": 1,
+      "qty": 15755
+    },
+    {
+      "id": "cmvfmliev0008szzs4phwdhxr",
+      "forecastId": "cmvfmlidp0004szzsmdpivspm",
+      "weekIndex": 2,
+      "qty": 15750
+    },
+    {
+      "id": "cmvfmlif9000aszzsi6cikerk",
+      "forecastId": "cmvfmlidp0004szzsmdpivspm",
+      "weekIndex": 3,
+      "qty": 15750
+    },
+    {
+      "id": "cmvfmlift000cszzsh5f9aimy",
+      "forecastId": "cmvfmlidp0004szzsmdpivspm",
+      "weekIndex": 4,
+      "qty": 15750
+    },
+    {
+      "id": "cmvibyl6b00iwszv0y2b091as",
+      "forecastId": "cmvibyl5y00iuszv0bhw3pjpk",
+      "weekIndex": 1,
+      "qty": 45500
+    },
+    {
+      "id": "cmvibyl6n00iyszv08ux9sk0m",
+      "forecastId": "cmvibyl5y00iuszv0bhw3pjpk",
+      "weekIndex": 2,
+      "qty": 45500
+    },
+    {
+      "id": "cmvibyl7000j0szv0mwzpaeld",
+      "forecastId": "cmvibyl5y00iuszv0bhw3pjpk",
+      "weekIndex": 3,
+      "qty": 45500
+    },
+    {
+      "id": "cmvibyl7f00j2szv0wc588dpw",
+      "forecastId": "cmvibyl5y00iuszv0bhw3pjpk",
+      "weekIndex": 4,
+      "qty": 45500
+    }
+  ],
+  "SystemSetting": [
+    {
+      "key": "sync.interval_seconds",
+      "value": "0",
+      "description": "Intervalo del worker de sincronización (0 = manual)",
+      "updatedAt": "2026-10-14T18:33:30.076Z"
+    },
+    {
+      "key": "sync.page_size",
+      "value": "5000",
+      "description": "Tamaño de lote de lectura desde Profit",
+      "updatedAt": "2026-10-14T18:33:30.113Z"
+    }
+  ]
+}
