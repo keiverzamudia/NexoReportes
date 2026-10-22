@@ -19,11 +19,13 @@ import {
   Bell,
   BellRing,
   CheckCheck,
+  DoorOpen,
   Inbox,
   Loader,
   MessageSquare,
   PackagePlus,
   Truck,
+  UserCheck,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useRouter } from 'next/navigation';
@@ -40,6 +42,9 @@ const TYPE_ICON: Record<NotificationType, LucideIcon> = {
   DESPACHO_NOVEDAD: AlertTriangle,
   DESPACHO_CANCELADO: Ban,
   MENSAJE: MessageSquare,
+  LLEGADA_ESPERADA: DoorOpen,
+  LLEGADA_MARCADA: UserCheck,
+  LLEGADA_INCIDENCIA: AlertTriangle,
 };
 
 const TYPE_TONE: Record<NotificationType, string> = {
@@ -50,6 +55,9 @@ const TYPE_TONE: Record<NotificationType, string> = {
   DESPACHO_NOVEDAD: 'bg-warning-container text-on-warning-container',
   DESPACHO_CANCELADO: 'bg-critical-container text-on-critical-container',
   MENSAJE: 'bg-secondary-container/40 text-secondary',
+  LLEGADA_ESPERADA: 'bg-primary-fixed text-primary',
+  LLEGADA_MARCADA: 'bg-success-container text-on-success-container',
+  LLEGADA_INCIDENCIA: 'bg-warning-container text-on-warning-container',
 };
 
 export function NotificationsBell() {

@@ -21,6 +21,7 @@ import {
 import { DispatchSheet, DispatchSheetEvent as EventRow, DispatchSheetLine as LineRow, Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
+import { ArrivalsService, ArrivalSourceLine } from '../arrivals/arrivals.service';
 
 // ============================================================
 // Despacho de almacén: hoja de trabajo + túnel de acuses.
@@ -83,6 +84,8 @@ export class DispatchService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    // Las llegadas de PCP nacen con el despacho: sin botón ni paso extra.
+    private readonly arrivals: ArrivalsService,
   ) {}
 
   // ---------- Bandeja ----------
@@ -257,7 +260,27 @@ export class DispatchService {
     const plannedKg = round2(lines.reduce((sum, line) => sum + line.assignedKg, 0));
     const destination = assignee ? assignee.displayName : 'todo el almacén';
 
+    const arrivalLines: ArrivalSourceLine[] = lines.map((line) => ({
+      orderNumber: line.orderNumber,
+      customerCode: line.customerCode ?? null,
+      customerName: line.customerName ?? null,
+      uom: line.uom ?? null,
+      effectiveDate: line.effectiveDate ?? null,
+      plannedQty: line.assignedQty,
+      plannedKg: line.assignedKg,
+    }));
+    let arrivalCount = 0;
+
     const sheet = await this.createWithNumber(async (number) => {
+      // Los clientes esperados en planta (PCP) se crean en el mismo `create`:
+      // o queda el despacho con sus llegadas, o no queda nada.
+      const arrivalRows = await this.arrivals.rowsForSheet({
+        sheetNumber: number,
+        sheetTitle: input.title,
+        lines: arrivalLines,
+        actor,
+      });
+      arrivalCount = arrivalRows.length;
       return this.prisma.dispatchSheet.create({
         data: {
           number,
@@ -303,6 +326,7 @@ export class DispatchService {
               authorName: actor.name,
             },
           },
+          arrivals: { create: arrivalRows },
         },
         include: {
           lines: { orderBy: { position: 'asc' } },
@@ -321,6 +345,9 @@ export class DispatchService {
       actorName: actor.name,
       linkPath: `/despacho/${sheet.id}`,
     });
+
+    // PCP recibe a sus clientes en la misma publicación: sin botón extra.
+    await this.arrivals.notifyExpected(sheet, { customers: arrivalCount, kg: plannedKg }, actor);
 
     await this.audit.record({
       actorId: actor.id,
@@ -638,6 +665,9 @@ export class DispatchService {
       actorName: actor.name,
       linkPath: `/despacho/${sheet.id}`,
     });
+
+    // Las llegadas que aún no ocurrieron se cancelan; las que sí, se conservan.
+    await this.arrivals.cancelForSheet(sheet.id, actor, input.reason);
 
     await this.audit.record({
       actorId: actor.id,

@@ -86,6 +86,17 @@ export const APP_MODULES: AppModuleDefinition[] = [
     ],
   },
   {
+    key: 'llegadas',
+    label: 'Llegadas PCP',
+    href: '/llegadas',
+    actions: [
+      { action: 'read', label: 'Ver' },
+      { action: 'create', label: 'Marcar llegada' },
+      { action: 'update', label: 'Incidencias y cierre' },
+      { action: 'delete', label: 'Corregir registros' },
+    ],
+  },
+  {
     key: 'usuarios',
     label: 'Usuarios y roles',
     href: '/usuarios',
@@ -116,6 +127,7 @@ export type AppModuleKey =
   | 'pedidos'
   | 'clientes'
   | 'despacho'
+  | 'llegadas'
   | 'usuarios'
   | 'auditoria'
   | 'sincronizacion';
@@ -147,6 +159,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['despacho', 'read'],
     ['despacho', 'create'],
     ['despacho', 'delete'],
+    ['llegadas', 'read'],
     ['auditoria', 'read'],
     ['sincronizacion', 'update'],
   ],
@@ -162,6 +175,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['despacho', 'read'],
     ['despacho', 'create'],
     ['despacho', 'delete'],
+    ['llegadas', 'read'],
+    ['llegadas', 'create'],
+    ['llegadas', 'update'],
     ['sincronizacion', 'update'],
   ],
   ALMACEN: [
@@ -174,6 +190,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['clientes', 'read'],
     ['despacho', 'read'],
     ['despacho', 'update'],
+    ['llegadas', 'read'],
   ],
   CONSULTA: [
     ['disponibilidad', 'read'],
@@ -967,6 +984,10 @@ export const NOTIFICATION_TYPES = [
   'DESPACHO_NOVEDAD',
   'DESPACHO_CANCELADO',
   'MENSAJE',
+  // PCP: clientes esperados por un despacho publicado y sus hitos en planta.
+  'LLEGADA_ESPERADA',
+  'LLEGADA_MARCADA',
+  'LLEGADA_INCIDENCIA',
 ] as const;
 export const zNotificationType = z.enum(NOTIFICATION_TYPES);
 export type NotificationType = z.infer<typeof zNotificationType>;
@@ -1121,6 +1142,182 @@ export type DispatchCancelInput = z.infer<typeof zDispatchCancelInput>;
 
 export const zDispatchMessageInput = z.object({ body: z.string().trim().min(1).max(500) });
 export type DispatchMessageInput = z.infer<typeof zDispatchMessageInput>;
+
+// ============================================================
+// Llegadas de clientes (PCP).
+//
+// Al publicar un despacho se crea, sin paso adicional, un registro por
+// cliente del plan: quién viene, cuándo se espera y qué trae. En planta se
+// marca la llegada (hora del servidor), se reportan incidencias y queda todo
+// en una bitácora que no se borra. Corregir un registro ya cerrado exige el
+// permiso «Corregir registros» y un motivo, y deja rastro del cambio.
+// ============================================================
+export const ARRIVAL_STATUSES = [
+  'ESPERADO',
+  'EN_PLANTA',
+  'ATENDIDO',
+  'AUSENTE',
+  'CON_INCIDENCIA',
+  'CANCELADO',
+] as const;
+export const zArrivalStatus = z.enum(ARRIVAL_STATUSES);
+export type ArrivalStatus = z.infer<typeof zArrivalStatus>;
+
+export const ARRIVAL_INCIDENT_KINDS = ['FALTANTE', 'DEMORA', 'DANO', 'DOCUMENTO', 'RECHAZO', 'OTRO'] as const;
+export const zArrivalIncidentKind = z.enum(ARRIVAL_INCIDENT_KINDS);
+export type ArrivalIncidentKind = z.infer<typeof zArrivalIncidentKind>;
+
+export const ARRIVAL_INCIDENT_SEVERITIES = ['BAJA', 'MEDIA', 'ALTA'] as const;
+export const zArrivalIncidentSeverity = z.enum(ARRIVAL_INCIDENT_SEVERITIES);
+export type ArrivalIncidentSeverity = z.infer<typeof zArrivalIncidentSeverity>;
+
+export const ARRIVAL_INCIDENT_STATUSES = ['ABIERTA', 'RESUELTA'] as const;
+export const zArrivalIncidentStatus = z.enum(ARRIVAL_INCIDENT_STATUSES);
+export type ArrivalIncidentStatus = z.infer<typeof zArrivalIncidentStatus>;
+
+export const zArrivalIncident = z.object({
+  id: z.string(),
+  kind: zArrivalIncidentKind,
+  severity: zArrivalIncidentSeverity,
+  body: z.string(),
+  status: zArrivalIncidentStatus,
+  resolution: z.string().nullable(),
+  reportedById: z.string().nullable(),
+  reportedByName: z.string().nullable(),
+  resolvedById: z.string().nullable(),
+  resolvedByName: z.string().nullable(),
+  resolvedAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type ArrivalIncident = z.infer<typeof zArrivalIncident>;
+
+export const zArrivalEvent = z.object({
+  id: z.string(),
+  kind: z.enum(['SYSTEM', 'MESSAGE']),
+  type: z.string(),
+  body: z.string().nullable(),
+  authorId: z.string().nullable(),
+  authorCode: z.string().nullable(),
+  authorName: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type ArrivalEvent = z.infer<typeof zArrivalEvent>;
+
+export const zArrivalSummary = z.object({
+  id: z.string(),
+  number: z.string(),
+  // Desnormalizado: la bitácora debe sobrevivir a cambios del despacho.
+  customerCode: z.string(),
+  customerName: z.string(),
+  expectedDate: z.string().nullable(),
+  sheetId: z.string(),
+  sheetNumber: z.string(),
+  sheetTitle: z.string(),
+  status: zArrivalStatus,
+  arrivedAt: z.string().nullable(),
+  arrivedById: z.string().nullable(),
+  arrivedByCode: z.string().nullable(),
+  arrivedByName: z.string().nullable(),
+  closedAt: z.string().nullable(),
+  note: z.string().nullable(),
+  orderNumbers: z.array(z.string()),
+  lineCount: z.number().int(),
+  plannedSacks: z.number(),
+  plannedKg: z.number(),
+  incidentCount: z.number().int(),
+  openIncidentCount: z.number().int(),
+  updatedAt: z.string(),
+  updatedByName: z.string().nullable(),
+  // Permisos resueltos para quien consulta.
+  canCheckIn: z.boolean(),
+  canClose: z.boolean(),
+  canReportIncident: z.boolean(),
+  canEdit: z.boolean(),
+});
+export type ArrivalSummary = z.infer<typeof zArrivalSummary>;
+
+export const zArrivalDetail = zArrivalSummary.extend({
+  incidents: z.array(zArrivalIncident),
+  events: z.array(zArrivalEvent),
+});
+export type ArrivalDetail = z.infer<typeof zArrivalDetail>;
+
+export const zArrivalListResponse = z.object({
+  items: z.array(zArrivalSummary),
+  total: z.number().int(),
+  counters: z.object({
+    expected: z.number().int(),
+    onSite: z.number().int(),
+    attended: z.number().int(),
+    withIncident: z.number().int(),
+    missed: z.number().int(),
+    kgExpected: z.number(),
+  }),
+});
+export type ArrivalListResponse = z.infer<typeof zArrivalListResponse>;
+
+export const zArrivalQuery = z.object({
+  // yyyy-MM-dd de negocio; omitido = todas las fechas (histórico).
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  status: zArrivalStatus.optional(),
+  q: z.string().trim().max(80).optional(),
+  // Tope para el histórico (evita traer años de registros).
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+});
+export type ArrivalQuery = z.infer<typeof zArrivalQuery>;
+
+export const zArrivalCheckInInput = z.object({
+  note: z.string().trim().max(240).optional(),
+  // Hora del cliente si la marcó el operador desde el formulario; por defecto
+  // se usa la hora del servidor.
+  at: z.string().datetime().optional(),
+});
+export type ArrivalCheckInInput = z.infer<typeof zArrivalCheckInInput>;
+
+export const zArrivalCloseInput = z.object({
+  status: z.enum(['ATENDIDO', 'AUSENTE']),
+  note: z.string().trim().max(500).optional(),
+});
+export type ArrivalCloseInput = z.infer<typeof zArrivalCloseInput>;
+
+// Corrección de un registro ya hecho (jefe de PCP / administrador).
+export const zArrivalEditInput = z
+  .object({
+    arrivedAt: z.string().datetime().nullable().optional(),
+    status: zArrivalStatus.optional(),
+    expectedDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable()
+      .optional(),
+    note: z.string().trim().max(500).nullable().optional(),
+    reason: z.string().trim().min(3, 'Explica el motivo de la corrección').max(240),
+  })
+  .refine(
+    (value) =>
+      value.arrivedAt !== undefined || value.status !== undefined || value.expectedDate !== undefined || value.note !== undefined,
+    { message: 'Indica qué quieres corregir' },
+  );
+export type ArrivalEditInput = z.infer<typeof zArrivalEditInput>;
+
+export const zArrivalIncidentInput = z.object({
+  kind: zArrivalIncidentKind,
+  severity: zArrivalIncidentSeverity.default('MEDIA'),
+  body: z.string().trim().min(3, 'Describe la incidencia').max(500),
+});
+export type ArrivalIncidentInput = z.infer<typeof zArrivalIncidentInput>;
+
+export const zArrivalIncidentResolveInput = z.object({
+  resolution: z.string().trim().min(3, 'Explica cómo se resolvió').max(500),
+  severity: zArrivalIncidentSeverity.optional(),
+});
+export type ArrivalIncidentResolveInput = z.infer<typeof zArrivalIncidentResolveInput>;
+
+export const zArrivalMessageInput = z.object({ body: z.string().trim().min(1).max(500) });
+export type ArrivalMessageInput = z.infer<typeof zArrivalMessageInput>;
 
 // ---------- Notificaciones (campana + acuses) ----------
 export const zNotification = z.object({

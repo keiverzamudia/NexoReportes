@@ -94,6 +94,35 @@ export class PermissionsService implements OnModuleInit {
         },
       });
     }
+
+    // Módulos agregados después de la instalación original: se siembran sus
+    // permisos por defecto en los roles de sistema que aún no los tengan, sin
+    // resucitar permisos que un administrador haya quitado a mano.
+    await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'llegadas');
+  }
+
+  private async seedMissingModule(
+    defaults: Record<Role, Array<[string, PermissionAction]>>,
+    module: string,
+  ): Promise<void> {
+    for (const role of ROLES) {
+      const row = await this.prisma.role.findUnique({
+        where: { code: role },
+        select: { permissions: { where: { module }, select: { action: true } } },
+      });
+      if (!row || row.permissions.length > 0) continue;
+
+      const expected = defaults[role]
+        .filter(([key]) => key === module)
+        .map(([, action]) => action);
+      if (expected.length === 0) continue;
+
+      await this.prisma.$transaction(
+        expected.map((action) =>
+          this.prisma.rolePermission.create({ data: { roleCode: role, module, action } }),
+        ),
+      );
+    }
   }
 
   /** Permisos que concede un rol (sin excepciones del usuario). */
