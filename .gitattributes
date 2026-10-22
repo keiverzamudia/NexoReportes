@@ -1,0 +1,5 @@
+# Scripts de shell: siempre LF, o Linux falla con "\r: command not found".
+*.sh text eol=lf
+Dockerfile* text eol=lf
+docker-compose*.yml text eol=lf
+*.mjs text eol=lf

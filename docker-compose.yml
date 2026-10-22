@@ -1,0 +1,73 @@
+# ============================================================
+# Nexo / San Luis — despliegue de producción (LAN por IP).
+#
+#   docker compose up -d --build
+#
+# La base vive en el volumen `pgdata`; los backups los hace scripts/deploy.sh.
+# ============================================================
+name: nexo
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: ${POSTGRES_DB:-nexo}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexo} -d ${POSTGRES_DB:-nexo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      API_PORT: "4000"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexo}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nexo}?schema=public
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+    # Si el contenedor no resuelve el nombre de Profit, descomenta y ajusta:
+    # extra_hosts:
+    #   - "SRVBDPROFITBK:172.16.1.10"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        API_URL: http://api:4000
+    environment:
+      NODE_ENV: production
+      PORT: "4100"
+      HOSTNAME: 0.0.0.0
+      API_URL: http://api:4000
+    ports:
+      # Escucha en todas las interfaces: los usuarios entran por http://<IP>:4100
+      - "4100:4100"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
