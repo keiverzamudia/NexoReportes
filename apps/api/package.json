@@ -2,7 +2,7 @@
   "name": "@nexo/api",
   "version": "0.1.0",
   "private": true,
-  "description": "API NestJS de Corpoagro · San Luis (auth, integración Profit, disponibilidad, escenarios, producción y reportes)",
+  "description": "API NestJS de Corpoagro (auth, integración Profit, disponibilidad, escenarios, producción y reportes)",
   "scripts": {
     "dev": "node scripts/ensure-prisma-client.mjs && nest start --watch",
     "dev:fast": "nest start --watch",

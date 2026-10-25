@@ -210,8 +210,8 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
         <span className="mt-space-lg flex items-center justify-center">
           <Logo size="full" height={72} priority />
         </span>
-        <h1 className="font-display mt-space-md text-display-lg uppercase tracking-[0.04em] text-primary">San Luis</h1>
-        <p className="text-body-md text-on-surface-variant">Corpoagro · Nutrición Animal · Sistema de gestión</p>
+        <h1 className="font-display mt-space-md text-display-lg uppercase tracking-[0.04em] text-primary">Gestión de producción</h1>
+        <p className="text-body-md text-on-surface-variant">Nutrición Animal · Sistema de gestión</p>
       </header>
       <div className="relative w-full">
         <LoginForm onSuccess={onSuccess} />
@@ -371,7 +371,6 @@ export function AppNav() {
       <div className="mx-auto flex w-full max-w-[1680px] flex-wrap items-center gap-space-md px-space-md py-space-sm md:px-space-xl">
         <Link href={home} className="flex shrink-0 items-center gap-space-sm" aria-label="Corpoagro — inicio">
           <Logo size="compact" height={28} />
-          <span className="hidden text-label-sm font-semibold uppercase tracking-[0.18em] text-outline sm:inline">San Luis</span>
         </Link>
 
         <nav aria-label="Módulos" className="order-3 w-full md:order-none md:w-auto md:flex-1">

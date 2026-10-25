@@ -98,7 +98,7 @@ export function NotificationsBell() {
   const baseTitle = useRef('');
   useEffect(() => {
     if (typeof document === 'undefined') return;
-    if (!baseTitle.current) baseTitle.current = document.title.replace(/^\(\d+\)\s*/, '') || 'CORPOAGRO · SAN LUIS';
+    if (!baseTitle.current) baseTitle.current = document.title.replace(/^\(\d+\)\s*/, '') || 'CORPOAGRO';
     document.title = unread > 0 ? `(${unread}) ${baseTitle.current}` : baseTitle.current;
     return () => {
       if (baseTitle.current) document.title = baseTitle.current;
