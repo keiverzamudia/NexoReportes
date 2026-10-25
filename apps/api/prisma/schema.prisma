@@ -109,13 +109,22 @@ model AuditEvent {
   actor      User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
   actorEmail String?
   action     String
+  // Módulo y severidad derivados del catálogo de acciones (ver @nexo/contracts).
+  module     String?
+  severity   String   @default("INFO")
   entityType String
   entityId   String?
   context    String? // JSON serializado (portabilidad SQLite/PostgreSQL)
+  // Origen de la petición: quién y desde dónde se hizo el cambio.
+  ip         String?
+  userAgent  String?
   createdAt  DateTime @default(now())
 
   @@index([entityType, entityId])
   @@index([createdAt])
+  @@index([module, createdAt])
+  @@index([action, createdAt])
+  @@index([actorId, createdAt])
 }
 
 // ---------- Configuración del sistema ----------

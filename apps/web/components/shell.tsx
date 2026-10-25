@@ -20,6 +20,7 @@ import {
   RefreshCw,
   ShieldCheck,
   ShoppingCart,
+  Truck,
   Users,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -30,7 +31,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, currentUser, login as apiLogin, logout, searchLoginCandidates } from '../lib/api';
 import { humanAge } from '../lib/dispatch-sheet';
 import { hasPermission } from '../lib/permissions';
-import { Logo } from './Logo';
+import { Logo, Isotype } from './Logo';
 import { NotificationsBell } from './NotificationsBell';
 import { cx } from './ui';
 
@@ -198,24 +199,78 @@ export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
 }
 
 export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
+  const benefits = [
+    { icon: Boxes, title: 'Existencias y pedidos al día', text: 'Lo disponible, lo comprometido y lo que falta.' },
+    { icon: Truck, title: 'Despacho con acuse', text: 'Del plan a la carga, con bitácora de cada paso.' },
+    { icon: DoorOpen, title: 'Llegadas de clientes', text: 'PCP marca la hora y registra cada incidencia.' },
+  ];
+
   return (
-    <main className="relative flex min-h-screen flex-col items-center justify-center gap-space-xl overflow-hidden p-space-xl">
-      <span aria-hidden className="pointer-events-none absolute -top-52 left-1/2 size-[38rem] -translate-x-1/2 rounded-full bg-primary-fixed/40 blur-3xl" />
-      <span aria-hidden className="pointer-events-none absolute -bottom-40 right-0 size-[26rem] rounded-full bg-secondary-container/20 blur-3xl" />
-      <header className="relative text-center">
-        <span className="inline-flex items-center gap-space-xs rounded-pill border border-outline-variant/50 bg-surface-container-lowest/80 px-space-md py-1 text-label-sm font-semibold uppercase tracking-[0.14em] text-primary backdrop-blur">
-          <ShieldCheck aria-hidden className="size-3.5" />
-          Sincronizado con Profit
-        </span>
-        <span className="mt-space-lg flex items-center justify-center">
-          <Logo size="full" height={72} priority />
-        </span>
-        <h1 className="font-display mt-space-md text-display-lg uppercase tracking-[0.04em] text-primary">Gestión de producción</h1>
-        <p className="text-body-md text-on-surface-variant">Nutrición Animal · Sistema de gestión</p>
-      </header>
-      <div className="relative w-full">
-        <LoginForm onSuccess={onSuccess} />
-      </div>
+    <main className="grid min-h-screen bg-surface lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+      <h1 className="sr-only">Iniciar sesión — Corpoagro</h1>
+
+      {/* Panel de marca: solo escritorio. */}
+      <aside className="relative hidden overflow-hidden bg-hero text-white lg:flex lg:flex-col lg:justify-between lg:p-space-2xl">
+        <span
+          aria-hidden
+          className="pointer-events-none absolute -right-32 -top-32 size-96 rounded-full bg-secondary-container/10 blur-3xl"
+        />
+        <span
+          aria-hidden
+          className="pointer-events-none absolute -bottom-28 -left-20 size-80 rounded-full bg-secondary-container/[0.06] blur-3xl"
+        />
+        <Isotype
+          variant="negative"
+          height={380}
+          className="pointer-events-none absolute -bottom-20 -right-16 opacity-[0.05]"
+        />
+
+        <div className="relative flex flex-col gap-space-lg">
+          <Logo size="full" variant="negative" height={92} priority />
+          <p className="max-w-md text-body-lg text-white/75">
+            Toda la operación en un solo lugar: existencias, pedidos, despacho y la llegada de tus clientes.
+          </p>
+        </div>
+
+        <ul className="relative flex max-w-md flex-col gap-space-sm">
+          {benefits.map(({ icon: Icon, title, text }) => (
+            <li key={title} className="flex items-start gap-space-sm">
+              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-white/10 text-secondary-container">
+                <Icon aria-hidden className="size-4" />
+              </span>
+              <span>
+                <span className="block font-semibold text-white">{title}</span>
+                <span className="block text-label-md normal-case text-white/60">{text}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+
+        <div className="relative flex flex-wrap items-center justify-between gap-space-sm">
+          <span className="inline-flex items-center gap-space-xs rounded-pill bg-white/10 px-space-sm py-1 text-label-sm font-semibold uppercase tracking-[0.12em] text-white/80">
+            <ShieldCheck aria-hidden className="size-3.5" />
+            Sincronizado con Profit
+          </span>
+          <span className="text-label-sm normal-case text-white/50">Corpoagro · Nutrición Animal</span>
+        </div>
+      </aside>
+
+      {/* Formulario. */}
+      <section className="relative flex min-h-screen flex-col items-center justify-center gap-space-lg p-space-lg sm:p-space-2xl">
+        <span
+          aria-hidden
+          className="pointer-events-none absolute -top-40 right-0 size-[26rem] rounded-full bg-secondary-container/15 blur-3xl"
+        />
+        <div className="relative w-full max-w-sm">
+          <div className="mb-space-lg flex justify-center lg:hidden">
+            <Logo size="full" height={64} priority />
+          </div>
+          <LoginForm onSuccess={onSuccess} />
+          <p className="mt-space-md text-center text-label-sm normal-case text-outline lg:hidden">
+            Corpoagro · Nutrición Animal
+          </p>
+        </div>
+      </section>
     </main>
   );
 }

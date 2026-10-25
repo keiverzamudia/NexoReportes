@@ -6,6 +6,7 @@
 // · Pestaña Usuarios: padrón que viene de Profit. Aquí se administran el rol,
 //   el acceso y las excepciones de permisos de cada persona.
 // · Pestaña Roles: crear/editar roles dinámicos y su matriz módulo × acción.
+// · Pestaña Bitácoras (solo ADMIN): quién cambió qué, cuándo y desde dónde.
 //
 // Los usuarios NO se crean aquí: se sincronizan desde Profit
 // (MasterProfit.dbo.VUSUARIOS) y la contraseña se valida allí.
@@ -13,9 +14,10 @@
 
 import type { RoleSummary, UserSummary } from '@nexo/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Lock, RefreshCw, Search, ShieldCheck, UserCheck, UserX, Users } from 'lucide-react';
+import { AlertTriangle, Lock, RefreshCw, ScrollText, Search, ShieldCheck, UserCheck, UserX, Users } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AppNav, LoginScreen } from '../../components/shell';
+import { BitacorasPanel } from '../../components/users/BitacorasPanel';
 import {
   Badge,
   Card,
@@ -72,7 +74,7 @@ function fmtDateTime(iso: string | null): string {
 export default function UsuariosPage() {
   const queryClient = useQueryClient();
   const [tick, setTick] = useState(0);
-  const [tab, setTab] = useState<'usuarios' | 'roles'>('usuarios');
+  const [tab, setTab] = useState<'usuarios' | 'roles' | 'bitacoras'>('usuarios');
   const [q, setQ] = useState('');
   const [role, setRole] = useState('');
   const [active, setActive] = useState('');
@@ -89,6 +91,8 @@ export default function UsuariosPage() {
     staleTime: 15_000,
     retry: false,
   });
+  // La bitácora es exclusiva del rol ADMIN (no depende solo del permiso).
+  const isAdmin = me.data?.role === 'ADMIN';
 
   const { data, isLoading, error } = useQuery<UsersResponse>({
     queryKey: ['users', tick, q, role, active],
@@ -274,6 +278,8 @@ export default function UsuariosPage() {
             options={[
               { value: 'usuarios', label: 'Usuarios' },
               { value: 'roles', label: 'Roles y permisos' },
+              // La bitácora es solo para administradores (el API lo revalida).
+              ...(isAdmin ? [{ value: 'bitacoras' as const, label: 'Bitácoras' }] : []),
             ]}
           />
           <p className="text-label-sm text-on-surface-variant">
@@ -368,6 +374,8 @@ export default function UsuariosPage() {
               </div>
             </Card>
           </>
+        ) : tab === 'bitacoras' && isAdmin ? (
+          <BitacorasPanel />
         ) : (
           <RolesPanel permissions={sessionPermissions} />
         )}
