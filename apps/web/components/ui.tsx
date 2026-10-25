@@ -42,7 +42,7 @@ export function PageHeader({
           </span>
         </div>
         {greeting && <p className="text-label-lg font-medium text-on-surface-variant">{greeting}</p>}
-        <h1 className="text-display-lg leading-[1.05] tracking-tight text-primary">{title}</h1>
+        <h1 className="font-display text-display-lg leading-[1.05] tracking-[0.01em] text-primary">{title}</h1>
         {subtitle && <p className="mt-space-xs max-w-3xl text-body-md text-on-surface-variant">{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-stretch gap-space-sm self-start xl:self-auto">{actions}</div>}
@@ -122,7 +122,7 @@ export function Kpi({
             </span>
           )}
         </div>
-        <div className="relative mt-space-xs flex items-baseline gap-1 tabular-nums text-headline-lg font-black text-secondary-container">
+        <div className="font-display relative mt-space-xs flex items-baseline gap-1 tabular-nums text-headline-lg font-black text-secondary-container">
           {value}
           {suffix && <span className="text-label-sm font-semibold text-white/60">{suffix}</span>}
         </div>
@@ -198,7 +198,7 @@ export function HeroCard({
           {label}
         </span>
         <div className="flex items-end gap-space-sm">
-          <span className="tabular-nums text-[2.75rem] font-black leading-none tracking-tight text-secondary-container">{value}</span>
+          <span className="font-display tabular-nums text-[2.75rem] font-black leading-none tracking-tight text-secondary-container">{value}</span>
           {suffix && <span className="pb-1 text-label-lg font-semibold text-white/60">{suffix}</span>}
         </div>
         {progress !== undefined && (

@@ -1,4 +1,4 @@
-# Arquitectura — Nexo Producción
+# Arquitectura — Corpoagro · San Luis
 
 ## Visión general
 
@@ -196,6 +196,32 @@ El acceso se define con una matriz **módulo × acción** (`read`, `create`,
 
 La matriz se administra en **Usuarios → pestaña Roles y permisos**; el botón
 «Permisos» de cada fila gestiona las excepciones individuales.
+
+## Identidad gráfica (Corpoagro)
+
+La marca del producto es **Corpoagro · Nutrición Animal**, con **San Luis** como
+unidad de negocio. Los assets viven en `apps/web/public/brand/` y son **vectores
+extraídos de la Guía de Identidad Gráfica Corpoagro** (no capturas de pantalla).
+
+| Archivo | Uso |
+|---|---|
+| `corpoagro-logo.svg` | Lockup completo (incluye la razón social): login y material |
+| `corpoagro-logo-compacto.svg` | Sin la línea de razón social: navegación |
+| `corpoagro-isotipo.svg` | Solo las hojas: iconos y espacios pequeños |
+| `corpoagro-*-negativo.svg` | Sobre navy/negro (fondos oscuros, OG) |
+| `corpoagro-*-mono.svg` | Una sola tinta (impresión, documentos) |
+| `corpoagro-og.jpg` | Imagen OpenGraph 1200×630 |
+| `icon.svg` · `apple-icon.png` · `favicon.ico` | Iconos de la app (isologo sobre navy) |
+
+- **Colores oficiales**: navy `#003366` (principal) y lima `#95C800` (secundario).
+  El lima **nunca** se usa como texto sobre blanco (contraste 1,9:1): solo como
+  relleno, acento o sobre navy.
+- **Tipografía**: **Asap** para toda la interfaz (`--font-sans`) y **Anton**
+  únicamente en display (`--font-display`: título de página, cifras del hero y
+  login). Ambas se cargan con `next/font/google` en `app/layout.tsx`.
+- **El logo no se recrea con texto**: se usa el SVG oficial a través de
+  `components/Logo.tsx`, con `size: 'full' | 'compact'` y
+  `variant: 'color' | 'negative' | 'mono'`.
 
 ## Decisiones técnicas registradas (ADR resumido)
 

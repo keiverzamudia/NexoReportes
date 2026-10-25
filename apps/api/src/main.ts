@@ -28,7 +28,7 @@ async function bootstrap() {
   app.useGlobalInterceptors(new CorrelationInterceptor());
 
   const swaggerConfig = new DocumentBuilder()
-    .setTitle('SAN LUIS API')
+    .setTitle('CORPOAGRO API')
     .setDescription('API del sistema de planificación de producción, inventarios y pedidos (datos origen: Profit Plus)')
     .setVersion('0.1.0')
     .addBearerAuth()
@@ -38,7 +38,7 @@ async function bootstrap() {
 
   const port = Number(process.env.API_PORT ?? 4000);
   await app.listen(port);
-  console.log(`SAN LUIS API escuchando en http://localhost:${port}/api (Swagger: /api/docs)`);
+  console.log(`CORPOAGRO API escuchando en http://localhost:${port}/api (Swagger: /api/docs)`);
 }
 
 void bootstrap();
