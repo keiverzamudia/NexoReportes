@@ -325,7 +325,7 @@ export function sheetExport(detail: DispatchSheetDetail, generatedAt: Date = new
     )} kg`,
   ]);
   merges.push({ s: { r: totalRow, c: 0 }, e: { r: totalRow, c: lastColumn } });
-  aoa.push([`Generado ${formatDateTime(generatedAt.toISOString())} · CORPOAGRO · SAN LUIS · solo lectura`]);
+  aoa.push([`Generado ${formatDateTime(generatedAt.toISOString())} · CORPOAGRO · solo lectura`]);
   merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: lastColumn } });
 
   return {

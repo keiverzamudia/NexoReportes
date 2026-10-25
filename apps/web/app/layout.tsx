@@ -22,12 +22,12 @@ const anton = Anton({
 });
 
 export const metadata: Metadata = {
-  title: 'Corpoagro · San Luis — Gestión de producción',
+  title: 'Corpoagro — Gestión de producción',
   description:
-    'Sistema de gestión de producción de San Luis (Corpoagro · Nutrición Animal): inventarios, pedidos, despacho, llegadas de clientes y reportes sincronizados con Profit.',
-  applicationName: 'Corpoagro · San Luis',
+    'Sistema de gestión de producción de Corpoagro (Nutrición Animal): inventarios, pedidos, despacho, llegadas de clientes y reportes sincronizados con Profit.',
+  applicationName: 'Corpoagro',
   openGraph: {
-    title: 'Corpoagro · San Luis — Gestión de producción',
+    title: 'Corpoagro — Gestión de producción',
     description: 'Inventarios, pedidos, despacho y llegadas de clientes sincronizados con Profit.',
     images: [{ url: '/brand/corpoagro-og.jpg', width: 1200, height: 630, alt: 'Corpoagro' }],
     locale: 'es_VE',

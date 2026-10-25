@@ -1,4 +1,4 @@
-# Arquitectura — Corpoagro · San Luis
+# Arquitectura — Corpoagro
 
 ## Visión general
 
@@ -199,9 +199,9 @@ La matriz se administra en **Usuarios → pestaña Roles y permisos**; el botón
 
 ## Identidad gráfica (Corpoagro)
 
-La marca del producto es **Corpoagro · Nutrición Animal**, con **San Luis** como
-unidad de negocio. Los assets viven en `apps/web/public/brand/` y son **vectores
-extraídos de la Guía de Identidad Gráfica Corpoagro** (no capturas de pantalla).
+La marca del producto es **Corpoagro · Nutrición Animal**. Los assets viven en
+`apps/web/public/brand/` y son **vectores extraídos de la Guía de Identidad
+Gráfica Corpoagro** (no capturas de pantalla).
 
 | Archivo | Uso |
 |---|---|

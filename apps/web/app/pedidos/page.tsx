@@ -103,7 +103,7 @@ const STATUS_TONE: Record<OrderStatus, 'success' | 'muted' | 'danger' | 'default
   DESCONOCIDO: 'default',
 };
 
-// Paleta de las gráficas (identidad San Luis + acento corporativo).
+// Paleta de las gráficas (identidad Corpoagro + acento corporativo).
 const C = {
   navy: '#003366',
   lime: '#95c800',

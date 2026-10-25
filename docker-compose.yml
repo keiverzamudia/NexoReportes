@@ -1,5 +1,5 @@
 # ============================================================
-# Corpoagro · San Luis — despliegue de producción (LAN por IP).
+# Corpoagro — despliegue de producción (LAN por IP).
 #
 #   docker compose up -d --build
 #
