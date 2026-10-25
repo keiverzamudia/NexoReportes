@@ -206,10 +206,24 @@ export class AuthService {
   async logout(refreshToken: string | undefined): Promise<void> {
     if (!refreshToken) return;
     const tokenHash = sha256(refreshToken);
+    const stored = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash },
+      select: { userId: true, user: { select: { profitCode: true } } },
+    });
     await this.prisma.refreshToken.updateMany({
       where: { tokenHash, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    // La bitácora registra también la salida, con IP y dispositivo.
+    if (stored) {
+      await this.audit.record({
+        actorId: stored.userId,
+        actorEmail: stored.user.profitCode,
+        action: 'LOGOUT',
+        entityType: 'User',
+        entityId: stored.userId,
+      });
+    }
   }
 
   /**

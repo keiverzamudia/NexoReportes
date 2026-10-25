@@ -6,12 +6,21 @@ import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/all-exceptions.filter';
 import { CorrelationInterceptor } from './common/correlation.interceptor';
+import { normalizeIp, runWithRequestMeta } from './common/request-context';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: false });
 
   app.use(helmet());
   app.use(cookieParser());
+  // IP y dispositivo de cada petición: la bitácora los guarda con el actor.
+  app.use((req: any, _res: any, next: () => void) => {
+    const forwarded = req.headers?.['x-forwarded-for'];
+    const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    const ip = normalizeIp(String(raw ?? '').split(',')[0]) ?? normalizeIp(req.ip) ?? normalizeIp(req.socket?.remoteAddress);
+    const userAgent = typeof req.headers?.['user-agent'] === 'string' ? req.headers['user-agent'] : null;
+    runWithRequestMeta({ ip, userAgent }, next);
+  });
   // Los escenarios del simulador llevan la foto de todos los renglones
   // marcados en el body (puede superar los 100 KB por defecto de Express).
   app.useBodyParser('json', { limit: '2mb' });

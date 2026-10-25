@@ -160,7 +160,6 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['despacho', 'create'],
     ['despacho', 'delete'],
     ['llegadas', 'read'],
-    ['auditoria', 'read'],
     ['sincronizacion', 'update'],
   ],
   PLANIFICADOR: [
@@ -1498,3 +1497,170 @@ export const zForecastPlanResponse = z.object({
   }),
 });
 export type ForecastPlanResponse = z.infer<typeof zForecastPlanResponse>;
+
+// ============================================================
+// Bitácora de auditoría (Usuarios → Bitácoras)
+//
+// Fuente principal: `AuditEvent`. Se complementa con las notas/mensajes de
+// las bitácoras operativas (despacho y llegadas), que no tienen acción de
+// auditoría propia. El catálogo de acciones traduce el código técnico a una
+// etiqueta en español, un módulo y una severidad, para que el panel no
+// dependa de strings sueltos.
+// ============================================================
+export const AUDIT_SEVERITIES = ['INFO', 'WARN', 'CRITICAL'] as const;
+export const zAuditSeverity = z.enum(AUDIT_SEVERITIES);
+export type AuditSeverity = z.infer<typeof zAuditSeverity>;
+
+export const AUDIT_MODULES = [
+  { key: 'auth', label: 'Sesiones' },
+  { key: 'users', label: 'Usuarios' },
+  { key: 'roles', label: 'Roles y permisos' },
+  { key: 'dispatch', label: 'Despacho' },
+  { key: 'arrivals', label: 'Llegadas PCP' },
+  { key: 'sync', label: 'Sincronización' },
+  { key: 'scenarios', label: 'Simulador' },
+  { key: 'forecast', label: 'Forecast' },
+  { key: 'orders', label: 'Pedidos' },
+  { key: 'system', label: 'Sistema' },
+] as const;
+
+export type AuditModuleKey = (typeof AUDIT_MODULES)[number]['key'];
+
+export interface AuditActionDefinition {
+  module: AuditModuleKey;
+  label: string;
+  severity: AuditSeverity;
+}
+
+export const AUDIT_ACTIONS: Record<string, AuditActionDefinition> = {
+  LOGIN_OK: { module: 'auth', label: 'Inició sesión', severity: 'INFO' },
+  LOGIN_FAILED: { module: 'auth', label: 'Intento de acceso fallido', severity: 'WARN' },
+  LOGOUT: { module: 'auth', label: 'Cerró sesión', severity: 'INFO' },
+  USER_UPDATED: { module: 'users', label: 'Actualizó un usuario', severity: 'INFO' },
+  USER_PERMISSIONS_UPDATED: { module: 'users', label: 'Cambió permisos de un usuario', severity: 'WARN' },
+  USER_PERMISSIONS_RESET: { module: 'users', label: 'Restableció permisos de un usuario', severity: 'WARN' },
+  PROFIT_USERS_SYNCED: { module: 'users', label: 'Sincronizó usuarios de Profit', severity: 'INFO' },
+  PROFIT_USERS_SYNC_FAILED: { module: 'users', label: 'Falló la sincronización de usuarios', severity: 'CRITICAL' },
+  ROLE_CREATED: { module: 'roles', label: 'Creó un rol', severity: 'WARN' },
+  ROLE_UPDATED: { module: 'roles', label: 'Editó un rol o su matriz', severity: 'WARN' },
+  ROLE_DELETED: { module: 'roles', label: 'Eliminó un rol', severity: 'CRITICAL' },
+  DISPATCH_SEND: { module: 'dispatch', label: 'Publicó un despacho', severity: 'INFO' },
+  DISPATCH_ACK: { module: 'dispatch', label: 'Acusó un despacho', severity: 'INFO' },
+  DISPATCH_LINE: { module: 'dispatch', label: 'Actualizó la carga de un renglón', severity: 'INFO' },
+  DISPATCH_COMPLETE: { module: 'dispatch', label: 'Cerró un despacho', severity: 'INFO' },
+  DISPATCH_CANCEL: { module: 'dispatch', label: 'Anuló un despacho', severity: 'WARN' },
+  ARRIVAL_CHECK_IN: { module: 'arrivals', label: 'Marcó la llegada de un cliente', severity: 'INFO' },
+  ARRIVAL_CLOSE: { module: 'arrivals', label: 'Cerró la atención de un cliente', severity: 'INFO' },
+  ARRIVAL_EDIT: { module: 'arrivals', label: 'Corrigió un registro de llegada', severity: 'WARN' },
+  ARRIVAL_INCIDENT: { module: 'arrivals', label: 'Registró una incidencia', severity: 'WARN' },
+  ARRIVAL_INCIDENT_RESOLVE: { module: 'arrivals', label: 'Resolvió una incidencia', severity: 'INFO' },
+  SYNC_RUN: { module: 'sync', label: 'Ejecutó una sincronización', severity: 'INFO' },
+  SYNC_TEST_CONNECTION: { module: 'sync', label: 'Probó la conexión con Profit', severity: 'INFO' },
+  SCENARIO_SAVE: { module: 'scenarios', label: 'Guardó una simulación', severity: 'INFO' },
+  SCENARIO_UPDATE: { module: 'scenarios', label: 'Renombró una simulación', severity: 'INFO' },
+  SCENARIO_DELETE: { module: 'scenarios', label: 'Eliminó una simulación', severity: 'WARN' },
+  SCENARIO_RESTORE: { module: 'scenarios', label: 'Restauró una simulación', severity: 'INFO' },
+  FORECAST_SET_WEEKS: { module: 'forecast', label: 'Editó semanas del forecast', severity: 'INFO' },
+  DELIVERY_DATE_SET: { module: 'orders', label: 'Asignó fecha tentativa a pedidos', severity: 'INFO' },
+  DELIVERY_DATE_RESTORE: { module: 'orders', label: 'Restauró la fecha tentativa', severity: 'INFO' },
+};
+
+const ACTION_PREFIX_MODULE: Array<[string, AuditModuleKey]> = [
+  ['PROFIT_USERS', 'users'],
+  ['LOGIN', 'auth'],
+  ['LOGOUT', 'auth'],
+  ['USER', 'users'],
+  ['ROLE', 'roles'],
+  ['DISPATCH', 'dispatch'],
+  ['ARRIVAL', 'arrivals'],
+  ['SYNC', 'sync'],
+  ['SCENARIO', 'scenarios'],
+  ['FORECAST', 'forecast'],
+  ['DELIVERY', 'orders'],
+  ['ORDER', 'orders'],
+];
+
+/** Etiqueta, módulo y severidad de una acción; tolera acciones nuevas. */
+export function auditMeta(action: string): AuditActionDefinition {
+  const known = AUDIT_ACTIONS[action];
+  if (known) return known;
+  const found = ACTION_PREFIX_MODULE.find(([prefix]) => action.startsWith(prefix));
+  const module = found ? found[1] : 'system';
+  const readable = action.replaceAll('_', ' ').toLowerCase();
+  const label = readable.charAt(0).toUpperCase() + readable.slice(1);
+  const severity: AuditSeverity = /FAIL|ERROR|DELETE|CANCEL|RESET/.test(action) ? 'WARN' : 'INFO';
+  return { module, label, severity };
+}
+
+export function auditModuleLabel(moduleKey: string): string {
+  return AUDIT_MODULES.find((entry) => entry.key === moduleKey)?.label ?? 'Sistema';
+}
+
+export const zAuditQuery = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(10).max(100).default(30),
+  // Fechas de negocio (yyyy-MM-dd). `to` es inclusivo.
+  from: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  to: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  module: z.string().trim().max(40).optional(),
+  action: z.string().trim().max(80).optional(),
+  severity: zAuditSeverity.optional(),
+  actorId: z.string().trim().max(60).optional(),
+  q: z.string().trim().max(80).optional(),
+  // all = auditoría + notas operativas · audit = solo acciones · notes = solo notas.
+  source: z.enum(['all', 'audit', 'notes']).default('all'),
+  // hide = oculta las corridas automáticas de sincronización (ruido del scheduler).
+  automation: z.enum(['hide', 'show']).default('hide'),
+});
+export type AuditQuery = z.infer<typeof zAuditQuery>;
+
+export const zAuditEntry = z.object({
+  id: z.string(),
+  source: z.enum(['audit', 'dispatch-note', 'arrival-note']),
+  at: z.string(),
+  module: z.string(),
+  moduleLabel: z.string(),
+  action: z.string(),
+  label: z.string(),
+  severity: zAuditSeverity,
+  actorId: z.string().nullable(),
+  actorCode: z.string().nullable(),
+  actorName: z.string().nullable(),
+  entityType: z.string(),
+  entityId: z.string().nullable(),
+  title: z.string(),
+  detail: z.string().nullable(),
+  linkPath: z.string().nullable(),
+  ip: z.string().nullable(),
+  userAgent: z.string().nullable(),
+  context: z.record(z.string(), z.unknown()).nullable(),
+});
+export type AuditEntry = z.infer<typeof zAuditEntry>;
+
+export const zAuditFacets = z.object({
+  actors: z.array(z.object({ id: z.string(), name: z.string(), code: z.string().nullable(), count: z.number().int() })),
+  actions: z.array(z.object({ action: z.string(), label: z.string(), module: z.string(), count: z.number().int() })),
+  modules: z.array(z.object({ key: z.string(), label: z.string(), count: z.number().int() })),
+});
+export type AuditFacets = z.infer<typeof zAuditFacets>;
+
+export const zAuditFeedResponse = z.object({
+  items: z.array(zAuditEntry),
+  total: z.number().int(),
+  page: z.number().int(),
+  pageSize: z.number().int(),
+  stats: z.object({
+    today: z.number().int(),
+    critical7d: z.number().int(),
+    actorsToday: z.number().int(),
+    syncErrors7d: z.number().int(),
+  }),
+  facets: zAuditFacets,
+});
+export type AuditFeedResponse = z.infer<typeof zAuditFeedResponse>;
