@@ -1,5 +1,5 @@
 # ============================================================
-# Nexo / San Luis — despliegue de producción (LAN por IP).
+# Corpoagro · San Luis — despliegue de producción (LAN por IP).
 #
 #   docker compose up -d --build
 #

@@ -207,11 +207,11 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
           <ShieldCheck aria-hidden className="size-3.5" />
           Sincronizado con Profit
         </span>
-        <span className="mt-space-md flex items-center justify-center">
-          <Logo width={30} height={33} />
+        <span className="mt-space-lg flex items-center justify-center">
+          <Logo size="full" height={72} priority />
         </span>
-        <h1 className="mt-space-sm text-display-lg uppercase tracking-[0.06em] text-primary">San Luis</h1>
-        <p className="text-body-md text-on-surface-variant">Corp. Agropecuaria Venezolana</p>
+        <h1 className="font-display mt-space-md text-display-lg uppercase tracking-[0.04em] text-primary">San Luis</h1>
+        <p className="text-body-md text-on-surface-variant">Corpoagro · Nutrición Animal · Sistema de gestión</p>
       </header>
       <div className="relative w-full">
         <LoginForm onSuccess={onSuccess} />
@@ -369,9 +369,9 @@ export function AppNav() {
   return (
     <header className="sticky top-0 z-30 border-b border-outline-variant/35 bg-surface-container-lowest/85 backdrop-blur-xl">
       <div className="mx-auto flex w-full max-w-[1680px] flex-wrap items-center gap-space-md px-space-md py-space-sm md:px-space-xl">
-        <Link href={home} className="flex shrink-0 items-center gap-space-sm" aria-label="San Luis — inicio">
-          <Logo width={25} height={29} />
-          <span className="text-title-md font-extrabold uppercase tracking-[0.12em] text-primary">San Luis</span>
+        <Link href={home} className="flex shrink-0 items-center gap-space-sm" aria-label="Corpoagro — inicio">
+          <Logo size="compact" height={28} />
+          <span className="hidden text-label-sm font-semibold uppercase tracking-[0.18em] text-outline sm:inline">San Luis</span>
         </Link>
 
         <nav aria-label="Módulos" className="order-3 w-full md:order-none md:w-auto md:flex-1">

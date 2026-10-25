@@ -1,4 +1,4 @@
-# Nexo Producción
+# Corpoagro · San Luis — Gestión de producción
 
 Sistema inteligente de planificación de producción alimenticia, inventarios, pedidos, simulación y reportes. Obtiene datos de **Profit Plus (SQL Server) mediante vistas SQL de solo lectura**, los normaliza en una base interna y permite responder: ¿qué pedidos se pueden cumplir?, ¿qué hay que producir? y ¿a quién atender primero?
 

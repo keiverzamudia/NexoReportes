@@ -1,13 +1,14 @@
 @import 'tailwindcss';
 
 /* ============================================================
-   SAN LUIS — Tokens del design system corporativo (Grupo San Luis,
-   misma paleta que el proyecto Taller): navy #003366, lima #95C800,
-   ámbar #D18700 y Rubik.
+   CORPOAGRO · SAN LUIS — Tokens del design system.
+   Identidad oficial (Guía de Identidad Gráfica Corpoagro):
+   navy #003366, lima #95C800 · Asap (texto) + Anton (display).
    ============================================================ */
 
 @theme {
-  --font-sans: var(--font-rubik), 'Rubik', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-asap), 'Asap', ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-anton), 'Anton', var(--font-asap), ui-sans-serif, sans-serif;
 
   /* Superficies */
   --color-background: #f6f9ff;
