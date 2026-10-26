@@ -239,3 +239,24 @@
     animation-delay: 300ms;
   }
 }
+
+/* ============================================================
+   Indicador de carga agroindustrial.
+   Solo el aro gira; el saco permanece estático.
+   ============================================================ */
+
+.agro-loader-ring {
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .agro-loader-ring {
+    animation: nexo-agro-ring-spin 1.8s linear infinite;
+  }
+}
+
+@keyframes nexo-agro-ring-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -34,6 +34,7 @@ import { apiFetch } from '../lib/api';
 import type { ScenarioDrift } from '../lib/scenario';
 import { restoreLogParts } from '../lib/scenario';
 import { relativeTime } from '../lib/dispatch-sheet';
+import { useLoadingOverlay } from './loading/LoadingOverlayProvider';
 import { Badge, Skeleton, fmtDate, fmtQty } from './ui';
 
 function messageOf(error: unknown, fallback: string): string {
@@ -79,6 +80,7 @@ export function ScenariosDialog({
   onRestore,
 }: ScenariosDialogProps) {
   const queryClient = useQueryClient();
+  const { runWithOverlay } = useLoadingOverlay();
   const closeRef = useRef<HTMLButtonElement>(null);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState('');
@@ -148,10 +150,12 @@ export function ScenariosDialog({
     setBusyId('save');
     setActionError(null);
     try {
-      await onSave(clean);
+      await runWithOverlay('Guardando la simulación', async () => {
+        await onSave(clean);
+        await refreshList();
+      });
       setName('');
       setSaving(false);
-      await refreshList();
     } catch (err) {
       setActionError(messageOf(err, 'No se pudo guardar la simulación'));
     } finally {
@@ -163,8 +167,10 @@ export function ScenariosDialog({
     setBusyId(item.id);
     setActionError(null);
     try {
-      const detail = await apiFetch<ScenarioDetail>(`/scenarios/${item.id}`);
-      await onRestore(detail);
+      await runWithOverlay('Restaurando la simulación', async () => {
+        const detail = await apiFetch<ScenarioDetail>(`/scenarios/${item.id}`);
+        await onRestore(detail);
+      });
       onClose();
     } catch (err) {
       setActionError(messageOf(err, 'No se pudo restaurar la simulación'));
@@ -179,12 +185,14 @@ export function ScenariosDialog({
     setBusyId(item.id);
     setActionError(null);
     try {
-      await apiFetch<ScenarioDetail>(`/scenarios/${item.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ name: clean, version: item.version }),
+      await runWithOverlay('Guardando el nombre', async () => {
+        await apiFetch<ScenarioDetail>(`/scenarios/${item.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ name: clean, version: item.version }),
+        });
+        await refreshList();
       });
       setRenameId(null);
-      await refreshList();
     } catch (err) {
       setActionError(messageOf(err, 'No se pudo renombrar'));
     } finally {
@@ -196,10 +204,12 @@ export function ScenariosDialog({
     setBusyId(item.id);
     setActionError(null);
     try {
-      await apiFetch(`/scenarios/${item.id}`, { method: 'DELETE' });
+      await runWithOverlay('Eliminando la simulación', async () => {
+        await apiFetch(`/scenarios/${item.id}`, { method: 'DELETE' });
+        await refreshList();
+      });
       setConfirmDeleteId(null);
       if (detailId === item.id) setDetailId(null);
-      await refreshList();
     } catch (err) {
       setActionError(messageOf(err, 'No se pudo borrar'));
     } finally {

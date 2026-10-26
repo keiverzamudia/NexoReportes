@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  customerForStatement,
   formatStatementDate,
   formatStatementMoney,
   statementBalanceLabel,
@@ -91,5 +92,23 @@ describe('statementUpdatedAt', () => {
   it('tolera valores ausentes o inválidos', () => {
     expect(statementUpdatedAt(null)).toBe('—');
     expect(statementUpdatedAt('no-es-fecha')).toBe('—');
+  });
+});
+
+describe('customerForStatement', () => {
+  it('adapta un grupo de la cartera al cliente del modal', () => {
+    expect(customerForStatement({ code: '153064128', label: 'AGRO LLANO QUIBOR, C.A.', ordersCount: 2 })).toEqual({
+      id: '153064128',
+      externalCode: '153064128',
+      name: 'AGRO LLANO QUIBOR, C.A.',
+      customerType: null,
+      vendor: null,
+      isActive: true,
+      ordersCount: 2,
+    });
+  });
+
+  it('devuelve null cuando el grupo no tiene código de cliente', () => {
+    expect(customerForStatement({ code: null, label: 'Sin código', ordersCount: 1 })).toBeNull();
   });
 });
