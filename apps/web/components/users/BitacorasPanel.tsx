@@ -37,7 +37,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 import {
   RANGE_OPTIONS,
-  SEVERITY_META,
   RangePreset,
   clockOf,
   dateTimeOf,
@@ -45,7 +44,9 @@ import {
   deviceLabel,
   groupByDay,
   initials,
+  normalizeFeed,
   rangeBounds,
+  severityMeta,
 } from '../../lib/audit';
 import { Badge, Card, EmptyState, Kpi, Segmented, Select, Skeleton, TextInput, cx } from '../ui';
 
@@ -115,13 +116,16 @@ export function BitacorasPanel() {
   if (q) params.set('q', q);
   const queryString = params.toString();
 
-  const { data, isLoading, isFetching, error, dataUpdatedAt } = useQuery<AuditFeedResponse>({
+  const { data: raw, isLoading, isFetching, error, dataUpdatedAt } = useQuery<unknown>({
     queryKey: ['audit', queryString],
-    queryFn: () => apiFetch<AuditFeedResponse>(`/audit?${queryString}`),
+    queryFn: () => apiFetch<unknown>(`/audit?${queryString}`),
     refetchInterval: 30_000,
     refetchIntervalInBackground: true,
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
+
+  // Si el API quedó en la versión anterior, el panel se adapta y avisa.
+  const { data, outdated } = useMemo(() => normalizeFeed(raw), [raw]);
 
   const items = data?.items ?? [];
   const groups = useMemo(() => groupByDay(items), [items]);
@@ -184,6 +188,19 @@ export function BitacorasPanel() {
           icon={RefreshCw}
         />
       </div>
+
+      {outdated && (
+        <div
+          role="status"
+          className="flex items-start gap-space-sm rounded-xl border border-warning/40 bg-warning/10 p-space-sm text-body-md text-on-surface"
+        >
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
+          <span>
+            <strong>El API está respondiendo el formato anterior.</strong> Los eventos se ven igual, pero sin IP, dispositivo
+            ni estadísticas completas. Reinicia el servidor (o actualiza el worktree) para completar la bitácora.
+          </span>
+        </div>
+      )}
 
       <Card className="p-space-md">
         <div className="flex flex-col gap-space-sm">
@@ -367,7 +384,7 @@ export function BitacorasPanel() {
                 <ol className="divide-y divide-outline-variant/20">
                   {group.items.map((entry) => {
                     const Icon = MODULE_ICON[entry.module] ?? Settings2;
-                    const severityMeta = SEVERITY_META[entry.severity];
+                    const severity = severityMeta(entry.severity);
                     const device = deviceLabel(entry.userAgent);
                     return (
                       <li key={entry.id}>
@@ -393,7 +410,7 @@ export function BitacorasPanel() {
                                 <Icon aria-hidden className="mr-0.5 size-3" />
                                 {entry.moduleLabel}
                               </Badge>
-                              {entry.severity !== 'INFO' && <Badge tone={severityMeta.tone}>{severityMeta.label}</Badge>}
+                              {entry.severity !== 'INFO' && <Badge tone={severity.tone}>{severity.label}</Badge>}
                             </div>
                             {entry.detail && (
                               <p className="mt-0.5 line-clamp-2 text-body-md text-on-surface-variant">{entry.detail}</p>
@@ -533,7 +550,7 @@ function AuditDrawer({ entry, onClose }: { entry: AuditEntry; onClose: () => voi
                 {entry.actorCode ?? 'sin código'} · {entry.moduleLabel}
               </p>
             </div>
-            <Badge tone={SEVERITY_META[entry.severity].tone}>{SEVERITY_META[entry.severity].label}</Badge>
+            <Badge tone={severityMeta(entry.severity).tone}>{severityMeta(entry.severity).label}</Badge>
           </div>
 
           {entry.detail && (

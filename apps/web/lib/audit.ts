@@ -1,11 +1,14 @@
 'use client';
 
-import type { AuditEntry, AuditSeverity } from '@nexo/contracts';
+import { AUDIT_MODULES, auditMeta, auditModuleLabel } from '@nexo/contracts';
+import type { AuditEntry, AuditFeedResponse, AuditModuleKey, AuditSeverity } from '@nexo/contracts';
 
 // ============================================================
-// Bitácora: etiquetas y agrupaciones de la bandeja.
-// La clasificación (módulo/severidad) viene resuelta del API; aquí solo se
-// decide cómo se ve.
+// Bitácora: etiquetas, agrupaciones y normalización defensiva.
+//
+// La clasificación (módulo/severidad) viene resuelta del API. Si el web se
+// actualiza antes que el API (o al revés), la respuesta llega con la forma
+// anterior: en vez de romper la pantalla, se adapta y se avisa.
 // ============================================================
 
 export type AuditTone = 'muted' | 'warning' | 'danger';
@@ -15,6 +18,11 @@ export const SEVERITY_META: Record<AuditSeverity, { label: string; tone: AuditTo
   WARN: { label: 'Atención', tone: 'warning' },
   CRITICAL: { label: 'Crítico', tone: 'danger' },
 };
+
+/** Nunca falla: una severidad desconocida se muestra como «Normal». */
+export function severityMeta(severity: string | null | undefined): { label: string; tone: AuditTone } {
+  return SEVERITY_META[(severity ?? 'INFO') as AuditSeverity] ?? SEVERITY_META.INFO;
+}
 
 export type RangePreset = 'today' | '7d' | '30d' | 'all';
 
@@ -131,4 +139,144 @@ export function deviceLabel(userAgent: string | null | undefined): string | null
   else if (ua.includes('bot')) device = 'Bot';
 
   return `${browser} · ${device}`;
+}
+
+// ---------- Normalización defensiva (API viejo ↔ web nuevo) ----------
+
+function text(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function linkFor(entityType: string, entityId: string | null): string | null {
+  if (!entityId) return null;
+  if (entityType === 'DispatchSheet') return `/despacho/${entityId}`;
+  if (entityType === 'CustomerArrival') return `/llegadas/${entityId}`;
+  if (entityType === 'User' || entityType === 'Role' || entityType === 'UserPermission') return '/usuarios';
+  return null;
+}
+
+function contextOf(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Acepta el formato actual y el anterior (AuditEvent crudo). Devuelve null
+ * solo si no hay ni acción ni fecha: una fila rota no debe tumbar la pantalla.
+ */
+export function normalizeEntry(raw: unknown): AuditEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const row = raw as Record<string, unknown>;
+  const action = text(row.action);
+  const at = text(row.at) ?? text(row.createdAt);
+  if (!action || !at) return null;
+
+  const meta = auditMeta(action);
+  const moduleKey = (text(row.module) ?? meta.module) as AuditModuleKey;
+  const context = contextOf(row.context);
+  const entityType = text(row.entityType) ?? 'Sistema';
+  const entityId = text(row.entityId);
+
+  return {
+    id: text(row.id) ?? `${action}:${at}`,
+    source: (text(row.source) as AuditEntry['source']) ?? 'audit',
+    at,
+    module: moduleKey,
+    moduleLabel: text(row.moduleLabel) ?? auditModuleLabel(moduleKey),
+    action,
+    label: text(row.label) ?? meta.label,
+    severity: (text(row.severity) as AuditSeverity) ?? meta.severity,
+    actorId: text(row.actorId),
+    actorCode: text(row.actorCode) ?? text(row.actorEmail),
+    actorName: text(row.actorName),
+    entityType,
+    entityId,
+    title: text(row.title) ?? meta.label,
+    detail: text(row.detail) ?? text(row.body),
+    linkPath: text(row.linkPath) ?? linkFor(entityType, entityId),
+    ip: text(row.ip),
+    userAgent: text(row.userAgent),
+    context,
+  };
+}
+
+function buildFallbackFacets(items: AuditEntry[]): AuditFeedResponse['facets'] {
+  const actors = new Map<string, { id: string; name: string; code: string | null; count: number }>();
+  const actions = new Map<string, { action: string; label: string; module: string; count: number }>();
+  const modules = new Map<string, number>();
+
+  for (const item of items) {
+    if (item.actorId) {
+      const current = actors.get(item.actorId);
+      actors.set(item.actorId, {
+        id: item.actorId,
+        name: current?.name ?? item.actorName ?? item.actorCode ?? 'Usuario',
+        code: current?.code ?? item.actorCode,
+        count: (current?.count ?? 0) + 1,
+      });
+    }
+    const action = actions.get(item.action);
+    actions.set(item.action, {
+      action: item.action,
+      label: action?.label ?? item.label,
+      module: item.module,
+      count: (action?.count ?? 0) + 1,
+    });
+    modules.set(item.module, (modules.get(item.module) ?? 0) + 1);
+  }
+
+  return {
+    actors: [...actors.values()].sort((a, b) => b.count - a.count).slice(0, 15),
+    actions: [...actions.values()].sort((a, b) => b.count - a.count).slice(0, 15),
+    modules: AUDIT_MODULES.map((module) => ({
+      key: module.key,
+      label: module.label,
+      count: modules.get(module.key) ?? 0,
+    })).filter((module) => module.count > 0),
+  };
+}
+
+/**
+ * Normaliza la bandeja completa. `outdated` avisa que el API respondió con la
+ * forma anterior (sin estadísticas ni IP): la vista sigue funcionando, pero se
+ * muestra un aviso para reiniciar el servidor.
+ */
+export function normalizeFeed(raw: unknown): { data: AuditFeedResponse; outdated: boolean } {
+  const source = (raw ?? {}) as Record<string, unknown>;
+  const rawItems = Array.isArray(source.items) ? source.items : [];
+  const items = rawItems.map((item) => normalizeEntry(item)).filter((item): item is AuditEntry => item !== null);
+  const outdated =
+    rawItems.length > 0 &&
+    rawItems.some((item) => {
+      if (!item || typeof item !== 'object') return false;
+      const row = item as Record<string, unknown>;
+      return !text(row.at) || !text(row.severity) || !text(row.module);
+    });
+  const fallbackFacets = buildFallbackFacets(items);
+
+  return {
+    outdated,
+    data: {
+      items,
+      total: typeof source.total === 'number' ? source.total : items.length,
+      page: typeof source.page === 'number' ? source.page : 1,
+      pageSize: typeof source.pageSize === 'number' ? source.pageSize : items.length || 30,
+      stats:
+        (source.stats as AuditFeedResponse['stats'] | undefined) ?? {
+          today: items.length,
+          critical7d: items.filter((item) => item.severity === 'CRITICAL').length,
+          actorsToday: fallbackFacets.actors.length,
+          syncErrors7d: items.filter((item) => item.action === 'SYNC_RUN' && item.severity !== 'INFO').length,
+        },
+      facets: (source.facets as AuditFeedResponse['facets'] | undefined) ?? fallbackFacets,
+    },
+  };
 }
