@@ -12,6 +12,7 @@
  */
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +37,31 @@ function readEnvFile(key) {
 }
 
 const port = String(process.env.WEB_PORT || readEnvFile('WEB_PORT') || DEFAULT_PORT).trim();
+
+// Preflight: dos `next dev` del mismo worktree comparten `apps/web/.next` y lo
+// corrompen ("Cannot find module './NNN.js'"). Si el puerto ya está ocupado,
+// fallamos con un mensaje claro en vez del EADDRINUSE críptico de Next.
+function portInUse(value) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port: Number(value) });
+    const done = (result) => {
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(700);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
+}
+
+if (await portInUse(port)) {
+  console.error(
+    `[web] el puerto ${port} ya está en uso: seguramente hay otro \`pnpm dev\` de este worktree corriendo.\n` +
+      '      Ciérralo con Ctrl+C antes de volver a arrancar (dos instancias comparten .next y lo corrompen).',
+  );
+  process.exit(1);
+}
 
 let nextBin;
 try {

@@ -4,7 +4,8 @@
   "private": true,
   "description": "API NestJS de Corpoagro (auth, integración Profit, disponibilidad, escenarios, producción y reportes)",
   "scripts": {
-    "dev": "node scripts/ensure-prisma-client.mjs && nest start --watch",
+    "dev": "node scripts/ensure-prisma-client.mjs && nest build && node dist/main.js",
+    "dev:watch": "node scripts/ensure-prisma-client.mjs && nest start --watch",
     "dev:fast": "nest start --watch",
     "build": "nest build",
     "start": "node dist/main.js",

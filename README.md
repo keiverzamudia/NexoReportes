@@ -29,13 +29,15 @@ cp .env.example apps/api/.env   # ajusta credenciales; por defecto PROFIT_DB_DIA
 pnpm db:generate
 pnpm db:push
 pnpm db:seed                    # crea admin@nexo.local
-pnpm dev                        # api (4000) + web (4100)
+pnpm dev                        # api (4010) + web (puerto de WEB_PORT; 4120 en este worktree)
 ```
 
-- API: `http://localhost:4000/api` — Swagger en `/api/docs`
-- Web: `http://localhost:4100`
+- API: `http://localhost:4010/api` — Swagger en `/api/docs`
+- Web: `http://localhost:4120` (el puerto lo define `WEB_PORT` en `apps/web/.env.local`)
 
 Nota: si el puerto 4000 está ocupado por otro proyecto, usa `API_PORT=4010`. En esta máquina el 4000 está ocupado, por eso la API de desarrollo y la de `pnpm start` usan **4010** (configúralo en `apps/api/.env`).
+
+> Un solo `pnpm dev` por worktree: dos instancias comparten `apps/web/.next` y lo corrompen (`Cannot find module './NNN.js'`). Los scripts de arranque ahora comprueban el puerto y fallan con un mensaje claro si ya hay otra instancia. Para trabajar en paralelo usa otro worktree con otro `WEB_PORT`/`API_PORT` (p. ej. Reportes-pruebas: web 4130, API 4030).
 
 ### Producción (un solo comando)
 
@@ -52,7 +54,7 @@ pnpm start            # levanta API (4010) y Web (4100) juntos vía Turbo
 
 | Comando | Descripción |
 |---|---|
-| `pnpm dev` | Desarrollo de todos los paquetes (api 4010 + web 4100) |
+| `pnpm dev` | Desarrollo de todos los paquetes (api 4010 + web según `WEB_PORT`) |
 | `pnpm build` | Build de producción |
 | `pnpm start` | Producción: build + API y Web juntos (Turbo) |
 | `pnpm typecheck` | Verificación de tipos |

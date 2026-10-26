@@ -22,6 +22,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +35,48 @@ const require = createRequire(path.join(apiRoot, 'package.json'));
 if (process.env.SKIP_PRISMA_CHECK === '1') {
   console.log('[prisma] comprobaciones omitidas (SKIP_PRISMA_CHECK=1)');
   process.exit(0);
+}
+
+// Preflight: si el puerto de la API ya está ocupado (otro `pnpm dev` del mismo
+// worktree, o `pnpm start` en producción), Nest fallaría con EADDRINUSE después
+// de compilar. Avisamos antes de gastar ~30 s en el build.
+function readApiPort() {
+  if (process.env.API_PORT) return process.env.API_PORT;
+  try {
+    const env = readFileSync(path.join(apiRoot, '.env'), 'utf8');
+    for (const raw of env.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (line.startsWith('API_PORT=')) {
+        return line.slice('API_PORT='.length).replace(/^["']|["']$/g, '').trim();
+      }
+    }
+  } catch {
+    // sin .env: se usa el default de la configuración
+  }
+  return '4000';
+}
+
+function portInUse(value) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port: Number(value) });
+    const done = (result) => {
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(700);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
+}
+
+const apiPort = readApiPort();
+if (await portInUse(apiPort)) {
+  console.error(
+    `[api] el puerto ${apiPort} ya está en uso: seguramente hay otra API de este worktree corriendo.\n` +
+      '      Ciérrala con Ctrl+C antes de volver a arrancar.',
+  );
+  process.exit(1);
 }
 
 let cli;
