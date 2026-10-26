@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Anton, Asap } from 'next/font/google';
 import './globals.css';
+import { NavigationProgress } from '../components/NavigationProgress';
 import { Providers } from './providers';
 
 // Tipografías de la Guía de Identidad Gráfica Corpoagro:
@@ -40,6 +41,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="es" className={`${asap.variable} ${anton.variable}`}>
       <body>
         <Providers>{children}</Providers>
+        <NavigationProgress />
       </body>
     </html>
   );

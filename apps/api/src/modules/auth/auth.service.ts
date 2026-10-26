@@ -40,6 +40,11 @@ export interface IssuedSession {
     displayName: string;
     role: string;
     isActive: boolean;
+    // El login entrega los permisos efectivos para que el web elija el
+    // módulo de inicio sin una segunda vuelta a /auth/me.
+    roleName?: string;
+    baseRole?: string;
+    permissions?: string[];
   };
   accessToken: string;
   refreshToken: string;
@@ -103,6 +108,17 @@ export class AuthService {
       displayName: user.displayName,
       role: user.role,
       isActive: user.isActive,
+    };
+  }
+
+  /** Resumen + permisos efectivos (lo que necesita el shell para navegar). */
+  private async fullUser(user: User) {
+    const access = await this.permissions.resolve(user.id);
+    return {
+      ...this.summary(user),
+      roleName: access?.roleName ?? user.role,
+      baseRole: access?.baseRole ?? 'CONSULTA',
+      permissions: access?.permissions ?? [],
     };
   }
 
@@ -236,12 +252,8 @@ export class AuthService {
     if (!user) {
       throw new UnauthorizedException('Sesión inválida');
     }
-    const access = await this.permissions.resolve(userId);
     return {
-      ...this.summary(user),
-      roleName: access?.roleName ?? user.role,
-      baseRole: access?.baseRole ?? 'CONSULTA',
-      permissions: access?.permissions ?? [],
+      ...(await this.fullUser(user)),
       lastLoginAt: user.lastLoginAt,
     };
   }
@@ -260,6 +272,6 @@ export class AuthService {
       },
     });
 
-    return { user: this.summary(user), accessToken, refreshToken, refreshTokenExpiresAt };
+    return { user: await this.fullUser(user), accessToken, refreshToken, refreshTokenExpiresAt };
   }
 }

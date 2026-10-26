@@ -97,6 +97,11 @@ controlador.
 - **Bandeja compartida**: si el despacho no se asigna a una persona, lo ve todo
   `ALMACEN` y el primero que lo abre lo reclama (`claimedById`); el resto lo ve
   pero no puede cargarlo.
+- **Carga todo o nada**: cada renglón se marca `CARGADO` (completado, toma la
+  cantidad planificada) o se deshace a `PENDIENTE`; no hay parciales. Las marcas
+  `PARCIAL`/`FALTANTE`/`NOVEDAD` quedan solo como histórico de lectura.
+- **Bitácora solo ADMIN**: el detalle entrega `events` únicamente al rol ADMIN;
+  el resto sigue el avance por la cinta de acuses y el reporte de cierre.
 - **Notificaciones bidireccionales**: cada transición avisa a la contraparte
   (recibido/en proceso/cerrado/novedad al planificador; anulación y mensajes al
   almacén). El aislamiento es por dueño: un despacho ajeno responde 404.

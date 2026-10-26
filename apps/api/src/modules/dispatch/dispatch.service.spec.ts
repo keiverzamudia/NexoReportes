@@ -40,6 +40,7 @@ function createFakePrisma() {
       { id: 'u-alm1', profitCode: 'ARIV', displayName: 'ALEXIS RIVAS', role: 'ALMACEN', isActive: true },
       { id: 'u-alm2', profitCode: 'AALV', displayName: 'ANA ALVAREZ', role: 'ALMACEN', isActive: true },
       { id: 'u-ger', profitCode: 'JGER', displayName: 'JEFA GERENCIA', role: 'GERENCIA', isActive: true },
+      { id: 'u-admin', profitCode: 'ADM', displayName: 'ADMINISTRADOR', role: 'ADMIN', isActive: true },
       { id: 'u-con', profitCode: 'CONS', displayName: 'CONSULTA SOLO', role: 'CONSULTA', isActive: true },
     ],
     scenarios: [] as Row[],
@@ -188,6 +189,7 @@ const planner = { id: 'u-plan', role: 'PLANIFICADOR', code: 'KZ' };
 const operator1 = { id: 'u-alm1', role: 'ALMACEN', code: 'ARIV' };
 const operator2 = { id: 'u-alm2', role: 'ALMACEN', code: 'AALV' };
 const manager = { id: 'u-ger', role: 'GERENCIA', code: 'JGER' };
+const admin = { id: 'u-admin', role: 'ADMIN', isAdmin: true, code: 'ADM' };
 const outsider = { id: 'u-con', role: 'CONSULTA', code: 'CONS' };
 
 function snapshotLine(overrides: Row = {}) {
@@ -267,7 +269,8 @@ describe('DispatchService — publicar', () => {
     expect(sheet.lines).toHaveLength(2);
     expect(sheet.lines[0]!.plannedQty).toBe(60);
     expect(sheet.plannedKg).toBe(2800);
-    expect(sheet.events[0]!.type).toBe('ENVIADO');
+    // La bitácora solo se entrega al ADMIN: se consulta con ese rol.
+    expect((await service.detail(admin, sheet.id)).events[0]!.type).toBe('ENVIADO');
     // Bandeja compartida: se notifica a los dos operadores de almacén.
     expect(prisma.state.notifications).toHaveLength(2);
     expect(prisma.state.notifications.every((row) => row.type === 'DESPACHO_ENVIADO')).toBe(true);
@@ -340,7 +343,9 @@ describe('DispatchService — acuses (túnel)', () => {
     expect(received.receivedAt).toBeTruthy();
     expect(received.receivedByName).toBe('ALEXIS RIVAS');
     expect(received.claimedByName).toBe('ALEXIS RIVAS');
-    expect(received.events.some((event) => event.type === 'RECIBIDO')).toBe(true);
+    // El operador ya no recibe la bitácora; el admin sí la ve.
+    expect(received.events).toHaveLength(0);
+    expect((await service.detail(admin, sheet.id)).events.some((event) => event.type === 'RECIBIDO')).toBe(true);
     expect(prisma.state.notifications.some((row) => row.type === 'DESPACHO_RECIBIDO' && row.recipientId === 'u-plan')).toBe(true);
   });
 
@@ -410,56 +415,65 @@ describe('DispatchService — carga y cierre', () => {
     return { prisma, service, sheet };
   }
 
-  it('deriva los kg reales del ratio planificado y acumula el avance', async () => {
+  it('completar toma la cantidad planificada y acumula el avance', async () => {
     const { service, sheet } = await inProgress();
 
-    const updated = await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, {
-      loadedQty: 40,
-      status: 'PARCIAL',
-    });
+    const updated = await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
 
     const line = updated.lines.find((item) => item.id === sheet.lines[0]!.id)!;
-    // 40 unidades de un renglón planificado a 2400 kg / 60 unid = 1600 kg.
-    expect(line.loadedKg).toBe(1600);
-    expect(line.loadedQty).toBe(40);
+    expect(line.loadedQty).toBe(60);
+    expect(line.loadedKg).toBe(2400);
+    expect(line.note).toBeNull();
     expect(updated.linesDone).toBe(1);
     expect(updated.progress).toBeCloseTo(0.5, 5);
-    expect(updated.loadedKg).toBe(1600);
-    expect(updated.differenceKg).toBe(-800);
+    expect(updated.loadedKg).toBe(2400);
+    expect(updated.differenceKg).toBe(0);
   });
 
-  it('pasa a CON_NOVEDAD y avisa al planificador', async () => {
-    const { prisma, service, sheet } = await inProgress();
+  it('deshacer devuelve el renglón a pendiente sin tocar las demás marcas', async () => {
+    const { service, sheet } = await inProgress();
 
-    const updated = await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, {
-      loadedQty: 0,
-      status: 'FALTANTE',
-      note: 'No alcanzó la existencia',
-    });
+    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
+    await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
+    const reset = await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'PENDIENTE' });
 
-    expect(updated.status).toBe('CON_NOVEDAD');
-    expect(updated.events.some((event) => event.type === 'NOVEDAD')).toBe(true);
-    expect(prisma.state.notifications.some((row) => row.type === 'DESPACHO_NOVEDAD')).toBe(true);
-
-    // Al resolver la diferencia vuelve a EN_PROCESO.
-    const resolved = await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { loadedQty: 60, status: 'CARGADO' });
-    expect(resolved.status).toBe('EN_PROCESO');
+    const line = reset.lines.find((item) => item.id === sheet.lines[0]!.id)!;
+    expect(line.status).toBe('PENDIENTE');
+    expect(line.loadedQty).toBeNull();
+    expect(line.loadedKg).toBeNull();
+    expect(reset.linesDone).toBe(1);
+    // La otra marca sigue intacta.
+    expect(reset.lines.find((item) => item.id === sheet.lines[1]!.id)!.status).toBe('CARGADO');
   });
 
-  it('no cierra con renglones pendientes y cierra con totales reales', async () => {
+  it('completar una marca histórica devuelve la hoja a EN_PROCESO', async () => {
+    const { prisma, service, sheet } = await inProgress();
+    const legacy = prisma.state.lines.find((line) => line.id === sheet.lines[0]!.id)!;
+    legacy.status = 'FALTANTE';
+    legacy.loadedQty = 0;
+    legacy.loadedKg = 0;
+    prisma.state.sheets.find((row) => row.id === sheet.id)!.status = 'CON_NOVEDAD';
+
+    const updated = await service.updateLine(operator1, sheet.id, legacy.id, { status: 'CARGADO' });
+    expect(updated.lines.find((item) => item.id === legacy.id)!.status).toBe('CARGADO');
+    expect(updated.status).toBe('EN_PROCESO');
+  });
+
+  it('no cierra con renglones incompletos y cierra con totales reales', async () => {
     const { prisma, service, sheet } = await inProgress();
 
-    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { loadedQty: 60, status: 'CARGADO' });
-    await expect(service.complete(operator1, sheet.id, {})).rejects.toThrow(/por confirmar/i);
+    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
+    await expect(service.complete(operator1, sheet.id, {})).rejects.toThrow(/por completar/i);
 
-    await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { loadedQty: 8, status: 'PARCIAL' });
-    const closed = await service.complete(operator1, sheet.id, { note: 'Faltaron 2 sacos' });
+    await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
+    const closed = await service.complete(operator1, sheet.id, { note: 'Carga completa' });
 
     expect(closed.status).toBe('DESPACHADO');
     expect(closed.completedAt).toBeTruthy();
     expect(closed.completedByName).toBe('ALEXIS RIVAS');
-    expect(closed.loadedSacks).toBe(68);
-    expect(closed.loadedKg).toBe(2720);
+    expect(closed.loadedSacks).toBe(70);
+    expect(closed.loadedKg).toBe(2800);
+    expect(closed.differenceKg).toBe(0);
     expect(prisma.state.notifications.some((row) => row.type === 'DESPACHO_CERRADO' && row.recipientId === 'u-plan')).toBe(true);
 
     // Cerrar dos veces no rompe.
@@ -481,20 +495,24 @@ describe('DispatchService — carga y cierre', () => {
 });
 
 describe('DispatchService — bitácora y notificaciones', () => {
-  it('el mensaje viaja a la contraparte y no al autor', async () => {
+  it('la bitácora y sus mensajes son exclusivos del ADMIN', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
     const service = new DispatchService(prisma as never, audit, arrivals);
     await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
 
-    await service.message(planner, sheet.id, { body: 'Prioriza el pedido 408251710' });
-    const toOperator = prisma.state.notifications.filter((row) => row.type === 'MENSAJE');
-    expect(toOperator).toHaveLength(1);
-    expect(toOperator[0]!.recipientId).toBe('u-alm1');
+    // Ningún otro rol ve los eventos ni puede escribir en la bitácora.
+    expect((await service.detail(operator1, sheet.id)).events).toHaveLength(0);
+    expect((await service.detail(planner, sheet.id)).events).toHaveLength(0);
+    await expect(service.message(planner, sheet.id, { body: 'Prioriza el pedido' })).rejects.toThrow(/administradores/i);
+    await expect(service.message(operator1, sheet.id, { body: 'Entendido' })).rejects.toThrow(/administradores/i);
 
-    await service.message(operator1, sheet.id, { body: 'Entendido, ya voy' });
-    const toPlanner = prisma.state.notifications.filter((row) => row.type === 'MENSAJE' && row.recipientId === 'u-plan');
-    expect(toPlanner).toHaveLength(1);
+    // El admin sí la ve y su mensaje viaja a la contraparte (el creador).
+    expect((await service.detail(admin, sheet.id)).events.length).toBeGreaterThan(0);
+    await service.message(admin, sheet.id, { body: 'Prioriza el pedido 408251710' });
+    const message = prisma.state.notifications.find((row) => row.type === 'MENSAJE');
+    expect(message).toBeTruthy();
+    expect(message!.recipientId).toBe('u-plan');
   });
 
   it('lista y marca notificaciones (idempotente)', async () => {
@@ -555,10 +573,10 @@ describe('DispatchService — bitácora y notificaciones', () => {
     await service.ack(operator1, sheet.id, { event: 'EN_PROCESO' });
     expect(typesFor('u-plan')).toEqual(['DESPACHO_RECIBIDO', 'DESPACHO_EN_PROCESO']);
 
-    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { loadedQty: 0, status: 'FALTANTE', note: 'No alcanzó' });
-    await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { loadedQty: 10, status: 'CARGADO' });
+    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
+    await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
     await service.complete(operator1, sheet.id, {});
-    expect(typesFor('u-plan')).toEqual(['DESPACHO_RECIBIDO', 'DESPACHO_EN_PROCESO', 'DESPACHO_NOVEDAD', 'DESPACHO_CERRADO']);
+    expect(typesFor('u-plan')).toEqual(['DESPACHO_RECIBIDO', 'DESPACHO_EN_PROCESO', 'DESPACHO_CERRADO']);
 
     // El aviso lleva a la hoja y firma a quien actuó.
     const last = prisma.state.notifications.filter((row) => row.recipientId === 'u-plan').at(-1)!;

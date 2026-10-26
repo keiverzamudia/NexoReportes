@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { DispatchSheetDetail, DispatchSheetLine, DispatchSheetSummary } from '@nexo/contracts';
 import {
+  buildDispatchReport,
   computeTotals,
   groupByCustomer,
   humanAge,
   lineLoadedKg,
-  lineStatusFrom,
+  lineStatusMeta,
   relativeTime,
   sheetExport,
   sheetStatusMeta,
@@ -89,11 +90,11 @@ describe('estados y lenguaje de planta', () => {
     expect(sheetStatusMeta('CON_NOVEDAD').tone).toBe('danger');
   });
 
-  it('sugiere el estado del renglón según lo cargado', () => {
-    expect(lineStatusFrom(0, 60)).toBe('FALTANTE');
-    expect(lineStatusFrom(40, 60)).toBe('PARCIAL');
-    expect(lineStatusFrom(60, 60)).toBe('CARGADO');
-    expect(lineStatusFrom(61, 60)).toBe('CARGADO');
+  it('usa «Completado» para la marca actual y conserva los estados históricos', () => {
+    expect(lineStatusMeta('PENDIENTE')).toMatchObject({ label: 'Pendiente', tone: 'muted' });
+    expect(lineStatusMeta('CARGADO')).toMatchObject({ label: 'Completado', tone: 'success' });
+    expect(lineStatusMeta('FALTANTE').label).toBe('No completado (histórico)');
+    expect(lineStatusMeta('PARCIAL').label).toBe('Parcial (histórico)');
   });
 
   it('formatea el tiempo relativo en lenguaje humano', () => {
@@ -123,32 +124,57 @@ describe('carga y avance', () => {
     expect(lineLoadedKg(line({ loadedQty: null }))).toBe(0);
   });
 
-  it('acumula planificado, cargado y diferencia solo con lo confirmado', () => {
+  it('acumula planificado, cargado y diferencia con los renglones completados', () => {
     const totals = computeTotals([
       line({ id: 'a', status: 'CARGADO', loadedQty: 60, loadedKg: 2400 }),
-      line({ id: 'b', productCode: 'ABABOV85', plannedQty: 10, plannedKg: 400, status: 'PARCIAL', loadedQty: 8, loadedKg: 320 }),
+      line({
+        id: 'b',
+        productCode: 'ABABOV85',
+        plannedQty: 10,
+        plannedKg: 400,
+        status: 'CARGADO',
+        loadedQty: 10,
+        loadedKg: 400,
+      }),
       line({ id: 'c', productCode: 'ABAGRA', plannedQty: 100, plannedKg: 100, uom: 'KG', status: 'PENDIENTE' }),
+      // Marca histórica: no avanza el trabajo, pero pesa en la diferencia.
+      line({ id: 'd', productCode: 'ABAFAL', plannedQty: 20, plannedKg: 400, status: 'FALTANTE', loadedQty: 0, loadedKg: 0 }),
     ]);
 
-    expect(totals.lines).toBe(3);
+    expect(totals.lines).toBe(4);
     expect(totals.done).toBe(2);
-    expect(totals.progress).toBeCloseTo(2 / 3, 5);
-    expect(totals.plannedSacks).toBe(70);
-    expect(totals.plannedKg).toBe(2900);
-    expect(totals.loadedSacks).toBe(68);
-    expect(totals.loadedKg).toBe(2720);
-    // Solo los renglones confirmados entran en la diferencia (2400 + 400 = 2800).
-    expect(totals.differenceKg).toBe(-80);
+    expect(totals.progress).toBeCloseTo(2 / 4, 5);
+    expect(totals.plannedSacks).toBe(90);
+    expect(totals.plannedKg).toBe(3300);
+    expect(totals.loadedSacks).toBe(70);
+    expect(totals.loadedKg).toBe(2800);
+    // Solo los renglones marcados entran en la diferencia (2400 + 400 + 400 = 3200).
+    expect(totals.differenceKg).toBe(-400);
   });
 
-  it('agrupa por cliente con pendientes', () => {
+  it('agrupa por cliente con pendientes y completados', () => {
     const groups = groupByCustomer([
       line({ id: 'a' }),
       line({ id: 'b', customerCode: 'X', customerName: 'OTRO CLIENTE', status: 'CARGADO', loadedQty: 60 }),
     ]);
     expect(groups.map((group) => group.name)).toEqual(['AGRICOLA LA CAÑADA', 'OTRO CLIENTE']);
     expect(groups[0]!.pendingLines).toBe(1);
+    expect(groups[0]!.completedLines).toBe(0);
     expect(groups[1]!.pendingLines).toBe(0);
+    expect(groups[1]!.completedLines).toBe(1);
+  });
+
+  it('arma el reporte completo de la hoja', () => {
+    const report = buildDispatchReport([
+      line({ id: 'a', status: 'CARGADO', loadedQty: 60, loadedKg: 2400 }),
+      line({ id: 'b', productCode: 'ABABOV85', plannedQty: 10, plannedKg: 400 }),
+    ]);
+
+    expect(report.completed).toMatchObject({ lines: 1, sacks: 60, kg: 2400 });
+    expect(report.pending).toMatchObject({ lines: 1, sacks: 10, kg: 400 });
+    expect(report.totals.done).toBe(1);
+    expect(report.groups).toHaveLength(1);
+    expect(report.groups[0]!.lines).toHaveLength(2);
   });
 });
 
@@ -198,7 +224,15 @@ describe('hoja exportable', () => {
       ...summary({ status: 'EN_PROCESO', receivedAt: '2026-10-21T15:02:00.000Z' }),
       lines: [
         line({ id: 'a', status: 'CARGADO', loadedQty: 60, loadedKg: 2400 }),
-        line({ id: 'b', productCode: 'ABABOV85', plannedQty: 10, plannedKg: 400, status: 'FALTANTE', loadedQty: 0, loadedKg: 0 }),
+        line({
+          id: 'b',
+          productCode: 'ABABOV85',
+          plannedQty: 10,
+          plannedKg: 400,
+          status: 'CARGADO',
+          loadedQty: 10,
+          loadedKg: 400,
+        }),
       ],
       events: [],
     };
@@ -214,11 +248,11 @@ describe('hoja exportable', () => {
 
     const dataRows = exported.aoa.slice(headerRow + 1, headerRow + 3);
     expect(dataRows[0]![10]).toBe(60);
-    expect(dataRows[1]![12]).toBe('Faltante');
+    expect(dataRows[1]![12]).toBe('Completado');
 
     const totalLine = exported.aoa.at(-2)![0] as string;
-    // Cargado 2.400 kg contra 2.800 kg confirmados → −400 kg.
-    expect(totalLine).toContain('diferencia -400 kg');
+    // Cargado 2.800 kg contra 2.800 kg completados → sin diferencia.
+    expect(totalLine).toContain('diferencia 0 kg');
     expect(exported.merges.length).toBeGreaterThanOrEqual(4);
     expect(exported.widths).toHaveLength(14);
   });

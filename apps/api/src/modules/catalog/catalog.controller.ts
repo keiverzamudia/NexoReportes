@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { zProductQuery, ProductQuery } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { RequireAnyPermission } from '../permissions/permissions.decorator';
+import { RequireAnyPermission, RequirePermission } from '../permissions/permissions.decorator';
 import { PermissionsGuard } from '../permissions/permissions.guard';
 import { CatalogService } from './catalog.service';
 
@@ -34,6 +34,9 @@ export class CatalogController {
   }
 
   @Get('availability')
+  // El resto del catálogo es compartido, pero esta vista es del módulo
+  // Disponibilidad: sin `disponibilidad:read` no se entrega ni por URL.
+  @RequirePermission('disponibilidad:read')
   availability() {
     return this.catalog.availability();
   }

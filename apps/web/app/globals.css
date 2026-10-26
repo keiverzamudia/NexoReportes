@@ -205,6 +205,19 @@
   }
 }
 
+/* Barra indeterminada de navegación entre módulos. */
+@keyframes nexo-nav-progress {
+  0% {
+    transform: translateX(-110%) scaleX(0.6);
+  }
+  50% {
+    transform: translateX(40%) scaleX(0.85);
+  }
+  100% {
+    transform: translateX(310%) scaleX(0.6);
+  }
+}
+
 @layer utilities {
   .bg-hero {
     background-image:
@@ -217,6 +230,11 @@
 
   .animate-fade {
     animation: nexo-fade 0.4s ease-out both;
+  }
+
+  .animate-nav-progress {
+    animation: nexo-nav-progress 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    transform-origin: left center;
   }
 
   /* Aparición escalonada de tarjetas. */
@@ -247,6 +265,14 @@
 
 .agro-loader-ring {
   transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-nav-progress {
+    width: 100%;
+    animation: none;
+    opacity: 0.6;
+  }
 }
 
 @media (prefers-reduced-motion: no-preference) {

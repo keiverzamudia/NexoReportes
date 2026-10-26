@@ -15,6 +15,7 @@ import {
   DoorOpen,
   Eye,
   EyeOff,
+  Loader2,
   LogIn,
   LogOut,
   RefreshCw,
@@ -24,8 +25,8 @@ import {
   Users,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { LoginCandidate, SyncStatusResponse } from '@nexo/contracts';
-import Link from 'next/link';
+import { LoginCandidate, SyncStatusResponse, UserSummary } from '@nexo/contracts';
+import Link, { useLinkStatus } from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, currentUser, login as apiLogin, logout, searchLoginCandidates } from '../lib/api';
@@ -36,7 +37,7 @@ import { NotificationsBell } from './NotificationsBell';
 import { useLoadingOverlay } from './loading/LoadingOverlayProvider';
 import { cx } from './ui';
 
-export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
+export function LoginForm({ onSuccess }: { onSuccess: (user: UserSummary) => void }) {
   const queryClient = useQueryClient();
   const [text, setText] = useState('');
   const [selected, setSelected] = useState<LoginCandidate | null>(null);
@@ -83,9 +84,14 @@ export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
     setError(null);
     try {
       // La contraseña va a Profit y se descarta: aquí solo queda la cookie.
-      await apiLogin(selected.id, password);
-      await queryClient.invalidateQueries({ queryKey: ['me'] });
-      onSuccess();
+      const auth = await apiLogin(selected.id, password);
+      // Una API anterior puede no incluir los permisos en el login; /auth/me
+      // los trae y evita aterrizar en «sin módulos» por una versión vieja.
+      const logged = auth.user.permissions ? auth.user : ((await currentUser()) ?? auth.user);
+      // No mezclar datos de una sesión anterior (p. ej. tras expirar la cookie).
+      queryClient.clear();
+      queryClient.setQueryData(['me'], logged);
+      onSuccess(logged);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error desconocido');
       setPassword('');
@@ -199,12 +205,47 @@ export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
+// Estado breve mientras la puerta de sesión (`/`) consulta la cookie.
+function LoginChecking() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="mx-auto flex w-full max-w-sm flex-col items-center gap-space-md rounded-card border border-outline-variant/40 bg-surface-container-lowest p-space-xl shadow-float"
+    >
+      <Loader2 aria-hidden className="size-6 animate-spin text-primary" />
+      <p className="font-semibold text-primary">Comprobando sesión…</p>
+      <p className="text-center text-label-sm normal-case text-on-surface-variant">
+        Estamos viendo si ya tienes una sesión activa.
+      </p>
+    </div>
+  );
+}
+
+export function LoginScreen({
+  onSuccess,
+  checking = false,
+}: {
+  onSuccess: (user: UserSummary) => void;
+  checking?: boolean;
+}) {
+  const router = useRouter();
+  const pathname = usePathname();
   const benefits = [
     { icon: Boxes, title: 'Existencias y pedidos al día', text: 'Lo disponible, lo comprometido y lo que falta.' },
     { icon: Truck, title: 'Despacho con acuse', text: 'Del plan a la carga, con bitácora de cada paso.' },
     { icon: DoorOpen, title: 'Llegadas de clientes', text: 'PCP marca la hora y registra cada incidencia.' },
   ];
+
+  // Tras autenticar, el usuario solo se queda si el módulo actual está en sus
+  // permisos; si no, entra por el primero que sí puede ver.
+  function handleSuccess(user: UserSummary) {
+    const links = linksFor(user.permissions);
+    const current = pathname ?? '/';
+    const allowed = links.some((link) => current === link.href || current.startsWith(`${link.href}/`));
+    onSuccess(user);
+    if (!allowed) router.replace(links[0]?.href ?? '/');
+  }
 
   return (
     <main className="grid min-h-screen bg-surface lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
@@ -266,7 +307,7 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
           <div className="mb-space-lg flex justify-center lg:hidden">
             <Logo size="full" height={64} priority />
           </div>
-          <LoginForm onSuccess={onSuccess} />
+          {checking ? <LoginChecking /> : <LoginForm onSuccess={handleSuccess} />}
           <p className="mt-space-md text-center text-label-sm normal-case text-outline lg:hidden">
             Corpoagro · Nutrición Animal
           </p>
@@ -298,6 +339,12 @@ const NAV_LINKS: NavLink[] = [
 
 export function linksFor(permissions: string[] | undefined): NavLink[] {
   return NAV_LINKS.filter((link) => hasPermission(permissions, link.module, 'read'));
+}
+
+/** Spinner localizado en el enlace que está navegando (Next 15). */
+function NavPending() {
+  const { pending } = useLinkStatus();
+  return pending ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : null;
 }
 
 // Botón "Sincronizar": dispara una sincronización completa contra Profit y
@@ -418,12 +465,17 @@ export function AppNav() {
   });
   const permissionList = useMemo(() => sessionUser?.permissions ?? [], [sessionUser?.permissions]);
   const links = useMemo(() => linksFor(permissionList), [permissionList]);
-  const home = links[0]?.href ?? '/pedidos';
+  const home = links[0]?.href ?? '/';
 
   // Acceso directo por URL a un módulo sin `modulo:read`: se devuelve al
-  // primer módulo permitido (el API responde 403 de todos modos).
+  // primer módulo permitido (el API responde 403 de todos modos). Sin ningún
+  // módulo, la puerta de sesión muestra la pantalla de «sin acceso».
   useEffect(() => {
-    if (!sessionUser || links.length === 0) return;
+    if (!sessionUser) return;
+    if (links.length === 0) {
+      router.replace('/');
+      return;
+    }
     const allowed = links.some((link) => pathname === link.href || pathname.startsWith(`${link.href}/`));
     if (!allowed) router.replace(links[0]!.href);
   }, [sessionUser, links, pathname, router]);
@@ -431,7 +483,14 @@ export function AppNav() {
   return (
     <header className="sticky top-0 z-30 border-b border-outline-variant/35 bg-surface-container-lowest/85 backdrop-blur-xl">
       <div className="mx-auto flex w-full max-w-[1680px] flex-wrap items-center gap-space-md px-space-md py-space-sm md:px-space-xl">
-        <Link href={home} className="flex shrink-0 items-center gap-space-sm" aria-label="Corpoagro — inicio">
+        <Link
+          href={home}
+          prefetch
+          onMouseEnter={() => router.prefetch(home)}
+          onFocus={() => router.prefetch(home)}
+          className="flex shrink-0 items-center gap-space-sm"
+          aria-label="Corpoagro — inicio"
+        >
           <Logo size="compact" height={28} />
         </Link>
 
@@ -443,6 +502,9 @@ export function AppNav() {
                 <Link
                   key={href}
                   href={href}
+                  prefetch
+                  onMouseEnter={() => router.prefetch(href)}
+                  onFocus={() => router.prefetch(href)}
                   aria-current={active ? 'page' : undefined}
                   className={cx(
                     'flex h-9 shrink-0 items-center gap-space-xs rounded-pill px-space-md text-body-md transition-all duration-200',
@@ -453,6 +515,7 @@ export function AppNav() {
                 >
                   <Icon aria-hidden className="size-4" />
                   {label}
+                  <NavPending />
                 </Link>
               );
             })}
