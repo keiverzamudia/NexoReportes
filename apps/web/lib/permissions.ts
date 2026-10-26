@@ -20,9 +20,9 @@ export function canSeeModule(permissions: string[] | undefined | null, module: s
 }
 
 /** Primer módulo visible con pantalla: destino seguro tras un 403 de ruta. */
-export function firstAllowedHref(permissions: string[] | undefined | null): string {
+export function firstAllowedHref(permissions: string[] | undefined | null): string | null {
   const module = APP_MODULES.find((entry) => entry.href && canSeeModule(permissions, entry.key));
-  return module?.href ?? '/pedidos';
+  return module?.href ?? null;
 }
 
 /** Acciones disponibles de un módulo según el catálogo compartido. */

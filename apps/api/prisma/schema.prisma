@@ -552,7 +552,8 @@ model DispatchSheetLine {
   // Lo que el almacén cargó de verdad.
   loadedQty     Decimal?
   loadedKg      Decimal?
-  // PENDIENTE | CARGADO | PARCIAL | FALTANTE | NOVEDAD
+  // PENDIENTE | CARGADO (marcas actuales)
+  // PARCIAL | FALTANTE | NOVEDAD quedan solo como histórico de lectura.
   status        String        @default("PENDIENTE")
   note          String?
   checkedAt     DateTime?

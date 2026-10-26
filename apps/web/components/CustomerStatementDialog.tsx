@@ -8,8 +8,9 @@
 // documentos pendientes, fecha de vencimiento, días vencidos, saldo y monto
 // neto, con los filtros de documentos pendientes y otra moneda.
 //
-// El saldo de la tabla viaja con signo desde el API; los créditos (ADEL,
-// N/CR) se muestran en positivo como en Profit, pero restan del saldo total.
+// El saldo de la tabla viaja con signo desde el API y se muestra con signo:
+// los débitos (FACT, N/DB, AJPM, GIRO) suman y los créditos (ADEL, N/CR)
+// aparecen en negativo porque restan del saldo total.
 // ============================================================
 
 import type {
@@ -162,7 +163,7 @@ export function CustomerStatementDialog({
             )}
             title={row.esCredito ? 'Crédito: se descuenta del saldo total' : undefined}
           >
-            {formatStatementMoney(row.saldo, currency, { absolute: row.esCredito })}
+            {formatStatementMoney(row.saldo, currency)}
           </span>
         ),
       },
@@ -177,7 +178,7 @@ export function CustomerStatementDialog({
             className="tabular-nums text-on-surface-variant"
             title={row.esCredito ? 'Monto del crédito (se descuenta del saldo)' : undefined}
           >
-            {formatStatementMoney(row.montoNeto, currency, { absolute: row.esCredito })}
+            {formatStatementMoney(row.montoNeto, currency)}
           </span>
         ),
       },
@@ -381,8 +382,8 @@ export function CustomerStatementDialog({
               <>
                 <p className="text-label-sm normal-case text-on-surface-variant">
                   {incluirSaldados ? 'Incluye documentos saldados.' : 'Solo documentos con saldo pendiente.'}{' '}
-                  Los adelantos y notas de crédito se descuentan del saldo cliente. Ordena por «Días Venc.» para
-                  priorizar cobranza.
+                  Los adelantos y notas de crédito se muestran en negativo y se descuentan del saldo cliente. Ordena
+                  por «Días Venc.» para priorizar cobranza.
                 </p>
 
                 {data?.truncated && (

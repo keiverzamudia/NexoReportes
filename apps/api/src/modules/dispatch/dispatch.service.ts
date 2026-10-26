@@ -39,6 +39,8 @@ import { ArrivalsService, ArrivalSourceLine } from '../arrivals/arrivals.service
 export interface DispatchViewer {
   id: string;
   role: string;
+  // La bitácora solo se entrega al rol ADMIN (ver `detail`/`message`).
+  isAdmin?: boolean;
   code?: string | null;
   name?: string | null;
 }
@@ -138,7 +140,7 @@ export class DispatchService {
     return {
       ...this.toSummary(sheet, viewer),
       lines: sheet.lines.map((line) => this.toLine(line)),
-      events: sheet.events.map((event) => this.toEvent(event)),
+      events: this.eventsFor(sheet, viewer),
     };
   }
 
@@ -361,7 +363,7 @@ export class DispatchService {
     return {
       ...this.toSummary(sheet, viewer),
       lines: sheet.lines.map((line) => this.toLine(line)),
-      events: sheet.events.map((event) => this.toEvent(event)),
+      events: this.eventsFor(sheet, viewer),
     };
   }
 
@@ -481,24 +483,32 @@ export class DispatchService {
     if (!line) throw new NotFoundException('Renglón no encontrado.');
 
     const actor = await this.viewerInfo(viewer);
+    const completed = input.status === 'CARGADO';
     const plannedQty = toNumber(line.plannedQty);
     const plannedKg = toNumber(line.plannedKg);
-    const loadedQty = round2(input.loadedQty);
-    // Los kg reales se derivan del kg/unidad planificado: el almacén solo
-    // digita lo que cargó, nunca dos veces el mismo dato.
-    const loadedKg = plannedQty > 0 ? round2((loadedQty * plannedKg) / plannedQty) : round2(loadedQty);
 
+    // Todo o nada: completar toma la cantidad planificada; deshacer la limpia.
     await this.prisma.dispatchSheetLine.update({
       where: { id: line.id },
-      data: {
-        loadedQty,
-        loadedKg,
-        status: input.status,
-        note: input.note ?? null,
-        checkedAt: new Date(),
-        checkedById: actor.id,
-        checkedByName: actor.name,
-      },
+      data: completed
+        ? {
+            loadedQty: plannedQty,
+            loadedKg: plannedKg,
+            status: 'CARGADO',
+            note: null,
+            checkedAt: new Date(),
+            checkedById: actor.id,
+            checkedByName: actor.name,
+          }
+        : {
+            loadedQty: null,
+            loadedKg: null,
+            status: 'PENDIENTE',
+            note: null,
+            checkedAt: null,
+            checkedById: null,
+            checkedByName: null,
+          },
     });
 
     // El estado de la hoja refleja si hay novedades entre los renglones.
@@ -526,7 +536,7 @@ export class DispatchService {
         await this.notify([refreshed.createdById], {
           type: 'DESPACHO_NOVEDAD',
           title: `${refreshed.number}: novedad en la carga`,
-          body: `${actor.name ?? 'Almacén'} reportó faltantes o diferencias. Revisa la bitácora.`,
+          body: `${actor.name ?? 'Almacén'} reportó renglones con una marca anterior. Revisa la bitácora.`,
           entityId: refreshed.id,
           actorId: actor.id,
           actorName: actor.name,
@@ -546,7 +556,7 @@ export class DispatchService {
         orderNumber: line.orderNumber,
         productCode: line.productCode,
         plannedQty,
-        loadedQty,
+        loadedQty: completed ? plannedQty : null,
         status: input.status,
       },
     });
@@ -564,10 +574,10 @@ export class DispatchService {
     if (!['EN_PROCESO', 'CON_NOVEDAD'].includes(sheet.status)) {
       throw new ConflictException('Toma el despacho (en proceso) antes de cerrarlo.');
     }
-    const pending = sheet.lines.filter((line) => line.status === 'PENDIENTE');
+    const pending = sheet.lines.filter((line) => line.status !== 'CARGADO');
     if (pending.length > 0) {
       throw new BadRequestException(
-        `Faltan ${pending.length} renglón(es) por confirmar. Marca cada uno como cargado, parcial o faltante.`,
+        `Faltan ${pending.length} renglón(es) por completar. Marca cada uno como completado antes de cerrar.`,
       );
     }
 
@@ -684,6 +694,9 @@ export class DispatchService {
   // ---------- Bitácora (mensajes libres) ----------
 
   async message(viewer: DispatchViewer, id: string, input: DispatchMessageInput): Promise<DispatchSheetDetail> {
+    if (!viewer.isAdmin) {
+      throw new ForbiddenException('La bitácora es solo para administradores.');
+    }
     const sheet = await this.findSheet(id);
     if (!this.canSee(sheet, viewer)) throw new NotFoundException('Despacho no encontrado.');
     const actor = await this.viewerInfo(viewer);
@@ -906,7 +919,8 @@ export class DispatchService {
   private toSummary(sheet: SheetWithLines, viewer: DispatchViewer): DispatchSheetSummary {
     const lines = sheet.lines ?? [];
     const totals = this.liveTotals(lines);
-    const linesDone = lines.filter((line) => line.status !== 'PENDIENTE').length;
+    const linesDone = lines.filter((line) => line.status === 'CARGADO').length;
+    const closed = ['DESPACHADO', 'CANCELADO'].includes(sheet.status);
     const customers = [...new Set(lines.map((line) => line.customerName).filter((name): name is string => Boolean(name)))];
     const pendingDates = lines
       .filter((line) => line.status === 'PENDIENTE' && line.effectiveDate)
@@ -940,9 +954,11 @@ export class DispatchService {
       plannedLines: sheet.plannedLines || lines.length,
       plannedSacks: toNumber(sheet.plannedSacks),
       plannedKg: totals.plannedKg || toNumber(sheet.plannedKg),
-      loadedSacks: totals.loadedSacks,
-      loadedKg: totals.loadedKg,
-      differenceKg: totals.differenceKg,
+      // Una hoja cerrada conserva los totales con los que se firmó, aunque
+      // después se agreguen/retiren renglones por una corrección histórica.
+      loadedSacks: closed ? toNumber(sheet.loadedSacks) : totals.loadedSacks,
+      loadedKg: closed ? toNumber(sheet.loadedKg) : totals.loadedKg,
+      differenceKg: closed ? toNumber(sheet.differenceKg) : totals.differenceKg,
       linesDone,
       progress: lines.length > 0 ? linesDone / lines.length : 0,
       customers: customers.slice(0, 3),
@@ -974,6 +990,11 @@ export class DispatchService {
       checkedAt: iso(line.checkedAt),
       checkedByName: line.checkedByName,
     };
+  }
+
+  private eventsFor(sheet: { events: EventRow[] }, viewer: DispatchViewer): DispatchSheetEvent[] {
+    // La bitácora es exclusiva del rol ADMIN (no depende solo de la pantalla).
+    return viewer.isAdmin ? sheet.events.map((event) => this.toEvent(event)) : [];
   }
 
   private toEvent(event: EventRow): DispatchSheetEvent {

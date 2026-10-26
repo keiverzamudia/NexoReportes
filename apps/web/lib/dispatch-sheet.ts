@@ -29,10 +29,11 @@ export const SHEET_STATUS_META: Record<DispatchSheetStatus, { label: string; sho
 
 export const LINE_STATUS_META: Record<DispatchLineStatus, { label: string; tone: SheetTone }> = {
   PENDIENTE: { label: 'Pendiente', tone: 'muted' },
-  CARGADO: { label: 'Cargado', tone: 'success' },
-  PARCIAL: { label: 'Parcial', tone: 'warning' },
-  FALTANTE: { label: 'Faltante', tone: 'danger' },
-  NOVEDAD: { label: 'Novedad', tone: 'danger' },
+  CARGADO: { label: 'Completado', tone: 'success' },
+  // Estados anteriores: se conservan para leer hojas históricas.
+  PARCIAL: { label: 'Parcial (histórico)', tone: 'warning' },
+  FALTANTE: { label: 'No completado (histórico)', tone: 'danger' },
+  NOVEDAD: { label: 'Novedad (histórico)', tone: 'danger' },
 };
 
 export function sheetStatusMeta(status: DispatchSheetStatus) {
@@ -103,13 +104,6 @@ export function relativeTime(iso: string | null | undefined, now: Date = new Dat
 
 // ---------- Carga ----------
 
-/** Sugiere el estado del renglón a partir de lo que el almacén digitó. */
-export function lineStatusFrom(loadedQty: number, plannedQty: number): DispatchLineStatus {
-  if (loadedQty <= 0) return 'FALTANTE';
-  if (plannedQty > 0 && loadedQty < plannedQty) return 'PARCIAL';
-  return 'CARGADO';
-}
-
 /** Kg reales del renglón: el servidor los guarda; si faltan, se derivan del ratio. */
 export function lineLoadedKg(line: Pick<DispatchSheetLine, 'loadedQty' | 'loadedKg' | 'plannedQty' | 'plannedKg'>): number {
   if (line.loadedKg !== null && line.loadedKg !== undefined) return line.loadedKg;
@@ -143,10 +137,10 @@ export function computeTotals(lines: DispatchSheetLine[]): SheetTotals {
     }
     plannedKg += line.plannedKg;
     loadedKg += lineLoadedKg(line);
-    if (line.status !== 'PENDIENTE') {
-      done += 1;
-      checkedPlannedKg += line.plannedKg;
-    }
+    // Solo «Completado» avanza el trabajo. Las marcas históricas
+    // (parcial/faltante) siguen pesando en la diferencia del reporte.
+    if (line.status === 'CARGADO') done += 1;
+    if (line.status !== 'PENDIENTE') checkedPlannedKg += line.plannedKg;
   }
   return {
     lines: lines.length,
@@ -166,7 +160,9 @@ export interface CustomerGroup {
   lines: DispatchSheetLine[];
   plannedKg: number;
   loadedKg: number;
+  /** Renglones que aún no están completados (incluye marcas históricas). */
   pendingLines: number;
+  completedLines: number;
 }
 
 /** Agrupa los renglones por cliente (para la vista de carga en móvil). */
@@ -176,15 +172,65 @@ export function groupByCustomer(lines: DispatchSheetLine[]): CustomerGroup[] {
     const key = line.customerCode ?? line.customerName ?? '—';
     let group = map.get(key);
     if (!group) {
-      group = { key, name: line.customerName ?? 'Cliente sin nombre', lines: [], plannedKg: 0, loadedKg: 0, pendingLines: 0 };
+      group = {
+        key,
+        name: line.customerName ?? 'Cliente sin nombre',
+        lines: [],
+        plannedKg: 0,
+        loadedKg: 0,
+        pendingLines: 0,
+        completedLines: 0,
+      };
       map.set(key, group);
     }
     group.lines.push(line);
     group.plannedKg += line.plannedKg;
     group.loadedKg += lineLoadedKg(line);
-    if (line.status === 'PENDIENTE') group.pendingLines += 1;
+    if (line.status === 'CARGADO') group.completedLines += 1;
+    else group.pendingLines += 1;
   }
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'es'));
+}
+
+// ---------- Reporte de cierre ----------
+
+export interface DispatchReportCounts {
+  lines: number;
+  sacks: number;
+  kg: number;
+}
+
+export interface DispatchReport {
+  totals: SheetTotals;
+  groups: CustomerGroup[];
+  completed: DispatchReportCounts;
+  pending: DispatchReportCounts;
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Reporte completo de la hoja: todos los renglones agrupados por cliente y
+ * los conteos de completados/pendientes. Se usa en el modal de cierre y en
+ * la tarjeta de una hoja ya despachada.
+ */
+export function buildDispatchReport(lines: DispatchSheetLine[]): DispatchReport {
+  const completed: DispatchReportCounts = { lines: 0, sacks: 0, kg: 0 };
+  const pending: DispatchReportCounts = { lines: 0, sacks: 0, kg: 0 };
+  for (const line of lines) {
+    const bucket = line.status === 'CARGADO' ? completed : pending;
+    bucket.lines += 1;
+    if (line.uom === 'SAC') bucket.sacks += line.plannedQty;
+    bucket.kg += line.plannedKg;
+  }
+  return {
+    totals: computeTotals(lines),
+    groups: groupByCustomer(lines),
+    completed: { ...completed, sacks: round2(completed.sacks), kg: round2(completed.kg) },
+    pending: { ...pending, sacks: round2(pending.sacks), kg: round2(pending.kg) },
+  };
 }
 
 // ---------- Bandeja ----------

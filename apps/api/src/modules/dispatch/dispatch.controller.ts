@@ -136,7 +136,12 @@ export class DispatchController {
     if (!id) throw new UnauthorizedException('Sesión requerida');
     // La plantilla del rol conserva la semántica del despacho (bandeja,
     // reclamo y propiedad); la matriz de permisos gobierna el acceso.
-    return { id, role: request.access?.baseRole ?? 'CONSULTA', code: request.user?.code ?? null };
+    return {
+      id,
+      role: request.access?.baseRole ?? 'CONSULTA',
+      isAdmin: request.access?.isAdmin ?? false,
+      code: request.user?.code ?? null,
+    };
   }
 }
 
@@ -170,6 +175,11 @@ export class NotificationsController {
   private viewer(request: AuthenticatedRequest): DispatchViewer {
     const id = request.user?.sub;
     if (!id) throw new UnauthorizedException('Sesión requerida');
-    return { id, role: request.access?.baseRole ?? 'CONSULTA', code: request.user?.code ?? null };
+    return {
+      id,
+      role: request.access?.baseRole ?? 'CONSULTA',
+      isAdmin: request.access?.isAdmin ?? false,
+      code: request.user?.code ?? null,
+    };
   }
 }

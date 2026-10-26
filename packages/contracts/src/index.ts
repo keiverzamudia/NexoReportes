@@ -971,6 +971,12 @@ export const DISPATCH_LINE_STATUSES = ['PENDIENTE', 'CARGADO', 'PARCIAL', 'FALTA
 export const zDispatchLineStatus = z.enum(DISPATCH_LINE_STATUSES);
 export type DispatchLineStatus = z.infer<typeof zDispatchLineStatus>;
 
+// Marcas que el almacén puede aplicar hoy: todo o nada. Los estados
+// históricos (PARCIAL/FALTANTE/NOVEDAD) se conservan solo para lectura.
+export const DISPATCH_LINE_MARKS = ['PENDIENTE', 'CARGADO'] as const;
+export const zDispatchLineMark = z.enum(DISPATCH_LINE_MARKS);
+export type DispatchLineMark = z.infer<typeof zDispatchLineMark>;
+
 export const DISPATCH_ACK_EVENTS = ['RECIBIDO', 'EN_PROCESO'] as const;
 export const zDispatchAckEvent = z.enum(DISPATCH_ACK_EVENTS);
 export type DispatchAckEvent = z.infer<typeof zDispatchAckEvent>;
@@ -1127,9 +1133,8 @@ export const zDispatchAckInput = z.object({ event: zDispatchAckEvent });
 export type DispatchAckInput = z.infer<typeof zDispatchAckInput>;
 
 export const zDispatchLineInput = z.object({
-  loadedQty: z.coerce.number().min(0).max(1_000_000),
-  status: zDispatchLineStatus,
-  note: z.string().trim().max(240).optional(),
+  // CARGADO = completado (toma la cantidad planificada); PENDIENTE = deshacer.
+  status: zDispatchLineMark,
 });
 export type DispatchLineInput = z.infer<typeof zDispatchLineInput>;
 
