@@ -33,6 +33,7 @@ import { humanAge } from '../lib/dispatch-sheet';
 import { hasPermission } from '../lib/permissions';
 import { Logo, Isotype } from './Logo';
 import { NotificationsBell } from './NotificationsBell';
+import { useLoadingOverlay } from './loading/LoadingOverlayProvider';
 import { cx } from './ui';
 
 export function LoginForm({ onSuccess }: { onSuccess: () => void }) {
@@ -304,6 +305,7 @@ export function linksFor(permissions: string[] | undefined): NavLink[] {
 // (la edad del dato más viejo y cada cuánto se refresca cada dominio).
 export function SyncButton({ enabled = true }: { enabled?: boolean }) {
   const queryClient = useQueryClient();
+  const { runWithOverlay } = useLoadingOverlay();
   const [state, setState] = useState<'idle' | 'running' | 'ok' | 'error'>('idle');
   const [message, setMessage] = useState<string>('');
 
@@ -343,14 +345,19 @@ export function SyncButton({ enabled = true }: { enabled?: boolean }) {
     setState('running');
     setMessage('');
     try {
-      const result = await apiFetch<{ totalRead: number; totalErrors: number; failedDomains: string[]; domains: { status: string }[] }>(
-        '/sync/run-all',
-        { method: 'POST' },
-      );
+      const result = await runWithOverlay('Sincronizando', async () => {
+        const response = await apiFetch<{
+          totalRead: number;
+          totalErrors: number;
+          failedDomains: string[];
+          domains: { status: string }[];
+        }>('/sync/run-all', { method: 'POST' });
+        await queryClient.invalidateQueries();
+        return response;
+      });
       const ok = result.domains.filter((d) => d.status === 'EXITOSA').length;
       setState('ok');
       setMessage(`${ok}/${result.domains.length} dominios · ${result.totalRead} filas leídas`);
-      await queryClient.invalidateQueries();
     } catch (e) {
       setState('error');
       setMessage(e instanceof Error ? e.message : 'Error al sincronizar');

@@ -16,6 +16,7 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { formatNumber, relativeTime } from '../lib/dispatch-sheet';
+import { useLoadingOverlay } from './loading/LoadingOverlayProvider';
 import { Badge, EmptyState, Select, Skeleton, cx } from './ui';
 
 export function PublishDispatchDialog({
@@ -31,6 +32,7 @@ export function PublishDispatchDialog({
   canManageUsers?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const { runWithOverlay } = useLoadingOverlay();
   const closeRef = useRef<HTMLButtonElement>(null);
   const [scenarioId, setScenarioId] = useState('');
   const [title, setTitle] = useState('');
@@ -99,16 +101,19 @@ export function PublishDispatchDialog({
     setBusy(true);
     setError(null);
     try {
-      const sheet = await apiFetch<DispatchSheetDetail>('/dispatch-sheets', {
-        method: 'POST',
-        body: JSON.stringify({
-          scenarioId,
-          title: title.trim(),
-          instructions: instructions.trim() || undefined,
-          assignedToId: assigneeId || null,
-        }),
+      const sheet = await runWithOverlay('Publicando el despacho', async () => {
+        const response = await apiFetch<DispatchSheetDetail>('/dispatch-sheets', {
+          method: 'POST',
+          body: JSON.stringify({
+            scenarioId,
+            title: title.trim(),
+            instructions: instructions.trim() || undefined,
+            assignedToId: assigneeId || null,
+          }),
+        });
+        await queryClient.invalidateQueries({ queryKey: ['dispatch-sheets'] });
+        return response;
       });
-      await queryClient.invalidateQueries({ queryKey: ['dispatch-sheets'] });
       onPublished(sheet);
       onClose();
     } catch (err) {

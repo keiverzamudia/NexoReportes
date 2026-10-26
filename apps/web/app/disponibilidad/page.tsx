@@ -30,7 +30,7 @@ const STATUS_LABEL: Record<AvailabilityStatus, string> = {
   DISPONIBLE: 'Despachable',
   PARCIAL: 'Parcial',
   FALTANTE: 'Faltante',
-  SIN_DEMANDA: 'Sin solicitado',
+  SIN_DEMANDA: 'Sin solicitud',
 };
 
 const STATUS_TONE: Record<AvailabilityStatus, 'success' | 'warning' | 'danger' | 'muted'> = {
@@ -44,7 +44,7 @@ const STATUS_OPTIONS = [
   { value: '', label: 'Estado: Todos' },
   { value: 'FALTANTE', label: 'Faltante (incluye parcial)' },
   { value: 'DISPONIBLE', label: 'Despachable' },
-  { value: 'SIN_DEMANDA', label: 'Sin solicitado' },
+  { value: 'SIN_DEMANDA', label: 'Sin solicitud' },
 ];
 
 // El filtro «Faltante» agrupa los estados FALTANTE y PARCIAL; cada fila

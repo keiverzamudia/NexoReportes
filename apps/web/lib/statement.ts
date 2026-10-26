@@ -1,4 +1,4 @@
-import type { CustomerStatementCurrency, CustomerStatementRow } from '@nexo/contracts';
+import type { Customer, CustomerStatementCurrency, CustomerStatementRow, OrderGroup } from '@nexo/contracts';
 
 // ============================================================
 // Formato puro del estado de cuenta (sin React ni red).
@@ -92,4 +92,23 @@ export function statementUpdatedAt(iso: string | null | undefined): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '—';
   return new Intl.DateTimeFormat('es-VE', { dateStyle: 'short', timeStyle: 'short' }).format(date);
+}
+
+/**
+ * Adapta un grupo de la cartera de Pedidos al cliente que espera el modal de
+ * estado de cuenta. Devuelve null si el grupo no trae código de cliente.
+ */
+export function customerForStatement(
+  group: Pick<OrderGroup, 'code' | 'label' | 'ordersCount'>,
+): Customer | null {
+  if (!group.code) return null;
+  return {
+    id: group.code,
+    externalCode: group.code,
+    name: group.label,
+    customerType: null,
+    vendor: null,
+    isActive: true,
+    ordersCount: group.ordersCount,
+  };
 }

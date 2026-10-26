@@ -18,6 +18,7 @@
 // ============================================================
 
 import type {
+  Customer,
   DeliveryDateApplyResponse,
   OrderDetail,
   OrderGroup,
@@ -35,14 +36,16 @@ import type {
   ScenarioFilters,
 } from '@nexo/contracts';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CalendarRange, ChevronDown, ChevronRight, Download, FileText, History, PackageCheck, Pin, PinOff, Save, Search, ShoppingCart, Trash2, X } from 'lucide-react';
+import { AlertTriangle, CalendarRange, ChevronDown, ChevronRight, Download, FileText, History, PackageCheck, Pin, PinOff, Receipt, Save, Search, ShoppingCart, Trash2, X } from 'lucide-react';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { CustomerStatementDialog } from '../../components/CustomerStatementDialog';
 import { DeliveryDateButton } from '../../components/DeliveryDate';
 import { DeliveryDateDialog } from '../../components/DeliveryDateDialog';
 import type { DeliveryDateTarget, DeliveryDateTargetItem } from '../../components/DeliveryDateDialog';
 import { EChart } from '../../components/EChart';
 import { RestorePreviewDialog, ScenariosDialog } from '../../components/ScenariosDialog';
 import type { RestorePreviewState } from '../../components/ScenariosDialog';
+import { useLoadingOverlay } from '../../components/loading/LoadingOverlayProvider';
 import { AppNav, LoginScreen } from '../../components/shell';
 import { Badge, Card, CoverageBar, DateInput, HeroCard, Kpi, PageHeader, Select, Segmented, Skeleton, Td, TextInput, Th, fmtDate, fmtQty, useGreeting } from '../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
@@ -60,6 +63,7 @@ import {
   toDispatchInputs,
   totalsForEntries,
 } from '../../lib/scenario';
+import { customerForStatement } from '../../lib/statement';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'Estado: Todos' },
@@ -151,6 +155,7 @@ function loadSelection(): string[] {
 export default function PedidosPage() {
   const [tick, setTick] = useState(0);
   const queryClient = useQueryClient();
+  const { runWithOverlay } = useLoadingOverlay();
   const greeting = useGreeting();
   const [by, setBy] = useState<OrderGroupBy>('cliente');
   const [mode, setMode] = useState<DispatchMode>('disponible');
@@ -192,6 +197,8 @@ export default function PedidosPage() {
   // Renglones del borrador que se resuelven cuando llega la cartera.
   const [pendingRefs, setPendingRefs] = useState<ScenarioLineRef[] | null>(null);
   const [restorePreview, setRestorePreview] = useState<RestorePreviewState | null>(null);
+  // Estado de cuenta del cliente: mismo modal que en Clientes, abierto desde la cartera.
+  const [statementCustomer, setStatementCustomer] = useState<Customer | null>(null);
 
   const { data: sessionUser } = useQuery({
     queryKey: ['me'],
@@ -201,6 +208,8 @@ export default function PedidosPage() {
   });
   // La acción «Editar fechas» de la matriz de permisos gobierna el modal.
   const canEditDates = hasPermission(sessionUser?.permissions, 'pedidos', 'update');
+  // El estado de cuenta exige el mismo permiso que en Clientes.
+  const canViewStatement = hasPermission(sessionUser?.permissions, 'clientes', 'read');
 
   useEffect(() => {
     if (!toast) return;
@@ -790,6 +799,10 @@ export default function PedidosPage() {
   }
 
   async function exportPlan() {
+    await runWithOverlay('Preparando el archivo', exportPlanFile);
+  }
+
+  async function exportPlanFile() {
     // Generación bajo demanda: xlsx solo se carga al pulsar «Exportar».
     const XLSX = await import('xlsx');
 
@@ -1392,6 +1405,11 @@ export default function PedidosPage() {
                         onOpenOrder={(id, number) => setSelectedOrder({ id, number })}
                         onEditGroupDate={() => openDateEditor(group.lines, 'cliente', 'Fecha del cliente')}
                         onEditLineDate={(line) => openDateEditor([line], 'renglon', 'Fecha del producto')}
+                        onOpenStatement={
+                          canViewStatement && by === 'cliente' && group.code
+                            ? () => setStatementCustomer(customerForStatement(group))
+                            : undefined
+                        }
                       />
                     );
                   })}
@@ -1630,6 +1648,12 @@ export default function PedidosPage() {
         onSaved={handleDateSaved}
       />
 
+      <CustomerStatementDialog
+        open={statementCustomer !== null}
+        customer={statementCustomer}
+        onClose={() => setStatementCustomer(null)}
+      />
+
       {toast && (
         <div
           role="status"
@@ -1663,6 +1687,7 @@ function GroupRow({
   onOpenOrder,
   onEditGroupDate,
   onEditLineDate,
+  onOpenStatement,
 }: {
   group: OrderGroup;
   by: OrderGroupBy;
@@ -1685,6 +1710,8 @@ function GroupRow({
   onOpenOrder: (orderId: string, orderNumber: string) => void;
   onEditGroupDate: () => void;
   onEditLineDate: (line: OrderGroupLine) => void;
+  /** Abre el estado de cuenta del cliente (solo en la vista por cliente). */
+  onOpenStatement?: () => void;
 }) {
   const coveragePct = Math.round(coverage * 100);
   const tone = coveragePct >= 100 ? 'success' : coveragePct > 0 ? 'warning' : 'danger';
@@ -1766,6 +1793,17 @@ function GroupRow({
                 </span>
               )}
               {!selectable && <span className="font-bold uppercase text-critical">sin existencia</span>}
+              {onOpenStatement && (
+                <button
+                  type="button"
+                  onClick={onOpenStatement}
+                  title={`Ver estado de cuenta de ${group.label}`}
+                  className="inline-flex items-center gap-space-2xs rounded-pill border border-outline-variant/40 px-2 py-0.5 font-semibold text-label-sm text-primary-container transition-colors hover:bg-surface-container-low"
+                >
+                  <Receipt aria-hidden className="size-3.5" />
+                  Cuenta
+                </button>
+              )}
             </div>
           </div>
         </Td>

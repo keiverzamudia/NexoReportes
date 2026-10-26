@@ -90,8 +90,7 @@ export function UserPermissionsDialog({
   });
 
   const reset = useMutation<UserPermissionsResponse, Error, void>({
-    mutationFn: () =>
-      apiFetch<UserPermissionsResponse>(`/users/${user.id}/permissions`, { method: 'DELETE' }),
+    mutationFn: () => apiFetch<UserPermissionsResponse>(`/users/${user.id}/permissions`, { method: 'DELETE' }),
     onSuccess: () => {
       setOverrides({});
       setError(null);
