@@ -3,10 +3,12 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
   CustomerQuery,
   CustomerStatementQuery,
+  CustomerStatementSummaryQuery,
   OrderGroupQuery,
   OrderQuery,
   zCustomerQuery,
   zCustomerStatementQuery,
+  zCustomerStatementSummaryQuery,
   zDeliveryDateRestoreInput,
   zDeliveryDateSetInput,
   zOrderGroupQuery,
@@ -37,6 +39,15 @@ export class SalesController {
   @RequireAnyPermission('clientes:read', 'pedidos:read')
   listCustomers(@Query(new ZodValidationPipe(zCustomerQuery)) query: CustomerQuery) {
     return this.sales.listCustomers(query);
+  }
+
+  // Resumen de cartera de varios clientes (tabla «Clientes en cartera» de Pedidos).
+  @Get('customers/statements')
+  @RequirePermission('clientes:read')
+  customerStatementsSummary(
+    @Query(new ZodValidationPipe(zCustomerStatementSummaryQuery)) query: CustomerStatementSummaryQuery,
+  ) {
+    return this.customerStatements.summaries(query.codes, { moneda: query.moneda });
   }
 
   // Estado de cuenta del cliente: cartera en vivo desde Profit (solo lectura).

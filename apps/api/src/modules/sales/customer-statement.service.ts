@@ -4,6 +4,8 @@ import {
   CustomerStatementCurrency,
   CustomerStatementQuery,
   CustomerStatementRow,
+  CustomerStatementSummary,
+  CustomerStatementSummaryResponse,
   CustomerStatementTotals,
 } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
@@ -29,6 +31,10 @@ import { ProfitAdapter, PROFIT_ADAPTER } from '../sync/profit.adapter';
 const MAX_DOCUMENTS = 1000;
 const QUERY_LIMIT = MAX_DOCUMENTS + 1;
 
+// Cartera de Pedidos: una sola consulta agregada para toda la lista. El tope
+// evita que un cliente con cientos de cuentas genere un IN gigantesco.
+const MAX_SUMMARY_CLIENTS = 200;
+
 // Documentos que Profit considera débito; el resto (ADEL, N/CR, …) resta.
 const DEBIT_DOCS = new Set(['FACT', 'N/DB', 'AJPM', 'GIRO']);
 
@@ -39,6 +45,7 @@ const PROFIT_STATEMENT_SQL = `
 SELECT TOP (${QUERY_LIMIT})
   RTRIM(cc.co_cli) AS co_cli,
   RTRIM(c.cli_des) AS cli_des,
+  c.mont_cre AS limite_credito,
   RTRIM(cc.tipo_doc) AS tipo_doc,
   cc.nro_doc,
   cc.fec_emis,
@@ -62,6 +69,56 @@ function normalizeCode(value: string): string {
     throw new BadRequestException('Código de cliente inválido');
   }
   return code;
+}
+
+// Lista de códigos para la cartera agrupada: valida cada uno con la misma
+// regla del estado de cuenta y descarta duplicados.
+function normalizeCodes(value: string): string[] {
+  const codes = [
+    ...new Set(
+      String(value ?? '')
+        .split(',')
+        .map((code) => code.trim())
+        .filter(Boolean),
+    ),
+  ].map(normalizeCode);
+  if (codes.length === 0) throw new BadRequestException('Indica al menos un cliente');
+  if (codes.length > MAX_SUMMARY_CLIENTS) {
+    throw new BadRequestException(`Máximo ${MAX_SUMMARY_CLIENTS} clientes por consulta`);
+  }
+  return codes;
+}
+
+// Agregado de cartera por cliente. `clientes` va a la izquierda para que un
+// cliente sin documentos también devuelva su límite de crédito (saldo 0).
+// Los códigos viajan como parámetros (@co_cli_0, @co_cli_1, …), nunca
+// interpolados: solo los marcadores los genera la app.
+const SUMMARY_AMOUNT =
+  "CASE WHEN @moneda = 'USD' THEN ROUND(cc.saldo / NULLIF(cc.tasa, 0), 2) ELSE cc.saldo END";
+const SUMMARY_IS_DEBIT = "RTRIM(cc.tipo_doc) IN ('FACT', 'N/DB', 'AJPM', 'GIRO')";
+const SUMMARY_IS_OVERDUE = `${SUMMARY_IS_DEBIT} AND cc.fec_venc IS NOT NULL AND DATEDIFF(DAY, cc.fec_venc, GETDATE()) > 0`;
+
+function summarySql(codes: string[]): string {
+  const placeholders = codes.map((_, index) => `@co_cli_${index}`).join(', ');
+  return `
+SELECT /* cartera_resumen */
+  RTRIM(c.co_cli) AS co_cli,
+  RTRIM(MAX(c.cli_des)) AS cli_des,
+  MAX(c.mont_cre) AS limite_credito,
+  SUM(CASE WHEN ${SUMMARY_IS_DEBIT} THEN 1 ELSE -1 END * ISNULL(${SUMMARY_AMOUNT}, 0)) AS saldo,
+  SUM(CASE WHEN ${SUMMARY_IS_OVERDUE} THEN ISNULL(${SUMMARY_AMOUNT}, 0) ELSE 0 END) AS saldo_vencido,
+  SUM(CASE WHEN ${SUMMARY_IS_DEBIT} THEN 0 ELSE ISNULL(${SUMMARY_AMOUNT}, 0) END) AS credito,
+  COUNT(cc.nro_doc) AS documentos,
+  SUM(CASE WHEN ${SUMMARY_IS_OVERDUE} THEN 1 ELSE 0 END) AS vencidos,
+  MAX(SYSUTCDATETIME()) AS as_of
+FROM dbo.clientes AS c
+LEFT JOIN dbo.docum_cc AS cc
+  ON cc.co_cli = c.co_cli
+  AND cc.anulado = 0
+  AND cc.saldo > 0
+WHERE RTRIM(c.co_cli) IN (${placeholders})
+GROUP BY RTRIM(c.co_cli)
+`;
 }
 
 function text(value: unknown): string {
@@ -100,6 +157,59 @@ export class CustomerStatementService {
     private readonly prisma: PrismaService,
     @Inject(PROFIT_ADAPTER) private readonly profit: ProfitAdapter,
   ) {}
+
+  // Resumen de cartera para la tabla de Pedidos: una sola consulta agregada
+  // para todos los clientes visibles (saldo, vencido y límite de crédito).
+  async summaries(
+    codesRaw: string,
+    query: { moneda?: CustomerStatementCurrency } = {},
+  ): Promise<CustomerStatementSummaryResponse> {
+    const codes = normalizeCodes(codesRaw);
+    const currency: CustomerStatementCurrency = query.moneda ?? 'USD';
+
+    const params: Record<string, unknown> = { moneda: currency };
+    codes.forEach((code, index) => {
+      params[`co_cli_${index}`] = code;
+    });
+
+    let rawRows: Record<string, unknown>[];
+    try {
+      rawRows = await this.profit.selectQuery(summarySql(codes), codes.length + 1, params);
+    } catch (error) {
+      this.logger.error(
+        `No se pudo consultar la cartera agrupada en Profit: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      throw new ServiceUnavailableException('No se pudo consultar la cartera de los clientes en Profit.');
+    }
+
+    const items: CustomerStatementSummary[] = rawRows.map((raw) => {
+      const code = text(raw.co_cli).toUpperCase();
+      return {
+        code,
+        name: text(raw.cli_des) || code,
+        saldo: round2(numberOrNull(raw.saldo) ?? 0),
+        saldoVencido: round2(numberOrNull(raw.saldo_vencido) ?? 0),
+        credito: round2(numberOrNull(raw.credito) ?? 0),
+        limiteCredito: numberOrNull(raw.limite_credito),
+        documentos: integerOrNull(raw.documentos) ?? 0,
+        vencidos: integerOrNull(raw.vencidos) ?? 0,
+      };
+    });
+
+    // Conserva el orden en que la cartera pidió los clientes (el mapa del
+    // frontend no depende de esto, pero la respuesta queda determinista).
+    const order = new Map(codes.map((code, index) => [code, index]));
+    items.sort((a, b) => (order.get(a.code) ?? 9999) - (order.get(b.code) ?? 9999));
+
+    return {
+      items,
+      asOf: isoDate(rawRows[0]?.as_of) ?? new Date().toISOString(),
+      moneda: currency,
+      source: this.profit.dialect === 'mssql' ? 'profit' : 'fixtures',
+    };
+  }
 
   async statement(codeRaw: string, query: CustomerStatementQuery = {}): Promise<CustomerStatement> {
     const code = normalizeCode(codeRaw);
@@ -205,6 +315,7 @@ export class CustomerStatementService {
         name: liveName || customer?.name?.trim() || code,
         customerType: customer?.customerType ?? null,
         vendor: customer?.vendor ?? null,
+        limiteCredito: numberOrNull(rawRows[0]?.limite_credito),
       },
       rows,
       totals,

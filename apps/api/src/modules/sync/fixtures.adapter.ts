@@ -70,6 +70,12 @@ const DOCUMENTOS_PENDIENTES: Array<{
   { co_cli: '505835220', cli_des: 'AGRO INVERSIONES MP, C.A', tipo_doc: 'ADEL', nro_doc: 57001, fec_emis: '2026-10-15T00:00:00.000Z', fec_venc: '2026-10-15T00:00:00.000Z', dias_venc: 7, monto_us: 3000, saldo_us: 3000, signo: -1 },
 ];
 
+// Límite de crédito de desarrollo (`dbo.clientes.mont_cre`).
+const LIMITES_CREDITO: Record<string, number> = {
+  '153064128': 25000,
+  '505835220': 12000,
+};
+
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -88,6 +94,7 @@ function statementRows(params: Record<string, unknown> = {}, limit = 1000): Reco
       return {
         co_cli: row.co_cli,
         cli_des: row.cli_des,
+        limite_credito: LIMITES_CREDITO[row.co_cli] ?? null,
         tipo_doc: row.tipo_doc,
         nro_doc: row.nro_doc,
         fec_emis: row.fec_emis,
@@ -99,6 +106,35 @@ function statementRows(params: Record<string, unknown> = {}, limit = 1000): Reco
         as_of: FIXTURE_STATEMENT_AS_OF,
       };
     });
+}
+
+// Equivalente al agregado por cliente de la cartera de Pedidos. Devuelve una
+// fila por código solicitado, aunque no tenga documentos (LEFT JOIN).
+function statementSummaries(params: Record<string, unknown> = {}, limit = 1000): Record<string, unknown>[] {
+  const codes = Object.keys(params)
+    .filter((key) => key.startsWith('co_cli_'))
+    .map((key) => String(params[key] ?? '').trim().toUpperCase())
+    .filter(Boolean);
+  const currency = String(params.moneda ?? 'USD').toUpperCase() === 'BS' ? 'BS' : 'USD';
+  const factor = currency === 'BS' ? FIXTURE_BS_RATE : 1;
+
+  return [...new Set(codes)].slice(0, limit).map((code) => {
+    const docs = DOCUMENTOS_PENDIENTES.filter((row) => row.co_cli.toUpperCase() === code && row.saldo_us > 0);
+    const saldo = docs.reduce((acc, row) => acc + row.saldo_us * factor * row.signo, 0);
+    const vencidos = docs.filter((row) => row.signo > 0 && row.dias_venc > 0);
+    const credito = docs.filter((row) => row.signo < 0).reduce((acc, row) => acc + row.saldo_us * factor, 0);
+    return {
+      co_cli: code,
+      cli_des: docs[0]?.cli_des ?? code,
+      limite_credito: LIMITES_CREDITO[code] ?? null,
+      saldo: round2(saldo),
+      saldo_vencido: round2(vencidos.reduce((acc, row) => acc + row.saldo_us * factor, 0)),
+      credito: round2(credito),
+      documentos: docs.length,
+      vencidos: vencidos.length,
+      as_of: FIXTURE_STATEMENT_AS_OF,
+    };
+  });
 }
 
 // Forecast mensual de desarrollo (equivalente a `dbo.xart_fore.kg_mes`).
@@ -184,6 +220,7 @@ export class FixturesProfitAdapter implements ProfitAdapter {
   ): Promise<Record<string, unknown>[]> {
     const lower = sqlText.toLowerCase();
     if (lower.includes('xart_fore')) return FORECAST.slice(0, limit);
+    if (lower.includes('cartera_resumen')) return statementSummaries(params, limit);
     if (lower.includes('docum_cc') || lower.includes('documentos_pendientes')) {
       return statementRows(params, limit);
     }

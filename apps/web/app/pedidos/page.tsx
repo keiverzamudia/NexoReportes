@@ -19,6 +19,8 @@
 
 import type {
   Customer,
+  CustomerStatementSummary,
+  CustomerStatementSummaryResponse,
   DeliveryDateApplyResponse,
   OrderDetail,
   OrderGroup,
@@ -63,7 +65,7 @@ import {
   toDispatchInputs,
   totalsForEntries,
 } from '../../lib/scenario';
-import { customerForStatement } from '../../lib/statement';
+import { customerForStatement, formatStatementMoney } from '../../lib/statement';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'Estado: Todos' },
@@ -245,6 +247,40 @@ export default function PedidosPage() {
     queryFn: () => apiFetch<OrderGroupedResponse>(`/orders/grouped?${params.toString()}`),
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
+
+  // Cartera resumida (saldo, vencido y límite) de los clientes visibles: una
+  // sola consulta para toda la tabla, en la misma moneda que el estado de cuenta.
+  const portfolioCodes = useMemo(
+    () =>
+      by === 'cliente'
+        ? [
+            ...new Set(
+              (data?.groups ?? [])
+                .map((group) => group.code)
+                .filter((code): code is string => Boolean(code)),
+            ),
+          ]
+        : [],
+    [by, data],
+  );
+
+  const { data: cartera, isFetching: carteraFetching } = useQuery<CustomerStatementSummaryResponse>({
+    queryKey: ['customer-statements', portfolioCodes.join(','), 'USD'],
+    queryFn: () =>
+      apiFetch<CustomerStatementSummaryResponse>(
+        `/customers/statements?codes=${encodeURIComponent(portfolioCodes.join(','))}&moneda=USD`,
+      ),
+    enabled: canViewStatement && portfolioCodes.length > 0,
+    staleTime: 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const carteraByCode = useMemo(() => {
+    const map = new Map<string, CustomerStatementSummary>();
+    for (const item of cartera?.items ?? []) map.set(item.code, item);
+    return map;
+  }, [cartera]);
 
   // Detalle del pedido abierto en el modal (misma fuente que /pedidos/[id]).
   const {
@@ -1374,7 +1410,7 @@ export default function PedidosPage() {
                 <tbody className="divide-y divide-outline-variant/20">
                   {orderedGroups.length === 0 && (
                     <tr>
-                      <Td align="center" className="py-space-xl text-on-surface-variant">
+                      <Td align="center" colSpan={7} className="py-space-xl text-on-surface-variant">
                         {hasFilters ? 'Sin pedidos para los filtros aplicados.' : 'No hay pedidos sincronizados.'}
                       </Td>
                     </tr>
@@ -1389,6 +1425,9 @@ export default function PedidosPage() {
                         key={group.key}
                         group={group}
                         by={by}
+                        showCartera={by === 'cliente' && canViewStatement}
+                        cartera={group.code ? carteraByCode.get(group.code) : undefined}
+                        carteraLoading={carteraFetching}
                         isOpen={isOpen}
                         allSelected={allSelected}
                         selectable={candidates.length > 0}
@@ -1668,9 +1707,59 @@ export default function PedidosPage() {
 }
 
 // ---------- Fila de grupo + panel desplegable ----------
+// Resumen de cartera dentro de la celda del cliente: saldo (verde si está a
+// favor, rojo si hay deuda), vencido y límite de crédito (`clientes.mont_cre`).
+function PortfolioBalance({ summary, loading }: { summary?: CustomerStatementSummary; loading: boolean }) {
+  if (!summary) {
+    return (
+      <div
+        className="ml-7 mt-0.5 text-label-sm text-outline"
+        title={loading ? 'Consultando cartera en Profit' : 'Sin datos de cartera en Profit'}
+      >
+        {loading ? 'Consultando cartera…' : 'Cartera sin datos'}
+      </div>
+    );
+  }
+
+  const saldoTone = summary.saldo > 0 ? 'text-error' : summary.saldo < 0 ? 'text-secondary' : 'text-outline';
+  const saldoHint =
+    summary.saldo > 0 ? 'Saldo pendiente de cobro' : summary.saldo < 0 ? 'Saldo a favor' : 'Cliente al día';
+  const vencidoHint = summary.saldoVencido > 0 ? 'Saldo vencido' : 'Sin documentos vencidos';
+  const limiteHint = summary.limiteCredito === null ? 'Sin límite en Profit' : 'Límite de crédito (mont_cre)';
+
+  return (
+    <div
+      className="ml-7 mt-0.5 flex flex-wrap items-center gap-x-space-xs gap-y-0.5 text-label-sm leading-tight"
+      title={`${saldoHint} · ${vencidoHint} · ${limiteHint}`}
+    >
+      <span className="uppercase tracking-wider text-outline">Saldo</span>
+      <span className={`whitespace-nowrap font-bold tabular-nums ${saldoTone}`}>
+        {formatStatementMoney(summary.saldo, 'USD')}
+      </span>
+      <span aria-hidden className="text-outline">·</span>
+      <span className="uppercase tracking-wider text-outline">Venc.</span>
+      <span
+        className={`whitespace-nowrap tabular-nums ${
+          summary.saldoVencido > 0 ? 'font-semibold text-error' : 'text-outline'
+        }`}
+      >
+        {formatStatementMoney(summary.saldoVencido, 'USD')}
+      </span>
+      <span aria-hidden className="text-outline">·</span>
+      <span className="uppercase tracking-wider text-outline">Límite</span>
+      <span className="whitespace-nowrap tabular-nums font-semibold text-on-surface-variant">
+        {summary.limiteCredito === null ? '—' : formatStatementMoney(summary.limiteCredito, 'USD')}
+      </span>
+    </div>
+  );
+}
+
 function GroupRow({
   group,
   by,
+  showCartera,
+  cartera,
+  carteraLoading,
   isOpen,
   allSelected,
   selectable,
@@ -1691,6 +1780,11 @@ function GroupRow({
 }: {
   group: OrderGroup;
   by: OrderGroupBy;
+  /** El resumen de cartera solo aplica a la vista por cliente y con permiso. */
+  showCartera: boolean;
+  /** Resumen de cartera del cliente (saldo/vencido/límite), si ya llegó. */
+  cartera?: CustomerStatementSummary;
+  carteraLoading: boolean;
   isOpen: boolean;
   allSelected: boolean;
   /** Hay al menos un renglón despachable (y el modo lo permite). */
@@ -1805,6 +1899,7 @@ function GroupRow({
                 </button>
               )}
             </div>
+            {showCartera && <PortfolioBalance summary={cartera} loading={carteraLoading} />}
           </div>
         </Td>
         <Td>

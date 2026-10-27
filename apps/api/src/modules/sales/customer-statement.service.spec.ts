@@ -106,7 +106,19 @@ describe('CustomerStatementService', () => {
       name: 'JOSEF HENDRIX HERNANDEZ REYES',
       customerType: 'L1 EXCLUSIVOS',
       vendor: 'MEIDY CRISTINA ARIAS VIDAL',
+      limiteCredito: null,
     });
+  });
+
+  it('incluye el límite de crédito de dbo.clientes (mont_cre)', async () => {
+    const service = new CustomerStatementService(
+      createFakePrisma(),
+      adapterWith([rawRow({ limite_credito: 25000 })]),
+    );
+
+    const result = await service.statement('153064128');
+
+    expect(result.customer.limiteCredito).toBe(25000);
   });
 
   it('envía los filtros al adaptador como parámetros (saldados + moneda)', async () => {
@@ -169,6 +181,64 @@ describe('CustomerStatementService', () => {
     expect(result.totals.documentos).toBe(1000);
   });
 
+  it('resume la cartera de varios clientes en una sola consulta', async () => {
+    const captured: Array<Record<string, unknown> | undefined> = [];
+    const adapter = {
+      dialect: 'fixtures',
+      selectQuery: async (
+        _sql: string,
+        _limit: number,
+        params?: Record<string, unknown>,
+      ) => {
+        captured.push(params);
+        return [
+          {
+            co_cli: '153064128',
+            cli_des: 'JOSEF HENDRIX HERNANDEZ REYES',
+            limite_credito: 25000,
+            saldo: -812.43,
+            saldo_vencido: 0,
+            credito: 812.43,
+            documentos: 1,
+            vencidos: 0,
+            as_of: new Date('2026-10-22T10:00:00.000Z'),
+          },
+        ];
+      },
+    } as unknown as ProfitAdapter;
+    const service = new CustomerStatementService(createFakePrisma(), adapter);
+
+    const result = await service.summaries('153064128, 505835220,153064128', { moneda: 'USD' });
+
+    // Deduplica y valida antes de consultar; los códigos van parametrizados.
+    expect(captured[0]).toEqual({
+      moneda: 'USD',
+      co_cli_0: '153064128',
+      co_cli_1: '505835220',
+    });
+    expect(result.items).toEqual([
+      {
+        code: '153064128',
+        name: 'JOSEF HENDRIX HERNANDEZ REYES',
+        saldo: -812.43,
+        saldoVencido: 0,
+        credito: 812.43,
+        limiteCredito: 25000,
+        documentos: 1,
+        vencidos: 0,
+      },
+    ]);
+    expect(result.asOf).toBe('2026-10-22T10:00:00.000Z');
+    expect(result.source).toBe('fixtures');
+  });
+
+  it('rechaza listas de clientes inválidas o demasiado grandes', async () => {
+    const service = new CustomerStatementService(createFakePrisma(), adapterWith([]));
+
+    await expect(service.summaries('153064128,ABC DEF')).rejects.toThrow('Código de cliente inválido');
+    await expect(service.summaries(',,,')).rejects.toThrow('Indica al menos un cliente');
+  });
+
   it('funciona con el adaptador de fixtures y reproduce el neto de la captura', async () => {
     const service = new CustomerStatementService(createFakePrisma(), new FixturesProfitAdapter());
 
@@ -180,5 +250,24 @@ describe('CustomerStatementService', () => {
     expect(result.totals.credito).toBe(21193.21);
     expect(result.totals.saldoVencido).toBe(21193.21);
     expect(result.totals.vencidos).toBe(3);
+  });
+
+  it('el resumen de fixtures coincide con el estado de cuenta y trae mont_cre', async () => {
+    const service = new CustomerStatementService(createFakePrisma(), new FixturesProfitAdapter());
+
+    const summary = await service.summaries('153064128,505835220');
+    const josef = summary.items.find((item) => item.code === '153064128');
+
+    expect(summary.items).toHaveLength(2);
+    expect(josef).toMatchObject({
+      saldo: 0,
+      saldoVencido: 21193.21,
+      credito: 21193.21,
+      limiteCredito: 25000,
+      documentos: 5,
+      vencidos: 3,
+    });
+    expect(summary.source).toBe('fixtures');
+    expect(summary.asOf).toBe('2026-10-22T10:00:00.000Z');
   });
 });
