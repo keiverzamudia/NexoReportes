@@ -205,7 +205,7 @@ vivo y de solo lectura**; no se sincroniza ni se escribe nada en Profit.
 | Tabla / vista | Columnas usadas | Uso |
 |---|---|---|
 | `dbo.docum_cc` | `co_cli`, `tipo_doc`, `nro_doc`, `fec_emis`, `fec_venc`, `monto_net`, `saldo`, `tasa`, `anulado` | Documentos de cuentas por cobrar; origen de la fecha de vencimiento y de los montos. |
-| `dbo.clientes` | `co_cli`, `cli_des` | Nombre del cliente. |
+| `dbo.clientes` | `co_cli`, `cli_des`, `mont_cre` | Nombre y límite de crédito del cliente. |
 | `dbo.Documentos_Pendientes` | — | **Referencia** de la conversión a USD (vista sobre `docum_cc`). No se consulta directamente porque no expone `fec_venc`. |
 
 Definición real de la vista de referencia:
@@ -227,6 +227,7 @@ Consulta del API (parámetros `@co_cli`, `@incluir_saldados`, `@moneda`):
 ```sql
 SELECT TOP (1001)
   RTRIM(cc.co_cli) AS co_cli, RTRIM(c.cli_des) AS cli_des,
+  c.mont_cre AS limite_credito,
   RTRIM(cc.tipo_doc) AS tipo_doc, cc.nro_doc, cc.fec_emis, cc.fec_venc,
   DATEDIFF(DAY, cc.fec_venc, GETDATE()) AS dias_venc,
   CASE WHEN @moneda = 'USD' THEN ROUND(cc.monto_net / NULLIF(cc.tasa, 0), 2)
@@ -261,9 +262,19 @@ Reglas y decisiones:
   el navegador muestre la hora local correcta.
 - Se limita a **1000 documentos** (se consultan 1001 para detectar el
   recorte); el modal avisa cuando la lista viene truncada.
+- **Límite de crédito**: se lee `dbo.clientes.mont_cre` en la misma consulta
+  del estado de cuenta (`limite_credito`). El modal lo muestra junto al saldo y
+  calcula el disponible como `mont_cre − saldo` (un saldo a favor lo aumenta).
+  No se usa `clientes.saldo`.
 - El código del cliente viaja como parámetro `@co_cli`; nunca se interpola
   SQL del usuario. El adaptador solo acepta un `SELECT` de lectura.
 
-Endpoint: `GET /api/customers/:code/statement?incluirSaldados=&moneda=USD|BS`
-(permiso `clientes:read`).
+Endpoints (permiso `clientes:read`):
+
+- `GET /api/customers/:code/statement?incluirSaldados=&moneda=USD|BS` — detalle.
+- `GET /api/customers/statements?codes=A,B,C&moneda=USD` — resumen para la
+  cartera de Pedidos (saldo, vencido, créditos y `mont_cre` por cliente). Usa
+  un solo agregado con `IN (@co_cli_0, @co_cli_1, …)` y `LEFT JOIN` desde
+  `dbo.clientes` para devolver también a los clientes sin documentos. Tope:
+  200 clientes por consulta.
 

@@ -540,6 +540,9 @@ export const zCustomerStatementCustomer = z.object({
   name: z.string(),
   customerType: z.string().nullable(),
   vendor: z.string().nullable(),
+  // Límite de crédito del cliente (`dbo.clientes.mont_cre`). null = la fuente
+  // no lo expone o el cliente no tiene límite configurado.
+  limiteCredito: z.number().nullable(),
 });
 export type CustomerStatementCustomer = z.infer<typeof zCustomerStatementCustomer>;
 
@@ -558,6 +561,40 @@ export const zCustomerStatement = z.object({
   source: zCustomerStatementSource,
 });
 export type CustomerStatement = z.infer<typeof zCustomerStatement>;
+
+// Resumen de cartera para varias cuentas (una fila por cliente). Lo usa la
+// cartera de Pedidos para mostrar saldo y vencido sin abrir cada estado de
+// cuenta. Misma fuente y mismas reglas de signo que `CustomerStatement`.
+export const zCustomerStatementSummaryQuery = z.object({
+  // Códigos separados por coma; el API los valida y deduplica.
+  codes: z.string().trim().min(1).max(2500),
+  moneda: zCustomerStatementCurrency.optional(),
+});
+export type CustomerStatementSummaryQuery = z.infer<typeof zCustomerStatementSummaryQuery>;
+
+export const zCustomerStatementSummary = z.object({
+  code: z.string(),
+  name: z.string(),
+  // Neto con signo: negativo = saldo a favor, positivo = deuda.
+  saldo: z.number(),
+  // Solo documentos con saldo positivo y días vencidos > 0.
+  saldoVencido: z.number(),
+  // Valor absoluto de los créditos listados.
+  credito: z.number(),
+  // `dbo.clientes.mont_cre`. null = sin dato en Profit.
+  limiteCredito: z.number().nullable(),
+  documentos: z.number().int(),
+  vencidos: z.number().int(),
+});
+export type CustomerStatementSummary = z.infer<typeof zCustomerStatementSummary>;
+
+export const zCustomerStatementSummaryResponse = z.object({
+  items: z.array(zCustomerStatementSummary),
+  asOf: z.string(),
+  moneda: zCustomerStatementCurrency,
+  source: zCustomerStatementSource,
+});
+export type CustomerStatementSummaryResponse = z.infer<typeof zCustomerStatementSummaryResponse>;
 
 export const ORDER_STATUSES = ['ABIERTO', 'CERRADO', 'CANCELADO', 'DESCONOCIDO'] as const;
 export const zOrderStatus = z.enum(ORDER_STATUSES);

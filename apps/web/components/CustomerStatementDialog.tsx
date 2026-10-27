@@ -25,6 +25,7 @@ import {
   CalendarClock,
   CheckCircle2,
   CircleDollarSign,
+  CreditCard,
   Inbox,
   ListChecks,
   Receipt,
@@ -101,6 +102,10 @@ export function CustomerStatementDialog({
   const rows = data?.rows ?? [];
   const totals = data?.totals;
   const currency = data?.moneda ?? moneda;
+  const limiteCredito = data?.customer.limiteCredito ?? null;
+  // Crédito disponible = límite del cliente (`mont_cre`) − saldo pendiente.
+  // Un saldo a favor (negativo) aumenta el disponible.
+  const creditoDisponible = limiteCredito !== null && totals ? limiteCredito - totals.saldo : null;
   const displayName = data?.customer.name ?? customer?.name ?? '—';
   const displayCode = data?.customer.code ?? customer?.externalCode ?? '—';
   const displayMeta = [data?.customer.customerType ?? customer?.customerType, data?.customer.vendor ?? customer?.vendor]
@@ -245,7 +250,7 @@ export function CustomerStatementDialog({
         <div className="flex-1 overflow-y-auto p-space-md sm:p-space-lg">
           <div className="flex flex-col gap-space-md">
             {data && totals ? (
-              <section aria-label="Resumen de la cartera" className="grid gap-space-sm sm:grid-cols-3">
+              <section aria-label="Resumen de la cartera" className="grid gap-space-sm sm:grid-cols-2 xl:grid-cols-4">
                 <div className="flex flex-col gap-space-2xs rounded-xl bg-primary-container p-space-md text-on-primary shadow-soft">
                   <div className="flex items-center justify-between gap-space-sm">
                     <span className="text-label-sm font-semibold uppercase tracking-[0.14em] text-on-primary/70">
@@ -283,9 +288,40 @@ export function CustomerStatementDialog({
                     {totals.proximoVencimiento ? `Próximo: ${formatStatementDate(totals.proximoVencimiento)}` : 'Sin vencimientos próximos'}
                   </p>
                 </div>
+
+                <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low/60 p-space-md">
+                  <div className="flex items-center justify-between gap-space-sm">
+                    <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">
+                      Límite de crédito
+                    </span>
+                    <CreditCard
+                      aria-hidden
+                      className={cx(
+                        'size-4',
+                        creditoDisponible !== null && creditoDisponible < 0 ? 'text-error' : 'text-primary-container',
+                      )}
+                    />
+                  </div>
+                  <p className="mt-space-2xs text-title-md font-bold tabular-nums text-primary">
+                    {limiteCredito === null ? '—' : formatStatementMoney(limiteCredito, currency)}
+                  </p>
+                  <p
+                    className={cx(
+                      'text-label-sm normal-case',
+                      creditoDisponible !== null && creditoDisponible < 0
+                        ? 'font-semibold text-error'
+                        : 'text-on-surface-variant',
+                    )}
+                  >
+                    {creditoDisponible === null
+                      ? 'Sin dato en Profit'
+                      : `Disponible: ${formatStatementMoney(creditoDisponible, currency)}`}
+                  </p>
+                </div>
               </section>
             ) : !error ? (
-              <div className="grid gap-space-sm sm:grid-cols-3" aria-hidden>
+              <div className="grid gap-space-sm sm:grid-cols-2 xl:grid-cols-4" aria-hidden>
+                <Skeleton className="h-28 rounded-xl" />
                 <Skeleton className="h-28 rounded-xl" />
                 <Skeleton className="h-28 rounded-xl" />
                 <Skeleton className="h-28 rounded-xl" />
