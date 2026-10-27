@@ -177,8 +177,6 @@ export default function PedidosPage() {
   // Filtros
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<OrderStatus | ''>('');
-  const [customerType, setCustomerType] = useState('');
-  const [vendor, setVendor] = useState('');
   const [authorized, setAuthorized] = useState<'SI' | 'NO' | ''>('');
   const [emisionDesde, setEmisionDesde] = useState('');
   const [emisionHasta, setEmisionHasta] = useState('');
@@ -243,7 +241,7 @@ export default function PedidosPage() {
   const params = new URLSearchParams(scenarioQueryString(currentRecipe()));
 
   const { data, isLoading, error } = useQuery<OrderGroupedResponse>({
-    queryKey: ['orders-grouped', tick, by, q, status, customerType, vendor, authorized, customerCode, emisionDesde, emisionHasta, entregaDesde, entregaHasta],
+    queryKey: ['orders-grouped', tick, by, q, status, authorized, customerCode, emisionDesde, emisionHasta, entregaDesde, entregaHasta],
     queryFn: () => apiFetch<OrderGroupedResponse>(`/orders/grouped?${params.toString()}`),
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
@@ -369,7 +367,7 @@ export default function PedidosPage() {
     }, 900);
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, data, by, mode, sort, q, status, customerType, vendor, authorized, customerCode, emisionDesde, emisionHasta, entregaDesde, entregaHasta, selection]);
+  }, [hydrated, data, by, mode, sort, q, status, authorized, customerCode, emisionDesde, emisionHasta, entregaDesde, entregaHasta, selection]);
 
   // Información agregada por producto (existencia, solicitado, kg por unidad).
   const productInfo = useMemo(() => {
@@ -680,7 +678,7 @@ export default function PedidosPage() {
     return <LoginScreen onSuccess={() => setTick((t) => t + 1)} />;
   }
 
-  const hasFilters = Boolean(q || status || customerType || vendor || authorized || emisionDesde || emisionHasta || entregaDesde || entregaHasta || customerCode);
+  const hasFilters = Boolean(q || status || authorized || emisionDesde || emisionHasta || entregaDesde || entregaHasta || customerCode);
   const savedCount = scenarioList?.items.length ?? 0;
   // El % acompaña a los kg de las tarjetas (mismo universo global).
   const totalDemandKg = liveSummary.assignedKg + liveSummary.missingKg;
@@ -694,8 +692,10 @@ export default function PedidosPage() {
       sort,
       q,
       status,
-      customerType,
-      vendor,
+      // Los filtros de tipo de cliente y vendedor se retiraron de la pantalla.
+      // Las recetas guardadas siguen aceptando esos campos, pero aquí viajan vacíos.
+      customerType: '',
+      vendor: '',
       authorized,
       customerCode,
       emisionDesde,
@@ -709,8 +709,6 @@ export default function PedidosPage() {
   function applyFilters(filters: ScenarioFilters) {
     setQ(filters.q);
     setStatus(filters.status);
-    setCustomerType(filters.customerType);
-    setVendor(filters.vendor);
     setAuthorized(filters.authorized);
     setCustomerCode(filters.customerCode);
     setEmisionDesde(filters.emisionDesde);
@@ -801,8 +799,6 @@ export default function PedidosPage() {
   function resetFilters() {
     setQ('');
     setStatus('');
-    setCustomerType('');
-    setVendor('');
     setAuthorized('');
     setEmisionDesde('');
     setEmisionHasta('');
@@ -1040,11 +1036,9 @@ export default function PedidosPage() {
             </Badge>
           </div>
           <div className="grid grid-cols-1 gap-space-md md:grid-cols-2 lg:grid-cols-12">
-            <TextInput className="lg:col-span-3" icon={Search} value={q} onChange={setQ} placeholder="Buscar N° de pedido o cliente…" ariaLabel="Buscar" />
-            <Select className="lg:col-span-2" value={status} onChange={(v) => setStatus(v as OrderStatus | '')} options={STATUS_OPTIONS} ariaLabel="Estado" />
-            <Select className="lg:col-span-2" value={authorized} onChange={(v) => setAuthorized(v as 'SI' | 'NO' | '')} options={AUTH_OPTIONS} ariaLabel="Autorizado" />
-            <TextInput className="lg:col-span-2" value={customerType} onChange={setCustomerType} placeholder="Tipo (ej. L1)" ariaLabel="Tipo de cliente" />
-            <TextInput className="lg:col-span-3" value={vendor} onChange={setVendor} placeholder="Vendedor…" ariaLabel="Vendedor" />
+            <TextInput className="lg:col-span-5" icon={Search} value={q} onChange={setQ} placeholder="Buscar N° de pedido o cliente…" ariaLabel="Buscar" />
+            <Select className="lg:col-span-3" value={status} onChange={(v) => setStatus(v as OrderStatus | '')} options={STATUS_OPTIONS} ariaLabel="Estado" />
+            <Select className="lg:col-span-4" value={authorized} onChange={(v) => setAuthorized(v as 'SI' | 'NO' | '')} options={AUTH_OPTIONS} ariaLabel="Autorizado" />
             <div className="flex items-center gap-space-xs lg:col-span-4">
               <span className="whitespace-nowrap font-semibold uppercase text-label-sm text-outline">Entrega</span>
               <DateInput ariaLabel="Entrega desde" value={entregaDesde} onChange={setEntregaDesde} className="w-full" />
