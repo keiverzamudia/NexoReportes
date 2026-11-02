@@ -186,6 +186,10 @@ const arrivals = {
 } as never;
 
 const planner = { id: 'u-plan', role: 'PLANIFICADOR', code: 'KZ' };
+// Quien publica en las pruebas: gerencia conserva el mismo id que el dueño del
+// escenario sembrado (`seedScenario`), y tiene el permiso de publicar.
+const publisher = { id: 'u-plan', role: 'GERENCIA', code: 'KZ', canPublish: true };
+const almacenPublisher = { id: 'u-alm1', role: 'ALMACEN', code: 'ARIV', canPublish: true };
 const operator1 = { id: 'u-alm1', role: 'ALMACEN', code: 'ARIV' };
 const operator2 = { id: 'u-alm2', role: 'ALMACEN', code: 'AALV' };
 const manager = { id: 'u-ger', role: 'GERENCIA', code: 'JGER' };
@@ -213,10 +217,13 @@ function snapshotLine(overrides: Row = {}) {
   };
 }
 
-function seedScenario(prisma: ReturnType<typeof createFakePrisma>, ownerId = 'u-plan') {
-  const lines = [snapshotLine(), snapshotLine({ productCode: 'ABABOV85', priority: 2, assignedQty: 10, assignedKg: 400 })];
+function seedScenario(prisma: ReturnType<typeof createFakePrisma>, ownerId = 'u-plan', id = 'sc-1') {
+  const lines = [
+    snapshotLine({ comment: 'Retira Elías Lozada' }),
+    snapshotLine({ productCode: 'ABABOV85', priority: 2, assignedQty: 10, assignedKg: 400 }),
+  ];
   const scenario = {
-    id: 'sc-1',
+    id,
     ownerId,
     name: 'Despacho lunes',
     kind: 'SAVED',
@@ -239,6 +246,20 @@ function seedScenario(prisma: ReturnType<typeof createFakePrisma>, ownerId = 'u-
         },
         lines,
       },
+      loadPlan: {
+        grouping: 'cliente',
+        segments: [
+          {
+            id: 'seg-1',
+            label: 'AGRICOLA LA CAÑADA',
+            customerCode: '294201237',
+            orderNumbers: ['408251710'],
+            kg: 2800,
+            sacks: 70,
+            color: '#0F4C5C',
+          },
+        ],
+      },
     }),
   };
   prisma.state.scenarios.push(scenario);
@@ -248,7 +269,7 @@ function seedScenario(prisma: ReturnType<typeof createFakePrisma>, ownerId = 'u-
 async function publish(prisma: ReturnType<typeof createFakePrisma>, assignedToId: string | null = null) {
   const service = new DispatchService(prisma as never, audit, arrivals);
   seedScenario(prisma);
-  return service.create(planner, {
+  return service.create(publisher, {
     scenarioId: 'sc-1',
     title: 'Despacho lunes',
     instructions: 'Cargar por la puerta 2',
@@ -262,12 +283,15 @@ describe('DispatchService — publicar', () => {
     const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma);
 
-    const sheet = await service.create(planner, { scenarioId: 'sc-1', title: 'Despacho lunes' });
+    const sheet = await service.create(publisher, { scenarioId: 'sc-1', title: 'Despacho lunes' });
 
     expect(sheet.number).toBe(`DSP-${new Date().getFullYear()}-0001`);
     expect(sheet.status).toBe('ENVIADO');
     expect(sheet.lines).toHaveLength(2);
     expect(sheet.lines[0]!.plannedQty).toBe(60);
+    // El comentario de la simulación viaja al renglón del almacén.
+    expect(sheet.lines[0]!.note).toBe('Retira Elías Lozada');
+    expect(sheet.loadPlan?.segments).toHaveLength(1);
     expect(sheet.plannedKg).toBe(2800);
     // La bitácora solo se entrega al ADMIN: se consulta con ese rol.
     expect((await service.detail(admin, sheet.id)).events[0]!.type).toBe('ENVIADO');
@@ -275,17 +299,40 @@ describe('DispatchService — publicar', () => {
     expect(prisma.state.notifications).toHaveLength(2);
     expect(prisma.state.notifications.every((row) => row.type === 'DESPACHO_ENVIADO')).toBe(true);
 
-    const second = await service.create(planner, { scenarioId: 'sc-1', title: 'Despacho martes' });
+    const second = await service.create(publisher, { scenarioId: 'sc-1', title: 'Despacho martes' });
     expect(second.number).toBe(`DSP-${new Date().getFullYear()}-0002`);
   });
 
-  it('rechaza publicar un escenario de otro usuario o sin plan', async () => {
+  it('solo con el permiso «Armar y enviar simulación» se puede publicar', async () => {
+    const prisma = createFakePrisma();
+    const service = new DispatchService(prisma as never, audit, arrivals);
+    seedScenario(prisma);
+    seedScenario(prisma, 'u-alm1', 'sc-2');
+    await expect(service.create(planner, { scenarioId: 'sc-1', title: 'Planificador' })).rejects.toThrow(
+      /Armar y enviar simulación/i,
+    );
+    await expect(service.create(outsider, { scenarioId: 'sc-1', title: 'Consulta' })).rejects.toThrow(
+      /Armar y enviar simulación/i,
+    );
+    // Almacén tampoco publica por defecto; solo si se le concede el permiso.
+    await expect(service.create(operator1, { scenarioId: 'sc-1', title: 'Almacén' })).rejects.toThrow(
+      /Armar y enviar simulación/i,
+    );
+    await expect(service.create(almacenPublisher, { scenarioId: 'sc-2', title: 'Almacén con permiso' })).resolves.toMatchObject({
+      status: 'ENVIADO',
+    });
+  });
+
+  it('publica un escenario del equipo y rechaza uno inexistente', async () => {
     const prisma = createFakePrisma();
     const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma, 'u-alm1');
 
-    await expect(service.create(planner, { scenarioId: 'sc-1', title: 'X' })).rejects.toThrow(/No encontramos/i);
-    await expect(service.create(planner, { scenarioId: 'sc-otro', title: 'X' })).rejects.toThrow(/No encontramos/i);
+    // El escenario es del equipo: otro usuario con permiso puede enviarlo.
+    await expect(service.create(publisher, { scenarioId: 'sc-1', title: 'X' })).resolves.toMatchObject({
+      status: 'ENVIADO',
+    });
+    await expect(service.create(publisher, { scenarioId: 'sc-otro', title: 'X' })).rejects.toThrow(/No encontramos/i);
   });
 
   it('exige que el operador asignado exista y sea de almacén', async () => {
@@ -293,25 +340,27 @@ describe('DispatchService — publicar', () => {
     const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma);
 
-    await expect(service.create(planner, { scenarioId: 'sc-1', title: 'X', assignedToId: 'u-con' })).rejects.toThrow(
+    await expect(service.create(publisher, { scenarioId: 'sc-1', title: 'X', assignedToId: 'u-con' })).rejects.toThrow(
       /no está disponible/i,
     );
 
-    const sheet = await service.create(planner, { scenarioId: 'sc-1', title: 'X', assignedToId: 'u-alm1' });
+    const sheet = await service.create(publisher, { scenarioId: 'sc-1', title: 'X', assignedToId: 'u-alm1' });
     expect(sheet.assignedToName).toBe('ALEXIS RIVAS');
     expect(prisma.state.notifications).toHaveLength(1);
     expect(prisma.state.notifications[0]!.recipientId).toBe('u-alm1');
   });
 
-  it('bloquea la publicación cuando no hay operadores de almacén activos', async () => {
+  it('sin operadores de almacén envía igual a la bandeja compartida (sin bloqueo)', async () => {
     const prisma = createFakePrisma();
     const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma);
-    // Nadie con rol ALMACEN: el aviso no tendría a quién llegar.
+    // Nadie con rol ALMACEN: la hoja queda en la bandeja compartida.
     prisma.state.users = prisma.state.users.map((user) => (user.role === 'ALMACEN' ? { ...user, role: 'CONSULTA' } : user));
 
-    await expect(service.create(planner, { scenarioId: 'sc-1', title: 'X' })).rejects.toThrow(/No hay operadores de almacén activos/i);
-    expect(prisma.state.sheets).toHaveLength(0);
+    const published = await service.create(publisher, { scenarioId: 'sc-1', title: 'Sin operadores' });
+    expect(published.status).toBe('ENVIADO');
+    expect(prisma.state.sheets).toHaveLength(1);
+    expect(prisma.state.notifications).toHaveLength(0);
 
     const readiness = await service.assignees();
     expect(readiness.hasWarehouseOperators).toBe(false);
@@ -325,82 +374,69 @@ describe('DispatchService — publicar', () => {
     // ALMACEN primero en la lista (es quien realmente opera).
     expect(ready.operators[0]!.role).toBe('ALMACEN');
     expect(ready.operators.map((operator) => operator.code)).toContain('NUEV');
-
-    const published = await service.create(planner, { scenarioId: 'sc-1', title: 'Ya se puede' });
-    expect(published.status).toBe('ENVIADO');
   });
 });
 
-describe('DispatchService — acuses (túnel)', () => {
-  it('sella el recibo, reclama la hoja y avisa al planificador', async () => {
+describe('DispatchService — toma al empezar la carga', () => {
+  it('el primer renglón inicia la hoja, la reclama y deja el evento', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
     const service = new DispatchService(prisma as never, audit, arrivals);
 
-    const received = await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
+    const started = await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
 
-    expect(received.status).toBe('RECIBIDO');
-    expect(received.receivedAt).toBeTruthy();
-    expect(received.receivedByName).toBe('ALEXIS RIVAS');
-    expect(received.claimedByName).toBe('ALEXIS RIVAS');
-    // El operador ya no recibe la bitácora; el admin sí la ve.
-    expect(received.events).toHaveLength(0);
-    expect((await service.detail(admin, sheet.id)).events.some((event) => event.type === 'RECIBIDO')).toBe(true);
-    expect(prisma.state.notifications.some((row) => row.type === 'DESPACHO_RECIBIDO' && row.recipientId === 'u-plan')).toBe(true);
+    expect(started.status).toBe('EN_PROCESO');
+    expect(started.startedAt).toBeTruthy();
+    expect(started.claimedByName).toBe('ALEXIS RIVAS');
+    // El operador no recibe la bitácora; el admin sí la ve.
+    expect(started.events).toHaveLength(0);
+    expect((await service.detail(admin, sheet.id)).events.some((event) => event.type === 'EN_PROCESO')).toBe(true);
+    // La toma no genera un aviso de acuse al planificador.
+    expect(prisma.state.notifications.some((row) => row.recipientId === 'u-plan')).toBe(false);
   });
 
-  it('es idempotente: repetir el acuse no duplica sellos ni eventos', async () => {
+  it('la bandeja compartida la toma el primero: el segundo no puede operar', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
     const service = new DispatchService(prisma as never, audit, arrivals);
 
-    await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
-    const eventsAfterFirst = prisma.state.events.length;
-    const notificationsAfterFirst = prisma.state.notifications.length;
-
-    const again = await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
-    expect(again.status).toBe('RECIBIDO');
-    expect(prisma.state.events).toHaveLength(eventsAfterFirst);
-    expect(prisma.state.notifications).toHaveLength(notificationsAfterFirst);
+    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
+    await expect(service.updateLine(operator2, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' })).rejects.toThrow(
+      /ya lo tomó/i,
+    );
   });
 
-  it('la bandeja compartida la toma el primero: el segundo recibe 409', async () => {
-    const prisma = createFakePrisma();
-    const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit, arrivals);
-
-    await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
-    await expect(service.ack(operator2, sheet.id, { event: 'RECIBIDO' })).rejects.toThrow(/ya lo tomó/i);
-  });
-
-  it('no se puede pasar a EN_PROCESO sin recibir primero', async () => {
-    const prisma = createFakePrisma();
-    const sheet = await publish(prisma);
-    const service = new DispatchService(prisma as never, audit, arrivals);
-
-    await expect(service.ack(operator1, sheet.id, { event: 'EN_PROCESO' })).rejects.toThrow(/recibir/i);
-  });
-
-  it('un despacho asignado a otro operador no aparece en su bandeja ni se puede operar', async () => {
+  it('un despacho asignado a otro operador se ve en la bandeja pero no se puede operar', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma, 'u-alm1');
     const service = new DispatchService(prisma as never, audit, arrivals);
 
-    // Ni en la bandeja ni por detalle: 404 para el operador equivocado.
+    // Todo almacén ve todo lo publicado; solo el asignado puede operarlo.
     const inbox = await service.list(operator2, { scope: 'all' });
-    expect(inbox.items).toHaveLength(0);
-    await expect(service.ack(operator2, sheet.id, { event: 'RECIBIDO' })).rejects.toThrow(/no encontrado/i);
-    // El asignado sí lo ve.
+    expect(inbox.items).toHaveLength(1);
+    await expect(service.updateLine(operator2, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' })).rejects.toThrow(
+      /asignado a otro operador/i,
+    );
+    // El asignado sí lo ve y lo puede tomar.
     expect((await service.list(operator1, { scope: 'all' })).items).toHaveLength(1);
+    await expect(service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' })).resolves.toMatchObject({
+      status: 'EN_PROCESO',
+    });
   });
 
-  it('un no participante no ve el despacho (404)', async () => {
+  it('sin «Ver todos» no se ve lo ajeno; con el permiso se ve pero no se opera', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
     const service = new DispatchService(prisma as never, audit, arrivals);
 
+    // Sin el permiso, el despacho ajeno no existe para este usuario.
     await expect(service.detail(outsider, sheet.id)).rejects.toThrow(/no encontrado/i);
-    // Gerencia sí lo ve (sigue el túnel).
+    // Con «Ver todos» puede consultarlo, pero sigue sin poder operarlo.
+    const granted = { ...outsider, canViewAll: true };
+    await expect(service.detail(granted, sheet.id)).resolves.toMatchObject({ id: sheet.id });
+    await expect(service.updateLine(granted, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' })).rejects.toThrow(
+      /Solo el personal de almacén/i,
+    );
     await expect(service.detail(manager, sheet.id)).resolves.toMatchObject({ id: sheet.id });
   });
 });
@@ -410,8 +446,9 @@ describe('DispatchService — carga y cierre', () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
     const service = new DispatchService(prisma as never, audit, arrivals);
-    await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
-    await service.ack(operator1, sheet.id, { event: 'EN_PROCESO' });
+    // Marcar el primer renglón inicia la hoja: no hay paso de acuse.
+    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
+    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'PENDIENTE' });
     return { prisma, service, sheet };
   }
 
@@ -423,7 +460,8 @@ describe('DispatchService — carga y cierre', () => {
     const line = updated.lines.find((item) => item.id === sheet.lines[0]!.id)!;
     expect(line.loadedQty).toBe(60);
     expect(line.loadedKg).toBe(2400);
-    expect(line.note).toBeNull();
+    // Completar no borra el comentario del planificador.
+    expect(line.note).toBe('Retira Elías Lozada');
     expect(updated.linesDone).toBe(1);
     expect(updated.progress).toBeCloseTo(0.5, 5);
     expect(updated.loadedKg).toBe(2400);
@@ -463,7 +501,7 @@ describe('DispatchService — carga y cierre', () => {
     const { prisma, service, sheet } = await inProgress();
 
     await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
-    await expect(service.complete(operator1, sheet.id, {})).rejects.toThrow(/por completar/i);
+    await expect(service.complete(operator1, sheet.id, {})).rejects.toThrow(/por cargar/i);
 
     await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
     const closed = await service.complete(operator1, sheet.id, { note: 'Carga completa' });
@@ -490,7 +528,9 @@ describe('DispatchService — carga y cierre', () => {
     const canceled = await service.cancel(planner, sheet.id, { reason: 'El cliente canceló' });
     expect(canceled.status).toBe('CANCELADO');
     expect(canceled.canOperate).toBe(false);
-    await expect(service.ack(operator1, sheet.id, { event: 'RECIBIDO' })).rejects.toThrow(/ya está cerrado/i);
+    await expect(service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' })).rejects.toThrow(
+      /ya está cerrado/i,
+    );
   });
 });
 
@@ -499,7 +539,6 @@ describe('DispatchService — bitácora y notificaciones', () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
     const service = new DispatchService(prisma as never, audit, arrivals);
-    await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
 
     // Ningún otro rol ve los eventos ni puede escribir en la bitácora.
     expect((await service.detail(operator1, sheet.id)).events).toHaveLength(0);
@@ -539,8 +578,8 @@ describe('DispatchService — bitácora y notificaciones', () => {
     const prisma = createFakePrisma();
     const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma);
-    await service.create(planner, { scenarioId: 'sc-1', title: 'Uno' });
-    await service.create(planner, { scenarioId: 'sc-1', title: 'Dos' });
+    await service.create(publisher, { scenarioId: 'sc-1', title: 'Uno' });
+    await service.create(publisher, { scenarioId: 'sc-1', title: 'Dos' });
 
     const plannerInbox = await service.list(planner, { scope: 'all' });
     expect(plannerInbox.items).toHaveLength(2);
@@ -554,9 +593,7 @@ describe('DispatchService — bitácora y notificaciones', () => {
     expect(outsiderInbox.items).toHaveLength(0);
   });
 
-  // El «túnel» se prueba tipo por tipo: cada transición avisa a la
-  // contraparte, con enlace al despacho y sin auto-notificarse.
-  it('cada acuse del túnel emite su tipo de aviso al lado correcto', async () => {
+  it('notifica al enviar y al cerrar; la toma de la hoja no genera acuse', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
     const service = new DispatchService(prisma as never, audit, arrivals);
@@ -569,14 +606,13 @@ describe('DispatchService — bitácora y notificaciones', () => {
     // El autor nunca se auto-notifica.
     expect(typesFor('u-plan')).toEqual([]);
 
-    await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
-    await service.ack(operator1, sheet.id, { event: 'EN_PROCESO' });
-    expect(typesFor('u-plan')).toEqual(['DESPACHO_RECIBIDO', 'DESPACHO_EN_PROCESO']);
-
     await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
+    // Tomar la hoja no avisa: no hay acuse.
+    expect(typesFor('u-plan')).toEqual([]);
+
     await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
     await service.complete(operator1, sheet.id, {});
-    expect(typesFor('u-plan')).toEqual(['DESPACHO_RECIBIDO', 'DESPACHO_EN_PROCESO', 'DESPACHO_CERRADO']);
+    expect(typesFor('u-plan')).toEqual(['DESPACHO_CERRADO']);
 
     // El aviso lleva a la hoja y firma a quien actuó.
     const last = prisma.state.notifications.filter((row) => row.recipientId === 'u-plan').at(-1)!;
@@ -585,23 +621,46 @@ describe('DispatchService — bitácora y notificaciones', () => {
     expect(last.entityType).toBe('DispatchSheet');
 
     // Anular avisa al lado almacén.
-    const second = await service.create(planner, { scenarioId: 'sc-1', title: 'Para anular' });
+    const second = await service.create(publisher, { scenarioId: 'sc-1', title: 'Para anular' });
     await service.cancel(planner, second.id, { reason: 'El cliente reprogramó' });
     expect(typesFor('u-alm1')).toContain('DESPACHO_CANCELADO');
     expect(typesFor('u-alm2')).toContain('DESPACHO_CANCELADO');
   });
 
-  it('un acuse repetido no vuelve a notificar', async () => {
+  it('la bandeja de pendientes ve todo lo abierto y el historial los cerrados', async () => {
     const prisma = createFakePrisma();
-    const sheet = await publish(prisma);
     const service = new DispatchService(prisma as never, audit, arrivals);
+    seedScenario(prisma);
+    seedScenario(prisma, 'u-alm1', 'sc-2');
+    const first = await service.create(publisher, { scenarioId: 'sc-1', title: 'Pendiente' });
+    const second = await service.create(publisher, { scenarioId: 'sc-1', title: 'Cerrado' });
+    await service.updateLine(operator1, second.id, second.lines[0]!.id, { status: 'CARGADO' });
+    await service.updateLine(operator1, second.id, second.lines[1]!.id, { status: 'CARGADO' });
+    await service.complete(operator1, second.id, {});
 
-    await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
-    const afterFirst = prisma.state.notifications.length;
-    await service.ack(operator1, sheet.id, { event: 'RECIBIDO' });
-    await service.ack(operator1, sheet.id, { event: 'EN_PROCESO' });
-    await service.ack(operator1, sheet.id, { event: 'EN_PROCESO' });
-    // Solo se suman los dos avisos reales (recibido + en proceso).
-    expect(prisma.state.notifications).toHaveLength(afterFirst + 1);
+    // Otro usuario publica y cierra su propio despacho.
+    const third = await service.create(almacenPublisher, { scenarioId: 'sc-2', title: 'Cerrado por almacén' });
+    await service.updateLine(operator1, third.id, third.lines[0]!.id, { status: 'CARGADO' });
+    await service.updateLine(operator1, third.id, third.lines[1]!.id, { status: 'CARGADO' });
+    await service.complete(operator1, third.id, {});
+
+    expect((await service.list(operator2, { scope: 'pending' })).items.map((row) => row.id)).toEqual([first.id]);
+    expect((await service.list(planner, { scope: 'pending' })).items.map((row) => row.id)).toEqual([first.id]);
+    // El historial también es visible para todo almacén (ve todo lo publicado).
+    const allHistory = [second.id, third.id];
+    for (const viewer of [operator1, operator2]) {
+      const history = (await service.list(viewer, { scope: 'history' })).items.map((row) => row.id);
+      expect(history).toHaveLength(2);
+      expect(history).toEqual(expect.arrayContaining(allHistory));
+    }
+    // El permiso individual `despacho:view_all` da la misma visibilidad total.
+    const granted = { ...outsider, canViewAll: true };
+    const grantedHistory = (await service.list(granted, { scope: 'history' })).items.map((row) => row.id);
+    expect(grantedHistory).toHaveLength(2);
+    expect(grantedHistory).toEqual(expect.arrayContaining(allHistory));
+    // Sin el permiso, no ve el historial ajeno.
+    expect((await service.list(outsider, { scope: 'history' })).items).toHaveLength(0);
+    // «Publicados por mí» solo trae lo propio.
+    expect((await service.list(planner, { scope: 'created' })).items).toHaveLength(2);
   });
 });

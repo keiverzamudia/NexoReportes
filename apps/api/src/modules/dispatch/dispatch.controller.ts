@@ -1,7 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
-  DispatchAckInput,
   DispatchCancelInput,
   DispatchCompleteInput,
   DispatchLineInput,
@@ -10,7 +9,6 @@ import {
   DispatchSheetQuery,
   NotificationQuery,
   NotificationReadInput,
-  zDispatchAckInput,
   zDispatchCancelInput,
   zDispatchCompleteInput,
   zDispatchLineInput,
@@ -75,17 +73,6 @@ export class DispatchController {
     return this.dispatch.detail(this.viewer(request), id);
   }
 
-  @Post(':id/ack')
-  @RequirePermission('despacho:update')
-  @ApiOperation({ summary: 'Acuse del almacén: recibido o en proceso (idempotente)' })
-  ack(
-    @Param('id') id: string,
-    @Body(new ZodValidationPipe(zDispatchAckInput)) body: DispatchAckInput,
-    @Req() request: AuthenticatedRequest,
-  ) {
-    return this.dispatch.ack(this.viewer(request), id, body);
-  }
-
   @Patch(':id/lines/:lineId')
   @RequirePermission('despacho:update')
   @ApiOperation({ summary: 'Confirma la carga real de un renglón' })
@@ -140,6 +127,8 @@ export class DispatchController {
       id,
       role: request.access?.baseRole ?? 'CONSULTA',
       isAdmin: request.access?.isAdmin ?? false,
+      canPublish: request.access?.permissions.includes('despacho:create') ?? false,
+      canViewAll: request.access?.permissions.includes('despacho:view_all') ?? false,
       code: request.user?.code ?? null,
     };
   }
@@ -179,6 +168,8 @@ export class NotificationsController {
       id,
       role: request.access?.baseRole ?? 'CONSULTA',
       isAdmin: request.access?.isAdmin ?? false,
+      canPublish: request.access?.permissions.includes('despacho:create') ?? false,
+      canViewAll: request.access?.permissions.includes('despacho:view_all') ?? false,
       code: request.user?.code ?? null,
     };
   }

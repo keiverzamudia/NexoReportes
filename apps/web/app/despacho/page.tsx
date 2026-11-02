@@ -1,54 +1,49 @@
 'use client';
 
 // ============================================================
-// Despacho — tablero del almacén (Fase 6b).
+// Despacho — bandeja de trabajo del almacén.
 //
-// Dos caras en la misma pantalla, según el rol:
-//   · ALMACEN  → «Mi jornada»: lo que le toca cargar, ordenado por urgencia.
-//   · PLANIFICADOR / GERENCIA / ADMIN → «Seguimiento»: lo publicado y su acuse
-//     (enviado, abierto por quién, en carga, con novedad, despachado).
+//   · Pendientes → todo lo abierto, sin importar quién lo publicó.
+//   · Publicados por mí → lo que envié desde el simulador (solo con permiso).
+//   · Historial → despachos cerrados o anulados.
 //
-// La simulación de Pedidos se materializa aquí como orden de trabajo con
-// acuse de recibo: el «túnel» se ve en cada fila y en la campana del shell.
+// La simulación se envía completa desde Pedidos. Aquí no hay acuse: el primer
+// operador que marca un renglón toma la hoja y la carga. Nada escribe en Profit.
 // ============================================================
 
-import type { DispatchSheetDetail, DispatchSheetListResponse, DispatchSheetStatus, DispatchSheetSummary } from '@nexo/contracts';
+import type { DispatchSheetListResponse, DispatchSheetStatus, DispatchSheetSummary } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, ClipboardList, Clock3, PackageCheck, RefreshCw, Search, ShoppingCart, Truck, Users } from 'lucide-react';
+import { AlertTriangle, ClipboardList, RefreshCw, Search, ShoppingCart, Truck, Users } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
-import { AcuseSummary, SheetStatusBadge } from '../../components/DispatchSheetParts';
-import { PublishDispatchDialog } from '../../components/PublishDispatchDialog';
+import { SheetStatusBadge } from '../../components/DispatchSheetParts';
 import { AppNav, LoginScreen } from '../../components/shell';
-import { Badge, Card, DataTable, EmptyState, HeroCard, Kpi, PageHeader, Select, Segmented, TextInput, type Column, cx, useGreeting } from '../../components/ui';
+import { Badge, Card, DataTable, EmptyState, PageHeader, Select, Segmented, TextInput, type Column, cx, useGreeting } from '../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
 import { formatBusinessDate, formatNumber, relativeTime, sortSheets } from '../../lib/dispatch-sheet';
 import { hasPermission } from '../../lib/permissions';
 
+type Scope = 'pending' | 'created' | 'history';
+
 const STATUS_OPTIONS = [
   { value: '', label: 'Estado: Todos' },
-  { value: 'ENVIADO', label: 'Sin abrir' },
-  { value: 'RECIBIDO', label: 'Recibidos' },
   { value: 'EN_PROCESO', label: 'En carga' },
-  { value: 'CON_NOVEDAD', label: 'Con novedad' },
   { value: 'DESPACHADO', label: 'Despachados' },
   { value: 'CANCELADO', label: 'Anulados' },
 ];
 
-const SCOPE_OPTIONS = [
-  { value: 'all', label: 'Todos' },
-  { value: 'assigned', label: 'Para cargar' },
-  { value: 'created', label: 'Publicados por mí' },
-] as const;
+const SCOPE_LABELS: Record<Scope, string> = {
+  pending: 'Pendientes',
+  created: 'Publicados por mí',
+  history: 'Historial',
+};
 
 export default function DespachoPage() {
   const [tick, setTick] = useState(0);
   const greeting = useGreeting();
-  const [scope, setScope] = useState<'all' | 'assigned' | 'created'>('all');
+  const [scope, setScope] = useState<Scope>('pending');
   const [status, setStatus] = useState<DispatchSheetStatus | ''>('');
   const [q, setQ] = useState('');
-  const [publishOpen, setPublishOpen] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
 
   const { data: sessionUser } = useQuery({
     queryKey: ['me'],
@@ -58,21 +53,19 @@ export default function DespachoPage() {
   });
   const permissions = sessionUser?.permissions;
   const isOperator = hasPermission(permissions, 'despacho', 'update');
-  const canPublish = hasPermission(permissions, 'despacho', 'create');
+  // «Armar y enviar simulación» se habilita con el permiso de Despacho.
+  const canSendSimulation = hasPermission(permissions, 'despacho', 'create');
+  const canSeeCreated = canSendSimulation;
+  const canSeeHistory = true;
+  // Mismo criterio que la API: rol con visibilidad total o permiso individual.
+  const canViewAll =
+    ['ADMIN', 'GERENCIA', 'ALMACEN'].includes(sessionUser?.role ?? '') ||
+    hasPermission(permissions, 'despacho', 'view_all');
 
-  // El alcance por defecto sigue la plantilla del rol: el almacén ve su
-  // trabajo, el planificador lo que publicó y gerencia todo.
+  // La bandeja siempre arranca en lo que hay por cargar.
   useEffect(() => {
-    const baseRole = sessionUser?.baseRole;
-    if (!baseRole) return;
-    setScope(baseRole === 'ALMACEN' ? 'assigned' : baseRole === 'PLANIFICADOR' ? 'created' : 'all');
-  }, [sessionUser?.baseRole]);
-
-  useEffect(() => {
-    if (!toast) return;
-    const id = window.setTimeout(() => setToast(null), 3600);
-    return () => window.clearTimeout(id);
-  }, [toast]);
+    setScope('pending');
+  }, [sessionUser?.id]);
 
   const params = new URLSearchParams();
   params.set('scope', scope);
@@ -89,22 +82,11 @@ export default function DespachoPage() {
   });
 
   const sheets = useMemo(() => sortSheets(data?.items ?? []), [data]);
-  const counters = data?.counters ?? { pending: 0, inProgress: 0, doneToday: 0, kgPending: 0, kgDoneToday: 0 };
   const hasFilters = Boolean(status || q);
 
   if (error instanceof AuthRequiredError) {
     return <LoginScreen onSuccess={() => setTick((t) => t + 1)} />;
   }
-
-  const heroLabel = isOperator ? 'Por cargar' : 'Despachado hoy';
-  const heroValue = isOperator ? counters.kgPending : counters.kgDoneToday;
-  const heroHint = isOperator
-    ? `${counters.pending} sin abrir · ${counters.inProgress} en curso · ${formatNumber(counters.kgDoneToday)} kg ya despachados`
-    : `${counters.pending} esperando acuse · ${counters.inProgress} en carga · ${counters.doneToday} cerrados hoy`;
-  const heroProgress =
-    counters.kgPending + counters.kgDoneToday > 0
-      ? Math.round((counters.kgDoneToday / (counters.kgPending + counters.kgDoneToday)) * 100)
-      : 0;
 
   const columns: Column<DispatchSheetSummary>[] = [
     {
@@ -115,8 +97,8 @@ export default function DespachoPage() {
       render: (row) => (
         <Link href={`/despacho/${row.id}`} className="flex flex-col leading-tight">
           <span className="font-bold tabular-nums text-primary">{row.number}</span>
-          <span className="max-w-[16rem] truncate text-body-md text-on-surface-variant" title={row.title}>
-            {row.title}
+          <span className="max-w-[18rem] truncate text-body-md text-on-surface-variant" title={row.title}>
+            Enviado por {row.createdByName ?? row.createdByCode ?? '—'}
           </span>
         </Link>
       ),
@@ -127,12 +109,6 @@ export default function DespachoPage() {
       kind: 'status',
       sortValue: (row) => row.status,
       render: (row) => <SheetStatusBadge status={row.status} />,
-    },
-    {
-      key: 'acuse',
-      header: 'Acuse',
-      kind: 'field',
-      render: (row) => <AcuseSummary sheet={row} />,
     },
     {
       key: 'progress',
@@ -210,136 +186,120 @@ export default function DespachoPage() {
           href={`/despacho/${row.id}`}
           className={cx(
             'inline-flex h-8 items-center gap-space-xs rounded-pill px-space-sm font-semibold text-label-md transition-all',
-            row.canOperate && row.status === 'ENVIADO'
+            row.canOperate && row.status !== 'DESPACHADO' && row.status !== 'CANCELADO'
               ? 'bg-secondary-container text-on-secondary shadow-soft hover:-translate-y-0.5'
               : 'border border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low',
           )}
         >
-          {row.canOperate && row.status === 'ENVIADO' ? 'Recibir' : 'Abrir'}
+          {row.canOperate && row.status !== 'DESPACHADO' && row.status !== 'CANCELADO' ? 'Cargar' : 'Abrir'}
         </Link>
       ),
     },
   ];
+
+  const scopeOptions = [
+    { value: 'pending' as const, label: SCOPE_LABELS.pending },
+    ...(canSeeCreated ? [{ value: 'created' as const, label: SCOPE_LABELS.created }] : []),
+    ...(canSeeHistory ? [{ value: 'history' as const, label: SCOPE_LABELS.history }] : []),
+  ];
+
+  const subtitle =
+    scope === 'pending'
+      ? 'Todo lo que falta por cargar. El primer operador que marca un renglón toma el despacho.'
+      : scope === 'created'
+        ? 'Las simulaciones que enviaste al almacén y su avance.'
+        : canViewAll
+          ? 'Historial completo: despachos cerrados y anulados de todos los usuarios. Solo lectura.'
+          : 'Tus despachos cerrados y anulados. Solo lectura.';
 
   return (
     <>
       <AppNav />
       <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg md:p-space-xl">
         <PageHeader
-          eyebrow={isOperator ? 'Almacén · Mi jornada' : 'Almacén · Seguimiento de despacho'}
+          eyebrow="Almacén · Bandeja de despacho"
           icon={ClipboardList}
           greeting={greeting}
           title="Despacho"
-          subtitle={
-            isOperator
-              ? 'Abre un despacho para recibirlo, carga renglón por renglón y ciérralo. Cada paso avisa a planificación.'
-              : 'Lo que publicaste al almacén y su acuse: enviado, abierto por quién, en carga, con novedad o despachado.'
-          }
+          subtitle={subtitle}
           actions={
-            canPublish ? (
-              <button
-                type="button"
-                onClick={() => setPublishOpen(true)}
+            canSendSimulation ? (
+              <Link
+                href="/pedidos"
                 className="flex h-10 items-center gap-space-xs rounded-pill bg-primary-container px-space-lg font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary"
               >
-                <Truck aria-hidden className="size-4" /> Publicar despacho
-              </button>
+                <Truck aria-hidden className="size-4" /> Armar y enviar simulación
+              </Link>
             ) : null
           }
         />
 
-        <section className="grid gap-space-md xl:grid-cols-12">
-          <div className="flex flex-col gap-space-md xl:col-span-4">
-            <HeroCard
-              label={heroLabel}
-              value={formatNumber(heroValue)}
-              suffix="kg"
-              hint={heroHint}
-              progress={heroProgress}
-              icon={isOperator ? PackageCheck : Truck}
-            />
-            <div className="stagger grid grid-cols-2 gap-space-sm">
-              <Kpi label="Sin abrir" value={formatNumber(counters.pending)} suffix="desp." tone={counters.pending > 0 ? 'warning' : 'muted'} icon={Clock3} />
-              <Kpi label="En carga" value={formatNumber(counters.inProgress)} suffix="desp." tone="primary" icon={Truck} />
-              <Kpi label="Cerrados hoy" value={formatNumber(counters.doneToday)} suffix="desp." tone="success" icon={PackageCheck} />
-              <Kpi
-                label={isOperator ? 'Falta por cargar' : 'Pendiente de carga'}
-                value={formatNumber(counters.kgPending)}
-                suffix="kg"
-                tone={counters.kgPending > 0 ? 'danger' : 'muted'}
+        <Card className="flex flex-col">
+          <div className="flex flex-wrap items-end justify-between gap-space-sm border-b border-outline-variant/30 px-space-md py-space-sm">
+            <div className="flex flex-wrap items-center gap-space-sm">
+              <Segmented
+                ariaLabel="Bandeja de despacho"
+                value={scope}
+                onChange={(value) => setScope(value as Scope)}
+                options={scopeOptions}
               />
+              <Select className="w-44" value={status} onChange={(value) => setStatus(value as DispatchSheetStatus | '')} options={STATUS_OPTIONS} ariaLabel="Estado" />
+              <TextInput className="w-56" icon={Search} value={q} onChange={setQ} placeholder="Buscar N° o título…" ariaLabel="Buscar despacho" />
+            </div>
+            <div className="flex items-center gap-space-sm">
+              {isFetching && <RefreshCw aria-hidden className="size-3.5 animate-spin text-outline" />}
+              <span className="text-label-sm normal-case text-on-surface-variant">
+                {dataUpdatedAt ? `actualizado ${relativeTime(new Date(dataUpdatedAt).toISOString())}` : 'sincronizando…'}
+              </span>
+              <Badge tone={hasFilters ? 'primary' : 'muted'} dot>
+                {sheets.length} despacho{sheets.length === 1 ? '' : 's'}
+              </Badge>
             </div>
           </div>
 
-          <Card className="flex flex-col xl:col-span-8">
-            <div className="flex flex-wrap items-end justify-between gap-space-sm border-b border-outline-variant/30 px-space-md py-space-sm">
-              <div className="flex flex-wrap items-center gap-space-sm">
-                <Segmented
-                  ariaLabel="Alcance de la bandeja"
-                  value={scope}
-                  onChange={(value) => setScope(value)}
-                  options={SCOPE_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
-                />
-                <Select className="w-44" value={status} onChange={(value) => setStatus(value as DispatchSheetStatus | '')} options={STATUS_OPTIONS} ariaLabel="Estado" />
-                <TextInput className="w-56" icon={Search} value={q} onChange={setQ} placeholder="Buscar N° o título…" ariaLabel="Buscar despacho" />
-              </div>
-              <div className="flex items-center gap-space-sm">
-                {isFetching && <RefreshCw aria-hidden className="size-3.5 animate-spin text-outline" />}
-                <span className="text-label-sm normal-case text-on-surface-variant">
-                  {dataUpdatedAt ? `actualizado ${relativeTime(new Date(dataUpdatedAt).toISOString())}` : 'sincronizando…'}
-                </span>
-                <Badge tone={hasFilters ? 'primary' : 'muted'} dot>
-                  {sheets.length} despacho{sheets.length === 1 ? '' : 's'}
-                </Badge>
-              </div>
-            </div>
-
-            <DataTable
-              columns={columns}
-              rows={sheets}
-              rowKey={(row) => row.id}
-              loading={isLoading}
-              defaultSortKey="number"
-              maxHeightClass="md:max-h-[min(64vh,820px)]"
-              mobileSummary={
-                <span>
-                  {formatNumber(counters.kgPending)} kg por cargar · {counters.pending} sin abrir · {counters.inProgress} en curso
-                </span>
-              }
-              empty={
-                <EmptyState
-                  icon={ClipboardList}
-                  title={hasFilters ? 'Sin despachos para este filtro' : isOperator ? 'No tienes despachos asignados' : 'Todavía no has publicado despachos'}
-                  description={
-                    hasFilters
-                      ? 'Prueba con otro estado o limpia la búsqueda.'
-                      : isOperator
-                        ? 'Cuando planificación publique uno, aparecerá aquí y te llegará una notificación.'
-                        : 'Arma el plan en Pedidos, guárdalo con nombre y publícalo al almacén desde aquí.'
-                  }
-                  action={
-                    !hasFilters && canPublish ? (
-                      <button
-                        type="button"
-                        onClick={() => setPublishOpen(true)}
-                        className="mt-space-sm inline-flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary"
-                      >
-                        <Truck aria-hidden className="size-4" /> Publicar despacho
-                      </button>
-                    ) : !hasFilters ? (
-                      <Link
-                        href="/pedidos"
-                        className="mt-space-sm inline-flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
-                      >
-                        <ShoppingCart aria-hidden className="size-4" /> Ver pedidos
-                      </Link>
-                    ) : null
-                  }
-                />
-              }
-            />
-          </Card>
-        </section>
+          <DataTable
+            columns={columns}
+            rows={sheets}
+            rowKey={(row) => row.id}
+            loading={isLoading}
+            defaultSortKey="number"
+            maxHeightClass="md:max-h-[min(72vh,900px)]"
+            mobileSummary={<span>{sheets.length} despacho(s) en {SCOPE_LABELS[scope].toLowerCase()}</span>}
+            empty={
+              <EmptyState
+                icon={ClipboardList}
+                title={
+                  hasFilters
+                    ? 'Sin despachos para este filtro'
+                    : scope === 'pending'
+                      ? 'No hay despachos pendientes'
+                      : scope === 'created'
+                        ? 'Todavía no has enviado simulaciones'
+                        : 'Sin historial todavía'
+                }
+                description={
+                  hasFilters
+                    ? 'Prueba con otro estado o limpia la búsqueda.'
+                    : scope === 'pending'
+                      ? 'Cuando envíes una simulación desde Pedidos aparecerá aquí para cargarla.'
+                      : scope === 'created'
+                        ? 'Arma el plan en Pedidos y usa «Guardar y enviar a despacho».'
+                        : 'Los despachos cerrados o anulados se guardan aquí.'
+                }
+                action={
+                  !hasFilters && canSendSimulation ? (
+                    <Link
+                      href="/pedidos"
+                      className="mt-space-sm inline-flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary"
+                    >
+                      <ShoppingCart aria-hidden className="size-4" /> Ir al simulador
+                    </Link>
+                  ) : null
+                }
+              />
+            }
+          />
+        </Card>
 
         {error && !(error instanceof AuthRequiredError) && (
           <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
@@ -349,29 +309,11 @@ export default function DespachoPage() {
 
         <p className="flex flex-wrap items-center gap-space-xs text-label-sm normal-case text-on-surface-variant">
           <Users aria-hidden className="size-3.5" />
-          Los despachos de bandeja compartida los toma el primer operador que los abre. Restaurar o publicar nunca escribe en Profit.
+          {isOperator
+            ? 'Los despachos abiertos los toma el primer operador que marca un renglón. Enviar o cargar nunca escribe en Profit.'
+            : 'Ves todo lo pendiente del almacén. La carga la realizan los operadores con permiso «Operar».'}
         </p>
       </main>
-
-      <PublishDispatchDialog
-        open={publishOpen}
-        onClose={() => setPublishOpen(false)}
-        canManageUsers={hasPermission(permissions, 'usuarios', 'update')}
-        onPublished={(sheet: DispatchSheetDetail) => {
-          setToast(`${sheet.number} publicado: ${sheet.plannedLines} renglón(es) al almacén.`);
-          setTick((t) => t + 1);
-        }}
-      />
-
-      {toast && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="fixed bottom-4 left-1/2 z-[85] -translate-x-1/2 rounded-pill bg-primary px-space-lg py-2 text-label-md font-semibold text-on-primary shadow-lift"
-        >
-          {toast}
-        </div>
-      )}
     </>
   );
 }

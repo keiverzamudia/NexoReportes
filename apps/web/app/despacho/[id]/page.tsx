@@ -4,15 +4,17 @@
 // Detalle del despacho: donde el almacén completa la carga y el
 // planificador sigue el avance.
 //
-//   · Cinta de acuses (el túnel hecho visible).
-//   · Carga todo o nada: cada renglón se marca «Completado» (toma la
+//   · Guía de carga del camión y comentarios del planificador.
+//   · Carga todo o nada: cada renglón se marca «Cargar» (toma la
 //     cantidad planificada) o se deshace. No hay parciales ni faltantes.
+//   · Los clientes van plegados: el encabezado muestra el resumen y
+//     «Cargar todo» marca de una vez los renglones de ese cliente.
 //   · Reporte de cierre con todos los renglones, disponible antes y
 //     después de cerrar.
 //   · Bitácora solo para ADMIN (drawer).
 //
-// Al abrir, el almacén deja el acuse «recibido» (una sola vez) y eso
-// notifica al planificador. Nada de esto escribe en Profit.
+// Al marcar el primer renglón el operador toma la hoja: no hay acuse previo.
+// Nada de esto escribe en Profit.
 // ============================================================
 
 import type { DispatchLineMark, DispatchSheetDetail, DispatchSheetLine } from '@nexo/contracts';
@@ -22,6 +24,8 @@ import {
   ArrowLeft,
   Ban,
   CheckCheck,
+  ChevronDown,
+  ChevronRight,
   ClipboardCheck,
   Download,
   Loader2,
@@ -32,10 +36,12 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { DispatchBitacoraDrawer } from '../../../components/DispatchBitacoraDrawer';
 import { DispatchReportDialog } from '../../../components/DispatchReportDialog';
-import { AcuseTimeline, SheetStatusBadge } from '../../../components/DispatchSheetParts';
+import { SheetStatusBadge } from '../../../components/DispatchSheetParts';
+import { TruckLoadPlan } from '../../../components/TruckLoadPlan';
+import type { LoadPlanLine } from '../../../components/TruckLoadPlan';
 import { AppNav, LoginScreen } from '../../../components/shell';
 import { Badge, Card, EmptyState, PageHeader, Skeleton, cx } from '../../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../../lib/api';
@@ -46,15 +52,17 @@ import {
   formatNumber,
   lineStatusMeta,
   sheetExport,
+  type CustomerGroup,
 } from '../../../lib/dispatch-sheet';
 
 export default function DispatchSheetPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id ?? '';
   const queryClient = useQueryClient();
-  const ackSent = useRef(false);
 
   const [savingLine, setSavingLine] = useState<string | null>(null);
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const [bulkGroup, setBulkGroup] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [toast, setToast] = useState<string | null>(null);
@@ -78,7 +86,6 @@ export default function DispatchSheetPage() {
 
   const closed = sheet ? sheet.status === 'DESPACHADO' || sheet.status === 'CANCELADO' : false;
   const editable = Boolean(sheet?.canOperate) && !closed;
-  const canStart = sheet ? sheet.status === 'ENVIADO' || sheet.status === 'RECIBIDO' : false;
   const isAdmin = sessionUser?.role === 'ADMIN';
   const isPlanner =
     ['PLANIFICADOR', 'GERENCIA', 'ADMIN'].includes(sessionUser?.baseRole ?? '') && !sheet?.canOperate;
@@ -89,27 +96,30 @@ export default function DispatchSheetPage() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  // Acuse automático al abrir: el planificador se entera de que el almacén lo vio.
+  // Cada despacho arranca plegado: primero se ve el resumen por cliente.
   useEffect(() => {
-    if (!sheet || ackSent.current) return;
-    if (!sheet.canOperate || sheet.status !== 'ENVIADO') return;
-    ackSent.current = true;
-    apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${sheet.id}/ack`, {
-      method: 'POST',
-      body: JSON.stringify({ event: 'RECIBIDO' }),
-    })
-      .then(() => {
-        // Se invalida en vez de escribir la respuesta: si el operador ya tomó
-        // el despacho o marcó un renglón, una respuesta vieja no debe pisarlo.
-        queryClient.invalidateQueries({ queryKey: ['dispatch-sheet', sheet.id] });
-        queryClient.invalidateQueries({ queryKey: ['notifications'] });
-      })
-      .catch(() => {
-        ackSent.current = false;
-      });
-  }, [sheet, queryClient]);
+    setOpenGroup(null);
+    setBulkGroup(null);
+  }, [id]);
 
   const report = useMemo(() => (sheet ? buildDispatchReport(sheet.lines) : null), [sheet]);
+  // Renglones del despacho en el formato de la guía de carga.
+  const loadPlanLines: LoadPlanLine[] = useMemo(
+    () =>
+      (sheet?.lines ?? []).map((line) => ({
+        orderNumber: line.orderNumber,
+        customerCode: line.customerCode,
+        customerName: line.customerName,
+        productCode: line.productCode,
+        description: line.description,
+        kg: line.plannedKg,
+        sacks: line.uom === 'SAC' ? line.plannedQty : 0,
+        uom: line.uom,
+        effectiveDate: line.effectiveDate,
+        comment: line.note,
+      })),
+    [sheet],
+  );
   const completedLines = sheet?.lines.filter((line) => line.status === 'CARGADO').length ?? 0;
   const blockingLines = sheet ? sheet.lines.length - completedLines : 0;
   const progress = sheet && sheet.lines.length > 0 ? completedLines / sheet.lines.length : 0;
@@ -142,29 +152,8 @@ export default function DispatchSheetPage() {
     }
   }
 
-  function ackInProgress() {
-    if (!sheet) return;
-    void runAction(
-      'start',
-      async () => {
-        // Si el recibo automático aún no llegó, se envía primero (idempotente).
-        if (sheet.status === 'ENVIADO') {
-          await apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${sheet.id}/ack`, {
-            method: 'POST',
-            body: JSON.stringify({ event: 'RECIBIDO' }),
-          });
-        }
-        return apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${sheet.id}/ack`, {
-          method: 'POST',
-          body: JSON.stringify({ event: 'EN_PROCESO' }),
-        });
-      },
-      'Despacho tomado. Ya puedes completar la carga.',
-    );
-  }
-
   async function markLine(line: DispatchSheetLine, status: DispatchLineMark) {
-    if (!sheet || !editable) return;
+    if (!sheet || !editable || bulkGroup) return;
     setSavingLine(line.id);
     try {
       const updated = await apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${sheet.id}/lines/${line.id}`, {
@@ -172,11 +161,41 @@ export default function DispatchSheetPage() {
         body: JSON.stringify({ status }),
       });
       applyDetail(updated);
-      setToast(status === 'CARGADO' ? 'Renglón completado.' : 'Renglón devuelto a pendiente.');
+      setToast(status === 'CARGADO' ? 'Renglón cargado.' : 'Renglón devuelto a pendiente.');
     } catch (err) {
       setToast(err instanceof Error ? err.message : 'No se pudo guardar el renglón');
     } finally {
       setSavingLine(null);
+    }
+  }
+
+  /** «Cargar todo»: marca de una vez los renglones pendientes de un cliente. */
+  async function cargarGrupo(group: CustomerGroup) {
+    if (!sheet || !editable || bulkGroup) return;
+    const pending = group.lines.filter((line) => line.status !== 'CARGADO');
+    if (pending.length === 0) return;
+    setBulkGroup(group.key);
+    try {
+      let updated = sheet;
+      // Secuencial: cada PATCH reutiliza la regla del servidor (toma del
+      // despacho en el primer renglón y recalcula el estado de la hoja).
+      for (const line of pending) {
+        updated = await apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${sheet.id}/lines/${line.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status: 'CARGADO' }),
+        });
+      }
+      applyDetail(updated);
+      setToast(
+        pending.length === 1
+          ? `Renglón de ${group.name} cargado.`
+          : `${pending.length} renglones de ${group.name} cargados.`,
+      );
+    } catch (err) {
+      setToast(err instanceof Error ? err.message : 'No se pudieron cargar los renglones del cliente');
+      void queryClient.invalidateQueries({ queryKey: ['dispatch-sheet', sheet.id] });
+    } finally {
+      setBulkGroup(null);
     }
   }
 
@@ -321,42 +340,44 @@ export default function DispatchSheetPage() {
           actions={<SheetStatusBadge status={sheet.status} />}
         />
 
-        {/* Cinta de acuses: el túnel */}
-        <Card className="p-space-md">
-          <div className="mb-space-sm flex flex-wrap items-center justify-between gap-space-sm">
-            <div>
-              <p className="font-semibold text-primary">Acuse de recibo</p>
-              <p className="text-label-sm normal-case text-on-surface-variant">
-                Publicado {formatDateTime(sheet.sentAt)} por {sheet.createdByName ?? '—'} · destino{' '}
-                {sheet.assignedToName ?? 'todo el almacén'}
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-space-xs">
-              {sheet.claimedByName && (
-                <Badge tone="muted" dot>
-                  tomado por {sheet.claimedByName}
-                </Badge>
-              )}
-              {sheet.status === 'CON_NOVEDAD' && (
-                <Badge tone="danger" dot>
-                  marcas anteriores
-                </Badge>
-              )}
-            </div>
+        {/* Datos del envío */}
+        <Card className="flex flex-wrap items-center justify-between gap-space-sm p-space-md">
+          <div>
+            <p className="font-semibold text-primary">
+              {sheet.number} · enviado por {sheet.createdByName ?? sheet.createdByCode ?? '—'}
+            </p>
+            <p className="text-label-sm normal-case text-on-surface-variant">
+              {formatDateTime(sheet.sentAt)} · destino {sheet.assignedToName ?? 'todo el almacén'}
+              {sheet.claimedByName ? ` · tomado por ${sheet.claimedByName}` : ''}
+            </p>
           </div>
-          <AcuseTimeline sheet={sheet} />
+          <div className="flex flex-wrap items-center gap-space-xs">
+            {sheet.status === 'CON_NOVEDAD' && (
+              <Badge tone="danger" dot>
+                marcas anteriores
+              </Badge>
+            )}
+            {!closed && !sheet.claimedByName && (
+              <Badge tone="muted" dot>
+                sin tomar
+              </Badge>
+            )}
+          </div>
         </Card>
+
+        {/* Guía de carga del camión */}
+        <TruckLoadPlan lines={loadPlanLines} loadPlan={sheet.loadPlan} />
 
         {/* Carga por renglón */}
         <Card className="overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-outline-variant/30 bg-surface-container-low/70 px-space-md py-space-sm">
             <div>
               <p className="font-bold uppercase tracking-wider text-label-md text-primary">
-                {editable ? 'Carga por renglón' : isPlanner ? 'Detalle del plan' : 'Detalle'}
+                {editable ? 'Carga por cliente' : isPlanner ? 'Detalle del plan' : 'Detalle'}
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
                 {editable
-                  ? 'Marca cada renglón como completado. Si te equivocas, usa Deshacer.'
+                  ? 'Abre un cliente para cargar sus pedidos, o usa «Cargar todo». Si te equivocas, usa Deshacer.'
                   : sheet.claimedByName && !closed
                     ? `Lo tomó ${sheet.claimedByName}: puedes verlo, pero solo esa persona lo carga.`
                     : 'Solo lectura.'}
@@ -383,7 +404,7 @@ export default function DispatchSheetPage() {
             <div className="min-w-[12rem] flex-1">
               <div className="mb-1 flex items-center justify-between text-label-sm text-on-surface-variant">
                 <span>
-                  {completedLines}/{sheet.lines.length} renglones completados
+                  {completedLines}/{sheet.lines.length} renglones cargados
                 </span>
                 <span className="tabular-nums">{Math.round(progress * 100)}%</span>
               </div>
@@ -396,11 +417,11 @@ export default function DispatchSheetPage() {
             </div>
             {blockingLines > 0 ? (
               <Badge tone="warning" dot>
-                {blockingLines} por completar
+                {blockingLines} por cargar
               </Badge>
             ) : (
               <Badge tone="success" dot>
-                todo completado
+                todo cargado
               </Badge>
             )}
           </div>
@@ -408,104 +429,148 @@ export default function DispatchSheetPage() {
           <div className="divide-y divide-outline-variant/25">
             {report?.groups.map((group) => (
               <section key={group.key}>
-                <div className="flex flex-wrap items-center justify-between gap-space-sm bg-surface-container-low/60 px-space-md py-space-xs">
-                  <span className="font-semibold text-on-surface">{group.name}</span>
-                  <span className="flex flex-wrap items-center gap-space-sm text-label-sm tabular-nums text-on-surface-variant">
-                    <span>{group.lines.length} renglón(es)</span>
-                    <span>·</span>
-                    <span>{formatNumber(group.plannedKg)} kg plan</span>
-                    {group.pendingLines > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-x-space-sm gap-y-2 bg-surface-container-low/60 px-space-md py-space-sm">
+                  <button
+                    type="button"
+                    onClick={() => setOpenGroup(openGroup === group.key ? null : group.key)}
+                    aria-expanded={openGroup === group.key}
+                    className="flex min-w-0 flex-1 items-start gap-space-sm text-left"
+                  >
+                    {openGroup === group.key ? (
+                      <ChevronDown aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />
+                    ) : (
+                      <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-outline" />
+                    )}
+                    <span className="min-w-0">
+                      <span className="block truncate font-semibold text-on-surface">{group.name}</span>
+                      <span className="block text-label-sm tabular-nums text-on-surface-variant">
+                        {group.lines.length} pedido(s) · {formatNumber(group.plannedKg)} kg plan ·{' '}
+                        {group.completedLines}/{group.lines.length} cargados
+                      </span>
+                    </span>
+                  </button>
+
+                  <div className="flex shrink-0 flex-wrap items-center gap-space-xs">
+                    {group.pendingLines > 0 ? (
                       <Badge tone="warning" dot>
-                        {group.pendingLines} por completar
+                        {group.pendingLines} por cargar
+                      </Badge>
+                    ) : (
+                      <Badge tone="success" dot>
+                        cargado
                       </Badge>
                     )}
-                  </span>
-                </div>
-
-                <div className="hidden gap-space-sm border-b border-outline-variant/20 px-space-md py-1 font-semibold uppercase tracking-wider text-label-sm text-outline lg:grid lg:grid-cols-[minmax(0,1fr)_7rem_minmax(0,10rem)_8rem]">
-                  <span>Pedido / artículo</span>
-                  <span className="text-right">Entrega</span>
-                  <span className="text-right">Cantidad</span>
-                  <span className="text-right">Acción</span>
-                </div>
-
-                <ul>
-                  {group.lines.map((line) => {
-                    const completed = line.status === 'CARGADO';
-                    const saving = savingLine === line.id;
-                    return (
-                      <li
-                        key={line.id}
-                        className={cx(
-                          'border-b border-outline-variant/15 px-space-md py-space-sm transition-colors',
-                          completed && 'bg-success-container/25',
-                        )}
+                    {editable && group.pendingLines > 0 && (
+                      <button
+                        type="button"
+                        disabled={bulkGroup !== null || savingLine !== null}
+                        onClick={() => void cargarGrupo(group)}
+                        title={`Cargar los ${group.pendingLines} renglón(es) pendientes de ${group.name}`}
+                        className="inline-flex h-8 items-center gap-space-xs rounded-pill bg-secondary-container px-space-sm font-semibold text-label-md text-on-secondary transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
                       >
-                        <div className="grid grid-cols-2 gap-x-space-sm gap-y-space-xs lg:grid-cols-[minmax(0,1fr)_7rem_minmax(0,10rem)_8rem] lg:items-center">
-                          <div className="col-span-2 min-w-0 lg:col-span-1">
-                            <p className="flex items-center gap-space-xs">
-                              <span className="font-bold tabular-nums text-primary">{line.orderNumber}</span>
-                              <span className="text-label-sm text-outline">turno {line.position}</span>
-                            </p>
-                            <p className="truncate text-body-md text-on-surface-variant" title={line.description ?? ''}>
-                              <span className="font-semibold text-on-surface">{line.productCode}</span> ·{' '}
-                              {line.description ?? '—'}
-                            </p>
+                        {bulkGroup === group.key ? (
+                          <Loader2 aria-hidden className="size-3.5 animate-spin" />
+                        ) : (
+                          <CheckCheck aria-hidden className="size-3.5" />
+                        )}
+                        {bulkGroup === group.key ? 'Cargando…' : 'Cargar todo'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div hidden={openGroup !== group.key}>
+                  <div className="hidden gap-space-sm border-b border-outline-variant/20 px-space-md py-1 font-semibold uppercase tracking-wider text-label-sm text-outline lg:grid lg:grid-cols-[minmax(0,1fr)_7rem_minmax(0,10rem)_8rem]">
+                    <span>Pedido / artículo</span>
+                    <span className="text-right">Entrega</span>
+                    <span className="text-right">Cantidad</span>
+                    <span className="text-right">Acción</span>
+                  </div>
+
+                  <ul>
+                    {group.lines.map((line) => {
+                      const completed = line.status === 'CARGADO';
+                      const saving = savingLine === line.id;
+                      return (
+                        <li
+                          key={line.id}
+                          className={cx(
+                            'border-b border-outline-variant/15 px-space-md py-space-sm transition-colors',
+                            completed && 'bg-success-container/25',
+                          )}
+                        >
+                          <div className="grid grid-cols-2 gap-x-space-sm gap-y-space-xs lg:grid-cols-[minmax(0,1fr)_7rem_minmax(0,10rem)_8rem] lg:items-center">
+                            <div className="col-span-2 min-w-0 lg:col-span-1">
+                              <p className="flex items-center gap-space-xs">
+                                <span className="font-bold tabular-nums text-primary">{line.orderNumber}</span>
+                                <span className="text-label-sm text-outline">turno {line.position}</span>
+                              </p>
+                              <p className="truncate text-body-md text-on-surface-variant" title={line.description ?? ''}>
+                                <span className="font-semibold text-on-surface">{line.productCode}</span> ·{' '}
+                                {line.description ?? '—'}
+                              </p>
+                              {line.note && (
+                                <p className="mt-space-2xs flex items-start gap-space-xs rounded-lg bg-secondary-container/15 px-space-xs py-1 text-label-md text-on-surface">
+                                  <MessageSquare aria-hidden className="mt-0.5 size-3.5 shrink-0 text-secondary" />
+                                  <span className="min-w-0 whitespace-pre-wrap">{line.note}</span>
+                                </p>
+                              )}
+                            </div>
+
+                            <Cell label="Entrega" align="right">
+                              <span className="tabular-nums text-on-surface-variant">
+                                {formatBusinessDate(line.effectiveDate)}
+                              </span>
+                            </Cell>
+
+                            <Cell label="Cantidad" align="right">
+                              <span className="flex flex-col items-end leading-tight tabular-nums">
+                                <span className="font-semibold text-primary">
+                                  {formatNumber(line.plannedQty)} {line.uom ?? ''}
+                                </span>
+                                <span className="text-label-sm text-outline">{formatNumber(line.plannedKg)} kg</span>
+                              </span>
+                            </Cell>
+
+                            <Cell label="Acción" align="right">
+                              {editable ? (
+                                <button
+                                  type="button"
+                                  disabled={saving || bulkGroup !== null}
+                                  onClick={() => void markLine(line, completed ? 'PENDIENTE' : 'CARGADO')}
+                                  className={cx(
+                                    'inline-flex h-8 min-w-[7.5rem] items-center justify-center gap-space-xs rounded-pill px-space-sm font-semibold text-label-md transition-all disabled:opacity-40',
+                                    completed
+                                      ? 'border border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low'
+                                      : 'bg-secondary-container text-on-secondary hover:-translate-y-0.5',
+                                  )}
+                                >
+                                  {saving ? (
+                                    <Loader2 aria-hidden className="size-3.5 animate-spin" />
+                                  ) : completed ? (
+                                    <RotateCcw aria-hidden className="size-3.5" />
+                                  ) : (
+                                    <CheckCheck aria-hidden className="size-3.5" />
+                                  )}
+                                  {completed ? 'Deshacer' : 'Cargar'}
+                                </button>
+                              ) : (
+                                <span
+                                  className={cx(
+                                    'text-label-sm font-semibold',
+                                    completed ? 'text-secondary' : 'text-outline',
+                                  )}
+                                >
+                                  {lineStatusMeta(line.status).label}
+                                </span>
+                              )}
+                            </Cell>
                           </div>
-
-                          <Cell label="Entrega" align="right">
-                            <span className="tabular-nums text-on-surface-variant">
-                              {formatBusinessDate(line.effectiveDate)}
-                            </span>
-                          </Cell>
-
-                          <Cell label="Cantidad" align="right">
-                            <span className="flex flex-col items-end leading-tight tabular-nums">
-                              <span className="font-semibold text-primary">
-                                {formatNumber(line.plannedQty)} {line.uom ?? ''}
-                              </span>
-                              <span className="text-label-sm text-outline">{formatNumber(line.plannedKg)} kg</span>
-                            </span>
-                          </Cell>
-
-                          <Cell label="Acción" align="right">
-                            {editable ? (
-                              <button
-                                type="button"
-                                disabled={saving}
-                                onClick={() => void markLine(line, completed ? 'PENDIENTE' : 'CARGADO')}
-                                className={cx(
-                                  'inline-flex h-8 min-w-[7.5rem] items-center justify-center gap-space-xs rounded-pill px-space-sm font-semibold text-label-md transition-all disabled:opacity-40',
-                                  completed
-                                    ? 'border border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low'
-                                    : 'bg-secondary-container text-on-secondary hover:-translate-y-0.5',
-                                )}
-                              >
-                                {saving ? (
-                                  <Loader2 aria-hidden className="size-3.5 animate-spin" />
-                                ) : completed ? (
-                                  <RotateCcw aria-hidden className="size-3.5" />
-                                ) : (
-                                  <CheckCheck aria-hidden className="size-3.5" />
-                                )}
-                                {completed ? 'Deshacer' : 'Completado'}
-                              </button>
-                            ) : (
-                              <span
-                                className={cx(
-                                  'text-label-sm font-semibold',
-                                  completed ? 'text-secondary' : 'text-outline',
-                                )}
-                              >
-                                {lineStatusMeta(line.status).label}
-                              </span>
-                            )}
-                          </Cell>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
               </section>
             ))}
           </div>
@@ -516,41 +581,26 @@ export default function DispatchSheetPage() {
           <Card className="sticky bottom-2 z-20 flex flex-wrap items-center justify-between gap-space-sm border-secondary-container/50 bg-surface-container-lowest/95 p-space-sm shadow-lift backdrop-blur">
             <div className="min-w-0">
               <p className="font-semibold text-primary">
-                {canStart
-                  ? 'Recibido. Toma el despacho para empezar a cargar.'
-                  : blockingLines > 0
-                    ? `Faltan ${blockingLines} renglón(es) por completar.`
-                    : 'Todo completado: revisa el reporte y cierra el despacho.'}
+                {blockingLines > 0
+                  ? `Faltan ${blockingLines} renglón(es) por cargar.`
+                  : 'Todo cargado: revisa el reporte y cierra el despacho.'}
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
-                {canStart
-                  ? 'Al tomarlo, planificación recibe el aviso.'
+                {sheet.status === 'ENVIADO' && completedLines === 0
+                  ? 'Carga el primer renglón para tomar el despacho. No hay paso de recibo.'
                   : 'Al cerrarlo se genera el reporte y planificación recibe los totales.'}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-space-sm">
-              {canStart && (
-                <button
-                  type="button"
-                  disabled={busy !== null}
-                  onClick={ackInProgress}
-                  className="flex h-10 items-center gap-space-xs rounded-pill bg-secondary-container px-space-lg font-bold text-on-secondary shadow-soft transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
-                >
-                  {busy === 'start' ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Truck aria-hidden className="size-4" />}
-                  Tomar y cargar
-                </button>
-              )}
-              {!canStart && (
-                <button
-                  type="button"
-                  disabled={blockingLines > 0 || busy !== null}
-                  onClick={() => openReport(false)}
-                  title={blockingLines > 0 ? 'Completa todos los renglones antes de cerrar' : undefined}
-                  className="flex h-10 items-center gap-space-xs rounded-pill bg-primary-container px-space-lg font-bold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
-                >
-                  <CheckCheck aria-hidden className="size-4" /> Cerrar despacho
-                </button>
-              )}
+              <button
+                type="button"
+                disabled={blockingLines > 0 || busy !== null}
+                onClick={() => openReport(false)}
+                title={blockingLines > 0 ? 'Completa todos los renglones antes de cerrar' : undefined}
+                className="flex h-10 items-center gap-space-xs rounded-pill bg-primary-container px-space-lg font-bold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
+              >
+                <CheckCheck aria-hidden className="size-4" /> Cerrar despacho
+              </button>
             </div>
           </Card>
         )}
@@ -592,7 +642,7 @@ export default function DispatchSheetPage() {
 
         <p className="flex flex-wrap items-center gap-space-xs text-label-sm normal-case text-on-surface-variant">
           <UserCheck aria-hidden className="size-3.5" />
-          Cada acuse queda firmado con quién y a qué hora. Este despacho no genera movimientos en Profit.
+          Quien marca el primer renglón queda como responsable de la carga. Este despacho no genera movimientos en Profit.
         </p>
       </main>
 

@@ -11,7 +11,6 @@ import {
   sheetExport,
   sheetStatusMeta,
   sortSheets,
-  timelineSteps,
 } from './dispatch-sheet';
 
 // ============================================================
@@ -85,15 +84,15 @@ function summary(overrides: Partial<DispatchSheetSummary> = {}): DispatchSheetSu
 
 describe('estados y lenguaje de planta', () => {
   it('traduce los estados del servidor a etiquetas operativas', () => {
-    expect(sheetStatusMeta('ENVIADO')).toMatchObject({ label: 'Sin abrir', tone: 'warning' });
+    expect(sheetStatusMeta('ENVIADO')).toMatchObject({ label: 'Pendiente', tone: 'warning' });
     expect(sheetStatusMeta('DESPACHADO')).toMatchObject({ label: 'Despachado', tone: 'success' });
     expect(sheetStatusMeta('CON_NOVEDAD').tone).toBe('danger');
   });
 
-  it('usa «Completado» para la marca actual y conserva los estados históricos', () => {
+  it('usa «Cargado» para la marca actual y conserva los estados históricos', () => {
     expect(lineStatusMeta('PENDIENTE')).toMatchObject({ label: 'Pendiente', tone: 'muted' });
-    expect(lineStatusMeta('CARGADO')).toMatchObject({ label: 'Completado', tone: 'success' });
-    expect(lineStatusMeta('FALTANTE').label).toBe('No completado (histórico)');
+    expect(lineStatusMeta('CARGADO')).toMatchObject({ label: 'Cargado', tone: 'success' });
+    expect(lineStatusMeta('FALTANTE').label).toBe('No cargado (histórico)');
     expect(lineStatusMeta('PARCIAL').label).toBe('Parcial (histórico)');
   });
 
@@ -190,38 +189,11 @@ describe('bandeja', () => {
   });
 });
 
-describe('cinta de acuses (túnel)', () => {
-  it('marca lo hecho, el paso actual y lo que falta', () => {
-    const steps = timelineSteps(
-      summary({
-        status: 'EN_PROCESO',
-        receivedAt: '2026-10-21T15:02:00.000Z',
-        receivedByName: 'ALEXIS RIVAS',
-        startedAt: '2026-10-21T15:05:00.000Z',
-      }),
-    );
-    // El próximo paso esperado (el cierre) queda resaltado como «actual».
-    expect(steps.map((step) => step.state)).toEqual(['done', 'done', 'done', 'current']);
-    expect(steps[1]!.by).toBe('ALEXIS RIVAS');
-    expect(steps[3]!.at).toBeNull();
-  });
-
-  it('marca el siguiente paso como actual cuando aún no ocurre', () => {
-    const steps = timelineSteps(summary({ status: 'ENVIADO' }));
-    expect(steps.map((step) => step.state)).toEqual(['done', 'current', 'todo', 'todo']);
-  });
-
-  it('si se anula, la cinta lo muestra en lugar del cierre', () => {
-    const steps = timelineSteps(summary({ status: 'CANCELADO', canceledAt: '2026-10-21T17:00:00.000Z' }));
-    expect(steps.map((step) => step.key)).toEqual(['ENVIADO', 'CANCELADO']);
-    expect(steps[1]!.state).toBe('canceled');
-  });
-});
-
 describe('hoja exportable', () => {
   it('arma el Excel con metadatos, renglones y totales', () => {
     const detail: DispatchSheetDetail = {
       ...summary({ status: 'EN_PROCESO', receivedAt: '2026-10-21T15:02:00.000Z' }),
+      loadPlan: null,
       lines: [
         line({ id: 'a', status: 'CARGADO', loadedQty: 60, loadedKg: 2400 }),
         line({
@@ -248,7 +220,7 @@ describe('hoja exportable', () => {
 
     const dataRows = exported.aoa.slice(headerRow + 1, headerRow + 3);
     expect(dataRows[0]![10]).toBe(60);
-    expect(dataRows[1]![12]).toBe('Completado');
+    expect(dataRows[1]![12]).toBe('Cargado');
 
     const totalLine = exported.aoa.at(-2)![0] as string;
     // Cargado 2.800 kg contra 2.800 kg completados → sin diferencia.

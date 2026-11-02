@@ -13,9 +13,11 @@ import {
   DispatchSheetListResponse,
   DispatchSheetQuery,
   DispatchSheetSummary,
+  LoadPlan,
   Notification,
   NotificationReadInput,
   NotificationListResponse,
+  zLoadPlan,
   zScenarioPayload,
 } from '@nexo/contracts';
 import { DispatchSheet, DispatchSheetEvent as EventRow, DispatchSheetLine as LineRow, Prisma } from '@prisma/client';
@@ -41,6 +43,10 @@ export interface DispatchViewer {
   role: string;
   // La bitácora solo se entrega al rol ADMIN (ver `detail`/`message`).
   isAdmin?: boolean;
+  // Permiso `despacho:create`: armar y enviar simulaciones al almacén.
+  canPublish?: boolean;
+  // Permiso individual `despacho:view_all`: ve toda la bandeja e historial.
+  canViewAll?: boolean;
   code?: string | null;
   name?: string | null;
 }
@@ -61,6 +67,8 @@ type SheetWithLines = DispatchSheet & { lines: LineRowLite[]; assignedTo?: { dis
 const OPEN_STATUSES = ['ENVIADO', 'RECIBIDO', 'EN_PROCESO', 'CON_NOVEDAD'];
 const OPERATOR_ROLES = ['ALMACEN', 'ADMIN'];
 const PLANNER_ROLES = ['PLANIFICADOR', 'GERENCIA', 'ADMIN'];
+// Estos roles ven toda la bandeja, incluido el historial cerrado por otros.
+const FULL_VISIBILITY_ROLES = ['ADMIN', 'GERENCIA', 'ALMACEN'];
 const NOVEDAD_LINE_STATUSES = ['PARCIAL', 'FALTANTE', 'NOVEDAD'];
 
 function toNumber(value: unknown): number {
@@ -141,6 +149,7 @@ export class DispatchService {
       ...this.toSummary(sheet, viewer),
       lines: sheet.lines.map((line) => this.toLine(line)),
       events: this.eventsFor(sheet, viewer),
+      loadPlan: this.parseLoadPlan(sheet.loadPlanJson),
     };
   }
 
@@ -226,20 +235,19 @@ export class DispatchService {
   // ---------- Publicar ----------
 
   async create(viewer: DispatchViewer, input: DispatchSheetCreateInput): Promise<DispatchSheetDetail> {
-    const actor = await this.viewerInfo(viewer);
-
-    // Sin operadores de almacén activos la publicación se bloquea: el aviso no
-    // llegaría a nadie y la hoja quedaría huérfana.
-    const candidates = await this.operatorCandidates();
-    const warehouseOperators = candidates.filter((candidate) => candidate.baseRole === 'ALMACEN');
-    if (warehouseOperators.length === 0) {
-      throw new ConflictException(
-        'No hay operadores de almacén activos, así que el despacho no tendría a quién llegar. Un administrador debe dar el permiso «Operar» (Despacho) a un rol con plantilla Almacén antes de publicar.',
+    if (!viewer.canPublish) {
+      throw new ForbiddenException(
+        'No tienes el permiso «Armar y enviar simulación» en Despacho.',
       );
     }
+    const actor = await this.viewerInfo(viewer);
+
+    // Sin operadores de almacén el despacho cae en la bandeja compartida: no
+    // se bloquea el envío desde el simulador, solo se avisa a quien exista.
+    const candidates = await this.operatorCandidates();
 
     const scenario = await this.prisma.dispatchScenario.findFirst({
-      where: { id: input.scenarioId, ownerId: viewer.id, kind: 'SAVED' },
+      where: { id: input.scenarioId, kind: 'SAVED' },
     });
     if (!scenario) {
       throw new NotFoundException('No encontramos ese escenario guardado. Guarda el plan en Pedidos y vuelve a intentar.');
@@ -293,6 +301,7 @@ export class DispatchService {
           scenarioName: scenario.name,
           recipeJson: JSON.stringify(payload.recipe),
           photoJson: JSON.stringify(snapshot),
+          loadPlanJson: payload.loadPlan ? JSON.stringify(payload.loadPlan) : null,
           assignedToId: assignee?.id ?? null,
           assignedRole: 'ALMACEN',
           createdById: actor.id,
@@ -315,6 +324,8 @@ export class DispatchService {
               effectiveDate: line.effectiveDate,
               plannedQty: line.assignedQty,
               plannedKg: line.assignedKg,
+              // El comentario de la simulación viaja al renglón del almacén.
+              note: line.comment ?? null,
               status: 'PENDIENTE',
             })),
           },
@@ -364,111 +375,8 @@ export class DispatchService {
       ...this.toSummary(sheet, viewer),
       lines: sheet.lines.map((line) => this.toLine(line)),
       events: this.eventsFor(sheet, viewer),
+      loadPlan: this.parseLoadPlan(sheet.loadPlanJson),
     };
-  }
-
-  // ---------- Acuses ----------
-
-  async ack(viewer: DispatchViewer, id: string, input: DispatchAckInput): Promise<DispatchSheetDetail> {
-    const sheet = await this.findSheet(id);
-    const actor = await this.viewerInfo(viewer);
-    this.assertOperable(sheet, viewer);
-
-    if (input.event === 'RECIBIDO') {
-      // Idempotente: repetir el acuse no duplica sellos ni notificaciones.
-      if (sheet.receivedAt) return this.detail(viewer, id);
-      const claimed = this.claimPatch(sheet, actor);
-      await this.prisma.$transaction([
-        this.prisma.dispatchSheet.update({
-          where: { id: sheet.id },
-          data: {
-            status: 'RECIBIDO',
-            receivedAt: new Date(),
-            receivedById: actor.id,
-            receivedByName: actor.name,
-            ...claimed,
-          },
-        }),
-        this.prisma.dispatchSheetEvent.create({
-          data: {
-            sheetId: sheet.id,
-            kind: 'SYSTEM',
-            type: 'RECIBIDO',
-            body: `${actor.name ?? 'El almacén'} abrió el despacho.`,
-            authorId: actor.id,
-            authorCode: actor.code,
-            authorName: actor.name,
-          },
-        }),
-      ]);
-      await this.notify([sheet.createdById], {
-        type: 'DESPACHO_RECIBIDO',
-        title: `${sheet.number}: abierto por el almacén`,
-        body: `${actor.name ?? 'Almacén'} recibió el despacho ${sheet.title}.`,
-        entityId: sheet.id,
-        actorId: actor.id,
-        actorName: actor.name,
-        linkPath: `/despacho/${sheet.id}`,
-      });
-      await this.audit.record({
-        actorId: actor.id,
-        actorEmail: actor.code,
-        action: 'DISPATCH_ACK',
-        entityType: 'DispatchSheet',
-        entityId: sheet.id,
-        context: { number: sheet.number, event: 'RECIBIDO' },
-      });
-      return this.detail(viewer, id);
-    }
-
-    // EN_PROCESO
-    if (sheet.status === 'EN_PROCESO') return this.detail(viewer, id);
-    if (!['RECIBIDO', 'CON_NOVEDAD'].includes(sheet.status)) {
-      throw new ConflictException('Primero hay que abrir (recibir) el despacho.');
-    }
-    const claimed = this.claimPatch(sheet, actor);
-    await this.prisma.$transaction([
-      this.prisma.dispatchSheet.update({
-        where: { id: sheet.id },
-        data: {
-          status: 'EN_PROCESO',
-          startedAt: sheet.startedAt ?? new Date(),
-          receivedAt: sheet.receivedAt ?? new Date(),
-          receivedById: sheet.receivedById ?? actor.id,
-          receivedByName: sheet.receivedByName ?? actor.name,
-          ...claimed,
-        },
-      }),
-      this.prisma.dispatchSheetEvent.create({
-        data: {
-          sheetId: sheet.id,
-          kind: 'SYSTEM',
-          type: 'EN_PROCESO',
-          body: `${actor.name ?? 'El almacén'} empezó a cargar.`,
-          authorId: actor.id,
-          authorCode: actor.code,
-          authorName: actor.name,
-        },
-      }),
-    ]);
-    await this.notify([sheet.createdById], {
-      type: 'DESPACHO_EN_PROCESO',
-      title: `${sheet.number}: en carga`,
-      body: `${actor.name ?? 'Almacén'} está cargando el despacho.`,
-      entityId: sheet.id,
-      actorId: actor.id,
-      actorName: actor.name,
-      linkPath: `/despacho/${sheet.id}`,
-    });
-    await this.audit.record({
-      actorId: actor.id,
-      actorEmail: actor.code,
-      action: 'DISPATCH_ACK',
-      entityType: 'DispatchSheet',
-      entityId: sheet.id,
-      context: { number: sheet.number, event: 'EN_PROCESO' },
-    });
-    return this.detail(viewer, id);
   }
 
   // ---------- Carga por renglón ----------
@@ -488,6 +396,7 @@ export class DispatchService {
     const plannedKg = toNumber(line.plannedKg);
 
     // Todo o nada: completar toma la cantidad planificada; deshacer la limpia.
+    // El `note` es el comentario del planificador: NO se borra al marcar.
     await this.prisma.dispatchSheetLine.update({
       where: { id: line.id },
       data: completed
@@ -495,7 +404,6 @@ export class DispatchService {
             loadedQty: plannedQty,
             loadedKg: plannedKg,
             status: 'CARGADO',
-            note: null,
             checkedAt: new Date(),
             checkedById: actor.id,
             checkedByName: actor.name,
@@ -504,7 +412,6 @@ export class DispatchService {
             loadedQty: null,
             loadedKg: null,
             status: 'PENDIENTE',
-            note: null,
             checkedAt: null,
             checkedById: null,
             checkedByName: null,
@@ -512,12 +419,26 @@ export class DispatchService {
     });
 
     // El estado de la hoja refleja si hay novedades entre los renglones.
+    // Al marcar el primer renglón la hoja arranca sola: ya no hay acuse previo.
     const refreshed = await this.findSheet(id);
+    const starting = refreshed.status === 'ENVIADO' || refreshed.status === 'RECIBIDO';
     const hasNovedad = refreshed.lines.some((item) => NOVEDAD_LINE_STATUSES.includes(item.status));
-    const nextStatus = hasNovedad ? 'CON_NOVEDAD' : refreshed.status === 'CON_NOVEDAD' ? 'EN_PROCESO' : refreshed.status;
+    const nextStatus = hasNovedad
+      ? 'CON_NOVEDAD'
+      : refreshed.status === 'CON_NOVEDAD' || starting
+        ? 'EN_PROCESO'
+        : refreshed.status;
     if (nextStatus !== refreshed.status) {
+      const claimed = starting ? this.claimPatch(refreshed, actor) : {};
       await this.prisma.$transaction([
-        this.prisma.dispatchSheet.update({ where: { id: refreshed.id }, data: { status: nextStatus } }),
+        this.prisma.dispatchSheet.update({
+          where: { id: refreshed.id },
+          data: {
+            status: nextStatus,
+            ...(starting ? { startedAt: refreshed.startedAt ?? new Date() } : {}),
+            ...claimed,
+          },
+        }),
         this.prisma.dispatchSheetEvent.create({
           data: {
             sheetId: refreshed.id,
@@ -525,7 +446,9 @@ export class DispatchService {
             type: hasNovedad ? 'NOVEDAD' : 'EN_PROCESO',
             body: hasNovedad
               ? `${actor.name ?? 'Almacén'} reportó diferencias en la carga.`
-              : 'Las diferencias quedaron resueltas.',
+              : starting
+                ? `${actor.name ?? 'El almacén'} empezó a cargar.`
+                : 'Las diferencias quedaron resueltas.',
             authorId: actor.id,
             authorCode: actor.code,
             authorName: actor.name,
@@ -571,13 +494,13 @@ export class DispatchService {
     // Idempotente: cerrar dos veces devuelve el mismo estado.
     if (sheet.status === 'DESPACHADO') return this.detail(viewer, id);
     this.assertOperable(sheet, viewer);
-    if (!['EN_PROCESO', 'CON_NOVEDAD'].includes(sheet.status)) {
-      throw new ConflictException('Toma el despacho (en proceso) antes de cerrarlo.');
+    if (!['RECIBIDO', 'EN_PROCESO', 'CON_NOVEDAD'].includes(sheet.status)) {
+      throw new ConflictException('Carga al menos un renglón antes de cerrarlo.');
     }
     const pending = sheet.lines.filter((line) => line.status !== 'CARGADO');
     if (pending.length > 0) {
       throw new BadRequestException(
-        `Faltan ${pending.length} renglón(es) por completar. Marca cada uno como completado antes de cerrar.`,
+        `Faltan ${pending.length} renglón(es) por cargar. Carga cada uno antes de cerrar.`,
       );
     }
 
@@ -802,7 +725,6 @@ export class DispatchService {
   }
 
   private visibilityWhere(viewer: DispatchViewer, query: DispatchSheetQuery): Prisma.DispatchSheetWhereInput {
-    const base = this.baseVisibility(viewer);
     const filters: Prisma.DispatchSheetWhereInput[] = [];
     if (query.q?.trim()) {
       const needle = query.q.trim();
@@ -813,18 +735,26 @@ export class DispatchService {
     if (query.from) filters.push({ sentAt: { gte: new Date(`${query.from}T00:00:00.000Z`) } });
     if (query.to) filters.push({ sentAt: { lte: new Date(`${query.to}T23:59:59.999Z`) } });
 
+    // La bandeja de pendientes es de piso: cualquier usuario con «Ver» ve todo
+    // lo abierto, sin importar quién lo publicó.
     const scope: Prisma.DispatchSheetWhereInput =
-      query.scope === 'created'
-        ? { createdById: viewer.id }
-        : query.scope === 'assigned'
-          ? this.operatorVisibility(viewer)
-          : {};
+      query.scope === 'pending'
+        ? { status: { in: OPEN_STATUSES } }
+        : query.scope === 'history'
+          ? { status: { in: ['DESPACHADO', 'CANCELADO'] } }
+          : query.scope === 'created'
+            ? { createdById: viewer.id }
+            : query.scope === 'assigned'
+              ? this.operatorVisibility(viewer)
+              : this.baseVisibility(viewer);
 
+    // La bandeja respeta la visibilidad del rol o del permiso «Ver todos».
+    const base = this.baseVisibility(viewer);
     return filters.length > 0 ? { AND: [base, scope, ...filters] } : { AND: [base, scope] };
   }
 
   private baseVisibility(viewer: DispatchViewer): Prisma.DispatchSheetWhereInput {
-    if (['ADMIN', 'GERENCIA'].includes(viewer.role)) return {};
+    if (FULL_VISIBILITY_ROLES.includes(viewer.role) || viewer.canViewAll) return {};
     if (viewer.role === 'PLANIFICADOR') return { createdById: viewer.id };
     if (viewer.role === 'ALMACEN') {
       return {
@@ -850,7 +780,7 @@ export class DispatchService {
   }
 
   private canSee(sheet: DispatchSheet, viewer: DispatchViewer): boolean {
-    if (['ADMIN', 'GERENCIA'].includes(viewer.role)) return true;
+    if (FULL_VISIBILITY_ROLES.includes(viewer.role) || viewer.canViewAll) return true;
     if (sheet.createdById === viewer.id) return true;
     if (viewer.role === 'ALMACEN') {
       return (
@@ -916,11 +846,22 @@ export class DispatchService {
     };
   }
 
+  private parseLoadPlan(raw: string | null | undefined): LoadPlan | null {
+    if (!raw) return null;
+    try {
+      return zLoadPlan.parse(JSON.parse(raw) as unknown);
+    } catch {
+      return null;
+    }
+  }
+
   private toSummary(sheet: SheetWithLines, viewer: DispatchViewer): DispatchSheetSummary {
     const lines = sheet.lines ?? [];
     const totals = this.liveTotals(lines);
     const linesDone = lines.filter((line) => line.status === 'CARGADO').length;
     const closed = ['DESPACHADO', 'CANCELADO'].includes(sheet.status);
+    // «Recibido» era el acuse anterior: se muestra como «en carga».
+    const status = sheet.status === 'RECIBIDO' ? 'EN_PROCESO' : sheet.status;
     const customers = [...new Set(lines.map((line) => line.customerName).filter((name): name is string => Boolean(name)))];
     const pendingDates = lines
       .filter((line) => line.status === 'PENDIENTE' && line.effectiveDate)
@@ -932,7 +873,7 @@ export class DispatchService {
       id: sheet.id,
       number: sheet.number,
       title: sheet.title,
-      status: sheet.status as DispatchSheetSummary['status'],
+      status: status as DispatchSheetSummary['status'],
       instructions: sheet.instructions,
       assignedToId: sheet.assignedToId,
       assignedToName: sheet.assignedTo?.displayName ?? null,

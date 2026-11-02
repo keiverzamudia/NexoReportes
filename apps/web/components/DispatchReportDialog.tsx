@@ -80,7 +80,7 @@ export function DispatchReportDialog({
         <div className="flex-1 overflow-y-auto p-space-md">
           <div className="grid grid-cols-2 gap-space-sm sm:grid-cols-4">
             <ReportKpi
-              label="Completados"
+              label="Cargados"
               value={`${report.completed.lines}/${report.totals.lines}`}
               hint={formatNumber(report.completed.kg) + ' kg'}
             />
@@ -96,8 +96,8 @@ export function DispatchReportDialog({
 
           {!readOnly && report.pending.lines > 0 && (
             <p className="mt-space-md rounded-xl border border-warning/40 bg-warning/10 px-space-sm py-2 text-label-md font-semibold text-on-warning-container">
-              Este reporte todavía tiene {report.pending.lines} renglón(es) sin completar. Vuelve a la hoja y
-              márcalos para poder cerrar.
+              Este reporte todavía tiene {report.pending.lines} renglón(es) sin cargar. Vuelve a la hoja y
+              cárgalos para poder cerrar.
             </p>
           )}
 
@@ -110,9 +110,9 @@ export function DispatchReportDialog({
                     <span>{group.lines.length} renglón(es)</span>
                     <span>{formatNumber(group.plannedKg)} kg plan</span>
                     {group.pendingLines > 0 ? (
-                      <Badge tone="warning">{group.pendingLines} por completar</Badge>
+                      <Badge tone="warning">{group.pendingLines} por cargar</Badge>
                     ) : (
-                      <Badge tone="success">completo</Badge>
+                      <Badge tone="success">cargado</Badge>
                     )}
                   </span>
                 </header>

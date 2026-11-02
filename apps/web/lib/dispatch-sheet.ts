@@ -19,8 +19,9 @@ import type {
 export type SheetTone = 'default' | 'primary' | 'success' | 'danger' | 'warning' | 'muted';
 
 export const SHEET_STATUS_META: Record<DispatchSheetStatus, { label: string; short: string; tone: SheetTone }> = {
-  ENVIADO: { label: 'Sin abrir', short: 'Enviado', tone: 'warning' },
-  RECIBIDO: { label: 'Recibido', short: 'Recibido', tone: 'primary' },
+  ENVIADO: { label: 'Pendiente', short: 'Pendiente', tone: 'warning' },
+  // Estado legado del acuse: se muestra como «En carga».
+  RECIBIDO: { label: 'En carga', short: 'En carga', tone: 'primary' },
   EN_PROCESO: { label: 'En carga', short: 'En carga', tone: 'primary' },
   CON_NOVEDAD: { label: 'Con novedad', short: 'Novedad', tone: 'danger' },
   DESPACHADO: { label: 'Despachado', short: 'Despachado', tone: 'success' },
@@ -29,10 +30,10 @@ export const SHEET_STATUS_META: Record<DispatchSheetStatus, { label: string; sho
 
 export const LINE_STATUS_META: Record<DispatchLineStatus, { label: string; tone: SheetTone }> = {
   PENDIENTE: { label: 'Pendiente', tone: 'muted' },
-  CARGADO: { label: 'Completado', tone: 'success' },
+  CARGADO: { label: 'Cargado', tone: 'success' },
   // Estados anteriores: se conservan para leer hojas históricas.
   PARCIAL: { label: 'Parcial (histórico)', tone: 'warning' },
-  FALTANTE: { label: 'No completado (histórico)', tone: 'danger' },
+  FALTANTE: { label: 'No cargado (histórico)', tone: 'danger' },
   NOVEDAD: { label: 'Novedad (histórico)', tone: 'danger' },
 };
 
@@ -137,7 +138,7 @@ export function computeTotals(lines: DispatchSheetLine[]): SheetTotals {
     }
     plannedKg += line.plannedKg;
     loadedKg += lineLoadedKg(line);
-    // Solo «Completado» avanza el trabajo. Las marcas históricas
+    // Solo «Cargado» avanza el trabajo. Las marcas históricas
     // (parcial/faltante) siguen pesando en la diferencia del reporte.
     if (line.status === 'CARGADO') done += 1;
     if (line.status !== 'PENDIENTE') checkedPlannedKg += line.plannedKg;
@@ -253,39 +254,6 @@ export function sortSheets(sheets: DispatchSheetSummary[]): DispatchSheetSummary
     if (byDate !== 0) return byDate;
     return a.sentAt.localeCompare(b.sentAt);
   });
-}
-
-// ---------- Cinta de acuses (el túnel, hecho visible) ----------
-
-export interface TimelineStep {
-  key: string;
-  label: string;
-  at: string | null;
-  by: string | null;
-  state: 'done' | 'current' | 'todo' | 'canceled';
-}
-
-export function timelineSteps(sheet: DispatchSheetSummary): TimelineStep[] {
-  const steps: Omit<TimelineStep, 'state'>[] = [
-    { key: 'ENVIADO', label: 'Enviado', at: sheet.sentAt, by: sheet.createdByName },
-    { key: 'RECIBIDO', label: 'Recibido', at: sheet.receivedAt, by: sheet.receivedByName },
-    { key: 'EN_PROCESO', label: 'En carga', at: sheet.startedAt, by: sheet.claimedByName ?? sheet.receivedByName },
-    { key: 'DESPACHADO', label: 'Despachado', at: sheet.completedAt, by: sheet.completedByName },
-  ];
-
-  if (sheet.status === 'CANCELADO') {
-    const canceledAt = sheet.canceledAt;
-    return [
-      ...steps.slice(0, 1).map((step) => ({ ...step, state: 'done' as const })),
-      { key: 'CANCELADO', label: 'Anulado', at: canceledAt, by: null, state: 'canceled' as const },
-    ];
-  }
-
-  const firstPending = steps.findIndex((step) => step.at === null);
-  return steps.map((step, index) => ({
-    ...step,
-    state: step.at !== null ? 'done' : index === firstPending ? 'current' : 'todo',
-  }));
 }
 
 // ---------- Exportación ----------
