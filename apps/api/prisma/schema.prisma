@@ -38,10 +38,10 @@ model User {
   updatedAt   DateTime  @updatedAt
 
   refreshTokens       RefreshToken[]
-  auditEvents         AuditEvent[]  @relation("AuditActor")
+  auditEvents         AuditEvent[]       @relation("AuditActor")
   scenarios           DispatchScenario[]
-  sheetsAssigned      DispatchSheet[] @relation("SheetAssignee")
-  notifications       Notification[]  @relation("NotificationRecipient")
+  sheetsAssigned      DispatchSheet[]    @relation("SheetAssignee")
+  notifications       Notification[]     @relation("NotificationRecipient")
   permissionOverrides UserPermission[]
 }
 
@@ -191,7 +191,7 @@ model Product {
   lastSyncedAt DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  orderLines    SalesOrderLine[]
+  orderLines     SalesOrderLine[]
   inventoryLines InventorySnapshotLine[]
 }
 
@@ -223,45 +223,63 @@ model Customer {
 }
 
 model SalesOrder {
-  id             String    @id @default(cuid())
-  externalNumber String    @unique
-  customerId     String?
-  customer       Customer? @relation(fields: [customerId], references: [id])
-  customerCode   String?
-  customerName   String?
-  customerType   String?
-  vendor         String?
-  orderDate      DateTime?
-  requestedDate  DateTime?
-  // ABIERTO | CERRADO | CANCELADO | DESCONOCIDO (mapeo desde statusRaw de Profit)
-  status         String    @default("ABIERTO")
-  statusRaw      String?
-  authorized     Boolean?
-  isActive       Boolean   @default(true)
-  removedAt      DateTime?
-  lastSyncedAt   DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id               String    @id @default(cuid())
+  externalNumber   String    @unique
+  customerId       String?
+  customer         Customer? @relation(fields: [customerId], references: [id])
+  customerCode     String?
+  customerName     String?
+  customerType     String?
+  vendor           String?
+  orderDate        DateTime?
+  requestedDate    DateTime?
+  // ABIERTO | NOTA_ENTREGA | CERRADO | CANCELADO | DESCONOCIDO
+  // `NOTA_ENTREGA` es terminal: el pedido salió de la cartera porque Profit
+  // lo convirtió en nota de entrega (despacho).
+  status           String    @default("ABIERTO")
+  statusRaw        String?
+  authorized       Boolean?
+  isActive         Boolean   @default(true)
+  removedAt        DateTime?
+  // Ciclo de vida local (auditoría del cierre automático).
+  closedAt         DateTime?
+  // NOTA_ENTREGA | CANCELADO | SIN_PENDIENTE | MANUAL | FUERA_DE_VISTA
+  closedReason     String?
+  // PENDIENTE | FACTURADO_ASUMIDO | FACTURADO
+  // Se separa del estado comercial: una nota de entrega no es una factura.
+  billingStatus    String    @default("PENDIENTE")
+  // JSON con los números de nota de entrega detectados (si se pudieron probar).
+  notaEntregaRefs  String?
+  lastCheckedAt    DateTime?
+  lastSeenInViewAt DateTime?
+  // Motivo por el que la reconciliación dejó el pedido abierto para revisión
+  // (desapareció de la vista, status 2 con pendiente, no está en Profit…).
+  reviewReason     String?
+  lastSyncedAt     DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   lines SalesOrderLine[]
 
   @@index([requestedDate])
   @@index([status])
+  @@index([isActive, status])
+  @@index([closedAt])
 }
 
 model SalesOrderLine {
-  id          String      @id @default(cuid())
+  id          String     @id @default(cuid())
   orderId     String
-  order       SalesOrder  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order       SalesOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
   lineNumber  Int
   productCode String
   productId   String?
-  product     Product?    @relation(fields: [productId], references: [id])
+  product     Product?   @relation(fields: [productId], references: [id])
   description String?
   uom         String?
   // Cantidades DECIMAL: Precisiones de negocio (SAC con decimales). En PostgreSQL = NUMERIC.
-  quantity    Decimal     @default(0)
+  quantity    Decimal    @default(0)
   // Pendiente puede ser negativo en Profit (sobre-compromiso); conservar el signo.
-  pendingQty  Decimal     @default(0)
+  pendingQty  Decimal    @default(0)
   // kg del renglón según la vista (`kg` = pendiente × relacion_empaque,
   // calculado en Profit; se persiste el valor crudo, no se recalcula).
   pendingKg   Decimal?
@@ -298,7 +316,7 @@ model DeliveryDateOverride {
 // Historial de cada asignación/restauración de fecha tentativa.
 // `batchId` agrupa los cambios hechos en una misma acción masiva.
 model DeliveryDateChange {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   batchId       String?
   orderNumber   String
   productCode   String
@@ -310,7 +328,7 @@ model DeliveryDateChange {
   note          String?
   changedById   String?
   changedByCode String?
-  changedAt     DateTime @default(now())
+  changedAt     DateTime  @default(now())
 
   @@index([changedAt])
   @@index([customerCode, changedAt])
@@ -328,17 +346,17 @@ model InventorySnapshot {
 }
 
 model InventorySnapshotLine {
-  id            String           @id @default(cuid())
+  id            String            @id @default(cuid())
   snapshotId    String
   snapshot      InventorySnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
   productCode   String
   productId     String?
-  product       Product?         @relation(fields: [productId], references: [id])
+  product       Product?          @relation(fields: [productId], references: [id])
   warehouseCode String
   warehouseId   String?
-  warehouse     Warehouse?       @relation(fields: [warehouseId], references: [id])
-  qty           Decimal          @default(0)
-  reservedQty   Decimal          @default(0)
+  warehouse     Warehouse?        @relation(fields: [warehouseId], references: [id])
+  qty           Decimal           @default(0)
+  reservedQty   Decimal           @default(0)
 
   @@index([snapshotId])
   @@index([productCode])
@@ -385,6 +403,30 @@ model ForecastWeek {
 }
 
 // ============================================================
+// Snapshot mensual de la meta (`xart_fore.kg_mes`).
+//
+// `xart_fore` es una foto del mes EN CURSO: no tiene columna de mes ni
+// histórico. Para poder comparar meses cerrados (venta real vs meta) se
+// captura la meta mientras el mes está vigente y se guarda aquí por artículo.
+// Es una copia LOCAL de solo lectura sobre Profit: Nexo nunca escribe allí.
+//
+// `targetKg` está en KILOGRAMOS (igual que `xart_fore.kg_mes`).
+// ============================================================
+model ForecastTarget {
+  id          String   @id @default(cuid())
+  year        Int
+  month       Int
+  productCode String
+  targetKg    Decimal  @default(0)
+  // Última vez que se refrescó desde Profit (no es la fecha de la meta).
+  capturedAt  DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([year, month, productCode])
+  @@index([year, month])
+}
+
+// ============================================================
 // Simulador de despacho (Fase 6): escenarios guardados.
 //
 // Un escenario tiene dos capas:
@@ -404,31 +446,31 @@ model ForecastWeek {
 // para marcar el escenario como desactualizado sin releer Profit.
 // ============================================================
 model DispatchScenario {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   ownerId     String
-  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  owner       User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   name        String
   // DRAFT | SAVED
-  kind        String   @default("SAVED")
+  kind        String    @default("SAVED")
   payload     String
-  lineCount   Int      @default(0)
-  sacks       Decimal  @default(0)
-  assignedKg  Decimal  @default(0)
-  missingKg   Decimal  @default(0)
+  lineCount   Int       @default(0)
+  sacks       Decimal   @default(0)
+  assignedKg  Decimal   @default(0)
+  missingKg   Decimal   @default(0)
   // Cobertura en % (0-100), derivada de la foto al guardar.
-  coverage    Int      @default(0)
+  coverage    Int       @default(0)
   dataVersion String?
   // Versionado optimista: el cliente envía la versión que leyó.
-  version     Int      @default(1)
+  version     Int       @default(1)
   restoredAt  DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  restores DispatchScenarioRestore[]
 
   // Un borrador por usuario (name vacío) y nombres únicos por usuario.
   @@unique([ownerId, kind, name])
   @@index([ownerId, updatedAt])
-
-  restores DispatchScenarioRestore[]
 }
 
 // Historial visible de restauraciones de un escenario del simulador.
@@ -473,57 +515,59 @@ model DispatchScenarioRestore {
 // o bajas del usuario. Solo `assignedTo` es relación (se filtra y notifica).
 // ============================================================
 model DispatchSheet {
-  id             String    @id @default(cuid())
+  id           String  @id @default(cuid())
   // Correlativo legible: DSP-2026-0001.
-  number         String    @unique
-  title          String
+  number       String  @unique
+  title        String
   // ENVIADO | RECIBIDO | EN_PROCESO | CON_NOVEDAD | DESPACHADO | CANCELADO
-  status         String    @default("ENVIADO")
-  instructions   String?
+  status       String  @default("ENVIADO")
+  instructions String?
   // Origen: escenario del simulador (receta + foto para comparar).
-  scenarioId     String?
-  scenarioName   String?
-  recipeJson     String?
-  photoJson      String?
+  scenarioId   String?
+  scenarioName String?
+  recipeJson   String?
+  photoJson    String?
+  // Guía visual de carga del camión (bloques, orden y colores) copiada del escenario.
+  loadPlanJson String?
 
-  assignedToId   String?
-  assignedTo     User?     @relation("SheetAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
-  assignedRole   String    @default("ALMACEN")
+  assignedToId String?
+  assignedTo   User?   @relation("SheetAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedRole String  @default("ALMACEN")
 
-  claimedById    String?
-  claimedByCode  String?
-  claimedByName  String?
-  claimedAt      DateTime?
+  claimedById   String?
+  claimedByCode String?
+  claimedByName String?
+  claimedAt     DateTime?
 
-  createdById    String
-  createdByCode  String?
-  createdByName  String?
+  createdById   String
+  createdByCode String?
+  createdByName String?
 
-  sentAt         DateTime  @default(now())
-  receivedAt     DateTime?
-  receivedById   String?
-  receivedByName String?
-  startedAt      DateTime?
-  completedAt    DateTime?
-  completedById  String?
+  sentAt          DateTime  @default(now())
+  receivedAt      DateTime?
+  receivedById    String?
+  receivedByName  String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  completedById   String?
   completedByName String?
-  canceledAt     DateTime?
-  canceledById   String?
-  canceledByName String?
-  cancelReason   String?
+  canceledAt      DateTime?
+  canceledById    String?
+  canceledByName  String?
+  cancelReason    String?
 
-  plannedLines   Int       @default(0)
-  plannedSacks   Decimal   @default(0)
-  plannedKg      Decimal   @default(0)
-  loadedSacks    Decimal   @default(0)
-  loadedKg       Decimal   @default(0)
-  differenceKg   Decimal   @default(0)
+  plannedLines Int     @default(0)
+  plannedSacks Decimal @default(0)
+  plannedKg    Decimal @default(0)
+  loadedSacks  Decimal @default(0)
+  loadedKg     Decimal @default(0)
+  differenceKg Decimal @default(0)
 
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  lines  DispatchSheetLine[]
-  events DispatchSheetEvent[]
+  lines    DispatchSheetLine[]
+  events   DispatchSheetEvent[]
   arrivals CustomerArrival[]
 
   @@index([status, sentAt])
@@ -590,41 +634,41 @@ model DispatchSheetEvent {
 // usuario siga activo.
 // ============================================================
 model CustomerArrival {
-  id             String        @id @default(cuid())
-  number         String        @unique
-  sheetId        String
-  sheet          DispatchSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  id          String        @id @default(cuid())
+  number      String        @unique
+  sheetId     String
+  sheet       DispatchSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
   // Copia del despacho al momento de crear la llegada (histórico).
-  sheetNumber    String
-  sheetTitle     String
+  sheetNumber String
+  sheetTitle  String
 
-  customerCode   String
-  customerName   String
+  customerCode String
+  customerName String
   // yyyy-MM-dd: fecha de entrega más próxima del cliente dentro del plan.
-  expectedDate   String?
+  expectedDate String?
   // Pedidos del cliente incluidos en el despacho (CSV, para búsqueda y hoja).
-  orderNumbers   String
-  lineCount      Int           @default(0)
-  plannedSacks   Decimal       @default(0)
-  plannedKg      Decimal       @default(0)
+  orderNumbers String
+  lineCount    Int     @default(0)
+  plannedSacks Decimal @default(0)
+  plannedKg    Decimal @default(0)
 
   // ESPERADO | EN_PLANTA | ATENDIDO | AUSENTE | CON_INCIDENCIA | CANCELADO
-  status         String        @default("ESPERADO")
-  arrivedAt      DateTime?
-  arrivedById    String?
-  arrivedByCode  String?
-  arrivedByName  String?
-  closedAt       DateTime?
-  note           String?
+  status        String    @default("ESPERADO")
+  arrivedAt     DateTime?
+  arrivedById   String?
+  arrivedByCode String?
+  arrivedByName String?
+  closedAt      DateTime?
+  note          String?
 
-  createdById    String?
-  createdByCode  String?
-  createdByName  String?
-  updatedById    String?
-  updatedByName  String?
+  createdById   String?
+  createdByCode String?
+  createdByName String?
+  updatedById   String?
+  updatedByName String?
 
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   incidents ArrivalIncident[]
   events    ArrivalEvent[]
@@ -635,17 +679,17 @@ model CustomerArrival {
 }
 
 model ArrivalIncident {
-  id             String          @id @default(cuid())
-  arrivalId      String
-  arrival        CustomerArrival @relation(fields: [arrivalId], references: [id], onDelete: Cascade)
+  id         String          @id @default(cuid())
+  arrivalId  String
+  arrival    CustomerArrival @relation(fields: [arrivalId], references: [id], onDelete: Cascade)
   // FALTANTE | DEMORA | DANO | DOCUMENTO | RECHAZO | OTRO
-  kind           String
+  kind       String
   // BAJA | MEDIA | ALTA
-  severity       String          @default("MEDIA")
-  body           String
+  severity   String          @default("MEDIA")
+  body       String
   // ABIERTA | RESUELTA
-  status         String          @default("ABIERTA")
-  resolution     String?
+  status     String          @default("ABIERTA")
+  resolution String?
 
   reportedById   String?
   reportedByCode String?
@@ -654,8 +698,8 @@ model ArrivalIncident {
   resolvedByName String?
   resolvedAt     DateTime?
 
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([arrivalId, status])
 }
@@ -676,10 +720,95 @@ model ArrivalEvent {
   @@index([arrivalId, createdAt])
 }
 
+// ============================================================
+// Borrador GLOBAL del simulador (una sola fila, id = "GLOBAL").
+//
+// Es el plan vivo del equipo: receta + renglones + guía de carga. No es una
+// foto histórica (eso son los DispatchScenario guardados). El bloqueo evita
+// que dos planificadores se pisen: solo el dueño del lock autoguarda.
+// ============================================================
+model DispatchDraft {
+  id            String    @id @default("GLOBAL")
+  payload       String
+  lineCount     Int       @default(0)
+  sacks         Decimal   @default(0)
+  assignedKg    Decimal   @default(0)
+  missingKg     Decimal   @default(0)
+  coverage      Int       @default(0)
+  dataVersion   String?
+  // Versionado optimista: cada guardado incrementa en 1.
+  version       Int       @default(1)
+  // Lock de edición (TTL corto, renovado por heartbeat).
+  lockedById    String?
+  lockedByName  String?
+  lockedUntil   DateTime?
+  lockToken     String?
+  updatedById   String?
+  updatedByCode String?
+  updatedByName String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// ============================================================
+// Ciclo de vida del pedido: cada transición automática o manual deja un
+// evento inmutable (quién, cuándo, por qué y con qué evidencia de Profit).
+// ============================================================
+model OrderLifecycleEvent {
+  id           String   @id @default(cuid())
+  orderId      String?
+  orderNumber  String
+  customerCode String?
+  customerName String?
+  fromStatus   String
+  toStatus     String
+  // NOTA_ENTREGA | CANCELADO | SIN_PENDIENTE | MANUAL | REAPERTURA
+  reason       String
+  // PROFIT | MANUAL | SYSTEM
+  source       String   @default("PROFIT")
+  // JSON serializado: status/anulada/pendiente/notas detectadas.
+  evidence     String?
+  actorId      String?
+  actorCode    String?
+  actorName    String?
+  detectedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  @@index([orderNumber, detectedAt])
+  @@index([toStatus, detectedAt])
+  @@index([detectedAt])
+}
+
+// ============================================================
+// Corrida de reconciliación de pedidos (cierre por nota de entrega).
+// Guarda el resultado para el panel «Cierres recientes» y para diagnóstico.
+// ============================================================
+model OrderReconciliationRun {
+  id          String    @id @default(cuid())
+  // EN_CURSO | EXITOSA | PARCIAL | ERROR
+  status      String    @default("EN_CURSO")
+  dryRun      Boolean   @default(false)
+  // MANUAL | SYNC | SCHEDULER
+  trigger     String    @default("MANUAL")
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  checked     Int       @default(0)
+  closed      Int       @default(0)
+  canceled    Int       @default(0)
+  review      Int       @default(0)
+  errorsCount Int       @default(0)
+  errorDetail String?
+  actorId     String?
+  actorCode   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([startedAt])
+}
+
 model Notification {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   recipientId String
-  recipient   User     @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  recipient   User      @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
   type        String
   title       String
   body        String?
@@ -689,7 +818,7 @@ model Notification {
   actorId     String?
   actorName   String?
   readAt      DateTime?
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
 
   @@index([recipientId, readAt, createdAt])
 }

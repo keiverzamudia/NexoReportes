@@ -43,9 +43,10 @@ Monorepo TypeScript (pnpm workspaces + Turborepo) con tres aplicaciones y un paq
 | `inventory` | 3 | Existencias por almacén, reservas, disponibilidad neta |
 | `orders` / `customers` | 4 | Pedidos y clientes normalizados |
 | `availability` | 5 | Motor de disponibilidad y faltantes |
-| `scenarios` | 6 | Simulador: escenarios por usuario (borrador + guardados con nombre), versionado optimista |
+| `scenarios` | 6 | Simulador: plan global compartido (borrador único con lock) + escenarios guardados con nombre; versionado optimista |
 | `dispatch` | 6 | Despacho de almacén: hoja de trabajo, acuses, bitácora y notificaciones |
 | `arrivals` | 6c | Llegadas de clientes (PCP): se crean al publicar el despacho; hora de llegada, incidencias y correcciones con rastro |
+| `orders` (lifecycle) | 6d | Cierre automático de pedidos por nota de entrega de Profit; panel de cierres solo ADMIN |
 | `production` | 7 | Planes de producción, lotes, merma, capacidad |
 | `reports` | 8 | Reportes modulares y exportación |
 
@@ -57,8 +58,18 @@ Monorepo TypeScript (pnpm workspaces + Turborepo) con tres aplicaciones y un paq
 
 ### Simulador de despacho (Fase 6)
 
-`DispatchScenario` guarda la simulación del usuario en dos capas, siempre local
-(nunca escribe en Profit):
+`DispatchDraft` guarda el **plan global** del equipo en una sola fila (`id =
+GLOBAL`): receta, renglones seleccionados y guía de carga. El plan tiene un
+**lock de edición** con TTL corto: solo el titular autoguarda; el resto ve la
+última versión en modo lectura y puede «tomar control». La versión se controla
+con `version` (409 si el cliente leyó una versión vieja).
+
+`DispatchScenario` guarda **fotos con nombre** (receta + renglones + foto) para
+volver a un plan anterior. Las ve todo el equipo; solo el creador o un ADMIN
+puede renombrarlas, restaurarlas o borrarlas. Los borradores por usuario de la
+versión anterior se migran una vez al arrancar: el más reciente se convierte en
+el plan global y los demás se archivan como `SAVED` con el nombre
+«Borrador de {usuario} (migrado)».
 
 - **Receta** (`payload.recipe`): agrupación, modo, orden, filtros y renglones
   marcados como `pedido#artículo`. Al restaurar se vuelve a ejecutar el motor
@@ -66,20 +77,31 @@ Monorepo TypeScript (pnpm workspaces + Turborepo) con tres aplicaciones y un paq
 - **Foto** (`payload.snapshot`): cantidades y totales del momento de guardar,
   usada solo para mostrar el diff «qué cambió» y el detalle congelado.
 
-`kind = DRAFT` es el trabajo en curso (uno por usuario, `name = ''`, sin foto,
-autoguardado con debounce); `kind = SAVED` son los guardados con nombre
-(máx. 25). `dataVersion` es el fingerprint de las últimas syncs de `PEDIDOS` y
-`EXISTENCIAS`: si cambia, la simulación se marca **desactualizada**. `version`
-implementa el versionado optimista en renombrados y ediciones (409 si el
-cliente leyó una versión vieja). Los escenarios son privados: un id ajeno
-responde 404. `save`/`restore`/`delete` dejan traza en `AuditEvent`.
+`dataVersion` es el fingerprint de las últimas syncs de `PEDIDOS` y
+`EXISTENCIAS`: si cambia, la simulación se marca **desactualizada**. Cada
+guardado/restauración/borrado deja traza en `AuditEvent`.
 
-**Historial visible de restauraciones**: `DispatchScenarioRestore` guarda, por
-cada restauración, el diff que el cliente calculó antes de confirmar (renglones
-aplicados/omitidos, pendientes y existencias cambiadas, fechas, cartera y kg y
-cobertura antes→después). El modal de Pedidos muestra «restaurada N veces» y el
-detalle devuelve las últimas 20 entradas; borrar el escenario las elimina en
-cascada.
+### Cierre de pedidos por nota de entrega (Fase 6d)
+
+El sync trae las **cotizaciones pendientes** de Profit (`cotiz_c`). Cuando
+Profit las convierte en nota de entrega, la cotización sale de esa vista y
+`cotiz_c.status` pasa a `'2'`. `OrderLifecycleService` reconcilia los pedidos
+abiertos contra Profit (solo `SELECT`) y aplica esta regla:
+
+- `anulada = 1` → `CANCELADO`.
+- `status = '2'` y pendiente total `0` → `NOTA_ENTREGA` +
+  `billingStatus = FACTURADO_ASUMIDO`.
+- `status = '2'` con pendiente `> 0` → **revisión** (no se cierra).
+- `status 0/1` pero desapareció de la vista → **revisión** (no se cierra por
+  ausencia sola).
+
+Los pedidos cerrados se ocultan de la cartera (`isActive = false`) pero
+conservan sus renglones y un `OrderLifecycleEvent` inmutable con la evidencia.
+`OrderReconciliationRun` registra cada corrida. El panel «Cierres recientes»
+es solo para ADMIN y permite reabrir con motivo. El scheduler corre cada
+`ORDER_RECONCILE_SECONDS` (300 s por defecto) y `ORDER_RECONCILE_DRY_RUN=true`
+calcula sin escribir. Al cerrar, se podan los renglones cerrados del plan
+global si no está siendo editado.
 
 ### Despacho de almacén y túnel de acuses (Fase 6b)
 

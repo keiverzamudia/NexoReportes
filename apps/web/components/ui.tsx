@@ -11,6 +11,8 @@
 import { ArrowDownRight, ArrowUpRight, ChevronDown, ChevronUp, Inbox } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
+import type { HelpTerm } from '../content/help/types';
+import { ColumnHelp } from './help/ColumnHelp';
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(' ');
@@ -458,6 +460,11 @@ export type Column<T> = {
   sortValue?: (row: T) => string | number;
   /** Texto completo cuando la celda se recorta. */
   title?: (row: T) => string | undefined;
+  /**
+   * Ayuda de la columna. Si existe, el encabezado muestra el icono `ⓘ` y, con
+   * `showHelpRow`, una línea con `help.short`.
+   */
+  help?: HelpTerm;
   className?: string;
 };
 
@@ -468,6 +475,15 @@ const ALIGN: Record<'left' | 'right' | 'center', string> = {
   right: 'text-right',
   center: 'text-center',
 };
+
+const JUSTIFY: Record<'left' | 'right' | 'center', string> = {
+  left: 'justify-start',
+  right: 'justify-end',
+  center: 'justify-center',
+};
+
+// Subrayado punteado: señal de “aquí hay una explicación”, sin color ni ruido.
+const HELP_UNDERLINE = 'underline decoration-dotted decoration-outline-variant/70 underline-offset-4';
 
 /**
  * Tabla de datos con dos caras, una sola implementación:
@@ -491,6 +507,7 @@ export function DataTable<T>({
   expandedKey,
   renderExpanded,
   sticky = true,
+  showHelpRow = false,
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -510,6 +527,8 @@ export function DataTable<T>({
   renderExpanded?: (row: T) => ReactNode;
   /** Encabezado anclado al hacer scroll. Desactivar en tablas anidadas. */
   sticky?: boolean;
+  /** Muestra bajo cada encabezado la descripción corta de `help.short`. */
+  showHelpRow?: boolean;
 }) {
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
 
@@ -574,28 +593,47 @@ export function DataTable<T>({
                       sticky && 'sticky top-0 z-10 backdrop-blur',
                       ALIGN[c.align ?? 'left'],
                       index === 0 && cx('left-0 border-r border-outline-variant/25', sticky ? 'z-20' : 'z-[1]'),
+                      c.help && 'group/th',
                       c.className,
                     )}
                   >
-                    {c.sortValue ? (
-                      <button
-                        type="button"
-                        onClick={() => toggleSort(c)}
-                        className="inline-flex cursor-pointer select-none items-center gap-1 uppercase tracking-wider hover:text-primary"
-                        title={`Ordenar por ${c.header}${active ? (sort?.dir === 'asc' ? ' (ascendente)' : ' (descendente)') : ''}`}
+                    <div className={cx('flex items-center gap-1', JUSTIFY[c.align ?? 'left'])}>
+                      {c.sortValue ? (
+                        <button
+                          type="button"
+                          onClick={() => toggleSort(c)}
+                          className={cx(
+                            'inline-flex cursor-pointer select-none items-center gap-1 uppercase tracking-wider hover:text-primary',
+                            c.help && HELP_UNDERLINE,
+                          )}
+                          title={`Ordenar por ${c.header}${active ? (sort?.dir === 'asc' ? ' (ascendente)' : ' (descendente)') : ''}`}
+                        >
+                          {c.header}
+                          {active ? (
+                            sort?.dir === 'asc' ? (
+                              <ChevronUp aria-hidden className="size-3.5 shrink-0" />
+                            ) : (
+                              <ChevronDown aria-hidden className="size-3.5 shrink-0" />
+                            )
+                          ) : null}
+                        </button>
+                      ) : (
+                        <span className={cx(c.help && HELP_UNDERLINE)}>{c.header}</span>
+                      )}
+                      {c.help ? <ColumnHelp term={c.help} label={c.header} /> : null}
+                    </div>
+                    {showHelpRow && c.help ? (
+                      <span
+                        title={c.help.what}
+                        className={cx(
+                          'mt-1 block max-w-[11rem] truncate text-[10.5px] font-normal normal-case tracking-normal text-on-surface-variant/75',
+                          c.align === 'right' && 'ml-auto',
+                          c.align === 'center' && 'mx-auto',
+                        )}
                       >
-                        {c.header}
-                        {active ? (
-                          sort?.dir === 'asc' ? (
-                            <ChevronUp aria-hidden className="size-3.5 shrink-0" />
-                          ) : (
-                            <ChevronDown aria-hidden className="size-3.5 shrink-0" />
-                          )
-                        ) : null}
-                      </button>
-                    ) : (
-                      c.header
-                    )}
+                        {c.help.short}
+                      </span>
+                    ) : null}
                   </th>
                 );
               })}
@@ -670,7 +708,10 @@ export function DataTable<T>({
                 <dl className="flex flex-col gap-space-2xs">
                   {fieldCols.map((c) => (
                     <div key={c.key} className="flex items-baseline justify-between gap-space-md">
-                      <dt className="min-w-0 text-label-sm font-semibold uppercase tracking-wide text-outline">{c.header}</dt>
+                      <dt className="flex min-w-0 items-center gap-1 text-label-sm font-semibold uppercase tracking-wide text-outline">
+                        {c.header}
+                        {c.help ? <ColumnHelp term={c.help} label={c.header} /> : null}
+                      </dt>
                       <dd className={cx('min-w-0 text-right text-body-md text-on-surface', c.align !== 'left' && NUMERIC)}>
                         {c.render(row)}
                       </dd>
@@ -683,7 +724,10 @@ export function DataTable<T>({
                 <div className="grid grid-cols-2 gap-space-sm rounded-lg bg-surface-container-low px-space-md py-space-sm">
                   {metricCols.map((c) => (
                     <div key={c.key} className="flex flex-col">
-                      <span className="text-label-sm font-semibold uppercase tracking-wide text-outline">{c.header}</span>
+                      <span className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wide text-outline">
+                        {c.header}
+                        {c.help ? <ColumnHelp term={c.help} label={c.header} /> : null}
+                      </span>
                       <span className={cx('font-bold text-body-lg', NUMERIC)}>{c.render(row)}</span>
                     </div>
                   ))}
@@ -698,7 +742,10 @@ export function DataTable<T>({
                   <dl className="mt-space-sm flex flex-col gap-space-2xs">
                     {detailCols.map((c) => (
                       <div key={c.key} className="flex items-baseline justify-between gap-space-md">
-                        <dt className="text-label-sm font-semibold uppercase tracking-wide text-outline">{c.header}</dt>
+                        <dt className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wide text-outline">
+                          {c.header}
+                          {c.help ? <ColumnHelp term={c.help} label={c.header} /> : null}
+                        </dt>
                         <dd className="text-right text-body-md text-on-surface">{c.render(row)}</dd>
                       </div>
                     ))}
