@@ -51,6 +51,14 @@ const envSchema = z.object({
   SYNC_SNAPSHOT_RETENTION: z.coerce.number().int().min(1).max(5000).default(240),
   SYNC_PAGE_SIZE: z.coerce.number().int().min(100).max(50000).default(5000),
 
+  // Reconciliación de pedidos: cierra los que Profit convirtió en nota de
+  // entrega. `DRY_RUN=true` calcula el resultado sin escribir (recomendado
+  // para la primera puesta en marcha).
+  ORDER_RECONCILE_ENABLED: z.enum(['true', 'false']).default('true'),
+  ORDER_RECONCILE_SECONDS: z.coerce.number().int().min(60).max(86400).default(300),
+  ORDER_RECONCILE_DRY_RUN: z.enum(['true', 'false']).default('false'),
+  ORDER_RECONCILE_BATCH_SIZE: z.coerce.number().int().min(50).max(2000).default(200),
+
   CORS_ORIGINS: z.string().default('http://localhost:4100'),
 });
 
@@ -109,6 +117,12 @@ export default function configuration() {
       schedule: env.SYNC_SCHEDULE,
       snapshotRetention: env.SYNC_SNAPSHOT_RETENTION,
       pageSize: env.SYNC_PAGE_SIZE,
+    },
+    orderLifecycle: {
+      enabled: env.ORDER_RECONCILE_ENABLED === 'true',
+      seconds: env.ORDER_RECONCILE_SECONDS,
+      dryRun: env.ORDER_RECONCILE_DRY_RUN === 'true',
+      batchSize: env.ORDER_RECONCILE_BATCH_SIZE,
     },
     forecast: {
       productionLine: 'ABA',
