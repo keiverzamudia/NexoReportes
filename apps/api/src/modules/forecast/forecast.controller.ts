@@ -1,9 +1,11 @@
-import { Body, Controller, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
   ForecastQuery,
+  ForecastSalesQuery,
   ForecastSetWeeks,
   zForecastQuery,
+  zForecastSalesQuery,
   zForecastSetWeeks,
 } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
@@ -25,6 +27,22 @@ export class ForecastController {
   @RequirePermission('forecast:read')
   plan(@Query(new ZodValidationPipe(zForecastQuery)) query: ForecastQuery) {
     return this.forecast.plan(query.year, query.month);
+  }
+
+  // Ventas reales vs forecast: facturación de Profit (solo lectura) contra la
+  // meta mensual, con proyección de cierre por días hábiles.
+  @Get('sales')
+  @RequirePermission('forecast:read')
+  sales(@Query(new ZodValidationPipe(zForecastSalesQuery)) query: ForecastSalesQuery) {
+    return this.forecast.salesReport(query);
+  }
+
+  // Fuerza el snapshot de la meta del mes en curso (por si el scheduler está
+  // desactivado). Solo escribe en la BD local, nunca en Profit.
+  @Post('sales/capture')
+  @RequirePermission('forecast:update')
+  captureSalesTarget() {
+    return this.forecast.captureForecastTargets();
   }
 
   @Get()

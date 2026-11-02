@@ -23,6 +23,7 @@ import type {
   ForecastPlanWeek,
   ForecastResponse,
   ForecastRow,
+  ForecastSalesResponse,
   ForecastWeekRange,
   UserSummary,
 } from '@nexo/contracts';
@@ -32,6 +33,8 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { EChart } from '../../components/EChart';
 import { ProductPicker } from '../../components/ProductPicker';
 import { AppNav, LoginScreen } from '../../components/shell';
+import { ControlReport } from '../../components/forecast/ControlReport';
+import { SalesReport } from '../../components/forecast/SalesReport';
 import {
   Badge,
   Card,
@@ -76,10 +79,24 @@ const STATUS_TONE: Record<AvailabilityStatus, 'success' | 'warning' | 'danger' |
   SIN_DEMANDA: 'muted',
 };
 
-type Tab = 'asignador' | 'reporte';
+type Tab = 'asignador' | 'reporte' | 'ventas';
 
 // Presentación del artículo en Profit: SAC = saco, KG = granel (a granel).
 type UnitFilter = 'ALL' | 'SAC' | 'KG';
+
+// Días que entran al denominador del run-rate.
+type SalesBasis = 'WORKING' | 'CALENDAR';
+
+const BASIS_OPTIONS: { value: SalesBasis; label: string }[] = [
+  { value: 'WORKING', label: 'Hábiles' },
+  { value: 'CALENDAR', label: 'Calendario' },
+];
+
+const HISTORY_OPTIONS = [
+  { value: '3', label: '3 meses' },
+  { value: '6', label: '6 meses' },
+  { value: '12', label: '12 meses' },
+];
 
 const UNIT_OPTIONS: { value: UnitFilter; label: string }[] = [
   { value: 'ALL', label: 'Todos' },
@@ -125,6 +142,10 @@ export default function ForecastPage() {
   const [search, setSearch] = useState('');
   const [onlyDemand, setOnlyDemand] = useState(false);
   const [unit, setUnit] = useState<UnitFilter>('ALL');
+  // Informe «Ventas vs Forecast»: base de días, ventana histórica y corte.
+  const [basis, setBasis] = useState<SalesBasis>('WORKING');
+  const [includeToday, setIncludeToday] = useState(false);
+  const [historyMonths, setHistoryMonths] = useState('6');
 
   const [yearPart, monthPart] = ym.split('-');
   const year = Number(yearPart);
@@ -151,6 +172,18 @@ export default function ForecastPage() {
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
 
+  const sales = useQuery<ForecastSalesResponse>({
+    queryKey: ['forecast-sales', tick, year, month, basis, includeToday, historyMonths],
+    queryFn: () =>
+      apiFetch<ForecastSalesResponse>(
+        `/forecast/sales?year=${year}&month=${month}&basis=${basis}&months=${historyMonths}&includeToday=${
+          includeToday ? 'true' : 'false'
+        }`,
+      ),
+    enabled: tab === 'ventas',
+    retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
+  });
+
   const rows = useMemo(() => {
     const all = forecast.data?.rows ?? [];
     const needle = search.trim().toLowerCase();
@@ -163,12 +196,18 @@ export default function ForecastPage() {
   }, [forecast.data, search, onlyDemand, unit]);
 
   const error = forecast.error ?? plan.error;
-  if (error instanceof AuthRequiredError) {
+  // El informe de ventas pinta su propio error; solo la sesión vencida se
+  // resuelve aquí para no duplicar banners.
+  if ([forecast.error, plan.error, sales.error].some((err) => err instanceof AuthRequiredError)) {
     return <LoginScreen onSuccess={() => setTick((t) => t + 1)} />;
   }
 
   const weeks = forecast.data?.weekRanges ?? [];
   const totalForecast = (forecast.data?.rows ?? []).reduce((a, r) => a + r.monthlyQty, 0);
+  // El encabezado resume la pestaña activa: en «Ventas» manda el informe de
+  // facturación (el catálogo local de producción puede estar vacío en dev).
+  const headerArticles = tab === 'ventas' ? (sales.data?.rows.length ?? 0) : rows.length;
+  const headerForecastKg = tab === 'ventas' ? (sales.data?.totals.forecastKg ?? 0) : totalForecast;
 
   return (
     <>
@@ -178,11 +217,11 @@ export default function ForecastPage() {
           eyebrow="Producción · Alimentos balanceados (línea ABA)"
           icon={CalendarRange}
           title="Forecast"
-          subtitle="Forecast mensual por artículo ."
+          subtitle="Forecast mensual por artículo y ventas reales de Profit contra la meta."
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
-              <Kpi label="Artículos" value={String(rows.length)} icon={CalendarRange} />
-              <Kpi label="Forecast del mes" value={fmtQty(totalForecast, 0)} suffix="unid." tone="primary" />
+              <Kpi label="Artículos" value={String(headerArticles)} icon={CalendarRange} />
+              <Kpi label="Forecast del mes" value={fmtQty(headerForecastKg, 0)} suffix="kg" tone="primary" />
             </div>
           }
         />
@@ -206,6 +245,7 @@ export default function ForecastPage() {
                 options={[
                   { value: 'asignador', label: 'Asignador' },
                   { value: 'reporte', label: 'Reporte' },
+                  { value: 'ventas', label: 'Ventas vs Forecast' },
                 ]}
               />
               <div className="flex items-center gap-space-2xs">
@@ -219,6 +259,33 @@ export default function ForecastPage() {
                 <label className="flex items-center gap-space-xs text-body-md text-on-surface-variant">
                   <input type="checkbox" checked={onlyDemand} onChange={(e) => setOnlyDemand(e.target.checked)} className="size-4 accent-[var(--color-primary-container)]" />
                   Solo con solicitado
+                </label>
+              </div>
+            )}
+            {tab === 'ventas' && (
+              <div className="flex flex-wrap items-end gap-space-md">
+                <div className="flex flex-col gap-space-2xs">
+                  <span className="font-semibold uppercase text-label-sm text-outline">Base de días</span>
+                  <Segmented ariaLabel="Base de días del informe" value={basis} onChange={setBasis} options={BASIS_OPTIONS} />
+                </div>
+                <label className="flex flex-col gap-space-2xs">
+                  <span className="font-semibold uppercase text-label-sm text-outline">Histórico</span>
+                  <Select
+                    ariaLabel="Ventana histórica"
+                    value={historyMonths}
+                    onChange={setHistoryMonths}
+                    options={HISTORY_OPTIONS}
+                    className="h-9 w-32"
+                  />
+                </label>
+                <label className="flex h-9 items-center gap-space-xs text-body-md text-on-surface-variant">
+                  <input
+                    type="checkbox"
+                    checked={includeToday}
+                    onChange={(e) => setIncludeToday(e.target.checked)}
+                    className="size-4 accent-[var(--color-secondary-container)]"
+                  />
+                  Incluir hoy
                 </label>
               </div>
             )}
@@ -265,8 +332,18 @@ export default function ForecastPage() {
         {tab === 'reporte' && (
           <>
             {plan.isLoading && <p className="text-body-md text-on-surface-variant">Calculando plan de producción…</p>}
-            {plan.data && <PlanReport key={ym} data={plan.data} unit={unit} />}
+            {plan.data && <ReporteBlock key={ym} data={plan.data} unit={unit} />}
           </>
+        )}
+
+        {tab === 'ventas' && (
+          <SalesReport
+            report={sales.data}
+            isLoading={sales.isLoading}
+            error={sales.error instanceof Error ? sales.error : null}
+            unit={unit}
+            onRetry={() => void sales.refetch()}
+          />
         )}
       </main>
     </>
@@ -382,17 +459,17 @@ function ForecastAsignador({
     },
     {
       key: 'forecastMes',
-      header: 'Forecast mes',
+      header: 'Forecast mes (kg)',
       align: 'right',
       render: (r) => (
-        <span className="font-semibold tabular-nums text-on-surface" title="Valor leído de Profit (xart_fore.kg_mes)">
+        <span className="font-semibold tabular-nums text-on-surface" title="Valor leído de Profit (xart_fore.kg_mes), en kilogramos">
           {fmtQty(r.monthlyQty, 0)}
         </span>
       ),
     },
     {
       key: 'promedio',
-      header: 'Promedio',
+      header: 'Promedio (kg)',
       align: 'right',
       render: (r) => <span className="text-on-surface-variant">{fmtQty(r.averageQty, 0)}</span>,
     },
@@ -501,6 +578,28 @@ function FocusProductButton({ code, onClick }: { code: string; onClick: () => vo
   );
 }
 
+// Reporte: dos vistas sobre el mismo payload. «Plan de producción» es la de
+// siempre; «Control» es la tabla comparativa forecast / solicitado / venta.
+function ReporteBlock({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilter }) {
+  const [view, setView] = useState<'plan' | 'control'>('plan');
+  return (
+    <>
+      <div className="flex justify-end">
+        <Segmented
+          ariaLabel="Vista del reporte"
+          value={view}
+          onChange={setView}
+          options={[
+            { value: 'plan', label: 'Plan de producción' },
+            { value: 'control', label: 'Control' },
+          ]}
+        />
+      </div>
+      {view === 'plan' ? <PlanReport data={data} unit={unit} /> : <ControlReport data={data} unit={unit} />}
+    </>
+  );
+}
+
 function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilter }) {
   const weeks = data.weekRanges;
   const allRows = useMemo(() => data.rows.filter((r) => unit === 'ALL' || r.uom === unit), [data, unit]);
@@ -601,12 +700,12 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           const first = params[0];
           const entry = first ? chartData[first.dataIndex] : undefined;
           if (!entry) return '';
-          const line = (label: string, value: number, color: string) =>
+          const line = (label: string, value: number, color: string, unit = 'unid.') =>
             `<div style="display:flex;justify-content:space-between;gap:20px;margin-top:5px;">
               <span style="display:inline-flex;align-items:center;gap:6px;color:#43474f;">
                 <span style="width:8px;height:8px;border-radius:2px;background:${color};"></span>${label}
               </span>
-              <strong style="font-variant-numeric:tabular-nums;color:${C.ink};">${fmtQty(value, 0)} unid.</strong>
+              <strong style="font-variant-numeric:tabular-nums;color:${C.ink};">${fmtQty(value, 0)} ${unit}</strong>
             </div>`;
           return `<div style="min-width:210px;">
             <div style="font-weight:700;color:#001e40;margin-bottom:2px;">Semana ${entry.week.weekIndex}
@@ -614,7 +713,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             </div>
             ${line('Solicitado', entry.demand, C.navy)}
             ${line('A producir', entry.toProduce, C.red)}
-            ${hasForecast ? line('Forecast', entry.forecast, C.limeDark) : ''}
+            ${hasForecast ? line('Forecast', entry.forecast, C.limeDark, 'kg') : ''}
           </div>`;
         },
       },
@@ -1148,7 +1247,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           </label>
 
           <div className="grid grid-cols-1 gap-space-sm sm:grid-cols-2">
-            <Kpi label={weekIndex === null ? 'Forecast del mes' : 'Forecast de la semana'} value={fmtQty(totals.forecast, 0)} suffix="unid." tone="primary" />
+            <Kpi label={weekIndex === null ? 'Forecast del mes' : 'Forecast de la semana'} value={fmtQty(totals.forecast, 0)} suffix="kg" tone="primary" />
             <Kpi label={weekIndex === null ? 'Solicitado del mes' : 'Solicitado de la semana'} value={fmtQty(totals.demand, 0)} suffix="unid." />
             <Kpi label="A producir" value={fmtQty(totals.toProduce, 0)} suffix="unid." tone="danger" />
             <Kpi label="A producir en kg" value={fmtQty(totals.toProduceKg, 0)} suffix="kg" tone="danger" />
