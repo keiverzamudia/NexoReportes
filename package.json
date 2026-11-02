@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "turbo run dev",
     "start": "turbo run start --filter=@nexo/api --filter=@nexo/web",
+    "stop": "node scripts/stop-dev.mjs",
+    "stop:all": "node scripts/stop-dev.mjs --all",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
