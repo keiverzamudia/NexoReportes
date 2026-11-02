@@ -28,17 +28,22 @@ import type {
   OrderGroupLine,
   OrderGroupedResponse,
   OrderStatus,
+  LoadPlan,
+  DispatchSheetDetail,
   ScenarioDetail,
   ScenarioDraftInput,
   ScenarioDraftResponse,
   ScenarioLineRef,
   ScenarioListResponse,
+  ScenarioLockResponse,
+  ScenarioListItem,
   ScenarioRecipe,
   ScenarioSaveInput,
   ScenarioFilters,
+  OrderLifecycleStatus,
 } from '@nexo/contracts';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CalendarRange, ChevronDown, ChevronRight, Download, FileText, History, PackageCheck, Pin, PinOff, Receipt, Save, Search, ShoppingCart, Trash2, X } from 'lucide-react';
+import { AlertTriangle, CalendarRange, ChevronDown, ChevronRight, Download, FileText, History, Lock, MessageSquare, PackageCheck, Pin, PinOff, Receipt, RefreshCw, Save, Search, Send, ShieldCheck, ShoppingCart, Trash2, Truck, Unlock, X } from 'lucide-react';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { CustomerStatementDialog } from '../../components/CustomerStatementDialog';
 import { DeliveryDateButton } from '../../components/DeliveryDate';
@@ -46,7 +51,11 @@ import { DeliveryDateDialog } from '../../components/DeliveryDateDialog';
 import type { DeliveryDateTarget, DeliveryDateTargetItem } from '../../components/DeliveryDateDialog';
 import { EChart } from '../../components/EChart';
 import { RestorePreviewDialog, ScenariosDialog } from '../../components/ScenariosDialog';
-import type { RestorePreviewState } from '../../components/ScenariosDialog';
+import type { RestorePreviewState, ScenarioSaveOptions } from '../../components/ScenariosDialog';
+import { OrderLifecycleDialog } from '../../components/OrderLifecycleDialog';
+import { TruckLoadDialog } from '../../components/TruckLoadDialog';
+import type { LoadPlanLine } from '../../lib/truck-load-plan';
+import { prunePlan } from '../../lib/truck-load-plan';
 import { useLoadingOverlay } from '../../components/loading/LoadingOverlayProvider';
 import { AppNav, LoginScreen } from '../../components/shell';
 import { Badge, Card, CoverageBar, DateInput, HeroCard, Kpi, PageHeader, Select, Segmented, Skeleton, Td, TextInput, Th, fmtDate, fmtQty, useGreeting } from '../../components/ui';
@@ -97,6 +106,7 @@ const SORT_OPTIONS: { value: DispatchSort; label: string }[] = [
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
   ABIERTO: 'Abierto',
+  NOTA_ENTREGA: 'Nota de entrega',
   CERRADO: 'Cerrado',
   CANCELADO: 'Cancelado',
   DESCONOCIDO: 'Desconocido',
@@ -104,6 +114,7 @@ const STATUS_LABEL: Record<OrderStatus, string> = {
 
 const STATUS_TONE: Record<OrderStatus, 'success' | 'muted' | 'danger' | 'default'> = {
   ABIERTO: 'success',
+  NOTA_ENTREGA: 'muted',
   CERRADO: 'muted',
   CANCELADO: 'danger',
   DESCONOCIDO: 'default',
@@ -189,11 +200,26 @@ export default function PedidosPage() {
   // Fechas tentativas: selección por grupo del plan + modal de asignación.
   const [dateSelection, setDateSelection] = useState<{ groupKey: string; keys: string[] } | null>(null);
   const [dateTarget, setDateTarget] = useState<DeliveryDateTarget | null>(null);
+  // Comentarios por renglón (viajan al despacho) y guía de carga del camión.
+  const [comments, setComments] = useState<Record<string, string>>({});
+  const [commentTarget, setCommentTarget] = useState<{ keys: string[]; label: string } | null>(null);
+  const [commentDraft, setCommentDraft] = useState('');
+  const [loadPlan, setLoadPlan] = useState<LoadPlan | null>(null);
+  // El camión vive en un modal: no ocupa espacio hasta que el usuario lo abre.
+  const [truckOpen, setTruckOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
-  // Simulaciones guardadas (Fase 6): borrador por usuario + escenarios con nombre.
+  // Simulaciones guardadas (global): plan del equipo + escenarios con nombre.
   const [scenariosOpen, setScenariosOpen] = useState(false);
   const [scenarioSaveIntent, setScenarioSaveIntent] = useState(false);
+  // Lock del plan global: solo el titular autoguarda.
+  const [planLock, setPlanLock] = useState<ScenarioLockResponse | null>(null);
+  const [lockBusy, setLockBusy] = useState(false);
+  const [lockNotice, setLockNotice] = useState<string | null>(null);
+  const autoLockTried = useRef(false);
+  const draftVersionRef = useRef<number | null>(null);
+  // Panel de cierres por nota de entrega (solo ADMIN).
+  const [lifecycleOpen, setLifecycleOpen] = useState(false);
   // Renglones del borrador que se resuelven cuando llega la cartera.
   const [pendingRefs, setPendingRefs] = useState<ScenarioLineRef[] | null>(null);
   const [restorePreview, setRestorePreview] = useState<RestorePreviewState | null>(null);
@@ -208,8 +234,17 @@ export default function PedidosPage() {
   });
   // La acción «Editar fechas» de la matriz de permisos gobierna el modal.
   const canEditDates = hasPermission(sessionUser?.permissions, 'pedidos', 'update');
+  // «Guardar simulación» requiere el permiso de Pedidos.
+  const canSaveSimulation = hasPermission(sessionUser?.permissions, 'pedidos', 'create');
+  // «Armar y enviar simulación» es un permiso propio de Despacho.
+  const canSendToDispatch = hasPermission(sessionUser?.permissions, 'despacho', 'create');
   // El estado de cuenta exige el mismo permiso que en Clientes.
   const canViewStatement = hasPermission(sessionUser?.permissions, 'clientes', 'read');
+  // El panel de cierres es exclusivo del ADMIN (decisión de negocio).
+  const isAdmin = sessionUser?.role === 'ADMIN' || sessionUser?.baseRole === 'ADMIN';
+  // El plan global lo edita quien tenga el lock; el resto lo ve en lectura.
+  const planLockedByOther = Boolean(planLock && !planLock.isMine);
+  const canEditPlan = canSaveSimulation && !planLockedByOther;
 
   useEffect(() => {
     if (!toast) return;
@@ -317,7 +352,59 @@ export default function PedidosPage() {
     queryFn: () => apiFetch<ScenarioDraftResponse>('/scenarios/draft'),
     retry: false,
     staleTime: 0,
+    refetchInterval: 15_000,
   });
+
+  useEffect(() => {
+    if (draftQuery.data?.scenario) draftVersionRef.current = draftQuery.data.scenario.version;
+  }, [draftQuery.data]);
+
+  // Refleja el lock del servidor en la UI. Si el plan está libre y tengo
+  // permiso, lo tomo automáticamente para que el autoguardado funcione.
+  useEffect(() => {
+    const scenario = draftQuery.data?.scenario;
+    if (!scenario) return;
+    const lock = scenario.lock;
+    if (lock?.isMine && lock.token) {
+      setPlanLock({
+        holderId: lock.holderId,
+        holderName: lock.holderName,
+        until: lock.until ?? new Date().toISOString(),
+        isMine: true,
+        token: lock.token,
+        version: scenario.version,
+      });
+      setLockNotice(null);
+    } else if (lock && !lock.isMine) {
+      setPlanLock({
+        holderId: lock.holderId,
+        holderName: lock.holderName,
+        until: lock.until ?? '',
+        isMine: false,
+        token: '',
+        version: scenario.version,
+      });
+      setLockNotice(`El plan lo está editando ${lock.holderName ?? 'otro usuario'}.`);
+    } else {
+      setPlanLock(null);
+    }
+  }, [draftQuery.data]);
+
+  useEffect(() => {
+    if (autoLockTried.current || !sessionUser || !canSaveSimulation || !draftQuery.isFetched) return;
+    const lock = draftQuery.data?.scenario?.lock;
+    autoLockTried.current = true;
+    if (lock?.isMine || (lock && !lock.isMine)) return;
+    void acquirePlanLock(false, true);
+  }, [sessionUser, canSaveSimulation, draftQuery.isFetched, draftQuery.data]);
+
+  // Heartbeat: renueva el lock mientras el usuario sigue en la pantalla.
+  useEffect(() => {
+    if (!planLock?.isMine) return;
+    const id = window.setInterval(() => void acquirePlanLock(false, true), 60_000);
+    return () => window.clearInterval(id);
+  }, [planLock?.isMine]);
+
 
   const { data: scenarioList } = useQuery<ScenarioListResponse>({
     queryKey: ['scenarios'],
@@ -337,6 +424,7 @@ export default function PedidosPage() {
       setMode(recipe.mode);
       setSort(recipe.sort);
       applyFilters(recipe.filters);
+      setLoadPlan(scenario.payload.loadPlan ?? null);
       setPendingRefs(scenario.payload.selected);
       return;
     }
@@ -353,21 +441,46 @@ export default function PedidosPage() {
     setHydrated(true);
   }, [pendingRefs, data]);
 
-  // Autoguardado del borrador (debounce): receta + renglones visibles.
-  // Espera a la cartera para no escribir un borrador vacío cuando la
-  // selección migrada todavía no se pudo resolver a `pedido#artículo`.
+  // Autoguardado del plan global (debounce): receta + renglones visibles.
+  // Solo escribe el titular del lock; si no, el plan es de solo lectura.
   useEffect(() => {
-    if (!hydrated || data === undefined) return;
+    if (!hydrated || data === undefined || !canEditPlan || !planLock?.isMine) return;
     const id = window.setTimeout(() => {
       const body: ScenarioDraftInput = {
         recipe: currentRecipe(),
         selected: refsFromSelection(selection, lineByKeyRef.current),
+        loadPlan,
+        version: draftVersionRef.current ?? planLock.version,
+        lockToken: planLock.token ?? undefined,
       };
-      void apiFetch('/scenarios/draft', { method: 'PUT', body: JSON.stringify(body) }).catch(() => undefined);
+      void apiFetch<ScenarioListItem>('/scenarios/draft', { method: 'PUT', body: JSON.stringify(body) })
+        .then((saved) => {
+          draftVersionRef.current = saved.version;
+          if (saved.lock?.isMine && saved.lock.token) {
+            setPlanLock({
+              holderId: saved.lock.holderId,
+              holderName: saved.lock.holderName,
+              until: saved.lock.until ?? new Date().toISOString(),
+              isMine: true,
+              token: saved.lock.token,
+              version: saved.version,
+            });
+          }
+          setLockNotice(null);
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : 'No se pudo guardar el plan.';
+          setLockNotice(message);
+          if (/control|expir/i.test(message)) {
+            setPlanLock(null);
+            void acquirePlanLock(false, true);
+          }
+          void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
+        });
     }, 900);
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, data, by, mode, sort, q, status, authorized, customerCode, emisionDesde, emisionHasta, entregaDesde, entregaHasta, selection]);
+  }, [hydrated, data, by, mode, sort, q, status, authorized, customerCode, emisionDesde, emisionHasta, entregaDesde, entregaHasta, selection, loadPlan, canEditPlan, planLock?.isMine, planLock?.token]);
 
   // Información agregada por producto (existencia, solicitado, kg por unidad).
   const productInfo = useMemo(() => {
@@ -453,6 +566,79 @@ export default function PedidosPage() {
     }
     return [...map.values()].map((g) => ({ ...g, entries: [...g.entries].sort((a, b) => a.priority - b.priority) }));
   }, [planEntries, lineByKey]);
+
+  // Renglones del plan en el formato de la guía de carga del camión.
+  const planLoadLines: LoadPlanLine[] = useMemo(
+    () =>
+      planEntries.flatMap((entry) => {
+        const ref = lineByKey.get(entry.key);
+        if (!ref) return [];
+        return [
+          {
+            orderNumber: ref.line.orderNumber,
+            customerCode: ref.line.customerCode,
+            customerName: ref.line.customerName,
+            productCode: ref.line.productCode,
+            description: ref.line.description,
+            kg: entry.assignedKg,
+            sacks: ref.line.uom === 'SAC' ? entry.assignedQty : 0,
+            uom: ref.line.uom,
+            effectiveDate: ref.line.tentativeDate ?? ref.line.requestedDate,
+            comment: comments[entry.key] ?? null,
+          } satisfies LoadPlanLine,
+        ];
+      }),
+    [planEntries, lineByKey, comments],
+  );
+
+  // Si el usuario libera un renglón, su pedido sale también de los espacios del
+  // camión para no guardar una ubicación fantasma.
+  const planOrderNumbers = useMemo(
+    () => new Set(planLoadLines.map((line) => line.orderNumber)),
+    [planLoadLines],
+  );
+  useEffect(() => {
+    setLoadPlan((previous) => (previous ? prunePlan(previous, planOrderNumbers) : previous));
+  }, [planOrderNumbers]);
+
+  useEffect(() => {
+    if (planEntries.length === 0) setTruckOpen(false);
+  }, [planEntries.length]);
+
+  // --- Comentarios del plan ----------------------------------------------
+  // Al liberar un renglón se descarta su comentario: no debe viajar a otro plan.
+  useEffect(() => {
+    const valid = new Set(planEntries.map((entry) => entry.key));
+    setComments((previous) => {
+      const next: Record<string, string> = {};
+      let changed = false;
+      for (const [key, value] of Object.entries(previous)) {
+        if (valid.has(key)) next[key] = value;
+        else changed = true;
+      }
+      return changed ? next : previous;
+    });
+  }, [planEntries]);
+
+  function openCommentEditor(keys: string[], label: string) {
+    setCommentDraft(keys.length === 1 ? comments[keys[0]!] ?? '' : '');
+    setCommentTarget({ keys, label });
+  }
+
+  function saveComment() {
+    if (!commentTarget) return;
+    const text = commentDraft.trim().slice(0, 240);
+    setComments((previous) => {
+      const next = { ...previous };
+      for (const key of commentTarget.keys) {
+        if (text) next[key] = text;
+        else delete next[key];
+      }
+      return next;
+    });
+    setCommentTarget(null);
+    setCommentDraft('');
+  }
 
   // --- Fecha tentativa: selección y modal ---------------------------------
   // La selección es por grupo para no mezclar clientes en una misma fecha.
@@ -720,6 +906,30 @@ export default function PedidosPage() {
     setDateSelection(null);
   }
 
+  // Toma (o renueva) el control del plan global. `force` solo lo usa ADMIN.
+  async function acquirePlanLock(force = false, silent = false) {
+    if (lockBusy) return;
+    setLockBusy(true);
+    try {
+      const lock = await apiFetch<ScenarioLockResponse>('/scenarios/draft/lock', {
+        method: 'POST',
+        body: JSON.stringify({ force }),
+      });
+      setPlanLock(lock);
+      draftVersionRef.current = lock.version;
+      setLockNotice(null);
+      void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'No se pudo tomar el control del plan.';
+      setLockNotice(message);
+      if (/editando|control/i.test(message)) setPlanLock(null);
+      if (!silent) setToast(message);
+      void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
+    } finally {
+      setLockBusy(false);
+    }
+  }
+
   function openScenarios(saveIntent: boolean) {
     setScenarioSaveIntent(saveIntent);
     setScenariosOpen(true);
@@ -730,22 +940,52 @@ export default function PedidosPage() {
     setScenarioSaveIntent(false);
   }
 
-  // Guarda el plan actual con nombre (foto + receta). Lo llama el modal.
-  async function saveScenario(name: string) {
+  // Guarda el plan actual con nombre (foto + receta + comentarios + camión).
+  // Si el usuario lo pide, la envía completa al almacén en la misma acción.
+  async function saveScenario(name: string, options?: ScenarioSaveOptions) {
     if (planEntries.length === 0) throw new Error('Marca al menos un renglón para guardar la simulación.');
     const snapshot = buildSnapshot({
       entries: planEntries,
       lineByKey,
       carteraLines: dispatchInputs.length,
       takenAt: new Date(),
+      comments,
     });
+    // Un pedido liberado no puede quedar guardado en un espacio del camión.
+    const prunedLoadPlan = loadPlan ? prunePlan(loadPlan, planOrderNumbers) : null;
+    // Una etiqueta vacía rompería el contrato: se completa con un nombre base.
+    const safeLoadPlan: LoadPlan | null = prunedLoadPlan
+      ? {
+          ...prunedLoadPlan,
+          segments: prunedLoadPlan.segments.map((segment, index) => ({
+            ...segment,
+            label: segment.label.trim() || `Espacio ${index + 1}`,
+          })),
+        }
+      : null;
     const body: ScenarioSaveInput = {
       name,
       recipe: currentRecipe(),
       selected: refsFromSelection(planEntries.map((entry) => entry.key), lineByKey),
       snapshot,
+      loadPlan: safeLoadPlan,
     };
-    await apiFetch<ScenarioDetail>('/scenarios', { method: 'POST', body: JSON.stringify(body) });
+    const saved = await apiFetch<ScenarioDetail>('/scenarios', { method: 'POST', body: JSON.stringify(body) });
+
+    if (options?.sendToDispatch) {
+      const sheet = await apiFetch<DispatchSheetDetail>(`/scenarios/${saved.id}/send-dispatch`, {
+        method: 'POST',
+        body: JSON.stringify({
+          title: options.title?.trim() || name,
+          instructions: options.instructions?.trim() || undefined,
+          assignedToId: options.assignedToId ?? null,
+        }),
+      });
+      setToast(`Simulación «${name}» enviada a despacho ${sheet.number}.`);
+      void queryClient.invalidateQueries({ queryKey: ['dispatch-sheets'] });
+      return;
+    }
+
     setToast(`Simulación «${name}» guardada.`);
   }
 
@@ -753,6 +993,10 @@ export default function PedidosPage() {
   // con los filtros de la receta, recalcula y abre el diff. Recién al
   // confirmar se aplican filtros y selección.
   async function previewRestore(detail: ScenarioDetail) {
+    if (!canEditPlan) {
+      setToast('El plan lo está editando otro usuario. Toma el control para restaurar una simulación.');
+      return;
+    }
     const recipe = detail.payload.recipe;
     const live = await apiFetch<OrderGroupedResponse>(`/orders/grouped?${scenarioQueryString(recipe)}`);
     const liveLines = buildLiveLines(live.groups);
@@ -775,6 +1019,23 @@ export default function PedidosPage() {
     setMode(recipe.mode);
     setSort(recipe.sort);
     applyFilters(recipe.filters);
+    // La foto y la guía de carga vuelven tal como se guardaron. Los comentarios
+    // se vuelven a mapear a la clave de selección (id de pedido + artículo).
+    const savedComments = new Map(
+      (detail.payload.snapshot?.lines ?? []).map((line) => [
+        `${line.orderNumber}#${line.productCode}`,
+        line.comment?.trim() ?? '',
+      ]),
+    );
+    const restoredComments: Record<string, string> = {};
+    for (const key of keys) {
+      const ref = lineByKey.get(key);
+      if (!ref) continue;
+      const comment = savedComments.get(`${ref.line.orderNumber}#${ref.line.productCode}`);
+      if (comment) restoredComments[key] = comment;
+    }
+    setComments(restoredComments);
+    setLoadPlan(detail.payload.loadPlan ?? null);
     setSelection(keys);
     setPlanExpanded(null);
     setExpanded(null);
@@ -817,11 +1078,19 @@ export default function PedidosPage() {
   }
 
   function toggleLine(line: OrderGroupLine) {
+    if (!canEditPlan) {
+      setToast('El plan lo está editando otro usuario. Toma el control para modificarlo.');
+      return;
+    }
     const key = lineKey(line);
     setSelection((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
   }
 
   function toggleGroup(group: OrderGroup) {
+    if (!canEditPlan) {
+      setToast('El plan lo está editando otro usuario. Toma el control para modificarlo.');
+      return;
+    }
     // Solo se marca o se suelta lo despachable. Cambiar de modo NO reinicia la
     // selección: lo ya marcado se queda como está.
     const keys = dispatchableKeys(group);
@@ -961,6 +1230,45 @@ export default function PedidosPage() {
           subtitle="Simula qué puedes despachar hoy con tu existencia real. Marca renglones para armar el plan de despacho; se ordena por prioridad y nunca escribe en Profit."
         />
 
+        {/* Plan global: lock de edición. Sin el control, la pantalla es de solo lectura. */}
+        {!planLock?.isMine && canSaveSimulation ? (
+          <div className="flex flex-wrap items-center justify-between gap-space-sm rounded-xl border border-warning/40 bg-warning/10 px-space-md py-space-sm">
+            <p className="flex items-center gap-space-sm text-body-md text-on-surface">
+              <Lock aria-hidden className="size-4 shrink-0 text-warning" />
+              <span>
+                {planLock?.holderName ? (
+                  <>
+                    El plan global lo está editando <strong>{planLock.holderName}</strong>. Estás viendo la última versión
+                    en solo lectura.
+                  </>
+                ) : (
+                  <>Toma el control para editar el plan global del equipo.</>
+                )}
+              </span>
+            </p>
+            <button
+              type="button"
+              onClick={() => void acquirePlanLock(isAdmin)}
+              disabled={lockBusy}
+              title={isAdmin ? 'Un administrador puede tomar el control' : 'Solo funciona si el otro usuario lo liberó'}
+              className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-40"
+            >
+              {lockBusy ? <RefreshCw aria-hidden className="size-4 animate-spin" /> : <Unlock aria-hidden className="size-4" />}
+              Tomar control
+            </button>
+          </div>
+        ) : planLock?.isMine ? (
+          <p className="flex items-center gap-space-xs rounded-xl border border-secondary/30 bg-secondary-container/20 px-space-md py-space-xs text-label-md font-semibold text-on-surface">
+            <ShieldCheck aria-hidden className="size-4 text-secondary" />
+            Tienes el control del plan global. Los cambios se guardan automáticamente para todo el equipo.
+          </p>
+        ) : null}
+        {lockNotice && !planLockedByOther && (
+          <p role="status" className="flex items-center gap-space-xs rounded-xl border border-warning/30 bg-warning/10 px-space-md py-space-xs text-label-md text-on-surface">
+            <AlertTriangle aria-hidden className="size-4 text-warning" /> {lockNotice}
+          </p>
+        )}
+
         {/* Centro de decisión: hero + controles + gráficas */}
         <section className="grid gap-space-md xl:grid-cols-12">
           <div className="flex flex-col gap-space-md xl:col-span-4">
@@ -1062,7 +1370,7 @@ export default function PedidosPage() {
               <button
                 type="button"
                 onClick={() => openScenarios(false)}
-                title="Abrir tus simulaciones guardadas: restaurar, borrar o ver la foto"
+                title="Abrir las simulaciones guardadas: restaurar, borrar o ver la foto"
                 className="flex h-9 items-center gap-space-xs rounded-pill border border-primary-container/30 bg-primary-fixed/50 px-space-md font-semibold text-body-md text-primary transition-colors hover:bg-primary-fixed"
               >
                 <History aria-hidden className="size-4" />
@@ -1073,6 +1381,17 @@ export default function PedidosPage() {
                   </span>
                 )}
               </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setLifecycleOpen(true)}
+                  title="Ver pedidos cerrados por nota de entrega y reabrir si hubo un error"
+                  className="flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-body-md text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-primary"
+                >
+                  <ShieldCheck aria-hidden className="size-4" />
+                  Cierres recientes
+                </button>
+              )}
             </div>
           </div>
           {customerCode && (
@@ -1129,12 +1448,34 @@ export default function PedidosPage() {
                   <span className="hidden sm:inline">{planPinned ? 'Soltar' : 'Fijar arriba'}</span>
                 </button>
                 <button
-                  onClick={() => openScenarios(true)}
-                  title="Guardar la simulación actual para volver a ella cuando llegue mercancía o cambien los pedidos"
-                  className="flex h-9 items-center gap-space-xs rounded-pill border border-primary-container/30 bg-primary-fixed/60 px-space-md font-semibold text-primary transition-colors hover:bg-primary-fixed"
+                  type="button"
+                  onClick={() => setTruckOpen(true)}
+                  aria-haspopup="dialog"
+                  title="Opcional: define los espacios del camión y ubica los pedidos"
+                  className={`flex h-9 items-center gap-space-xs rounded-pill border px-space-md font-semibold transition-colors ${
+                    loadPlan
+                      ? 'border-secondary/40 bg-secondary-container/20 text-secondary hover:bg-secondary-container/30'
+                      : 'border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low hover:text-primary'
+                  }`}
                 >
-                  <Save aria-hidden className="size-4" /> Guardar
+                  <Truck aria-hidden className="size-4" />
+                  {loadPlan
+                    ? `Carga · ${loadPlan.segments.length} espacio${loadPlan.segments.length === 1 ? '' : 's'}`
+                    : 'Solicitud de carga'}
+                  <span
+                    aria-hidden
+                    className={`size-2 rounded-full ${loadPlan ? 'bg-secondary' : 'bg-outline-variant'}`}
+                  />
                 </button>
+                {canSaveSimulation && (
+                  <button
+                    onClick={() => openScenarios(true)}
+                    title="Guardar la simulación actual y enviarla al almacén"
+                    className="flex h-9 items-center gap-space-xs rounded-pill border border-primary-container/30 bg-primary-fixed/60 px-space-md font-semibold text-primary transition-colors hover:bg-primary-fixed"
+                  >
+                    <Save aria-hidden className="size-4" /> Guardar
+                  </button>
+                )}
                 <button onClick={exportPlan} title="Descargar Excel con el detalle por cliente" className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary">
                   <Download aria-hidden className="size-4" /> Exportar
                 </button>
@@ -1143,8 +1484,12 @@ export default function PedidosPage() {
                     setSelection([]);
                     setPlanExpanded(null);
                     setDateSelection(null);
+                    setComments({});
+                    setLoadPlan(null);
+                    setTruckOpen(false);
                   }}
-                  className="flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-lowest"
+                  disabled={!canEditPlan}
+                  className="flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-lowest disabled:opacity-40"
                 >
                   <Trash2 aria-hidden className="size-4" /> Limpiar
                 </button>
@@ -1246,6 +1591,14 @@ export default function PedidosPage() {
                                     >
                                       <CalendarRange aria-hidden className="size-3.5" /> Asignar fecha
                                     </button>
+                                    <button
+                                      type="button"
+                                      disabled={selectedCount === 0}
+                                      onClick={() => openCommentEditor(selectedKeys, `Comentario para ${selectedCount} renglón(es)`)}
+                                      className="flex h-8 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-sm font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-lowest disabled:opacity-40"
+                                    >
+                                      <MessageSquare aria-hidden className="size-3.5" /> Comentario
+                                    </button>
                                   </div>
                                 </div>
                               )}
@@ -1323,14 +1676,40 @@ export default function PedidosPage() {
                                                 <span className="text-on-surface-variant"> · {ref.line.description ?? '—'}</span>
                                               </span>
                                             )}
+                                            {comments[e.key] && (
+                                              <span className="mt-0.5 flex items-start gap-1 text-label-sm normal-case text-secondary">
+                                                <MessageSquare aria-hidden className="mt-0.5 size-3 shrink-0" />
+                                                <span className="line-clamp-2">{comments[e.key]}</span>
+                                              </span>
+                                            )}
                                           </Td>
                                           <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(e.pendingQty, 0)}</Td>
                                           <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(e.assignedQty, 0)}</Td>
                                           <Td align="right" className={`tabular-nums ${e.missingQty > 0 ? 'font-bold text-error' : 'text-outline'}`}>{fmtQty(e.missingQty, 0)}</Td>
                                           <Td align="right">
-                                            <button onClick={() => toggleLine(ref.line)} className="rounded-pill border border-outline-variant/40 px-2.5 py-1 font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low">
-                                              Liberar
-                                            </button>
+                                            <div className="flex items-center justify-end gap-1">
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  openCommentEditor(
+                                                    [e.key],
+                                                    `Comentario para el pedido ${ref.line.orderNumber}`,
+                                                  )
+                                                }
+                                                aria-label={`Agregar comentario al pedido ${ref.line.orderNumber}`}
+                                                title="Comentario para el almacén"
+                                                className={`grid size-7 place-items-center rounded-full border transition-colors ${
+                                                  comments[e.key]
+                                                    ? 'border-secondary/40 bg-secondary-container/20 text-secondary'
+                                                    : 'border-outline-variant/40 text-outline hover:bg-surface-container-low'
+                                                }`}
+                                              >
+                                                <MessageSquare aria-hidden className="size-3.5" />
+                                              </button>
+                                              <button onClick={() => toggleLine(ref.line)} className="rounded-pill border border-outline-variant/40 px-2.5 py-1 font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low">
+                                                Liberar
+                                              </button>
+                                            </div>
                                           </Td>
                                         </tr>
                                       );
@@ -1647,10 +2026,24 @@ export default function PedidosPage() {
         </div>
       )}
 
+      <TruckLoadDialog
+        open={truckOpen}
+        lines={planLoadLines}
+        plan={loadPlan}
+        onClose={() => setTruckOpen(false)}
+        onSave={(next) => {
+          setLoadPlan(next);
+          setTruckOpen(false);
+          setToast(next ? 'Solicitud de carga guardada.' : 'Solicitud de carga retirada.');
+        }}
+      />
+
       <ScenariosDialog
         open={scenariosOpen}
         onClose={closeScenarios}
-        canSave={planEntries.length > 0}
+        canSave={planEntries.length > 0 && canSaveSimulation && canEditPlan}
+        canSend={canSendToDispatch}
+        currentUserId={sessionUser?.id}
         current={{
           lineCount: planEntries.length,
           sacks: planSacks,
@@ -1665,6 +2058,12 @@ export default function PedidosPage() {
         onRestore={previewRestore}
       />
 
+      <OrderLifecycleDialog
+        open={lifecycleOpen}
+        onClose={() => setLifecycleOpen(false)}
+        onChanged={() => void queryClient.invalidateQueries({ queryKey: ['orders-grouped'] })}
+      />
+
       {restorePreview && (
         <RestorePreviewDialog
           preview={restorePreview}
@@ -1672,6 +2071,96 @@ export default function PedidosPage() {
           onCancel={() => setRestorePreview(null)}
           onConfirm={confirmRestore}
         />
+      )}
+
+      {/* Comentario por pedido o para varios renglones */}
+      {commentTarget && (
+        <div
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setCommentTarget(null);
+          }}
+          className="animate-fade fixed inset-0 z-50 flex items-end justify-center bg-primary/35 p-space-sm backdrop-blur-sm sm:items-center sm:p-space-lg"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="comment-title"
+            className="animate-rise w-full max-w-lg overflow-hidden rounded-card border border-outline-variant/40 bg-surface-container-lowest shadow-hero"
+          >
+            <div className="flex items-start justify-between gap-space-md border-b border-outline-variant/30 px-space-md py-space-sm">
+              <div className="flex min-w-0 items-start gap-space-sm">
+                <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-secondary-container/30 text-secondary">
+                  <MessageSquare aria-hidden className="size-4" />
+                </span>
+                <div className="min-w-0">
+                  <h2 id="comment-title" className="text-title-md text-primary">Comentario para el almacén</h2>
+                  <p className="truncate text-label-sm normal-case text-on-surface-variant">{commentTarget.label}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCommentTarget(null)}
+                aria-label="Cerrar"
+                className="grid size-8 shrink-0 place-items-center rounded-full border border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low"
+              >
+                <X aria-hidden className="size-4" />
+              </button>
+            </div>
+            <div className="p-space-md">
+              <label className="flex flex-col gap-1">
+                <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Qué debe saber el almacén</span>
+                <textarea
+                  autoFocus
+                  value={commentDraft}
+                  onChange={(event) => setCommentDraft(event.target.value.slice(0, 240))}
+                  rows={3}
+                  maxLength={240}
+                  placeholder="Ej. Retira Elías Lozada · cargar primero · orden de carga en la imagen adjunta…"
+                  className="rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-sm py-2 text-body-md text-on-surface outline-none focus:border-transparent focus:ring-2 focus:ring-secondary-container/70"
+                />
+                <span className="text-right text-label-sm normal-case text-on-surface-variant">{commentDraft.length}/240</span>
+              </label>
+              {commentTarget.keys.length > 1 && (
+                <p className="mt-space-xs rounded-lg bg-surface-container-low px-space-sm py-space-xs text-label-sm normal-case text-on-surface-variant">
+                  Se aplicará el mismo comentario a {commentTarget.keys.length} renglones seleccionados.
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-space-sm border-t border-outline-variant/30 bg-surface-container-low/60 px-space-md py-space-sm">
+              <button
+                type="button"
+                onClick={() => {
+                  setComments((previous) => {
+                    const next = { ...previous };
+                    for (const key of commentTarget.keys) delete next[key];
+                    return next;
+                  });
+                  setCommentTarget(null);
+                }}
+                className="h-9 rounded-pill px-space-sm font-semibold text-label-md text-error transition-colors hover:bg-critical-container/30"
+              >
+                Quitar comentario
+              </button>
+              <div className="flex items-center gap-space-sm">
+                <button
+                  type="button"
+                  onClick={() => setCommentTarget(null)}
+                  className="h-9 rounded-pill border border-outline-variant/50 px-space-md font-semibold text-body-md text-on-surface-variant hover:bg-surface-container-low"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={saveComment}
+                  className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-lg font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary"
+                >
+                  <Send aria-hidden className="size-4" /> Guardar comentario
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       <DeliveryDateDialog

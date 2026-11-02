@@ -22,7 +22,7 @@ export const zRoleCode = z
   .max(40)
   .regex(/^[A-Z][A-Z0-9_]*$/, 'Usa MAYÚSCULAS, números y guion bajo (ej. SUPERVISOR)');
 
-export const PERMISSION_ACTIONS = ['read', 'create', 'update', 'delete'] as const;
+export const PERMISSION_ACTIONS = ['read', 'create', 'update', 'delete', 'view_all'] as const;
 export const zPermissionAction = z.enum(PERMISSION_ACTIONS);
 export type PermissionAction = z.infer<typeof zPermissionAction>;
 
@@ -80,9 +80,10 @@ export const APP_MODULES: AppModuleDefinition[] = [
     href: '/despacho',
     actions: [
       { action: 'read', label: 'Ver' },
-      { action: 'create', label: 'Publicar' },
+      { action: 'create', label: 'Armar y enviar simulación' },
       { action: 'update', label: 'Operar' },
       { action: 'delete', label: 'Anular' },
+      { action: 'view_all', label: 'Ver todos los despachos' },
     ],
   },
   {
@@ -159,6 +160,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['despacho', 'read'],
     ['despacho', 'create'],
     ['despacho', 'delete'],
+    ['despacho', 'view_all'],
     ['llegadas', 'read'],
     ['sincronizacion', 'update'],
   ],
@@ -189,6 +191,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['clientes', 'read'],
     ['despacho', 'read'],
     ['despacho', 'update'],
+    ['despacho', 'view_all'],
     ['llegadas', 'read'],
   ],
   CONSULTA: [
@@ -596,9 +599,16 @@ export const zCustomerStatementSummaryResponse = z.object({
 });
 export type CustomerStatementSummaryResponse = z.infer<typeof zCustomerStatementSummaryResponse>;
 
-export const ORDER_STATUSES = ['ABIERTO', 'CERRADO', 'CANCELADO', 'DESCONOCIDO'] as const;
+export const ORDER_STATUSES = ['ABIERTO', 'NOTA_ENTREGA', 'CERRADO', 'CANCELADO', 'DESCONOCIDO'] as const;
 export const zOrderStatus = z.enum(ORDER_STATUSES);
 export type OrderStatus = z.infer<typeof zOrderStatus>;
+
+// Estado de facturación separado del estado comercial: una nota de entrega
+// no es una factura. `FACTURADO_ASUMIDO` es la regla de negocio del cierre
+// automático; cuando llegue la factura real se reemplaza por `FACTURADO`.
+export const ORDER_BILLING_STATUSES = ['PENDIENTE', 'FACTURADO_ASUMIDO', 'FACTURADO'] as const;
+export const zOrderBillingStatus = z.enum(ORDER_BILLING_STATUSES);
+export type OrderBillingStatus = z.infer<typeof zOrderBillingStatus>;
 
 export const zOrderSummary = z.object({
   id: z.string(),
@@ -617,6 +627,13 @@ export const zOrderSummary = z.object({
   linesCount: z.number().int(),
   // Suma de pendientes del pedido (puede ser negativa por sobre-compromiso).
   totalPendingQty: z.number(),
+  // Ciclo de vida local (cierre por nota de entrega / anulación).
+  closedAt: z.string().nullable().optional(),
+  closedReason: z.string().nullable().optional(),
+  billingStatus: zOrderBillingStatus.optional(),
+  notaEntregaRefs: z.array(z.string()).optional(),
+  // Motivo de revisión cuando la reconciliación no cierra el pedido.
+  reviewReason: z.string().nullable().optional(),
 });
 export type OrderSummary = z.infer<typeof zOrderSummary>;
 
@@ -664,6 +681,12 @@ export const zOrderQuery = zPaginationQuery.extend({
   q: z.string().trim().max(100).optional(),
   customerCode: z.string().trim().max(20).optional(),
   status: zOrderStatus.optional(),
+  // Por defecto solo se ve la cartera viva (isActive=true). El historial de
+  // cierres se consulta con includeClosed=true.
+  includeClosed: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .transform((value) => value === true || value === 'true')
+    .optional(),
   // Filtros del reporte ampliado.
   customerType: z.string().trim().max(60).optional(),
   vendor: z.string().trim().max(100).optional(),
@@ -775,6 +798,91 @@ export const zDeliveryDateApplyResponse = z.object({
 export type DeliveryDateApplyResponse = z.infer<typeof zDeliveryDateApplyResponse>;
 
 // ============================================================
+// ============================================================
+// Ciclo de vida del pedido (cierre por nota de entrega).
+//
+// El sync trae cotizaciones pendientes. Cuando Profit las convierte en nota
+// de entrega (`cotiz_c.status = '2'` y no anulada), el pedido sale de la
+// cartera y se registra un evento inmutable. Es una capa LOCAL: nunca se
+// escribe en Profit.
+// ============================================================
+export const ORDER_CLOSE_REASONS = [
+  'NOTA_ENTREGA',
+  'CANCELADO',
+  'SIN_PENDIENTE',
+  'MANUAL',
+  'FUERA_DE_VISTA',
+  'REAPERTURA',
+] as const;
+export const zOrderCloseReason = z.enum(ORDER_CLOSE_REASONS);
+export type OrderCloseReason = z.infer<typeof zOrderCloseReason>;
+
+export const zOrderLifecycleEvent = z.object({
+  id: z.string(),
+  orderId: z.string().nullable(),
+  orderNumber: z.string(),
+  customerCode: z.string().nullable(),
+  customerName: z.string().nullable(),
+  fromStatus: z.string(),
+  toStatus: z.string(),
+  reason: zOrderCloseReason,
+  source: z.string(),
+  // JSON parseado con la evidencia de Profit (status, anulada, pendiente…).
+  evidence: z.record(z.string(), z.unknown()).nullable(),
+  actorId: z.string().nullable(),
+  actorCode: z.string().nullable(),
+  actorName: z.string().nullable(),
+  detectedAt: z.string(),
+});
+export type OrderLifecycleEvent = z.infer<typeof zOrderLifecycleEvent>;
+
+export const zOrderReconciliationRun = z.object({
+  id: z.string(),
+  status: z.enum(['EN_CURSO', 'EXITOSA', 'PARCIAL', 'ERROR']),
+  dryRun: z.boolean(),
+  trigger: z.string(),
+  startedAt: z.string(),
+  finishedAt: z.string().nullable(),
+  checked: z.number().int(),
+  closed: z.number().int(),
+  canceled: z.number().int(),
+  review: z.number().int(),
+  errorsCount: z.number().int(),
+  errorDetail: z.string().nullable(),
+});
+export type OrderReconciliationRun = z.infer<typeof zOrderReconciliationRun>;
+
+export const zOrderLifecycleStatus = z.object({
+  lastRun: zOrderReconciliationRun.nullable(),
+  // Cierres/anulaciones recientes (máximo 50).
+  recent: z.array(zOrderLifecycleEvent),
+  // Pedidos que desaparecieron o tienen datos inconsistentes y necesitan
+  // revisión humana. No se cierran solos.
+  review: z.array(zOrderSummary),
+  // Totales de la cartera viva vs cerrada (para el panel).
+  closedToday: z.number().int(),
+  pendingReview: z.number().int(),
+});
+export type OrderLifecycleStatus = z.infer<typeof zOrderLifecycleStatus>;
+
+export const zOrderReconcileInput = z.object({
+  // Si se omite, usa ORDER_RECONCILE_DRY_RUN del servidor.
+  dryRun: z.boolean().optional(),
+  // Opcional: limitar a pedidos concretos (pruebas o corrección puntual).
+  orderNumbers: z.array(z.string().trim().min(1).max(40)).max(2000).optional(),
+});
+export type OrderReconcileInput = z.infer<typeof zOrderReconcileInput>;
+
+export const zOrderReopenInput = z.object({
+  reason: z.string().trim().min(4, 'Explica por qué se reabre').max(240),
+});
+export type OrderReopenInput = z.infer<typeof zOrderReopenInput>;
+
+export const zOrderLifecycleQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+export type OrderLifecycleQuery = z.infer<typeof zOrderLifecycleQuery>;
+
 // Simulador de despacho: escenarios guardados (Fase 6).
 //
 // La simulación vive en el navegador hasta que el usuario la guarda. Aquí
@@ -783,6 +891,8 @@ export type DeliveryDateApplyResponse = z.infer<typeof zDeliveryDateApplyRespons
 // ============================================================
 export const MAX_SCENARIOS = 25;
 export const MAX_SCENARIO_LINES = 5000;
+// TTL del lock de edición del plan global (el cliente renueva por heartbeat).
+export const SCENARIO_LOCK_SECONDS = 120;
 
 export const DISPATCH_MODES = ['disponible', 'total'] as const;
 export const zDispatchMode = z.enum(DISPATCH_MODES);
@@ -861,8 +971,48 @@ export const zScenarioSnapshotLine = zScenarioLineRef.extend({
   stockTotal: z.number(),
   effectiveDate: z.string().nullable(),
   priority: z.number().int(),
+  // Comentario del planificador para el almacén (por pedido/artículo).
+  comment: z.string().trim().max(240).nullable().default(null),
 });
 export type ScenarioSnapshotLine = z.infer<typeof zScenarioSnapshotLine>;
+
+// ---------- Plan de carga del camión ----------
+// El planificador define los espacios del vehículo y ubica exactamente un
+// pedido en cada uno (sin reparto automático). Los `segments` son posicionales:
+// el índice del arreglo es el espacio físico dentro del tráiler. `orderNumbers`
+// es la fuente de verdad; `label`, `kg` y `sacks` se derivan de los renglones.
+// `grouping` quedó como campo legado de los planes anteriores y ya no se usa.
+// Es una guía visual, no escribe en Profit.
+export const LOAD_PLAN_GROUPINGS = ['cliente', 'pedido'] as const;
+export const zLoadPlanGrouping = z.enum(LOAD_PLAN_GROUPINGS);
+export type LoadPlanGrouping = z.infer<typeof zLoadPlanGrouping>;
+
+// Tope técnico del contrato (compatibilidad con planes históricos). La UI
+// limita la edición a 6 espacios.
+export const MAX_LOAD_PLAN_SEGMENTS = 24;
+
+export const zLoadPlanSegment = z.object({
+  id: z.string().trim().min(1).max(40),
+  // Etiqueta visible: nombre del cliente o número de pedido.
+  label: z.string().trim().min(1).max(80),
+  customerCode: z.string().trim().max(40).nullable().default(null),
+  orderNumbers: z.array(z.string().trim().max(40)).max(200).default([]),
+  kg: z.number().min(0),
+  sacks: z.number().min(0).default(0),
+  // Color del bloque (hex). Si falta, se usa la paleta del componente.
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+});
+export type LoadPlanSegment = z.infer<typeof zLoadPlanSegment>;
+
+export const zLoadPlan = z.object({
+  grouping: zLoadPlanGrouping.default('cliente'),
+  segments: z.array(zLoadPlanSegment).max(MAX_LOAD_PLAN_SEGMENTS).default([]),
+  note: z.string().trim().max(240).optional(),
+});
+export type LoadPlan = z.infer<typeof zLoadPlan>;
 
 export const zScenarioSnapshot = z.object({
   // ISO del momento en que se tomó la foto.
@@ -879,13 +1029,30 @@ export const zScenarioPayload = z.object({
   selected: z.array(zScenarioLineRef).max(MAX_SCENARIO_LINES),
   // null en el borrador: siempre se recalcula en vivo.
   snapshot: zScenarioSnapshot.nullable(),
+  // Guía visual de carga del camión. Opcional para payloads históricos.
+  loadPlan: zLoadPlan.nullable().default(null),
 });
 export type ScenarioPayload = z.infer<typeof zScenarioPayload>;
+
+// Lock del plan global: solo el titular autoguarda. `token` se devuelve
+// únicamente a quien lo posee (el cliente lo reenvía en cada guardado).
+export const zScenarioLock = z.object({
+  holderId: z.string().nullable(),
+  holderName: z.string().nullable(),
+  until: z.string().nullable(),
+  isMine: z.boolean().default(false),
+  token: z.string().nullable().default(null),
+});
+export type ScenarioLock = z.infer<typeof zScenarioLock>;
 
 // Borrador: solo receta + renglones (sin foto) para no escribir de más.
 export const zScenarioDraftInput = z.object({
   recipe: zScenarioRecipe,
   selected: z.array(zScenarioLineRef).max(MAX_SCENARIO_LINES),
+  loadPlan: zLoadPlan.nullable().optional(),
+  // Versionado optimista y lock del plan global.
+  version: z.number().int().min(1).optional(),
+  lockToken: z.string().trim().max(120).optional(),
 });
 export type ScenarioDraftInput = z.infer<typeof zScenarioDraftInput>;
 
@@ -894,6 +1061,15 @@ export const zScenarioSaveInput = zScenarioDraftInput.extend({
   snapshot: zScenarioSnapshot,
 });
 export type ScenarioSaveInput = z.infer<typeof zScenarioSaveInput>;
+
+// Envío de una simulación guardada al almacén. El título nace del nombre del
+// escenario si no se envía uno; el destino vacío = bandeja compartida.
+export const zScenarioSendDispatchInput = z.object({
+  title: z.string().trim().min(1).max(120).optional(),
+  instructions: z.string().trim().max(500).optional(),
+  assignedToId: z.string().min(1).nullable().optional(),
+});
+export type ScenarioSendDispatchInput = z.infer<typeof zScenarioSendDispatchInput>;
 
 export const zScenarioUpdateInput = z
   .object({
@@ -948,6 +1124,10 @@ export const zScenarioListItem = z.object({
   id: z.string(),
   name: z.string(),
   kind: zScenarioKind,
+  // Creador del escenario (para auditoría y para el borrado restringido).
+  ownerId: z.string(),
+  ownerCode: z.string().nullable(),
+  ownerName: z.string().nullable(),
   lineCount: z.number().int(),
   sacks: z.number(),
   assignedKg: z.number(),
@@ -960,6 +1140,15 @@ export const zScenarioListItem = z.object({
   restoredAt: z.string().nullable(),
   // Cuántas veces se ha restaurado (historial visible en el modal).
   restoreCount: z.number().int(),
+  // Permisos calculados para el usuario que consulta.
+  canEdit: z.boolean().default(true),
+  canDelete: z.boolean().default(true),
+  canRestore: z.boolean().default(true),
+  // Renglones del escenario cuyo pedido ya salió de la cartera (nota de
+  // entrega, anulación o cierre). Es informativo: la foto no se muta.
+  closedLines: z.number().int().default(0),
+  // Lock del plan global (solo aplica al borrador DRAFT).
+  lock: zScenarioLock.nullable().default(null),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -976,6 +1165,8 @@ export const zScenarioListResponse = z.object({
   draft: zScenarioListItem.nullable(),
   items: z.array(zScenarioListItem),
   limit: z.number().int(),
+  // true = la lista incluye escenarios de todos los usuarios (ADMIN).
+  allOwners: z.boolean().default(false),
   dataVersion: z.string().nullable(),
 });
 export type ScenarioListResponse = z.infer<typeof zScenarioListResponse>;
@@ -984,6 +1175,20 @@ export const zScenarioDraftResponse = z.object({
   scenario: zScenarioDetail.nullable(),
 });
 export type ScenarioDraftResponse = z.infer<typeof zScenarioDraftResponse>;
+
+// Respuesta al tomar/renovar el lock del plan global.
+export const zScenarioLockResponse = zScenarioLock.extend({
+  version: z.number().int(),
+  until: z.string(),
+  token: z.string(),
+});
+export type ScenarioLockResponse = z.infer<typeof zScenarioLockResponse>;
+
+export const zScenarioLockInput = z.object({
+  // true = un ADMIN puede arrebatar el lock a otro usuario.
+  force: z.boolean().optional(),
+});
+export type ScenarioLockInput = z.infer<typeof zScenarioLockInput>;
 
 // ============================================================
 // Despacho de almacén (Fase 6b): hoja de despacho + túnel de acuses.
@@ -995,6 +1200,7 @@ export type ScenarioDraftResponse = z.infer<typeof zScenarioDraftResponse>;
 // ============================================================
 export const DISPATCH_SHEET_STATUSES = [
   'ENVIADO',
+  // Solo histórico: el flujo nuevo va de ENVIADO a EN_PROCESO al primer renglón.
   'RECIBIDO',
   'EN_PROCESO',
   'CON_NOVEDAD',
@@ -1113,6 +1319,8 @@ export type DispatchSheetSummary = z.infer<typeof zDispatchSheetSummary>;
 export const zDispatchSheetDetail = zDispatchSheetSummary.extend({
   lines: z.array(zDispatchSheetLine),
   events: z.array(zDispatchSheetEvent),
+  // Guía de carga del camión copiada de la simulación. null = sin guía.
+  loadPlan: zLoadPlan.nullable(),
 });
 export type DispatchSheetDetail = z.infer<typeof zDispatchSheetDetail>;
 
@@ -1148,8 +1356,12 @@ export const zDispatchAssigneesResponse = z.object({
 export type DispatchAssigneesResponse = z.infer<typeof zDispatchAssigneesResponse>;
 
 export const zDispatchSheetQuery = z.object({
-  // all = todo lo que puedo ver · assigned = lo mío por operar · created = lo que publiqué.
-  scope: z.enum(['all', 'assigned', 'created']).default('all'),
+  // pending  = todo lo abierto (bandeja de trabajo, sin importar quién publicó)
+  // created  = lo que publiqué
+  // history  = cerrados/anulados
+  // all      = compatibilidad: visibilidad base del rol
+  // assigned = compatibilidad: lo mío por operar
+  scope: z.enum(['all', 'pending', 'assigned', 'created', 'history']).default('pending'),
   status: zDispatchSheetStatus.optional(),
   q: z.string().trim().max(80).optional(),
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -1418,7 +1630,7 @@ export type ApiError = z.infer<typeof zApiError>;
 // ============================================================
 // Forecast (pronóstico de producción).
 //   - Forecast MENSUAL por artículo: se lee de Profit (`xart_fore.kg_mes`),
-//     sin conversión. Solo lectura.
+//     en KILOGRAMOS y sin conversión. Solo lectura.
 //   - Reparto en 4 semanas (bloques 1-7 / 8-14 / 15-21 / 22-fin), editable
 //     en Nexo. Por defecto = forecast mensual / 4.
 // ============================================================
@@ -1494,6 +1706,8 @@ export const zForecastPlanWeek = z.object({
   // Demanda real de pedidos activos cuya entrega cae en esa semana.
   demandQty: z.number(),
   demandKg: z.number(),
+  // Kg despachados en la semana según notas de entrega (0 si Profit no respondió).
+  soldKg: z.number(),
   // Objetivo de la semana = max(forecast, demanda). Es la "demanda" que usa el
   // motor de disponibilidad.
   objectiveQty: z.number(),
@@ -1520,6 +1734,10 @@ export const zForecastPlanRow = z.object({
   forecastMonthQty: z.number(),
   averageQty: z.number(),
   demandMonthQty: z.number(),
+  // Demanda del mes en kg (pedidos activos), para comparar con forecast y venta.
+  demandMonthKg: z.number(),
+  // Kg despachados en el mes según notas de entrega.
+  soldMonthKg: z.number(),
   productionMonthQty: z.number(),
   productionMonthKg: z.number(),
   weeks: z.array(zForecastPlanWeek),
@@ -1530,6 +1748,8 @@ export const zForecastPlanResponse = z.object({
   year: z.number().int(),
   month: z.number().int(),
   weekRanges: z.array(zForecastWeekRange),
+  // false si Profit no devolvió los despachos: la UI avisa y no pinta ceros falsos.
+  salesAvailable: z.boolean(),
   rows: z.array(zForecastPlanRow),
   totals: z.object({
     forecastQty: z.number(),
@@ -1539,6 +1759,150 @@ export const zForecastPlanResponse = z.object({
   }),
 });
 export type ForecastPlanResponse = z.infer<typeof zForecastPlanResponse>;
+
+// ============================================================
+// Ventas del mes vs Forecast (run-rate).
+//
+//  · Fuente de venta: notas de entrega NO anuladas de Profit (`dbo.not_ent` +
+//    `dbo.reng_nde` + `dbo.art`), solo línea `ABA`. En este Profit ambas tablas
+//    usan `fact_num` como llave. Venta neta = venta bruta (no hay renglones
+//    anulados ni negativos en `reng_nde`). NUNCA se escribe en Profit.
+//  · Corte: se comparan días COMPLETOS (ayer). El día en curso se puede
+//    incluir con `includeToday`, pero por defecto queda fuera para no hundir
+//    la proyección con un despacho parcial.
+//  · Días hábiles: lunes a sábado (el domingo casi no se despacha). El modo
+//    `CALENDAR` existe para contrastar contra el calendario completo.
+// ============================================================
+export const FORECAST_SALES_BASES = ['WORKING', 'CALENDAR'] as const;
+export const zForecastSalesBasis = z.enum(FORECAST_SALES_BASES);
+export type ForecastSalesBasis = z.infer<typeof zForecastSalesBasis>;
+
+export const FORECAST_SALES_STATUSES = ['OPEN', 'CLOSED', 'FUTURE'] as const;
+export const zForecastSalesStatus = z.enum(FORECAST_SALES_STATUSES);
+export type ForecastSalesStatus = z.infer<typeof zForecastSalesStatus>;
+
+// De dónde salió la meta del mes del informe:
+//   LIVE     = mes en curso, leída de `xart_fore` ahora mismo.
+//   SNAPSHOT = mes cerrado con la meta guardada en `ForecastTarget`.
+//   NONE     = no hay meta (mes futuro o cerrado sin snapshot).
+export const FORECAST_SALES_SOURCES = ['LIVE', 'SNAPSHOT', 'NONE'] as const;
+export const zForecastSalesSource = z.enum(FORECAST_SALES_SOURCES);
+export type ForecastSalesSource = z.infer<typeof zForecastSalesSource>;
+
+// `?includeToday=false` llega como string: z.coerce.boolean() lo volvería
+// `true` (cualquier cadena no vacía es truthy), por eso se normaliza a mano.
+const zForecastSalesBool = z.preprocess(
+  (value) => value === true || value === 'true' || value === '1' || value === 1,
+  z.boolean(),
+);
+
+export const zForecastSalesQuery = z.object({
+  // Sin año/mes se usa el mes en curso en America/Caracas.
+  year: zYear.optional(),
+  month: zMonth.optional(),
+  // Ventana histórica para el promedio de comparación (meses cerrados).
+  months: z.coerce.number().int().min(3).max(24).default(6),
+  basis: zForecastSalesBasis.default('WORKING'),
+  includeToday: zForecastSalesBool.default(false),
+});
+export type ForecastSalesQuery = z.infer<typeof zForecastSalesQuery>;
+
+export const zForecastSalesDays = z.object({
+  inMonth: z.number().int(),
+  elapsed: z.number().int(),
+  remaining: z.number().int(),
+  workingInMonth: z.number().int(),
+  workingElapsed: z.number().int(),
+  workingRemaining: z.number().int(),
+  // Hoy en la zona del negocio (America/Caracas), no la del servidor.
+  today: z.string(),
+  // Último día completo contado (null en un mes futuro).
+  cut: z.string().nullable(),
+});
+export type ForecastSalesDays = z.infer<typeof zForecastSalesDays>;
+
+export const zForecastSalesDaily = z.object({
+  date: z.string(),
+  actualKg: z.number(),
+  actualUnits: z.number(),
+  invoiceCount: z.number().int(),
+  // Null después del corte: la línea real no se dibuja a futuro.
+  cumulativeKg: z.number().nullable(),
+  // Proyección desde el corte hasta fin de mes (null antes del corte).
+  projectedCumulativeKg: z.number().nullable(),
+  // Ritmo uniforme del forecast (null sin meta).
+  forecastCumulativeKg: z.number().nullable(),
+});
+export type ForecastSalesDaily = z.infer<typeof zForecastSalesDaily>;
+
+export const zForecastSalesHistory = z.object({
+  year: z.number().int(),
+  month: z.number().int(),
+  actualKg: z.number(),
+  actualUnits: z.number(),
+  // La meta histórica requiere snapshot (Fase 2); sin él queda null.
+  forecastKg: z.number().nullable(),
+});
+export type ForecastSalesHistory = z.infer<typeof zForecastSalesHistory>;
+
+export const zForecastSalesRow = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  kgPerUom: z.number().nullable(),
+  forecastKg: z.number(),
+  actualKg: z.number(),
+  actualUnits: z.number(),
+  // Solo para artículos SAC (kg / kg por saco). Null en granel.
+  actualSacks: z.number().nullable(),
+  dailyAvgKg: z.number(),
+  projectedKg: z.number().nullable(),
+  attainmentPct: z.number().nullable(),
+  projectedAttainmentPct: z.number().nullable(),
+  gapKg: z.number().nullable(),
+  requiredDailyKg: z.number().nullable(),
+  historicalAvgKg: z.number().nullable(),
+  vsHistoricalPct: z.number().nullable(),
+  lastInvoiceDate: z.string().nullable(),
+  history: z.array(zForecastSalesHistory),
+});
+export type ForecastSalesRow = z.infer<typeof zForecastSalesRow>;
+
+export const zForecastSalesResponse = z.object({
+  year: z.number().int(),
+  month: z.number().int(),
+  // Fecha de corte efectiva (yyyy-mm-dd) en America/Caracas.
+  asOf: z.string().nullable(),
+  basis: zForecastSalesBasis,
+  status: zForecastSalesStatus,
+  // false = Profit no respondió: la UI avisa, no muestra ceros como ventas.
+  salesAvailable: z.boolean(),
+  // false = no se pudo leer `xart_fore`.
+  forecastAvailable: z.boolean(),
+  // Origen de la meta: viva (mes en curso), snapshot local o sin meta.
+  forecastSource: zForecastSalesSource,
+  days: zForecastSalesDays,
+  totals: z.object({
+    forecastKg: z.number(),
+    actualKg: z.number(),
+    actualUnits: z.number(),
+    dailyAvgKg: z.number(),
+    projectedKg: z.number().nullable(),
+    attainmentPct: z.number().nullable(),
+    projectedAttainmentPct: z.number().nullable(),
+    gapKg: z.number().nullable(),
+    requiredDailyKg: z.number().nullable(),
+    historicalAvgKg: z.number().nullable(),
+    vsHistoricalPct: z.number().nullable(),
+    invoiceCount: z.number().int(),
+    lastInvoiceDate: z.string().nullable(),
+  }),
+  daily: z.array(zForecastSalesDaily),
+  history: z.array(zForecastSalesHistory),
+  rows: z.array(zForecastSalesRow),
+  generatedAt: z.string(),
+});
+export type ForecastSalesResponse = z.infer<typeof zForecastSalesResponse>;
 
 // ============================================================
 // Bitácora de auditoría (Usuarios → Bitácoras)
@@ -1602,6 +1966,14 @@ export const AUDIT_ACTIONS: Record<string, AuditActionDefinition> = {
   SCENARIO_UPDATE: { module: 'scenarios', label: 'Renombró una simulación', severity: 'INFO' },
   SCENARIO_DELETE: { module: 'scenarios', label: 'Eliminó una simulación', severity: 'WARN' },
   SCENARIO_RESTORE: { module: 'scenarios', label: 'Restauró una simulación', severity: 'INFO' },
+  SCENARIO_LOCK: { module: 'scenarios', label: 'Tomó el control del plan global', severity: 'INFO' },
+  SCENARIO_UNLOCK: { module: 'scenarios', label: 'Liberó el control del plan global', severity: 'INFO' },
+  SCENARIO_TAKEOVER: { module: 'scenarios', label: 'Arrebató el control del plan global', severity: 'WARN' },
+  ORDER_LIFECYCLE_CLOSE: { module: 'orders', label: 'Cerró un pedido por nota de entrega', severity: 'INFO' },
+  ORDER_LIFECYCLE_CANCEL: { module: 'orders', label: 'Anuló un pedido desde Profit', severity: 'WARN' },
+  ORDER_LIFECYCLE_REVIEW: { module: 'orders', label: 'Marcó un pedido para revisión', severity: 'WARN' },
+  ORDER_REOPEN: { module: 'orders', label: 'Reabrió un pedido cerrado', severity: 'WARN' },
+  ORDER_RECONCILE_RUN: { module: 'orders', label: 'Ejecutó la reconciliación de pedidos', severity: 'INFO' },
   FORECAST_SET_WEEKS: { module: 'forecast', label: 'Editó semanas del forecast', severity: 'INFO' },
   DELIVERY_DATE_SET: { module: 'orders', label: 'Asignó fecha tentativa a pedidos', severity: 'INFO' },
   DELIVERY_DATE_RESTORE: { module: 'orders', label: 'Restauró la fecha tentativa', severity: 'INFO' },

@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -14,40 +15,48 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
   ScenarioDraftInput,
+  ScenarioLockInput,
   ScenarioRestoreInput,
   ScenarioSaveInput,
+  ScenarioSendDispatchInput,
   ScenarioUpdateInput,
   zScenarioDraftInput,
+  zScenarioLockInput,
   zScenarioRestoreInput,
   zScenarioSaveInput,
+  zScenarioSendDispatchInput,
   zScenarioUpdateInput,
 } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RequirePermission } from '../permissions/permissions.decorator';
 import { PermissionsGuard } from '../permissions/permissions.guard';
+import { DispatchService, DispatchViewer } from '../dispatch/dispatch.service';
 import { ScenariosService } from './scenarios.service';
 
-// Simulador de despacho (Fase 6): escenarios guardados por usuario.
+// Simulador de despacho: plan GLOBAL del equipo + escenarios guardados.
 // Solo persiste receta + foto; nunca escribe en Profit.
 @ApiTags('scenarios')
 @ApiBearerAuth()
 @Controller('scenarios')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class ScenariosController {
-  constructor(private readonly scenarios: ScenariosService) {}
+  constructor(
+    private readonly scenarios: ScenariosService,
+    private readonly dispatch: DispatchService,
+  ) {}
 
   @Get()
   @RequirePermission('pedidos:read')
   list(@Req() request: AuthenticatedRequest) {
-    return this.scenarios.list(this.ownerOf(request));
+    return this.scenarios.list(this.viewerOf(request));
   }
 
   // Rutas del borrador ANTES de ':id' para que no las capture el parámetro.
   @Get('draft')
   @RequirePermission('pedidos:read')
   getDraft(@Req() request: AuthenticatedRequest) {
-    return this.scenarios.getDraft(this.ownerOf(request));
+    return this.scenarios.getDraft(this.viewerOf(request));
   }
 
   @Put('draft')
@@ -56,7 +65,24 @@ export class ScenariosController {
     @Body(new ZodValidationPipe(zScenarioDraftInput)) body: ScenarioDraftInput,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.scenarios.saveDraft(this.ownerOf(request), body);
+    return this.scenarios.saveDraft(this.actorOf(request), body);
+  }
+
+  // El lock es lo que permite que el plan sea global sin que dos personas se
+  // pisen: solo el titular autoguarda; el resto puede «tomar control».
+  @Post('draft/lock')
+  @RequirePermission('pedidos:create')
+  acquireLock(
+    @Body(new ZodValidationPipe(zScenarioLockInput)) body: ScenarioLockInput,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.scenarios.acquireLock(this.actorOf(request), this.viewerOf(request), body);
+  }
+
+  @Delete('draft/lock')
+  @RequirePermission('pedidos:create')
+  releaseLock(@Req() request: AuthenticatedRequest) {
+    return this.scenarios.releaseLock(this.actorOf(request));
   }
 
   @Post()
@@ -65,13 +91,34 @@ export class ScenariosController {
     @Body(new ZodValidationPipe(zScenarioSaveInput)) body: ScenarioSaveInput,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.scenarios.create(this.ownerOf(request), body, this.actorOf(request));
+    return this.scenarios.create(this.viewerOf(request), body, this.actorOf(request));
+  }
+
+  // Enviar una simulación guardada al almacén. Es el permiso «Armar y enviar
+  // simulación» de Despacho; no basta con guardar simulaciones en Pedidos.
+  @Post(':id/send-dispatch')
+  @RequirePermission('despacho:create')
+  async sendToDispatch(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(zScenarioSendDispatchInput)) body: ScenarioSendDispatchInput,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const scenario = await this.scenarios.detail(this.viewerOf(request), id);
+    if (!scenario.canRestore) {
+      throw new ForbiddenException('Solo quien creó la simulación o un administrador puede enviarla a despacho.');
+    }
+    return this.dispatch.create(this.dispatchViewerOf(request), {
+      scenarioId: scenario.id,
+      title: body.title?.trim() || scenario.name,
+      instructions: body.instructions,
+      assignedToId: body.assignedToId ?? null,
+    });
   }
 
   @Get(':id')
   @RequirePermission('pedidos:read')
   detail(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
-    return this.scenarios.detail(this.ownerOf(request), id);
+    return this.scenarios.detail(this.viewerOf(request), id);
   }
 
   @Patch(':id')
@@ -81,13 +128,13 @@ export class ScenariosController {
     @Body(new ZodValidationPipe(zScenarioUpdateInput)) body: ScenarioUpdateInput,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.scenarios.update(this.ownerOf(request), id, body, this.actorOf(request));
+    return this.scenarios.update(this.viewerOf(request), id, body, this.actorOf(request));
   }
 
   @Delete(':id')
   @RequirePermission('pedidos:delete')
   remove(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
-    return this.scenarios.remove(this.ownerOf(request), id, this.actorOf(request));
+    return this.scenarios.remove(this.viewerOf(request), id, this.actorOf(request));
   }
 
   @Post(':id/restore')
@@ -97,16 +144,36 @@ export class ScenariosController {
     @Body(new ZodValidationPipe(zScenarioRestoreInput)) body: ScenarioRestoreInput,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.scenarios.markRestored(this.ownerOf(request), id, body, this.actorOf(request));
+    return this.scenarios.markRestored(this.viewerOf(request), id, body, this.actorOf(request));
   }
 
-  private ownerOf(request: AuthenticatedRequest): string {
-    const ownerId = request.user?.sub;
-    if (!ownerId) throw new UnauthorizedException('Sesión requerida');
-    return ownerId;
+  private viewerOf(request: AuthenticatedRequest) {
+    return {
+      id: this.requireUser(request),
+      isAdmin: request.access?.isAdmin ?? false,
+    };
+  }
+
+  private requireUser(request: AuthenticatedRequest): string {
+    const id = request.user?.sub;
+    if (!id) throw new UnauthorizedException('Sesión requerida');
+    return id;
   }
 
   private actorOf(request: AuthenticatedRequest) {
     return { id: request.user?.sub ?? null, code: request.user?.code ?? null };
+  }
+
+  private dispatchViewerOf(request: AuthenticatedRequest): DispatchViewer {
+    const id = request.user?.sub;
+    if (!id) throw new UnauthorizedException('Sesión requerida');
+    return {
+      id,
+      role: request.access?.baseRole ?? 'CONSULTA',
+      isAdmin: request.access?.isAdmin ?? false,
+      canPublish: request.access?.permissions.includes('despacho:create') ?? false,
+      canViewAll: request.access?.permissions.includes('despacho:view_all') ?? false,
+      code: request.user?.code ?? null,
+    };
   }
 }

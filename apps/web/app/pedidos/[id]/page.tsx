@@ -18,6 +18,7 @@ import { AuthRequiredError, apiFetch } from '../../../lib/api';
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
   ABIERTO: 'Abierto',
+  NOTA_ENTREGA: 'Nota de entrega',
   CERRADO: 'Cerrado',
   CANCELADO: 'Cancelado',
   DESCONOCIDO: 'Desconocido',
@@ -25,6 +26,7 @@ const STATUS_LABEL: Record<OrderStatus, string> = {
 
 const STATUS_TONE: Record<OrderStatus, 'success' | 'muted' | 'danger' | 'default'> = {
   ABIERTO: 'success',
+  NOTA_ENTREGA: 'muted',
   CERRADO: 'muted',
   CANCELADO: 'danger',
   DESCONOCIDO: 'default',

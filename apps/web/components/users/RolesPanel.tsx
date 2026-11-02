@@ -1,6 +1,6 @@
 'use client';
 
-import type { Role, RoleSummary } from '@nexo/contracts';
+import type { PermissionAction, Role, RoleSummary } from '@nexo/contracts';
 import { APP_MODULES, ROLES, zRoleInput } from '@nexo/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Lock, Pencil, Plus, ShieldCheck, Trash2, Users, X } from 'lucide-react';
@@ -73,7 +73,7 @@ export function RolesPanel({ permissions }: RolesPanelProps) {
       const entries = [...value.permissions]
         .map((key) => {
           const [module, action] = key.split(':');
-          return { module: module ?? '', action: action as 'read' | 'create' | 'update' | 'delete' };
+          return { module: module ?? '', action: action as PermissionAction };
         })
         .filter((entry) => entry.module);
 
@@ -423,6 +423,9 @@ function RoleDialog({
 
         <div className="border-t border-surface-container p-space-md">
           <h3 className="mb-space-sm font-semibold text-on-surface">Matriz de permisos</h3>
+          <p className="mb-space-sm text-label-sm normal-case text-on-surface-variant">
+            En Despacho, «Crear» habilita «Armar y enviar simulación»; «Editar» permite operar la carga.
+          </p>
           <PermissionMatrix
             mode="role"
             granted={[...form.permissions]}

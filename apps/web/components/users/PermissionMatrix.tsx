@@ -19,6 +19,7 @@ const ACTION_LABEL: Record<(typeof PERMISSION_ACTIONS)[number], string> = {
   create: 'Crear',
   update: 'Editar',
   delete: 'Eliminar',
+  view_all: 'Ver todos',
 };
 
 export interface PermissionMatrixProps {

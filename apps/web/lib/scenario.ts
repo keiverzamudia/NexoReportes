@@ -242,6 +242,8 @@ export function buildSnapshot(args: {
   lineByKey: Map<string, { line: OrderGroupLine }>;
   carteraLines: number;
   takenAt: Date;
+  /** Comentario por clave de selección (`id#artículo`). */
+  comments?: Record<string, string>;
 }): ScenarioSnapshot {
   const lines: ScenarioSnapshotLine[] = [];
   for (const entry of args.entries) {
@@ -264,6 +266,7 @@ export function buildSnapshot(args: {
       stockTotal: round2((line.stock03 ?? 0) + (line.stock9999 ?? 0) + (line.stock68 ?? 0)),
       effectiveDate: normalizeDate(line.tentativeDate ?? line.requestedDate),
       priority: entry.priority,
+      comment: args.comments?.[entry.key]?.trim().slice(0, 240) || null,
     });
   }
   lines.sort((a, b) => a.priority - b.priority || a.orderNumber.localeCompare(b.orderNumber));

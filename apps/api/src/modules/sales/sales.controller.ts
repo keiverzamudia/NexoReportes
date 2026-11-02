@@ -1,18 +1,36 @@
-import { Body, Controller, Delete, Get, Param, Put, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
   CustomerQuery,
   CustomerStatementQuery,
   CustomerStatementSummaryQuery,
   OrderGroupQuery,
+  OrderLifecycleQuery,
   OrderQuery,
+  OrderReconcileInput,
+  OrderReopenInput,
   zCustomerQuery,
   zCustomerStatementQuery,
   zCustomerStatementSummaryQuery,
   zDeliveryDateRestoreInput,
   zDeliveryDateSetInput,
   zOrderGroupQuery,
+  zOrderLifecycleQuery,
   zOrderQuery,
+  zOrderReconcileInput,
+  zOrderReopenInput,
 } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -20,6 +38,7 @@ import { RequireAnyPermission, RequirePermission } from '../permissions/permissi
 import { PermissionsGuard } from '../permissions/permissions.guard';
 import { CustomerStatementService } from './customer-statement.service';
 import { DeliveryDatesService } from './delivery-dates.service';
+import { OrderLifecycleService } from './order-lifecycle.service';
 import { SalesService } from './sales.service';
 
 // Pedidos y clientes (Fase 4): consulta de lo sincronizado desde Profit y
@@ -33,6 +52,7 @@ export class SalesController {
     private readonly sales: SalesService,
     private readonly deliveryDates: DeliveryDatesService,
     private readonly customerStatements: CustomerStatementService,
+    private readonly lifecycle: OrderLifecycleService,
   ) {}
 
   @Get('customers')
@@ -72,6 +92,43 @@ export class SalesController {
     return this.sales.listGrouped(query);
   }
 
+  // ---------- Cierre por nota de entrega (solo ADMIN) ----------
+
+  @Get('orders/lifecycle')
+  @RequirePermission('pedidos:read')
+  lifecycleStatus(
+    @Query(new ZodValidationPipe(zOrderLifecycleQuery)) query: OrderLifecycleQuery,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.requireAdmin(request);
+    return this.lifecycle.status(query);
+  }
+
+  @Post('orders/lifecycle/reconcile')
+  @RequirePermission('pedidos:update')
+  reconcileOrders(
+    @Body(new ZodValidationPipe(zOrderReconcileInput)) body: OrderReconcileInput,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.requireAdmin(request);
+    return this.lifecycle.reconcile({
+      ...body,
+      trigger: 'MANUAL',
+      actor: { id: request.user?.sub, code: request.user?.code },
+    });
+  }
+
+  @Post('orders/:id/reopen')
+  @RequirePermission('pedidos:update')
+  reopenOrder(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(zOrderReopenInput)) body: OrderReopenInput,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.requireAdmin(request);
+    return this.lifecycle.reopen({ id: request.user?.sub, code: request.user?.code }, id, body);
+  }
+
   @Get('orders/:id')
   @RequirePermission('pedidos:read')
   orderDetail(@Param('id') id: string) {
@@ -102,5 +159,11 @@ export class SalesController {
       id: request.user?.sub,
       code: request.user?.code,
     });
+  }
+
+  private requireAdmin(request: AuthenticatedRequest): void {
+    if (!request.access?.isAdmin) {
+      throw new ForbiddenException('El panel de cierres es solo para administradores.');
+    }
   }
 }

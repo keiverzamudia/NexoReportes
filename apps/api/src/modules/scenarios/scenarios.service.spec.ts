@@ -17,11 +17,19 @@ function matchesWhere(where: Row, row: Row): boolean {
 }
 
 function createFakePrisma() {
-  const state = { scenarios: [] as Row[], runs: [] as Row[], restores: [] as Row[], users: [] as Row[] };
+  const state = {
+    scenarios: [] as Row[],
+    drafts: [] as Row[],
+    orders: [] as Row[],
+    runs: [] as Row[],
+    restores: [] as Row[],
+    users: [] as Row[],
+  };
 
   // Prisma devuelve el `_count` y las relaciones incluidas en la misma fila.
   const decorate = (row: Row) => ({
     ...row,
+    owner: state.users.find((user) => user.id === row.ownerId) ?? null,
     _count: { restores: state.restores.filter((restore) => restore.scenarioId === row.id).length },
     restores: state.restores
       .filter((restore) => restore.scenarioId === row.id)
@@ -75,6 +83,29 @@ function createFakePrisma() {
         // Cascada: el historial de restauraciones se va con el escenario.
         state.restores = state.restores.filter((restore) => restore.scenarioId !== where.id);
         return removed;
+      },
+    },
+    dispatchDraft: {
+      findUnique: async ({ where }: Row) => state.drafts.find((row) => row.id === where.id) ?? null,
+      create: async ({ data }: Row) => {
+        const row: Row = { version: 1, createdAt: new Date(), updatedAt: new Date(), ...data };
+        state.drafts.push(row);
+        return row;
+      },
+      update: async ({ where, data }: Row) => {
+        const row = state.drafts.find((item) => item.id === where.id);
+        if (!row) throw new Error('no encontrado');
+        const { version, ...rest } = data;
+        Object.assign(row, rest);
+        if (version && typeof version === 'object' && 'increment' in version) row.version += version.increment;
+        row.updatedAt = new Date();
+        return row;
+      },
+    },
+    salesOrder: {
+      findMany: async ({ where }: Row) => {
+        const wanted = where?.externalNumber?.in as unknown[] | undefined;
+        return state.orders.filter((row) => !wanted || wanted.includes(row.externalNumber));
       },
     },
     dispatchScenarioRestore: {
@@ -184,16 +215,43 @@ describe('ScenariosService', () => {
     expect(prisma.state.scenarios).toHaveLength(1);
   });
 
-  it('aísla los escenarios por dueño: el ajeno no existe', async () => {
+  it('el equipo ve las simulaciones de todos, pero solo el creador o ADMIN las elimina', async () => {
     const prisma = createFakePrisma();
     const service = new ScenariosService(prisma as never, audit);
     const created = await service.create('u1', saveInput(), {});
 
+    // u2 puede verla, pero no restaurarla ni borrarla.
     const list = await service.list('u2');
-    expect(list.items).toHaveLength(0);
+    expect(list.items).toHaveLength(1);
+    expect(list.items[0]!.canDelete).toBe(false);
+    expect(list.items[0]!.canRestore).toBe(false);
 
-    await expect(service.detail('u2', created.id)).rejects.toThrow(/no encontrada/i);
-    await expect(service.remove('u2', created.id, {})).rejects.toThrow(/no encontrada/i);
+    const detail = await service.detail('u2', created.id);
+    expect(detail.name).toBe('Despacho lunes');
+    await expect(service.remove('u2', created.id, {})).rejects.toThrow(/administrador/i);
+    await expect(service.markRestored('u2', created.id, restoreInput(), {})).rejects.toThrow(/administrador/i);
+
+    // El creador sí puede.
+    await service.remove('u1', created.id, {});
+    expect(prisma.state.scenarios).toHaveLength(0);
+  });
+
+  it('un ADMIN ve y elimina cualquier simulación del equipo', async () => {
+    const prisma = createFakePrisma();
+    const service = new ScenariosService(prisma as never, audit);
+    prisma.state.users.push(
+      { id: 'u1', profitCode: 'AAA', displayName: 'ANA' },
+      { id: 'u2', profitCode: 'BBB', displayName: 'BETO' },
+    );
+    await service.create('u2', saveInput({ name: 'De Beto' }), {});
+    const ana = await service.create('u1', saveInput({ name: 'De Ana' }), {});
+
+    const all = await service.list({ id: 'u1', isAdmin: true });
+    expect(all.allOwners).toBe(true);
+    expect(all.items).toHaveLength(2);
+    expect(all.items.every((item) => item.canDelete)).toBe(true);
+
+    await service.remove({ id: 'u1', isAdmin: true }, ana.id, {});
     expect(prisma.state.scenarios).toHaveLength(1);
   });
 
@@ -225,7 +283,7 @@ describe('ScenariosService', () => {
     await expect(service.update('u1', created.id, { name: 'Otra', version: 1 }, {})).rejects.toThrow(/otra pestaña/i);
   });
 
-  it('el borrador es uno solo y no lleva foto', async () => {
+  it('el borrador global es uno solo y no lleva foto', async () => {
     const prisma = createFakePrisma();
     const service = new ScenariosService(prisma as never, audit);
 
@@ -236,13 +294,34 @@ describe('ScenariosService', () => {
 
     await service.saveDraft('u1', input);
     await service.saveDraft('u1', input);
-    expect(prisma.state.scenarios).toHaveLength(1);
-    expect(prisma.state.scenarios[0]!.kind).toBe('DRAFT');
+    expect(prisma.state.drafts).toHaveLength(1);
+    expect(prisma.state.drafts[0]!.id).toBe('GLOBAL');
+    expect(prisma.state.scenarios).toHaveLength(0);
 
     const draft = await service.getDraft('u1');
     expect(draft.scenario?.lineCount).toBe(1);
     expect(draft.scenario?.payload.snapshot).toBeNull();
     expect(draft.scenario?.coverage).toBe(0);
+  });
+
+  it('el lock del plan global impide que otro usuario autoguarde sin tomarlo', async () => {
+    const prisma = createFakePrisma();
+    const service = new ScenariosService(prisma as never, audit);
+    const input = {
+      recipe: { by: 'cliente', mode: 'disponible', sort: 'cobertura', filters: {} },
+      selected: [{ orderNumber: '408251710', productCode: 'ABAPOR77' }],
+    } as never;
+
+    const lock = await service.acquireLock({ id: 'u1', code: 'AAA' }, { id: 'u1', isAdmin: false });
+    expect(lock.token).toBeTruthy();
+    await expect(
+      service.acquireLock({ id: 'u2', code: 'BBB' }, { id: 'u2', isAdmin: false }),
+    ).rejects.toThrow(/editando/i);
+    await expect(service.saveDraft({ id: 'u2' }, input)).rejects.toThrow(/editando/i);
+
+    // Un ADMIN puede arrebatarlo y deja rastro.
+    const forced = await service.acquireLock({ id: 'u3', code: 'KZ' }, { id: 'u3', isAdmin: true }, { force: true });
+    expect(forced.isMine).toBe(true);
   });
 
   it('marca la simulación como desactualizada cuando cambió la sync', async () => {

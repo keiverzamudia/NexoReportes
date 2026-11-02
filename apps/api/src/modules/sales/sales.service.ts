@@ -42,6 +42,16 @@ function toDateOnly(value: Date | null): string | null {
   return value ? value.toISOString().slice(0, 10) : null;
 }
 
+function parseRefs(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 // Compara fechas de negocio (yyyy-MM-dd) sin pasar por zonas horarias.
 function inDateRange(value: string | null, from?: string, to?: string): boolean {
   if (!from && !to) return true;
@@ -77,7 +87,7 @@ function orderWhere(query: OrderFilters, options: { includeDeliveryDate?: boolea
   const emision = dateRange(query.emisionDesde, query.emisionHasta);
   const entrega = dateRange(query.entregaDesde, query.entregaHasta);
   return {
-    isActive: true,
+    ...(query.includeClosed ? {} : { isActive: true }),
     ...(query.status ? { status: query.status } : {}),
     ...(query.customerCode ? { customerCode: query.customerCode } : {}),
     ...(query.customerType ? { customerType: { contains: query.customerType } } : {}),
@@ -391,6 +401,11 @@ export class SalesService {
       orderDate: Date | null;
       requestedDate: Date | null;
       status: string;
+      closedAt?: Date | null;
+      closedReason?: string | null;
+      billingStatus?: string | null;
+      notaEntregaRefs?: string | null;
+      reviewReason?: string | null;
     },
     linesCount: number,
     totalPendingQty: number,
@@ -408,6 +423,11 @@ export class SalesService {
       status: order.status as OrderSummary['status'],
       linesCount,
       totalPendingQty,
+      closedAt: toDate(order.closedAt ?? null),
+      closedReason: order.closedReason ?? null,
+      billingStatus: (order.billingStatus ?? 'PENDIENTE') as OrderSummary['billingStatus'],
+      notaEntregaRefs: parseRefs(order.notaEntregaRefs ?? null),
+      reviewReason: order.reviewReason ?? null,
     };
   }
 }

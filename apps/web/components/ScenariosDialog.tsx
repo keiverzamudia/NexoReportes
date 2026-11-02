@@ -11,7 +11,7 @@
 // · Borrar pide confirmación; renombrar usa el versionado optimista.
 // ============================================================
 
-import type { ScenarioDetail, ScenarioListResponse, ScenarioListItem } from '@nexo/contracts';
+import type { DispatchSheetDetail, ScenarioDetail, ScenarioListResponse, ScenarioListItem } from '@nexo/contracts';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
@@ -26,7 +26,9 @@ import {
   Pencil,
   RotateCcw,
   Save,
+  Send,
   Trash2,
+  Truck,
   X,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -58,15 +60,29 @@ export interface CurrentPlanSummary {
   coverage: number;
 }
 
+export interface ScenarioSaveOptions {
+  /** Además de guardar, envía la simulación completa al almacén. */
+  sendToDispatch?: boolean;
+  instructions?: string;
+  /** Título del despacho; si falta se usa el nombre de la simulación. */
+  title?: string;
+  /** null/omitido = bandeja compartida. */
+  assignedToId?: string | null;
+}
+
 export interface ScenariosDialogProps {
   open: boolean;
   onClose: () => void;
   /** Hay al menos un renglón marcado: se puede guardar. */
   canSave: boolean;
+  /** Permiso «Guardar simulación»: habilita el envío a Despacho. */
+  canSend: boolean;
+  /** Usuario actual: los escenarios de otros quedan en solo lectura. */
+  currentUserId?: string;
   current: CurrentPlanSummary;
   /** Abre directo el formulario de guardado (botón «Guardar» del plan). */
   startSaving: boolean;
-  onSave: (name: string) => Promise<void>;
+  onSave: (name: string, options?: ScenarioSaveOptions) => Promise<void>;
   onRestore: (detail: ScenarioDetail) => Promise<void>;
 }
 
@@ -74,6 +90,7 @@ export function ScenariosDialog({
   open,
   onClose,
   canSave,
+  canSend,
   current,
   startSaving,
   onSave,
@@ -84,7 +101,9 @@ export function ScenariosDialog({
   const closeRef = useRef<HTMLButtonElement>(null);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState('');
+  const [instructions, setInstructions] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameName, setRenameName] = useState('');
@@ -112,7 +131,9 @@ export function ScenariosDialog({
     if (!open) return;
     setSaving(Boolean(startSaving) && canSave);
     setName('');
+    setInstructions('');
     setActionError(null);
+    setNotice(null);
     setRenameId(null);
     setConfirmDeleteId(null);
     setDetailId(null);
@@ -143,24 +164,38 @@ export function ScenariosDialog({
     await queryClient.invalidateQueries({ queryKey: ['scenarios'] });
   }
 
-  async function submitSave(event: React.FormEvent) {
-    event.preventDefault();
+  async function performSave(sendToDispatch: boolean) {
     const clean = name.trim();
     if (!clean || busyId) return;
-    setBusyId('save');
+    setBusyId(sendToDispatch ? 'send' : 'save');
     setActionError(null);
     try {
-      await runWithOverlay('Guardando la simulación', async () => {
-        await onSave(clean);
-        await refreshList();
-      });
+      await runWithOverlay(
+        sendToDispatch ? 'Enviando la simulación al almacén' : 'Guardando la simulación',
+        async () => {
+          await onSave(clean, {
+            sendToDispatch,
+            instructions: instructions.trim() || undefined,
+          });
+          await refreshList();
+        },
+      );
       setName('');
+      setInstructions('');
       setSaving(false);
+      if (sendToDispatch) onClose();
     } catch (err) {
-      setActionError(messageOf(err, 'No se pudo guardar la simulación'));
+      setActionError(
+        messageOf(err, sendToDispatch ? 'No se pudo enviar la simulación a despacho' : 'No se pudo guardar la simulación'),
+      );
     } finally {
       setBusyId(null);
     }
+  }
+
+  function submitSave(event: React.FormEvent) {
+    event.preventDefault();
+    void performSave(false);
   }
 
   async function restore(item: ScenarioListItem) {
@@ -174,6 +209,27 @@ export function ScenariosDialog({
       onClose();
     } catch (err) {
       setActionError(messageOf(err, 'No se pudo restaurar la simulación'));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function sendSaved(item: ScenarioListItem) {
+    setBusyId(`send-${item.id}`);
+    setActionError(null);
+    setNotice(null);
+    try {
+      const sheet = await runWithOverlay('Enviando la simulación al almacén', () =>
+        apiFetch<DispatchSheetDetail>(`/scenarios/${item.id}/send-dispatch`, {
+          method: 'POST',
+          body: JSON.stringify({ title: item.name }),
+        }),
+      );
+      setNotice(`«${item.name}» enviada a despacho ${sheet.number}.`);
+      await refreshList();
+      await queryClient.invalidateQueries({ queryKey: ['dispatch-sheets'] });
+    } catch (err) {
+      setActionError(messageOf(err, 'No se pudo enviar la simulación a despacho'));
     } finally {
       setBusyId(null);
     }
@@ -252,17 +308,17 @@ export function ScenariosDialog({
                 Simulador de despacho
               </p>
               <h2 id="scenarios-title" className="text-headline-md text-primary">
-                Simulaciones guardadas
+                Simulaciones del equipo
               </h2>
               <p className="text-body-md text-on-surface-variant">
-                Se guardan en tu usuario: cierras sesión o cambias de equipo y siguen ahí.
+                Todos ven los planes guardados. Solo quien los creó o un administrador puede renombrarlos o eliminarlos.
               </p>
             </div>
           </div>
           <div className="flex items-center gap-space-sm">
             {items.length > 0 && (
               <Badge tone="muted" dot>
-                {items.length}/{data?.limit ?? 25}
+                {data?.allOwners ? items.length : `${items.length}/${data?.limit ?? 25}`}
               </Badge>
             )}
             <button
@@ -301,41 +357,70 @@ export function ScenariosDialog({
             </div>
 
             {saving && (
-              <form onSubmit={submitSave} className="mt-space-sm flex flex-wrap items-end gap-space-sm">
-                <label className="flex min-w-[16rem] flex-1 flex-col gap-1">
-                  <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Nombre</span>
-                  <input
-                    autoFocus
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    maxLength={80}
-                    placeholder="Despacho lunes 20/10…"
-                    className="h-9 rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-space-sm text-body-md text-on-surface outline-none focus:border-primary-container"
+              <form onSubmit={submitSave} className="mt-space-sm flex flex-col gap-space-sm">
+                <div className="flex flex-wrap items-end gap-space-sm">
+                  <label className="flex min-w-[16rem] flex-1 flex-col gap-1">
+                    <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Nombre</span>
+                    <input
+                      autoFocus
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                      maxLength={80}
+                      placeholder="Despacho lunes 20/10…"
+                      className="h-9 rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-space-sm text-body-md text-on-surface outline-none focus:border-primary-container"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={!name.trim() || busyId === 'save' || busyId === 'send'}
+                    className="flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                  >
+                    {busyId === 'save' ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Save aria-hidden className="size-4" />}
+                    Solo guardar
+                  </button>
+                  {canSend && (
+                    <button
+                      type="button"
+                      onClick={() => void performSave(true)}
+                      disabled={!name.trim() || busyId === 'save' || busyId === 'send'}
+                      title="Guarda la simulación y la envía completa al almacén"
+                      className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-40"
+                    >
+                      {busyId === 'send' ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Truck aria-hidden className="size-4" />}
+                      Guardar y enviar a despacho
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setSaving(false)}
+                    className="h-9 rounded-pill px-space-sm font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+                <label className="flex flex-col gap-1">
+                  <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Instrucciones para el almacén (opcional)</span>
+                  <textarea
+                    value={instructions}
+                    onChange={(event) => setInstructions(event.target.value.slice(0, 500))}
+                    rows={2}
+                    maxLength={500}
+                    placeholder="Ej. Cargar por la puerta 2 · respetar el orden del camión…"
+                    className="rounded-lg border border-outline-variant/50 bg-surface-container-lowest px-space-sm py-1.5 text-body-md text-on-surface outline-none focus:border-primary-container"
                   />
                 </label>
-                <button
-                  type="submit"
-                  disabled={!name.trim() || busyId === 'save'}
-                  className="flex h-9 items-center gap-space-xs rounded-pill bg-primary px-space-md font-semibold text-on-primary transition-colors hover:bg-primary/90 disabled:opacity-40"
-                >
-                  {busyId === 'save' ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Save aria-hidden className="size-4" />}
-                  Guardar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSaving(false)}
-                  className="h-9 rounded-pill px-space-sm font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
-                >
-                  Cancelar
-                </button>
+                <p className="flex items-center gap-space-xs text-label-sm normal-case text-on-surface-variant">
+                  <Send aria-hidden className="size-3.5" />
+                  «Guardar y enviar» manda todos los renglones con sus fechas, comentarios y la guía del camión.
+                </p>
               </form>
             )}
 
             {draft && draft.lineCount > 0 && (
               <p className="mt-space-xs flex items-center gap-space-xs text-label-sm text-on-surface-variant">
                 <Clock3 aria-hidden className="size-3.5 shrink-0" />
-                Tu trabajo en curso se autoguarda ({draft.lineCount} renglón(es) · {fmtDateTime(draft.updatedAt)}). No hace
-                falta guardarlo para no perderlo.
+                El plan global del equipo se autoguarda ({draft.lineCount} renglón(es) · {fmtDateTime(draft.updatedAt)}). No
+                hace falta guardarlo para no perderlo.
               </p>
             )}
           </section>
@@ -343,6 +428,12 @@ export function ScenariosDialog({
           {actionError && (
             <p role="alert" className="mt-space-sm flex items-center gap-space-sm text-body-md text-error">
               <AlertTriangle aria-hidden className="size-4 shrink-0" /> {actionError}
+            </p>
+          )}
+
+          {notice && (
+            <p role="status" className="mt-space-sm flex items-center gap-space-sm rounded-xl border border-secondary/30 bg-secondary-container/20 px-space-sm py-space-xs text-body-md text-on-surface">
+              <CheckCircle2 aria-hidden className="size-4 shrink-0 text-secondary" /> {notice}
             </p>
           )}
 
@@ -379,6 +470,8 @@ export function ScenariosDialog({
               const openDetail = detailId === item.id;
               const showingPhoto = openDetail && detailView === 'photo';
               const showingHistory = openDetail && detailView === 'history';
+              const canRestore = item.canRestore;
+              const canManage = item.canEdit || item.canDelete;
               return (
                 <article
                   key={item.id}
@@ -429,8 +522,26 @@ export function ScenariosDialog({
                             }`
                           : ''}
                       </p>
+                      {data?.allOwners && (
+                        <p className="text-label-sm text-on-surface-variant">
+                          Creada por{' '}
+                          <strong className="font-semibold text-on-surface">
+                            {item.ownerName ?? item.ownerCode ?? '—'}
+                          </strong>
+                        </p>
+                      )}
                     </div>
                     <div className="flex flex-wrap items-center gap-space-xs">
+                      {!item.canEdit && (
+                        <Badge tone="muted">
+                          solo lectura
+                        </Badge>
+                      )}
+                      {item.closedLines > 0 && (
+                        <Badge tone="warning" dot>
+                          {item.closedLines} despachado(s)
+                        </Badge>
+                      )}
                       {item.stale && (
                         <Badge tone="warning" dot>
                           datos nuevos
@@ -456,15 +567,33 @@ export function ScenariosDialog({
                   </div>
 
                   <div className="mt-space-sm flex flex-wrap items-center gap-space-xs">
-                    <button
-                      type="button"
-                      onClick={() => void restore(item)}
-                      disabled={busy || renaming}
-                      className="flex h-8 items-center gap-space-xs rounded-pill bg-primary-container px-space-sm font-semibold text-label-md text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-40"
-                    >
-                      {busy ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : <RotateCcw aria-hidden className="size-3.5" />}
-                      Restaurar
-                    </button>
+                    {canSend && canRestore && (
+                      <button
+                        type="button"
+                        onClick={() => void sendSaved(item)}
+                        disabled={busy || renaming}
+                        title="Envía esta simulación completa al almacén"
+                        className="flex h-8 items-center gap-space-xs rounded-pill bg-primary-container px-space-sm font-semibold text-label-md text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-40"
+                      >
+                        {busyId === `send-${item.id}` ? (
+                          <Loader2 aria-hidden className="size-3.5 animate-spin" />
+                        ) : (
+                          <Truck aria-hidden className="size-3.5" />
+                        )}
+                        Enviar a despacho
+                      </button>
+                    )}
+                    {canRestore && (
+                      <button
+                        type="button"
+                        onClick={() => void restore(item)}
+                        disabled={busy || renaming}
+                        className="flex h-8 items-center gap-space-xs rounded-pill border border-primary-container/30 bg-primary-fixed/50 px-space-sm font-semibold text-label-md text-primary transition-colors hover:bg-primary-fixed disabled:opacity-40"
+                      >
+                        {busy ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : <RotateCcw aria-hidden className="size-3.5" />}
+                        Restaurar
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => toggleDetail(item, 'photo')}
@@ -486,24 +615,28 @@ export function ScenariosDialog({
                         </span>
                       )}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRenameId(item.id);
-                        setRenameName(item.name);
-                        setConfirmDeleteId(null);
-                      }}
-                      className="flex h-8 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-sm font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-low"
-                    >
-                      <Pencil aria-hidden className="size-3.5" /> Renombrar
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeleteId(confirming ? null : item.id)}
-                      className="flex h-8 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-sm font-semibold text-label-md text-error transition-colors hover:bg-error/10"
-                    >
-                      <Trash2 aria-hidden className="size-3.5" /> Borrar
-                    </button>
+                    {item.canEdit && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRenameId(item.id);
+                          setRenameName(item.name);
+                          setConfirmDeleteId(null);
+                        }}
+                        className="flex h-8 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-sm font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-low"
+                      >
+                        <Pencil aria-hidden className="size-3.5" /> Renombrar
+                      </button>
+                    )}
+                    {item.canDelete && (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(confirming ? null : item.id)}
+                        className="flex h-8 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-sm font-semibold text-label-md text-error transition-colors hover:bg-error/10"
+                      >
+                        <Trash2 aria-hidden className="size-3.5" /> Borrar
+                      </button>
+                    )}
                   </div>
 
                   {confirming && (
