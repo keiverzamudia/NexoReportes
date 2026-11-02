@@ -278,3 +278,127 @@ Endpoints (permiso `clientes:read`):
   `dbo.clientes` para devolver también a los clientes sin documentos. Tope:
   200 clientes por consulta.
 
+## Ventas del mes vs Forecast (`GET /api/forecast/sales`)
+
+Verificado contra `COR_A3` (octubre 2026). La venta se mide por **nota de
+entrega** (despacho), no por factura: el encabezado es **`dbo.not_ent`** y los
+renglones **`dbo.reng_nde`**. En este Profit ambas tablas usan **`fact_num`**
+como llave del documento (no existe `not_num`), por eso el JOIN es
+`r.fact_num = f.fact_num`. Ambas consultas son `SELECT` de solo lectura,
+parametrizadas con `@desde` y `@hasta` (rango semiabierto).
+
+### Reglas de negocio
+
+- **Venta** = nota de entrega emitida y **no anulada** (`not_ent.anulada = 0`),
+  línea **ABA** (`art.co_lin = 'ABA'`) y artículo no anulado.
+- **Sin devoluciones ABA**: en 2026 `reng_nde` no tiene renglones anulados ni
+  cantidades negativas (0 de 6.036 líneas); venta neta = venta bruta.
+- **Notas vs facturas**: las notas van ~1–2 % por encima de lo facturado,
+  porque incluyen despachos aún no facturados. Es la cifra que se reporta.
+- **`xart_fore.kg_mes` está en KILOGRAMOS**, no en unidades de venta. La UI
+  muestra kg/t en los totales y añade **sacos** (`kg / art.uni_relac`) solo en
+  artículos `SAC`.
+- **Corte a ayer**: el día en curso está incompleto y se excluye del promedio
+  (opción `includeToday=true` para contrastar). **Días hábiles = lun–sáb**; el
+  domingo casi no se despacha. `basis=CALENDAR` usa días corridos.
+- **Zona horaria** `America/Caracas` calculada con `Intl` en el servidor, no
+  con la hora del proceso (un contenedor en UTC cambiaría de día a las 20:00).
+- Sin `xart_fore` la venta se muestra igual, pero los porcentajes quedan en
+  `null` («sin meta»), nunca `Infinity`. Si Profit falla, el API responde
+  `salesAvailable: false` y la UI NO pinta ceros.
+
+### Volumen por renglón (mes del informe)
+
+```sql
+SELECT
+  YEAR(f.fec_emis) AS anio,
+  MONTH(f.fec_emis) AS mes,
+  RTRIM(r.co_art) AS co_art,
+  RTRIM(a.art_des) AS art_des,
+  RTRIM(a.uni_venta) AS uni_venta,
+  a.uni_relac AS uni_relac,
+  SUM(r.total_art) AS unid,
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg,
+  MAX(f.fec_emis) AS ultima_factura
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND a.co_lin = 'ABA'
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+GROUP BY YEAR(f.fec_emis), MONTH(f.fec_emis), RTRIM(r.co_art), RTRIM(a.art_des), RTRIM(a.uni_venta), a.uni_relac
+```
+
+La misma consulta cubre el **histórico** (meses cerrados para el promedio) y el
+mes del informe: `@desde` arranca N meses atrás y `@hasta` es el corte.
+
+### Serie diaria del mes
+
+```sql
+SELECT
+  CAST(f.fec_emis AS date) AS fecha,
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg,
+  SUM(r.total_art) AS unid,
+  COUNT(DISTINCT f.fact_num) AS facturas
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND a.co_lin = 'ABA'
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+GROUP BY CAST(f.fec_emis AS date)
+```
+
+### Fórmulas del run-rate
+
+```text
+díasHábilesCorte   = lun–sáb desde el día 1 hasta ayer
+promedioDiarioKg   = ventaAcumKg / max(1, díasHábilesCorte)
+proyeccionKg       = promedioDiarioKg × díasHábilesMes
+cumplimientoPct    = ventaAcumKg / forecastKg × 100        (null si forecast = 0)
+cumplimientoProy   = proyeccionKg / forecastKg × 100       (null si forecast = 0)
+ritmoNecesarioKgD  = max(0, forecastKg − ventaAcumKg) / max(1, díasHábilesRestantes)
+vsHistóricoPct     = proyeccionKg / promedioHistóricoKg × 100 − 100
+```
+
+Contrato: `ForecastSalesResponse` en `packages/contracts` (`zForecastSalesQuery`,
+`zForecastSalesRow`, `zForecastSalesResponse`). Parámetros:
+`year`, `month`, `months` (3–24, default 6), `basis` (`WORKING` | `CALENDAR`) e
+`includeToday` (default `false`). Requiere permiso `forecast:read`.
+
+> En modo `PROFIT_DB_DIALECT=fixtures` el adaptador genera 18 meses de ventas
+> deterministas de lunes a sábado, para probar la pantalla sin Profit.
+
+### Meta histórica: snapshot mensual (`ForecastTarget`)
+
+`dbo.xart_fore` es una **foto del mes en curso**: no tiene columna de mes ni
+histórico. Para comparar un mes cerrado contra su meta, Nexo guarda la meta
+mientras el mes está vigente en la tabla local `ForecastTarget`
+(`apps/api/prisma/schema.prisma`):
+
+| Columna | Uso |
+|---|---|
+| `year`, `month` | Mes al que pertenece la meta. |
+| `productCode` | Código del artículo (`art.co_art`). |
+| `targetKg` | `xart_fore.kg_mes` en **kilogramos**. |
+| `capturedAt` | Última captura desde Profit (no es la fecha de la meta). |
+
+- **Captura**: al abrir el informe del mes en curso y por un reloj del módulo
+  (`FORECAST_TARGET_INTERVAL_MINUTES`, por defecto 60; `0` lo desactiva). Es un
+  `upsert` idempotente por `[year, month, productCode]` y solo escribe en la BD
+  local: **nunca** en Profit.
+- **Forzar captura**: `POST /api/forecast/sales/capture` (permiso
+  `forecast:update`).
+- **Lectura**: el mes en curso usa `xart_fore` en vivo (`forecastSource=LIVE`);
+  los meses cerrados usan `ForecastTarget` (`SNAPSHOT`). Sin snapshot,
+  `forecastSource=NONE` y el cumplimiento queda en `null` («sin meta»), sin
+  tratarlo como error de Profit.
+- El histórico de la respuesta (`history[].forecastKg`) también sale del
+  snapshot, para poder comparar cada mes contra su propia meta.
+- La UI dibuja una línea punteada con la meta de cada mes en el gráfico de foco
+  del producto.
+

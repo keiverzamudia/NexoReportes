@@ -19,8 +19,20 @@ export class MssqlProfitAdapter implements ProfitAdapter {
   readonly dialect = 'mssql' as const;
   private readonly logger = new Logger(MssqlProfitAdapter.name);
   private pool: sql.ConnectionPool | null = null;
+  // Una sola lectura a la vez: el pool de SQL Server no tolera dos consultas
+  // concurrentes (el sync y la reconciliación comparten este adaptador).
+  private readQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly config: ConfigService) {}
+
+  private runSerialized<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.readQueue.then(task, task);
+    this.readQueue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
 
   private poolConfig(): sql.config {
     const server = this.config.get<string>('profit.server');
@@ -57,7 +69,7 @@ export class MssqlProfitAdapter implements ProfitAdapter {
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
         const pool = await this.getPool();
-        await pool.request().query('SELECT 1 AS ok');
+        await this.runSerialized(() => pool.request().query('SELECT 1 AS ok'));
         return { connected: true };
       } catch (error) {
         lastError = error;
@@ -124,7 +136,7 @@ export class MssqlProfitAdapter implements ProfitAdapter {
       ? `WHERE ${inputs.map(([key]) => `${key} = @${key}`).join(' AND ')}`
       : '';
     // Identificador ya validado con SAFE_VIEW_NAME; los valores viajan siempre como parámetros.
-    const result = await request.query(`SELECT TOP (${safeLimit}) * FROM ${viewName} ${where}`);
+    const result = await this.runSerialized(() => request.query(`SELECT TOP (${safeLimit}) * FROM ${viewName} ${where}`));
     return result.recordset as Record<string, unknown>[];
   }
 
@@ -148,7 +160,7 @@ export class MssqlProfitAdapter implements ProfitAdapter {
       request.input(key, value as never);
     }
     // Envuelta en tabla derivada para aplicar el TOP sin alterar el resultado.
-    const result = await request.query(`SELECT TOP (${safeLimit}) * FROM (${sqlText}) AS nexo_src`);
+    const result = await this.runSerialized(() => request.query(`SELECT TOP (${safeLimit}) * FROM (${sqlText}) AS nexo_src`));
     return result.recordset as Record<string, unknown>[];
   }
 
@@ -166,11 +178,13 @@ export class MssqlProfitAdapter implements ProfitAdapter {
   // parámetro y se descarta al volver.
   async authenticateUser(profitCode: string, password: string): Promise<string | null> {
     const pool = await this.getPool();
-    const result = await pool
-      .request()
-      .input('id', profitCode)
-      .input('password', password)
-      .query(`SELECT ID FROM ${this.authDatabase()}.dbo.autenticar(@id, @password)`);
+    const result = await this.runSerialized(() =>
+      pool
+        .request()
+        .input('id', profitCode)
+        .input('password', password)
+        .query(`SELECT ID FROM ${this.authDatabase()}.dbo.autenticar(@id, @password)`),
+    );
     const row = result.recordset?.[0] as { ID?: unknown } | undefined;
     if (row?.ID === null || row?.ID === undefined) return null;
     const id = String(row.ID).trim();
@@ -181,11 +195,13 @@ export class MssqlProfitAdapter implements ProfitAdapter {
   // que se recortan aquí; nunca llegan espacios a la aplicación.
   async listUsers(): Promise<ProfitUserRef[]> {
     const pool = await this.getPool();
-    const result = await pool.request().query(
-      `SELECT RTRIM(codigo) AS code, RTRIM(nombre) AS name
-       FROM ${this.authDatabase()}.dbo.VUSUARIOS
-       WHERE codigo IS NOT NULL AND LTRIM(RTRIM(codigo)) <> ''
-       ORDER BY nombre`,
+    const result = await this.runSerialized(() =>
+      pool.request().query(
+        `SELECT RTRIM(codigo) AS code, RTRIM(nombre) AS name
+         FROM ${this.authDatabase()}.dbo.VUSUARIOS
+         WHERE codigo IS NOT NULL AND LTRIM(RTRIM(codigo)) <> ''
+         ORDER BY nombre`,
+      ),
     );
     const seen = new Map<string, string>();
     for (const raw of result.recordset as { code?: unknown; name?: unknown }[]) {

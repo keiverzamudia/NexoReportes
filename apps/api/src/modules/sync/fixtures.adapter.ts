@@ -138,21 +138,191 @@ function statementSummaries(params: Record<string, unknown> = {}, limit = 1000):
 }
 
 // Forecast mensual de desarrollo (equivalente a `dbo.xart_fore.kg_mes`).
-// Solo incluye códigos presentes en el dataset anterior para que la pantalla
-// muestre valores en modo fixtures.
+// `kg_mes` es KILOGRAMOS, no unidades de venta: los valores se eligen para
+// que la pestaña «Ventas vs Forecast» tenga metas realistas (~1,5 M kg/mes).
 const FORECAST: Record<string, unknown>[] = [
-  { co_art: 'ABABOV58', forecast_mes: 1800 },
-  { co_art: 'ABAGP13', forecast_mes: 7500 },
-  { co_art: 'ABAEQUI01', forecast_mes: 900 },
-  { co_art: 'ABABOV67', forecast_mes: 5714 },
-  { co_art: 'ABAPOR47', forecast_mes: 2275 },
-  { co_art: 'ABABOV75', forecast_mes: 171 },
+  { co_art: 'ABABOV58', forecast_mes: 160_000 },
+  { co_art: 'ABAGP13', forecast_mes: 360_000 },
+  { co_art: 'ABAEQUI01', forecast_mes: 100_000 },
+  { co_art: 'ABABOV67', forecast_mes: 340_000 },
+  { co_art: 'ABAPOR47', forecast_mes: 155_000 },
+  { co_art: 'ABABOV75', forecast_mes: 85_000 },
 ];
+
+// ============================================================
+// Ventas de desarrollo (equivalente a `dbo.not_ent` + `dbo.reng_nde`).
+//
+// Se generan de forma DETERMINISTA a partir de la fecha de arranque: los
+// últimos 18 meses, de lunes a sábado, con una onda fija por día y artículo.
+// Así la pestaña «Ventas vs Forecast» se puede probar sin Profit y sin que
+// las cifras cambien entre renders.
+// ============================================================
+interface FixtureSaleProduct {
+  co_art: string;
+  art_des: string;
+  uni_venta: string;
+  uni_relac: number;
+  /** Sacos/día de referencia (en día hábil normal). */
+  baseSacks: number;
+}
+
+const SALES_PRODUCTS: FixtureSaleProduct[] = [
+  { co_art: 'ABABOV58', art_des: 'MULTIPROPOSITO 14% LINEA NARANJA SACO 35 KG', uni_venta: 'SAC', uni_relac: 35, baseSacks: 250 },
+  { co_art: 'ABAGP13', art_des: 'GALLINA PONEDORA PLUS 18% - 40 KG', uni_venta: 'SAC', uni_relac: 40, baseSacks: 300 },
+  { co_art: 'ABAEQUI01', art_des: 'ALFALFA EN PELLETS L.V SAC (10 KG)', uni_venta: 'SAC', uni_relac: 10, baseSacks: 500 },
+  { co_art: 'ABABOV67', art_des: 'MULTIESPECIE LINEA NARANJA SACO 35 KG', uni_venta: 'SAC', uni_relac: 35, baseSacks: 500 },
+  { co_art: 'ABAPOR47', art_des: 'CERDO DESARROLLO MEDICADO PLUS 18,8% -40 KG', uni_venta: 'SAC', uni_relac: 40, baseSacks: 200 },
+  { co_art: 'ABABOV75', art_des: 'VACA LECHERA 21% ALTA ENERGIA SACO 35 KG', uni_venta: 'SAC', uni_relac: 35, baseSacks: 150 },
+];
+
+function isoUtc(date: Date): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
+function buildDailySales(): Record<string, unknown>[] {
+  const rows: Record<string, unknown>[] = [];
+  const now = new Date();
+  const todayUtc = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const start = Date.UTC(now.getFullYear(), now.getMonth() - 17, 1);
+
+  for (let time = start; time < todayUtc; time += 86_400_000) {
+    const date = new Date(time);
+    const weekday = date.getUTCDay();
+    if (weekday === 0) continue; // domingo: casi no se despacha
+    if (weekday === 6 && date.getUTCDate() % 3 === 0) continue; // sábado flojo ocasional
+    const day = date.getUTCDate();
+    const monthFactor = 0.82 + ((date.getUTCMonth() * 7) % 9) / 40;
+
+    SALES_PRODUCTS.forEach((product, index) => {
+      const wave = ((day * 37 + index * 11) % 23) - 11; // −11 % … +11 %
+      const sacks = Math.max(0, Math.round(product.baseSacks * monthFactor * (1 + wave / 100)));
+      if (sacks === 0) return;
+      rows.push({
+        fecha: isoUtc(date),
+        co_art: product.co_art,
+        art_des: product.art_des,
+        uni_venta: product.uni_venta,
+        uni_relac: product.uni_relac,
+        unid: sacks,
+        kg: sacks * product.uni_relac,
+      });
+    });
+  }
+
+  return rows;
+}
+
+const SALES_DAILY = buildDailySales();
+
+function paramDay(value: unknown): string {
+  if (value instanceof Date) return isoUtc(value);
+  return String(value ?? '').slice(0, 10);
+}
+
+function salesMonthly(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const buckets = new Map<
+    string,
+    { anio: number; mes: number; co_art: string; art_des: string; uni_venta: string; uni_relac: number; unid: number; kg: number; ultima_factura: string }
+  >();
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const [year, month] = day.split('-');
+    const code = String(row.co_art);
+    const key = `${year}-${month}-${code}`;
+    const bucket = buckets.get(key) ?? {
+      anio: Number(year),
+      mes: Number(month),
+      co_art: code,
+      art_des: String(row.art_des),
+      uni_venta: String(row.uni_venta),
+      uni_relac: Number(row.uni_relac),
+      unid: 0,
+      kg: 0,
+      ultima_factura: day,
+    };
+    bucket.unid += Number(row.unid);
+    bucket.kg += Number(row.kg);
+    if (day > bucket.ultima_factura) bucket.ultima_factura = day;
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()].slice(0, limit);
+}
+
+function salesDaily(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const buckets = new Map<string, { fecha: string; kg: number; unid: number; facturas: number }>();
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const bucket = buckets.get(day) ?? { fecha: day, kg: 0, unid: 0, facturas: 0 };
+    bucket.kg += Number(row.kg);
+    bucket.unid += Number(row.unid);
+    buckets.set(day, bucket);
+  }
+
+  // Nº de facturas determinista (varias líneas por factura en la vida real).
+  for (const bucket of buckets.values()) {
+    bucket.facturas = 2 + (Number(bucket.fecha.slice(8, 10)) % 3);
+  }
+
+  return [...buckets.values()].sort((a, b) => a.fecha.localeCompare(b.fecha)).slice(0, limit);
+}
 
 function datasetFor(viewName: string): Record<string, unknown>[] {
   const lower = viewName.toLowerCase();
   if (lower.includes('solicitud') || lower.includes('pendiente')) return SOLICITUDES;
   return [];
+}
+
+// Filas equivalentes a `cotiz_c` para la reconciliación de pedidos.
+// En fixtures no hay notas de entrega: todos los pedidos siguen abiertos
+// (`status='0'`). Los tests del servicio usan un adaptador falso para simular
+// el cierre; esto solo mantiene la app de desarrollo operativa.
+function lifecycleHeaders(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const numbers = Object.keys(params)
+    .filter((key) => /^o\d+$/.test(key))
+    .map((key) => String(params[key]))
+    .slice(0, limit);
+  return numbers.map((nro) => {
+    const row = SOLICITUDES.find((item) => String(item.nro_solicitud) === nro);
+    return {
+      fact_num: Number(nro),
+      status: row?.status_cotizacion ?? '0',
+      anulada: false,
+      fec_emis: row?.emision ?? null,
+    };
+  });
+}
+
+function lifecyclePending(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const wanted = new Set(
+    Object.keys(params)
+      .filter((key) => /^o\d+$/.test(key))
+      .map((key) => String(params[key])),
+  );
+  const byOrder = new Map<string, { pendiente: number; lineas: number }>();
+  for (const row of SOLICITUDES) {
+    const nro = String(row.nro_solicitud);
+    if (!wanted.has(nro)) continue;
+    const bucket = byOrder.get(nro) ?? { pendiente: 0, lineas: 0 };
+    bucket.pendiente += Number(row.pendiente ?? 0);
+    bucket.lineas += 1;
+    byOrder.set(nro, bucket);
+  }
+  return [...byOrder.entries()].slice(0, limit).map(([nro, bucket]) => ({
+    fact_num: Number(nro),
+    pendiente: bucket.pendiente,
+    lineas: bucket.lineas,
+  }));
 }
 
 // Usuarios de desarrollo: mismo papel que `MasterProfit.dbo.VUSUARIOS`.
@@ -220,6 +390,14 @@ export class FixturesProfitAdapter implements ProfitAdapter {
   ): Promise<Record<string, unknown>[]> {
     const lower = sqlText.toLowerCase();
     if (lower.includes('xart_fore')) return FORECAST.slice(0, limit);
+    // Reconciliación de pedidos: se detecta por el marcador del SELECT.
+    if (lower.includes('order_lifecycle_header')) return lifecycleHeaders(params, limit);
+    if (lower.includes('order_lifecycle_pending')) return lifecyclePending(params, limit);
+    if (lower.includes('reng_nde')) {
+      // Serie diaria (la consulta agrupa por `CAST(f.fec_emis AS date)`) vs
+      // agregado mensual por artículo.
+      return lower.includes('as fecha') ? salesDaily(params, limit) : salesMonthly(params, limit);
+    }
     if (lower.includes('cartera_resumen')) return statementSummaries(params, limit);
     if (lower.includes('docum_cc') || lower.includes('documentos_pendientes')) {
       return statementRows(params, limit);

@@ -38,6 +38,13 @@ function createFakePrisma() {
       }
       return { count };
     },
+    update: async ({ where, data }: { where: { externalCode?: string; externalNumber?: string }; data: Record<string, unknown> }) => {
+      const key = (where.externalCode ?? where.externalNumber) as string;
+      const existing = table.get(key);
+      if (!existing) throw new Error('no encontrado');
+      Object.assign(existing, data);
+      return existing;
+    },
     findUnique: async ({ where }: { where: { externalCode?: string; externalNumber?: string } }) => {
       const key = (where.externalCode ?? where.externalNumber) as string;
       return table.get(key) ?? null;

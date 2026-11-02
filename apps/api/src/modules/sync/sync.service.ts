@@ -522,49 +522,58 @@ export class SyncService {
   // Estado: la fuente sólo contiene solicitudes PENDIENTES → ABIERTO.
   // Vendedor, tipo de cliente y autorizado vienen del reporte ampliado
   // (autorizado = status '1'); si no llegan, quedan null.
+  //
+  // Un pedido que ya cerró la reconciliación (NOTA_ENTREGA/CANCELADO/CERRADO)
+  // NO se reabre si vuelve a aparecer en una lectura parcial: solo se refresca
+  // su metadata y se conserva el estado terminal.
   private async syncOrders(lines: RawSolicitudLine[], seen: Set<string>): Promise<number> {
     const now = new Date();
     const byNumber = new Map<number, RawSolicitudLine>();
     for (const line of lines) {
       if (!byNumber.has(line.nroSolicitud)) byNumber.set(line.nroSolicitud, line);
     }
+    const terminal = ['NOTA_ENTREGA', 'CERRADO', 'CANCELADO'];
     let count = 0;
     for (const [number, line] of byNumber) {
       const externalNumber = String(number);
       seen.add(externalNumber);
       const customer = await this.prisma.customer.findUnique({ where: { externalCode: line.coCli } });
+      const existing = await this.prisma.salesOrder.findUnique({ where: { externalNumber } });
       const header = {
         customerType: line.tipoCliente,
         vendor: line.vendedor,
         authorized: line.statusCotizacion === null ? null : line.statusCotizacion === '1',
         statusRaw: line.statusCotizacion,
       };
-      await this.prisma.salesOrder.upsert({
-        where: { externalNumber },
-        update: {
-          customerId: customer?.id ?? null,
-          customerCode: line.coCli,
-          customerName: line.cliDes,
-          ...header,
-          orderDate: line.emision,
-          requestedDate: line.entrega,
-          status: 'ABIERTO',
-          isActive: true,
-          removedAt: null,
-          lastSyncedAt: now,
-        },
-        create: {
-          externalNumber,
-          customerId: customer?.id ?? null,
-          customerCode: line.coCli,
-          customerName: line.cliDes,
-          ...header,
-          orderDate: line.emision,
-          requestedDate: line.entrega,
-          status: 'ABIERTO',
-          lastSyncedAt: now,
-        },
-      });
+      const metadata = {
+        customerId: customer?.id ?? null,
+        customerCode: line.coCli,
+        customerName: line.cliDes,
+        ...header,
+        orderDate: line.emision,
+        requestedDate: line.entrega,
+        lastSeenInViewAt: now,
+        lastSyncedAt: now,
+      };
+      if (existing && terminal.includes(existing.status)) {
+        await this.prisma.salesOrder.update({ where: { externalNumber }, data: metadata });
+      } else {
+        await this.prisma.salesOrder.upsert({
+          where: { externalNumber },
+          update: {
+            ...metadata,
+            status: 'ABIERTO',
+            isActive: true,
+            removedAt: null,
+            reviewReason: null,
+          },
+          create: {
+            externalNumber,
+            ...metadata,
+            status: 'ABIERTO',
+          },
+        });
+      }
       count += 1;
     }
     return count;
