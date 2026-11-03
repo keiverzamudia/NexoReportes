@@ -1,14 +1,17 @@
 'use client';
 
 // ============================================================
-// Reporte → Control: la tabla del pizarrón.
+// Reporte → Básico: la tabla del pizarrón.
 //
-// Código · Descripción · Forecast · Solicitado · Vtas
+// Código · Descripción · Stock 03 · Stock 9999 · Stock 68 · Existencia
+//   · Forecast · Solicitado · Vtas
 //   · Diferencia venta − forecast
 //   · Diferencia venta + solicitado − forecast
 //
-// Mensual o semanal (bloques 1-7 / 8-14 / 15-21 / 22-fin) y en kg o en la
-// unidad de venta (sacos para SAC, kg para granel). No escribe nada.
+// El stock por almacén se muestra en la unidad del artículo (SAC o KG), sin
+// convertir. Forecast, solicitado y venta van en kg o en la unidad de venta
+// (sacos para SAC, kg para granel), mensual o semanal (bloques 1-7 / 8-14 /
+// 15-21 / 22-fin). No escribe nada.
 // ============================================================
 
 import type { ForecastPlanResponse, ForecastPlanRow } from '@nexo/contracts';
@@ -89,6 +92,43 @@ export function ControlReport({ data, unit }: { data: ForecastPlanResponse; unit
               {row.description}
             </span>
             <Badge tone="muted">{row.uom}</Badge>
+          </span>
+        ),
+      },
+      {
+        key: 'stock03',
+        header: 'Stock 03',
+        help: CONTROL_COLUMN_HELP.stock03,
+        align: 'right',
+        sortValue: (row) => row.stock03,
+        render: (row) => <span className="tabular-nums text-on-surface-variant">{fmt(row.stock03)}</span>,
+      },
+      {
+        key: 'stock9999',
+        header: 'Stock 9999',
+        help: CONTROL_COLUMN_HELP.stock9999,
+        align: 'right',
+        sortValue: (row) => row.stock9999,
+        render: (row) => <span className="tabular-nums text-on-surface-variant">{fmt(row.stock9999)}</span>,
+      },
+      {
+        key: 'stock68',
+        header: 'Stock 68',
+        help: CONTROL_COLUMN_HELP.stock68,
+        align: 'right',
+        sortValue: (row) => row.stock68,
+        render: (row) => <span className="tabular-nums text-on-surface-variant">{fmt(row.stock68)}</span>,
+      },
+      {
+        key: 'existencia',
+        header: 'Existencia',
+        help: CONTROL_COLUMN_HELP.existencia,
+        align: 'right',
+        kind: 'metric',
+        sortValue: (row) => row.stockTotal,
+        render: (row) => (
+          <span className="font-bold tabular-nums text-on-surface" title="Suma de Stock 03 + Stock 9999 + Stock 68">
+            {fmt(row.stockTotal)}
           </span>
         ),
       },
@@ -189,6 +229,10 @@ export function ControlReport({ data, unit }: { data: ForecastPlanResponse; unit
     return rows.reduce(
       (acc, row) => {
         const value = controlValues(row, w);
+        acc.stock03 += row.stock03;
+        acc.stock9999 += row.stock9999;
+        acc.stock68 += row.stock68;
+        acc.stockTotal += row.stockTotal;
         acc.forecast += display(value.forecastKg, row);
         acc.demand += display(value.demandKg, row);
         acc.sold += display(value.soldKg, row);
@@ -196,7 +240,7 @@ export function ControlReport({ data, unit }: { data: ForecastPlanResponse; unit
         acc.gapCoverage += display(value.gapCoverageKg, row);
         return acc;
       },
-      { forecast: 0, demand: 0, sold: 0, gapSale: 0, gapCoverage: 0 },
+      { stock03: 0, stock9999: 0, stock68: 0, stockTotal: 0, forecast: 0, demand: 0, sold: 0, gapSale: 0, gapCoverage: 0 },
     );
   }, [rows, period, weekIndex, controlUnit]);
 
@@ -205,21 +249,21 @@ export function ControlReport({ data, unit }: { data: ForecastPlanResponse; unit
       <Card className="flex flex-col gap-space-md p-space-md">
         <div className="flex flex-wrap items-end justify-between gap-space-md">
           <div className="min-w-0">
-            <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Control</p>
+            <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Básico</p>
             <p className="text-body-sm text-on-surface-variant">
-              Forecast, solicitado y venta {periodLabel}, en {unitLabel}.
+              Stock por almacén, forecast, solicitado y venta {periodLabel}. Las cifras de gestión van en {unitLabel}.
             </p>
           </div>
           <div className="flex flex-wrap items-end gap-space-md">
             <div className="flex flex-col gap-space-2xs">
               <span className="font-semibold uppercase text-label-sm text-outline">Periodo</span>
-              <Segmented ariaLabel="Periodo del control" value={period} onChange={setPeriod} options={PERIOD_OPTIONS} />
+              <Segmented ariaLabel="Periodo del reporte básico" value={period} onChange={setPeriod} options={PERIOD_OPTIONS} />
             </div>
             {period === 'week' && (
               <label className="flex flex-col gap-space-2xs">
                 <span className="font-semibold uppercase text-label-sm text-outline">Semana</span>
                 <Select
-                  ariaLabel="Semana del control"
+                  ariaLabel="Semana del reporte básico"
                   value={String(weekIndex)}
                   onChange={(value) => setWeekIndex(Number(value))}
                   options={weekOptions}
@@ -229,11 +273,11 @@ export function ControlReport({ data, unit }: { data: ForecastPlanResponse; unit
             )}
             <div className="flex flex-col gap-space-2xs">
               <span className="font-semibold uppercase text-label-sm text-outline">Unidad</span>
-              <Segmented ariaLabel="Unidad del control" value={controlUnit} onChange={setControlUnit} options={UNIT_OPTIONS} />
+              <Segmented ariaLabel="Unidad del reporte básico" value={controlUnit} onChange={setControlUnit} options={UNIT_OPTIONS} />
             </div>
             <ModuleHelp
               title={CONTROL_HELP_TITLE}
-              narrative={`Se comparan la meta de Profit, lo vendido por nota de entrega y lo solicitado ${periodLabel}.`}
+              narrative={`Se muestra la existencia por almacén y se comparan la meta de Profit, lo vendido por nota de entrega y lo solicitado ${periodLabel}.`}
               rules={CONTROL_HELP_RULES}
               terms={CONTROL_HELP_TERMS}
             />
@@ -258,8 +302,12 @@ export function ControlReport({ data, unit }: { data: ForecastPlanResponse; unit
           footer={
             <tr className="border-t-2 border-surface-container bg-surface-container-low font-bold">
               <td className="px-space-sm py-space-xs uppercase text-label-sm text-outline" colSpan={2}>
-                Totales ({unitLabel})
+                Totales (stock en unid. · gestión en {unitLabel})
               </td>
+              <td className="px-space-sm py-space-xs text-right tabular-nums text-on-surface-variant">{fmt(totals.stock03)}</td>
+              <td className="px-space-sm py-space-xs text-right tabular-nums text-on-surface-variant">{fmt(totals.stock9999)}</td>
+              <td className="px-space-sm py-space-xs text-right tabular-nums text-on-surface-variant">{fmt(totals.stock68)}</td>
+              <td className="px-space-sm py-space-xs text-right tabular-nums">{fmt(totals.stockTotal)}</td>
               <td className="px-space-sm py-space-xs text-right tabular-nums">{fmt(totals.forecast)}</td>
               <td className="px-space-sm py-space-xs text-right tabular-nums">{fmt(totals.demand)}</td>
               <td className="px-space-sm py-space-xs text-right tabular-nums text-primary">{fmt(totals.sold)}</td>
@@ -271,8 +319,9 @@ export function ControlReport({ data, unit }: { data: ForecastPlanResponse; unit
           }
         />
         <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
-          Positivo = excedente sobre la meta · negativo = falta por cubrir. En «Sacos / unid.» los artículos SAC se
-          convierten con su kg por saco y el granel se mantiene en kg (lo indica su badge).
+          Stock 03 / 9999 / 68 en la unidad del artículo (SAC o KG), sin convertir; Existencia es su suma. Positivo =
+          excedente sobre la meta · negativo = falta por cubrir. En «Sacos / unid.» los artículos SAC se convierten con
+          su kg por saco y el granel se mantiene en kg (lo indica su badge).
         </div>
       </Card>
     </>

@@ -1,4 +1,11 @@
-import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import {
   FORECAST_WEEK_INDEXES,
   ForecastPlanResponse,
@@ -38,11 +45,13 @@ import {
 // ============================================================
 // Forecast (pronóstico de producción).
 //
-//  · El FORECAST MENSUAL por artículo se lee de Profit (`dbo.xart_fore`) TAL
-//    CUAL, sin conversión: `kg_mes` está en KILOGRAMOS (no en sacos). Es solo
-//    lectura; Nexo nunca lo escribe.
-//  · `xart_fore` no tiene código ni mes: se cruza por descripción y aplica al
-//    mes en curso.
+//  · El FORECAST MENSUAL por artículo se lee de Profit (`dbo.forecast`). La
+//    columna `kg_mensual` viene en la presentación del artículo: los SAC se
+//    multiplican por `art.uni_relac` para llevarlos a KILOGRAMOS y el granel
+//    (KG) se usa tal cual. Es solo lectura; Nexo nunca lo escribe.
+//  · `forecast.fecha` es el mes de vigencia (primer día del mes) y `co_art` el
+//    código del artículo, así que cada mes se consulta directamente y no hace
+//    falta cruzar por descripción.
 //  · Cada semana (4 bloques) tiene una CANTIDAD editable. Por defecto se
 //    llena con el PROMEDIO = forecast mensual / 4; aquí solo se ajustan semanas.
 //  · El Reporte reutiliza el MISMO motor de disponibilidad que la vista
@@ -77,17 +86,25 @@ const WAREHOUSE_03 = 'Stock 03';
 const WAREHOUSE_9999 = 'Stock 9999';
 const WAREHOUSE_68 = 'Stock 68';
 
-// Forecast mensual mantenido por producción en Profit (`COR_A3.dbo.xart_fore`).
-// `kg_mes` está en KILOGRAMOS y se usa TAL CUAL (sin convertir). `kg_sem` no se
-// usa: las semanas se reparten en Nexo como mensual / 4 y se ajustan aquí. La
-// tabla no tiene código ni mes, por eso se cruza por descripción (RTRIM) y se
-// aplica solo al mes en curso.
-const PROFIT_FORECAST_SQL = `
-SELECT RTRIM(a.co_art) AS co_art, f.kg_mes AS forecast_mes
-FROM dbo.xart_fore AS f
-INNER JOIN dbo.art AS a
-        ON RTRIM(LTRIM(a.art_des)) = RTRIM(LTRIM(f.nom))
-       AND a.anulado = 0
+// Forecast mensual mantenido por producción en Profit (`COR_A3.dbo.forecast`).
+// `fecha` es el mes de vigencia (primer día del mes), `co_art` el artículo y
+// `kg_mensual` la cantidad en la PRESENTACIÓN del artículo: si `art.uni_venta`
+// es `SAC` viene en sacos y se multiplica por `art.uni_relac` (kg por saco);
+// si es `KG` (granel) ya viene en kilogramos y se usa tal cual. `kg_semanal`
+// no se usa: Nexo reparte el mensual convertido a kg en 4 bloques editables.
+// El rango [@desde, @hasta) permite leer un mes suelto o varios meses de
+// histórico en una sola consulta.
+export const PROFIT_FORECAST_SQL = `
+SELECT
+  RTRIM(f.co_art) AS co_art,
+  f.kg_mensual AS forecast_mes,
+  f.fecha AS fecha,
+  RTRIM(a.uni_venta) AS uni_venta,
+  a.uni_relac AS uni_relac
+FROM dbo.forecast AS f
+LEFT JOIN dbo.art AS a ON a.co_art = f.co_art
+WHERE f.fecha >= @desde
+  AND f.fecha < @hasta
 `;
 
 // ============================================================
@@ -96,8 +113,8 @@ INNER JOIN dbo.art AS a
 // La venta se mide por NOTA DE ENTREGA (despacho), no por factura: encabezado
 // `dbo.not_ent` + renglones `dbo.reng_nde`. En este Profit ambas tablas usan
 // `fact_num` como llave (NO `not_num`): es el número de documento del módulo,
-// por eso el JOIN es `r.fact_num = f.fact_num`. `kg_mes` de `xart_fore` está en
-// KILOGRAMOS, por eso la comparación global es en kg/t y la de producto añade
+// por eso el JOIN es `r.fact_num = f.fact_num`. `kg_mensual` de `forecast` está
+// en KILOGRAMOS, por eso la comparación global es en kg/t y la de producto añade
 // sacos cuando `uni_venta = 'SAC'`.
 //
 // Filtro de negocio: nota no anulada, artículo no anulado y línea ABA
@@ -144,6 +161,27 @@ WHERE f.anulada = 0
 GROUP BY CAST(f.fec_emis AS date)
 `;
 
+// Desglose del día por artículo: alimenta el panel «Ventas del día» que se
+// sincroniza con el hover/clic de la gráfica de acumulado. Misma fuente y
+// filtros que la serie diaria; la consulta diaria se mantiene aparte para no
+// alterar el conteo de notas (un artículo no puede multiplicar las facturas).
+export const PROFIT_SALES_DAILY_PRODUCTS_SQL = `
+SELECT /* nexo:daily_products */
+  CAST(f.fec_emis AS date) AS fecha,
+  RTRIM(r.co_art) AS co_art,
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg,
+  SUM(r.total_art) AS unid
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND a.co_lin = 'ABA'
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+GROUP BY CAST(f.fec_emis AS date), RTRIM(r.co_art)
+`;
+
 // Kg despachados por artículo y BLOQUE DE SEMANA del mes (1: 1-7, 2: 8-14,
 // 3: 15-21, 4: 22-fin). Misma fuente y filtros que el informe de ventas (notas
 // de entrega no anuladas, artículo vigente y línea ABA), así el plan de
@@ -184,9 +222,42 @@ const BUSINESS_TIME_ZONE = 'America/Caracas';
 const SALES_CACHE_TTL_MS = 5 * 60_000;
 const SALES_CACHE_MAX_ENTRIES = 40;
 
+// Ventana para corregir la captura inicial de la meta. `forecast` ya identifica
+// el mes con `fecha`, pero producción puede cargar o ajustar la meta durante
+// los primeros días. Durante estas horas la captura se puede corregir; después
+// queda congelada.
+const TARGET_GRACE_HOURS_DEFAULT = 72;
+
+function targetGraceHours(): number {
+  const raw = process.env.FORECAST_TARGET_GRACE_HOURS;
+  const value = raw === undefined || raw.trim() === '' ? TARGET_GRACE_HOURS_DEFAULT : Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : TARGET_GRACE_HOURS_DEFAULT;
+}
+
+function isoOrNull(value: Date | null | undefined): string | null {
+  return value instanceof Date && !Number.isNaN(value.getTime()) ? value.toISOString() : null;
+}
+
 interface SalesMonthBucket {
   kg: number;
   units: number;
+}
+
+// Metadatos de la meta capturada que necesita el informe (sin `capturedAt`,
+// que es solo la última escritura oficial).
+interface ForecastTargetMeta {
+  targetKg: number;
+  firstCapturedAt: string | null;
+  frozenAt: string | null;
+  lastSeenKg: number | null;
+  driftDetectedAt: string | null;
+}
+
+interface CaptureStats {
+  created: number;
+  corrected: number;
+  frozen: number;
+  drifted: number;
 }
 
 interface SalesProductMeta {
@@ -199,6 +270,12 @@ interface SalesProductMeta {
 // Despachos del mes agrupados por artículo y semana (índice 0 = semana 1).
 interface WeeklySalesIndex {
   byCode: Map<string, { weeks: number[]; monthKg: number }>;
+  available: boolean;
+}
+
+// Forecast de Profit agrupado por mes (`yyyy-mm` → código → kg).
+interface ForecastSeries {
+  byMonth: Map<string, Map<string, number>>;
   available: boolean;
 }
 
@@ -333,7 +410,7 @@ export class ForecastService {
   async setWeeks(productCode: string, dto: ForecastSetWeeks) {
     const forecast = await this.profitForecastIndex(dto.year, dto.month);
     if (!forecast.available) {
-      throw new ServiceUnavailableException('No se pudo leer el forecast de Profit (xart_fore). Intenta de nuevo.');
+      throw new ServiceUnavailableException('No se pudo leer el forecast de Profit (forecast). Intenta de nuevo.');
     }
     const monthlyQty = forecast.byCode.get(productCode) ?? 0;
     const forecastRow = await this.prisma.forecast.upsert({
@@ -506,26 +583,64 @@ export class ForecastService {
     }
 
     const historyStart = new Date(Date.UTC(year, month - 1 - query.months, 1));
+    // El mes del informe siempre entra: en un mes en curso es la meta viva; en
+    // uno cerrado, el snapshot. Incluso con meta viva necesitamos sus metadatos
+    // para saber si Profit la cambió después de capturarla.
+    const historyMonths = previousMonths(year, month, query.months);
+    const targetMonths = [{ year, month }, ...historyMonths];
 
-    const [monthlyRows, dailyRows, forecast] = await Promise.all([
+    const [monthlyRows, dailyRows, dailyProductRows, forecastSeries, catalog] = await Promise.all([
       this.profit.selectQuery(PROFIT_SALES_MONTHLY_SQL, 20000, { desde: historyStart, hasta: monthlyHasta }),
       dailyHasta
         ? this.profit.selectQuery(PROFIT_SALES_DAILY_SQL, 3000, { desde: reportStart, hasta: dailyHasta })
         : Promise.resolve([] as Record<string, unknown>[]),
-      this.profitForecastIndex(year, month),
+      dailyHasta
+        ? this.profit
+            .selectQuery(PROFIT_SALES_DAILY_PRODUCTS_SQL, 6000, { desde: reportStart, hasta: dailyHasta })
+            // Consulta complementaria: si falla, el panel del día queda vacío
+            // pero el informe (totales, proyección y tabla) sigue disponible.
+            .catch((error: unknown) => {
+              this.logger.warn(
+                `Desglose diario por artículo no disponible: ${
+                  error instanceof Error ? error.message : 'error desconocido'
+                }`,
+              );
+              return [] as Record<string, unknown>[];
+            })
+        : Promise.resolve([] as Record<string, unknown>[]),
+      // Una sola consulta de `forecast` trae el mes del informe y el histórico:
+      // `fecha` identifica el mes de cada fila.
+      this.profitForecastSeries(targetMonths),
+      // Catálogo local de producción: el informe lista TODOS los artículos ABA,
+      // aunque no tengan meta ni venta en el mes.
+      this.prisma.product.findMany({
+        where: { isProduction: true, isActive: true },
+        select: { externalCode: true, description: true, uom: true, kgPerUom: true },
+      }),
     ]);
+
+    const catalogMeta = new Map<
+      string,
+      { description: string; uom: string; kgPerUom: number | null; lastInvoiceDate: string | null }
+    >();
+    for (const product of catalog) {
+      catalogMeta.set(product.externalCode, {
+        description: product.description,
+        uom: product.uom,
+        kgPerUom: product.kgPerUom === null || product.kgPerUom === undefined ? null : num(product.kgPerUom),
+        lastInvoiceDate: null,
+      });
+    }
 
     const reportKey = monthKey(year, month);
     const globalByMonth = new Map<string, SalesMonthBucket>();
     const byCodeMonth = new Map<string, Map<string, SalesMonthBucket>>();
     const salesMeta = new Map<string, SalesProductMeta>();
 
-    // La meta viva solo existe para el mes en curso. Mientras se lee, se guarda
-    // como snapshot para que el mes se pueda comparar cuando cierre.
-    if (calendar.status === 'OPEN' && forecast.available && forecast.byCode.size > 0) {
-      await this.persistForecastTargets(year, month, forecast.byCode);
-    }
-
+    // La captura de la meta NO se hace aquí: este endpoint es de solo lectura.
+    // `ForecastTargetScheduler` guarda el snapshot cada hora (y `captureForecastTargets`
+    // sigue disponible para ejecutarlo a demanda). Antes se escribía dentro del GET,
+    // lo que añadía cientos de upserts a la primera carga del informe.
     for (const raw of monthlyRows) {
       const rowYear = num(raw.anio);
       const rowMonth = num(raw.mes);
@@ -556,40 +671,59 @@ export class ForecastService {
       });
     }
 
-    // Filas = artículos con venta EN ESTE MES + artículos con meta (viva en el
-    // mes en curso, snapshot en un mes cerrado). Un artículo que solo vendió
-    // meses atrás no ensucia el informe con 0/0.
+    // Filas = catálogo de producción completo + artículos con venta en este mes
+    // + artículos con meta. El catálogo manda para que «todos» incluya también
+    // los que no tienen meta ni venta (quedan en 0 y se pueden filtrar en la UI).
     const currentSalesCodes = [...byCodeMonth.entries()]
       .filter(([, months]) => months.has(reportKey))
       .map(([code]) => code);
-    const historyMonths = previousMonths(year, month, query.months);
-    // El mes del informe entra a la consulta de snapshots salvo cuando su meta
-    // es viva; el histórico siempre se compara contra la meta guardada.
-    const targetMonths = calendar.status === 'OPEN' ? historyMonths : [{ year, month }, ...historyMonths];
     const targetsByMonth = await this.forecastTargetIndex(targetMonths);
-    const reportTargets = targetsByMonth.get(reportKey) ?? new Map<string, number>();
+    const reportTargets = targetsByMonth.get(reportKey) ?? new Map<string, ForecastTargetMeta>();
+    const reportForecast = forecastSeries.byMonth.get(reportKey) ?? new Map<string, number>();
     const isLive = calendar.status === 'OPEN';
-    const forecastCodes = isLive ? forecast.byCode.keys() : reportTargets.keys();
-    const codes = new Set<string>([...currentSalesCodes, ...forecastCodes]);
-    const productRows = await this.productMeta([...codes].filter((code) => !salesMeta.has(code)));
+    const hasSnapshot = reportTargets.size > 0;
+    // Un mes cerrado conserva su snapshot congelado como valor oficial. El mes
+    // en curso (y un mes futuro) usan la meta viva de `forecast`; si un mes
+    // cerrado no tiene snapshot, también se cae a la lectura viva por mes.
+    const useLive = forecastSeries.available && reportForecast.size > 0 && (isLive || !hasSnapshot);
+    // La lectura viva solo es imprescindible cuando no hay snapshot congelado.
+    const forecastAvailable = isLive || !hasSnapshot ? forecastSeries.available : true;
+    // Incluye tanto la meta viva como la capturada: si un artículo desapareció
+    // de `forecast`, debe seguir visible para que la UI muestre el drift.
+    const forecastCodes = new Set<string>([...reportForecast.keys(), ...reportTargets.keys()]);
+    const codes = new Set<string>([
+      ...catalogMeta.keys(),
+      ...currentSalesCodes,
+      ...forecastCodes,
+    ]);
+    const productRows = await this.productMeta(
+      [...codes].filter((code) => !salesMeta.has(code) && !catalogMeta.has(code)),
+    );
 
     const rows: ForecastSalesRow[] = [...codes].map((code) => {
       const info = salesMeta.get(code);
-      const product = productRows.get(code);
+      const product = catalogMeta.get(code) ?? productRows.get(code);
       const uom = info?.uom ?? product?.uom ?? 'KG';
       const kgPerUom = info?.kgPerUom ?? product?.kgPerUom ?? null;
       const agg = byCodeMonth.get(code)?.get(reportKey) ?? { kg: 0, units: 0 };
-      const forecastKg = roundTo(isLive ? (forecast.byCode.get(code) ?? 0) : (reportTargets.get(code) ?? 0));
+      const captured = reportTargets.get(code);
+      const capturedKg = captured ? roundTo(captured.targetKg) : null;
+      const liveKg = useLive ? roundTo(reportForecast.get(code) ?? 0) : null;
+      // Regla: el mes en curso usa la meta VIVA de Profit; un mes cerrado con
+      // snapshot conserva la meta congelada. Si no hay snapshot, se usa la
+      // lectura viva de `forecast` para ese mes.
+      const forecastKg = useLive ? (liveKg ?? 0) : (capturedKg ?? 0);
       const rowHistory = historyMonths.map((entry) => {
         const key = monthKey(entry.year, entry.month);
         const bucket = byCodeMonth.get(code)?.get(key);
-        const target = targetsByMonth.get(key);
+        const target = targetsByMonth.get(key)?.get(code);
+        const live = forecastSeries.byMonth.get(key)?.get(code);
         return {
           year: entry.year,
           month: entry.month,
           kg: bucket?.kg ?? 0,
           units: bucket?.units ?? 0,
-          forecastKg: target?.has(code) ? roundTo(target.get(code) ?? 0) : null,
+          forecastKg: target ? roundTo(target.targetKg) : live === undefined ? null : roundTo(live),
         };
       });
       const metrics = computeRunRate({
@@ -605,6 +739,12 @@ export class ForecastService {
         uom,
         kgPerUom,
         forecastKg,
+        forecastCapturedKg: capturedKg,
+        forecastLiveKg: liveKg,
+        forecastCapturedAt: captured?.firstCapturedAt ?? null,
+        // El drift solo se muestra en el mes en curso: en un cerrado no hay
+        // lectura viva con la que comparar.
+        forecastDriftAt: isLive ? (captured?.driftDetectedAt ?? null) : null,
         actualKg: roundTo(agg.kg),
         actualUnits: roundTo(agg.units),
         // Los sacos solo tienen sentido en artículos SAC: kg / kg por saco.
@@ -653,24 +793,32 @@ export class ForecastService {
       const key = monthKey(entry.year, entry.month);
       const bucket = globalByMonth.get(key);
       const targets = targetsByMonth.get(key);
+      const live = forecastSeries.byMonth.get(key);
       return {
         year: entry.year,
         month: entry.month,
         actualKg: roundTo(bucket?.kg ?? 0),
         actualUnits: roundTo(bucket?.units ?? 0),
+        // Snapshot congelado si existe; si no, la meta viva de `forecast` para
+        // ese mes (la tabla ya trae el mes de vigencia en `fecha`).
         forecastKg:
-          targets && targets.size > 0 ? roundTo([...targets.values()].reduce((acc, kg) => acc + kg, 0)) : null,
+          targets && targets.size > 0
+            ? roundTo([...targets.values()].reduce((acc, target) => acc + target.targetKg, 0))
+            : live && live.size > 0
+              ? roundTo([...live.values()].reduce((acc, kg) => acc + kg, 0))
+              : null,
       };
     });
 
-    // Origen de la meta del mes del informe. `NONE` no es un error: un mes
-    // cerrado sin snapshot (o un mes futuro) simplemente no tiene meta.
-    const forecastSource: ForecastSalesSource = isLive
-      ? forecast.available && forecast.byCode.size > 0
-        ? 'LIVE'
-        : 'NONE'
+    // Origen de la meta del mes del informe. `NONE` no es un error: un mes sin
+    // meta en `forecast` ni snapshot simplemente no tiene meta.
+    // `CAPTURED` = mes en curso sin lectura viva; se usa la captura local.
+    const forecastSource: ForecastSalesSource = useLive
+      ? 'LIVE'
       : reportTargets.size > 0
-        ? 'SNAPSHOT'
+        ? isLive
+          ? 'CAPTURED'
+          : 'SNAPSHOT'
         : 'NONE';
 
     return {
@@ -680,7 +828,7 @@ export class ForecastService {
       basis: calendar.basis,
       status: calendar.status,
       salesAvailable: true,
-      forecastAvailable: isLive ? forecast.available : true,
+      forecastAvailable,
       forecastSource,
       days: {
         inMonth: calendar.inMonth,
@@ -700,7 +848,7 @@ export class ForecastService {
         invoiceCount,
         lastInvoiceDate,
       },
-      daily: this.buildDailySeries(calendar, dailyRows, totalForecastKg),
+      daily: this.buildDailySeries(calendar, dailyRows, dailyProductRows, totalForecastKg),
       history,
       rows,
       generatedAt: new Date().toISOString(),
@@ -712,6 +860,7 @@ export class ForecastService {
   private buildDailySeries(
     calendar: MonthCalendar,
     dailyRows: Record<string, unknown>[],
+    dailyProductRows: Record<string, unknown>[],
     forecastKg: number,
   ): ForecastSalesDaily[] {
     if (calendar.status === 'FUTURE') return [];
@@ -727,6 +876,22 @@ export class ForecastService {
       bucket.units += num(raw.unid);
       bucket.invoices += num(raw.facturas);
       byDay.set(dayNumber, bucket);
+    }
+
+    // Desglose por artículo y día (misma fecha, distinta agrupación).
+    const productsByDay = new Map<number, Map<string, { kg: number; units: number }>>();
+    for (const raw of dailyProductRows) {
+      const day = isoDayOf(raw.fecha);
+      const code = String(raw.co_art ?? '').trim();
+      if (!day || !code) continue;
+      const dayNumber = Number(day.slice(8, 10));
+      if (!Number.isFinite(dayNumber)) continue;
+      const perCode = productsByDay.get(dayNumber) ?? new Map<string, { kg: number; units: number }>();
+      const bucket = perCode.get(code) ?? { kg: 0, units: 0 };
+      bucket.kg += num(raw.kg);
+      bucket.units += num(raw.unid);
+      perCode.set(code, bucket);
+      productsByDay.set(dayNumber, perCode);
     }
 
     const cutDay = calendar.cut ? Number(calendar.cut.slice(8, 10)) : 0;
@@ -762,11 +927,20 @@ export class ForecastService {
       const projected =
         calendar.status === 'OPEN' && day >= projectionStart ? roundTo(actualToCut + dailyAvg * steps) : null;
 
+      const dayProducts = [...(productsByDay.get(day)?.entries() ?? [])]
+        .map(([productCode, item]) => ({
+          productCode,
+          kg: roundTo(item.kg),
+          units: roundTo(item.units),
+        }))
+        .sort((a, b) => b.kg - a.kg || a.productCode.localeCompare(b.productCode));
+
       series.push({
         date: isoDay(calendar.year, calendar.month, day),
         actualKg,
         actualUnits: roundTo(bucket?.units ?? 0),
         invoiceCount: Math.trunc(bucket?.invoices ?? 0),
+        products: dayProducts,
         cumulativeKg: day <= cutDay ? roundTo(cumulativeActual) : null,
         projectedCumulativeKg: projected,
         forecastCumulativeKg: forecastKg > 0 ? roundTo(cumulativeForecast) : null,
@@ -814,9 +988,12 @@ export class ForecastService {
   // ============================================================
   // Snapshot mensual de la meta (`ForecastTarget`).
   //
-  // `xart_fore` no tiene histórico: para poder comparar un mes cerrado hay que
-  // guardar la meta mientras el mes está vigente. La captura es idempotente y
-  // NUNCA escribe en Profit; si falla, el informe sigue funcionando.
+  // `forecast` ya trae el mes en `fecha`, pero la meta se coloca una sola vez y
+  // producción puede editarla después. El snapshot conserva el valor oficial
+  // del mes (congelado) para que el histórico no cambie; si no existe, el
+  // informe usa la lectura viva de `forecast` para ese mes. La captura es
+  // idempotente y NUNCA escribe en Profit; si falla, el informe sigue
+  // funcionando.
   // ============================================================
 
   /**
@@ -829,44 +1006,151 @@ export class ForecastService {
     month: number;
     products: number;
     captured: boolean;
+    created: number;
+    corrected: number;
+    frozen: number;
+    drifted: number;
   }> {
     const today = todayInTimeZone(BUSINESS_TIME_ZONE);
     const year = Number(today.slice(0, 4));
     const month = Number(today.slice(5, 7));
     const forecast = await this.profitForecastIndex(year, month);
     if (!forecast.available) {
-      return { year, month, products: 0, captured: false };
+      return { year, month, products: 0, captured: false, created: 0, corrected: 0, frozen: 0, drifted: 0 };
     }
-    await this.persistForecastTargets(year, month, forecast.byCode);
-    return { year, month, products: forecast.byCode.size, captured: true };
+    const stats = await this.persistForecastTargets(year, month, forecast.byCode);
+    return { year, month, products: forecast.byCode.size, captured: true, ...stats };
   }
 
-  /** Upsert por artículo; solo escribe si la meta cambió o hay filas nuevas. */
-  private async persistForecastTargets(year: number, month: number, byCode: Map<string, number>): Promise<void> {
+  /**
+   * Captura la meta del mes en curso con la regla de negocio:
+   *  · La primera lectura crea la meta.
+   *  · Durante `FORECAST_TARGET_GRACE_HOURS` se puede corregir (carga tardía).
+   *  · Después queda congelada: un cambio en Profit solo se registra como drift.
+   *  · Un artículo que desaparece de `forecast` se trata como 0: durante la
+   *    gracia corrige el target; después solo marca drift.
+   * Nunca escribe en Profit ni en meses cerrados.
+   */
+  private async persistForecastTargets(
+    year: number,
+    month: number,
+    byCode: Map<string, number>,
+  ): Promise<CaptureStats> {
+    const stats: CaptureStats = { created: 0, corrected: 0, frozen: 0, drifted: 0 };
+    if (!this.isCurrentMonth(year, month)) return stats;
+
     const entries = [...byCode.entries()].filter(([code]) => code.length > 0);
-    if (entries.length === 0) return;
+    if (entries.length === 0) return stats;
 
     try {
       const existing = await this.prisma.forecastTarget.findMany({
         where: { year, month },
-        select: { productCode: true, targetKg: true },
+        select: {
+          id: true,
+          productCode: true,
+          targetKg: true,
+          capturedAt: true,
+          firstCapturedAt: true,
+          frozenAt: true,
+          lastSeenKg: true,
+          driftDetectedAt: true,
+        },
       });
-      const unchanged =
-        existing.length === entries.length &&
-        entries.every(([code, kg]) => {
-          const found = existing.find((row) => row.productCode === code);
-          return found !== undefined && Math.abs(num(found.targetKg) - kg) < 0.001;
+      const existingByCode = new Map(existing.map((row) => [row.productCode, row]));
+      const now = new Date();
+      const graceMs = targetGraceHours() * 60 * 60_000;
+
+      const captureRow = async (row: (typeof existing)[number], liveKg: number): Promise<void> => {
+        const firstCapturedAt = row.firstCapturedAt ?? row.capturedAt ?? now;
+        const frozen = row.frozenAt !== null || now.getTime() - firstCapturedAt.getTime() >= graceMs;
+        const targetKg = num(row.targetKg);
+        const same = Math.abs(targetKg - liveKg) < 0.001;
+
+        if (!frozen) {
+          // Ventana de gracia: corrige la captura (cambio de mes o carga tardía).
+          if (same) return;
+          await this.prisma.forecastTarget.update({
+            where: { id: row.id },
+            data: {
+              targetKg: liveKg,
+              firstCapturedAt,
+              lastSeenKg: liveKg,
+              lastSeenAt: now,
+              capturedAt: now,
+              driftDetectedAt: null,
+            },
+          });
+          stats.corrected += 1;
+          return;
+        }
+
+        // Congelada: nunca se toca `targetKg`; solo se registra la diferencia.
+        const wasFrozen = row.frozenAt === null;
+        if (same) {
+          if (wasFrozen || row.driftDetectedAt !== null) {
+            await this.prisma.forecastTarget.update({
+              where: { id: row.id },
+              data: {
+                firstCapturedAt,
+                frozenAt: row.frozenAt ?? now,
+                lastSeenKg: liveKg,
+                lastSeenAt: now,
+                driftDetectedAt: null,
+              },
+            });
+          }
+          if (wasFrozen) stats.frozen += 1;
+          return;
+        }
+
+        const wasDrifting = row.driftDetectedAt !== null;
+        await this.prisma.forecastTarget.update({
+          where: { id: row.id },
+          data: {
+            firstCapturedAt,
+            frozenAt: row.frozenAt ?? now,
+            lastSeenKg: liveKg,
+            lastSeenAt: now,
+            driftDetectedAt: row.driftDetectedAt ?? now,
+          },
         });
-      if (unchanged) return;
+        if (wasFrozen) stats.frozen += 1;
+        if (!wasDrifting) stats.drifted += 1;
+      };
 
       for (const [productCode, targetKg] of entries) {
-        await this.prisma.forecastTarget.upsert({
-          where: { year_month_productCode: { year, month, productCode } },
-          update: { targetKg, capturedAt: new Date() },
-          create: { year, month, productCode, targetKg },
-        });
+        const row = existingByCode.get(productCode);
+        if (!row) {
+          await this.prisma.forecastTarget.create({
+            data: {
+              year,
+              month,
+              productCode,
+              targetKg,
+              firstCapturedAt: now,
+              lastSeenKg: targetKg,
+              lastSeenAt: now,
+              capturedAt: now,
+            },
+          });
+          stats.created += 1;
+          continue;
+        }
+        await captureRow(row, targetKg);
       }
-      this.logger.log(`ForecastTarget ${year}-${pad2(month)}: ${entries.length} metas guardadas/actualizadas.`);
+
+      // Artículos que estaban capturados y desaparecieron de `forecast`.
+      for (const row of existing) {
+        if (byCode.has(row.productCode)) continue;
+        await captureRow(row, 0);
+      }
+
+      if (stats.created + stats.corrected + stats.frozen + stats.drifted > 0) {
+        this.logger.log(
+          `ForecastTarget ${year}-${pad2(month)}: ${stats.created} nuevas, ${stats.corrected} corregidas, ` +
+            `${stats.frozen} congeladas, ${stats.drifted} con diferencia en Profit.`,
+        );
+      }
     } catch (error) {
       // La captura es un extra: si la BD local falla, el informe sigue en pie.
       this.logger.warn(
@@ -875,18 +1159,75 @@ export class ForecastService {
         }`,
       );
     }
+    return stats;
   }
 
-  /** Metas por mes (`yyyy-mm` → código → kg). Si la consulta falla, vacío. */
+  /**
+   * Acepta un cambio de Profit sobre una meta ya congelada. Solo para el mes en
+   * curso y con permiso `forecast:update`; deja rastro en la bitácora.
+   */
+  async acceptTargetDrift(
+    year: number,
+    month: number,
+    productCode: string,
+  ): Promise<{ ok: boolean; targetKg: number | null }> {
+    if (!this.isCurrentMonth(year, month)) {
+      throw new BadRequestException('Solo se puede aceptar un cambio de meta del mes en curso.');
+    }
+    const row = await this.prisma.forecastTarget.findUnique({
+      where: { year_month_productCode: { year, month, productCode } },
+    });
+    if (!row) throw new NotFoundException('No hay una meta capturada para ese artículo.');
+    if (row.lastSeenKg === null || row.lastSeenKg === undefined) {
+      throw new BadRequestException('Todavía no hay una lectura viva de Profit para aceptar.');
+    }
+
+    const liveKg = num(row.lastSeenKg);
+    if (Math.abs(num(row.targetKg) - liveKg) < 0.001) {
+      return { ok: true, targetKg: num(row.targetKg) };
+    }
+
+    const updated = await this.prisma.forecastTarget.update({
+      where: { id: row.id },
+      data: {
+        targetKg: liveKg,
+        capturedAt: new Date(),
+        frozenAt: row.frozenAt ?? new Date(),
+        driftDetectedAt: null,
+      },
+    });
+    await this.audit.record({
+      action: 'FORECAST_TARGET_ACCEPTED',
+      entityType: 'ForecastTarget',
+      entityId: row.id,
+      context: { year, month, productCode, fromKg: num(row.targetKg), toKg: liveKg },
+    });
+    return { ok: true, targetKg: num(updated.targetKg) };
+  }
+
+  /**
+   * Metas por mes (`yyyy-mm` → código → metadatos). Si la consulta falla,
+   * devuelve un mapa vacío para no tumbar el informe.
+   */
   private async forecastTargetIndex(
     months: { year: number; month: number }[],
-  ): Promise<Map<string, Map<string, number>>> {
-    const map = new Map<string, Map<string, number>>();
+  ): Promise<Map<string, Map<string, ForecastTargetMeta>>> {
+    const map = new Map<string, Map<string, ForecastTargetMeta>>();
     if (months.length === 0) return map;
     try {
       const rows = await this.prisma.forecastTarget.findMany({
         where: { OR: months.map((entry) => ({ year: entry.year, month: entry.month })) },
-        select: { year: true, month: true, productCode: true, targetKg: true },
+        select: {
+          year: true,
+          month: true,
+          productCode: true,
+          targetKg: true,
+          capturedAt: true,
+          firstCapturedAt: true,
+          frozenAt: true,
+          lastSeenKg: true,
+          driftDetectedAt: true,
+        },
       });
       for (const row of rows) {
         const key = monthKey(row.year, row.month);
@@ -895,7 +1236,13 @@ export class ForecastService {
           perCode = new Map();
           map.set(key, perCode);
         }
-        perCode.set(row.productCode, num(row.targetKg));
+        perCode.set(row.productCode, {
+          targetKg: num(row.targetKg),
+          firstCapturedAt: isoOrNull(row.firstCapturedAt ?? row.capturedAt),
+          frozenAt: isoOrNull(row.frozenAt),
+          lastSeenKg: row.lastSeenKg === null || row.lastSeenKg === undefined ? null : num(row.lastSeenKg),
+          driftDetectedAt: isoOrNull(row.driftDetectedAt),
+        });
       }
     } catch (error) {
       this.logger.warn(
@@ -909,7 +1256,8 @@ export class ForecastService {
 
   // Metadatos del catálogo local para artículos con forecast que aún no
   // tuvieron ventas en la ventana consultada (uom, kg por unidad, descripción).
-  private async productMeta(codes: string[]) {    const map = new Map<string, { description: string; uom: string; kgPerUom: number | null }>();
+  private async productMeta(codes: string[]) {
+    const map = new Map<string, { description: string; uom: string; kgPerUom: number | null }>();
     if (codes.length === 0) return map;
     const products = await this.prisma.product.findMany({
       where: { externalCode: { in: codes } },
@@ -998,36 +1346,79 @@ export class ForecastService {
     return this.computeWeeks(monthlyQty, stored, true);
   }
 
-  // `xart_fore` es una foto del mes en curso (no tiene columna de mes). Para
-  // cualquier otro mes se devuelve 0 sin consultar Profit. Se compara contra la
-  // fecha del NEGOCIO (America/Caracas), no la del servidor.
+  // Se compara contra la fecha del NEGOCIO (America/Caracas), no la del
+  // servidor: la captura del snapshot y la aceptación de diferencias solo
+  // aplican al mes en curso.
   private isCurrentMonth(year: number, month: number): boolean {
     const today = todayInTimeZone(BUSINESS_TIME_ZONE);
     return Number(today.slice(0, 4)) === year && Number(today.slice(5, 7)) === month;
   }
 
-  // Forecast mensual por artículo desde Profit (`xart_fore.kg_mes`), SIN conversión.
-  // Si la consulta falla, se devuelve el mapa vacío y `available=false` para que
-  // la UI avise en lugar de mostrar valores inventados.
-  private async profitForecastIndex(year: number, month: number): Promise<{ byCode: Map<string, number>; available: boolean }> {
-    if (!this.isCurrentMonth(year, month)) {
-      return { byCode: new Map(), available: true };
-    }
+  // Forecast mensual por artículo desde Profit (`forecast.kg_mensual`), SIN
+  // conversión. Se consulta el mes pedido con `fecha`, así que también sirve
+  // para meses pasados y futuros. Si la consulta falla, se devuelve el mapa
+  // vacío y `available=false` para que la UI avise en lugar de mostrar valores
+  // inventados.
+  private async profitForecastIndex(
+    year: number,
+    month: number,
+  ): Promise<{ byCode: Map<string, number>; available: boolean }> {
+    const series = await this.profitForecastSeries([{ year, month }]);
+    return {
+      byCode: series.byMonth.get(monthKey(year, month)) ?? new Map<string, number>(),
+      available: series.available,
+    };
+  }
+
+  // Lee `forecast` una sola vez para todos los meses pedidos. `fecha` es el mes
+  // de vigencia: se agrupa por `yyyy-mm` y se descartan los meses no pedidos
+  // (la consulta cubre el rango completo entre el primero y el último).
+  private async profitForecastSeries(months: { year: number; month: number }[]): Promise<ForecastSeries> {
+    const keys = [...new Set(months.map((entry) => monthKey(entry.year, entry.month)))].sort();
+    if (keys.length === 0) return { byMonth: new Map(), available: true };
+
+    const [minKey, maxKey] = [keys[0]!, keys[keys.length - 1]!];
+    const [minYear, minMonth] = minKey.split('-').map(Number) as [number, number];
+    const [maxYear, maxMonth] = maxKey.split('-').map(Number) as [number, number];
+    const desde = new Date(Date.UTC(minYear, minMonth - 1, 1));
+    const hasta = new Date(Date.UTC(maxYear, maxMonth, 1));
+
     try {
-      const rows = await this.profit.selectQuery(PROFIT_FORECAST_SQL, 5000);
-      const byCode = new Map<string, number>();
+      const rows = await this.profit.selectQuery(PROFIT_FORECAST_SQL, 20000, { desde, hasta });
+      const allowed = new Set(keys);
+      const byMonth = new Map<string, Map<string, number>>();
       for (const raw of rows) {
+        const day = isoDayOf(raw.fecha);
+        if (!day) continue;
+        const key = day.slice(0, 7);
+        if (!allowed.has(key)) continue;
         const code = String(raw.co_art ?? '').trim();
         if (!code) continue;
-        if (byCode.has(code)) {
-          this.logger.warn(`xart_fore trae más de una fila para ${code}; se usa la última.`);
+        // `kg_mensual` viene en la presentación del artículo: SAC × kg por
+        // saco; KG (o sin presentación conocida) se deja igual. Todo el
+        // servicio trabaja en kg.
+        const presentation = String(raw.uni_venta ?? '').trim().toUpperCase();
+        const relation = raw.uni_relac === null || raw.uni_relac === undefined ? null : num(raw.uni_relac);
+        const factor = presentation === '' || presentation === 'KG' || relation === null || relation <= 0 ? 1 : relation;
+        const kg = num(raw.forecast_mes) * factor;
+        let perCode = byMonth.get(key);
+        if (!perCode) {
+          perCode = new Map();
+          byMonth.set(key, perCode);
         }
-        byCode.set(code, num(raw.forecast_mes));
+        if (perCode.has(code)) {
+          this.logger.warn(`forecast trae más de una fila para ${key}/${code}; se usa la última.`);
+        }
+        perCode.set(code, kg);
       }
-      return { byCode, available: true };
+      return { byMonth, available: true };
     } catch (error) {
-      this.logger.warn(`No se pudo leer el forecast de Profit (xart_fore): ${error instanceof Error ? error.message : 'error desconocido'}`);
-      return { byCode: new Map(), available: false };
+      this.logger.warn(
+        `No se pudo leer el forecast de Profit (forecast): ${
+          error instanceof Error ? error.message : 'error desconocido'
+        }`,
+      );
+      return { byMonth: new Map(), available: false };
     }
   }
 

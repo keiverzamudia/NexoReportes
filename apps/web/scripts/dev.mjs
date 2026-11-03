@@ -12,12 +12,20 @@
  */
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import {
+  killTree,
+  portInUse,
+  portOwners,
+  processMatchesRoot,
+  shortCommand,
+  waitForPortFree,
+} from '../../../scripts/dev-ports.mjs';
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const worktreeRoot = path.resolve(webRoot, '..', '..');
 const DEFAULT_PORT = '4120';
 
 function readEnvFile(key) {
@@ -40,27 +48,30 @@ const port = String(process.env.WEB_PORT || readEnvFile('WEB_PORT') || DEFAULT_P
 
 // Preflight: dos `next dev` del mismo worktree comparten `apps/web/.next` y lo
 // corrompen ("Cannot find module './NNN.js'"). Si el puerto ya está ocupado,
-// fallamos con un mensaje claro en vez del EADDRINUSE críptico de Next.
-function portInUse(value) {
-  return new Promise((resolve) => {
-    const socket = net.connect({ host: '127.0.0.1', port: Number(value) });
-    const done = (result) => {
-      socket.destroy();
-      resolve(result);
-    };
-    socket.setTimeout(700);
-    socket.once('connect', () => done(true));
-    socket.once('timeout', () => done(false));
-    socket.once('error', () => done(false));
-  });
-}
-
+// mostramos quién lo tiene y, si es de este mismo worktree, lo cerramos.
 if (await portInUse(port)) {
-  console.error(
-    `[web] el puerto ${port} ya está en uso: seguramente hay otro \`pnpm dev\` de este worktree corriendo.\n` +
-      '      Ciérralo con Ctrl+C antes de volver a arrancar (dos instancias comparten .next y lo corrompen).',
-  );
-  process.exit(1);
+  const owners = portOwners(port);
+  const sameWorktree = owners.length > 0 && owners.every((owner) => processMatchesRoot(owner, worktreeRoot));
+
+  console.error(`[web] el puerto ${port} ya está en uso:`);
+  for (const owner of owners) {
+    console.error(`      PID ${owner.pid}  ${shortCommand(owner.cmd) || '(sin línea de comandos)'}`);
+  }
+
+  if (sameWorktree && process.env.WEB_DEV_NO_AUTOSTOP !== '1') {
+    console.error('      es de este mismo worktree: lo cierro para no compartir apps/web/.next');
+    for (const owner of owners) killTree(owner.pid);
+    if (await waitForPortFree(port, 6000)) {
+      console.error(`      puerto ${port} liberado; continúo`);
+    } else {
+      console.error(`      no se pudo liberar el puerto ${port}; revisa con \`pnpm stop ${port}\``);
+      process.exit(1);
+    }
+  } else {
+    console.error(`      Ciérralo con \`pnpm stop ${port}\` o con Ctrl+C en la otra terminal.`);
+    console.error('      (dos instancias comparten apps/web/.next y lo corrompen)');
+    process.exit(1);
+  }
 }
 
 let nextBin;

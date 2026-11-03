@@ -31,10 +31,10 @@ export const SHEET_STATUS_META: Record<DispatchSheetStatus, { label: string; sho
 export const LINE_STATUS_META: Record<DispatchLineStatus, { label: string; tone: SheetTone }> = {
   PENDIENTE: { label: 'Pendiente', tone: 'muted' },
   CARGADO: { label: 'Cargado', tone: 'success' },
-  // Estados anteriores: se conservan para leer hojas históricas.
-  PARCIAL: { label: 'Parcial (histórico)', tone: 'warning' },
-  FALTANTE: { label: 'No cargado (histórico)', tone: 'danger' },
-  NOVEDAD: { label: 'Novedad (histórico)', tone: 'danger' },
+  PARCIAL: { label: 'Parcial', tone: 'warning' },
+  FALTANTE: { label: 'No cargado', tone: 'danger' },
+  // Estado heredado: se conserva para leer hojas históricas.
+  NOVEDAD: { label: 'Novedad', tone: 'danger' },
 };
 
 export function sheetStatusMeta(status: DispatchSheetStatus) {
@@ -112,10 +112,50 @@ export function lineLoadedKg(line: Pick<DispatchSheetLine, 'loadedQty' | 'loaded
   return line.plannedQty > 0 ? (line.loadedQty * line.plannedKg) / line.plannedQty : line.loadedQty;
 }
 
+// ============================================================
+// Cantidad digitada en la fila.
+//
+// El almacén escribe directamente lo que cargó. El servidor decide la marca:
+//   · igual al plan → cargado
+//   · menos que el plan y > 0 → parcial (con motivo)
+//   · 0 → no cargado (con motivo)
+// Vacío o inválido no toca la marca: evita cargas accidentales al salir.
+// ============================================================
+
+export type TypedQuantityResolution =
+  | { kind: 'UNCHANGED' }
+  | { kind: 'FULL' }
+  | { kind: 'PARTIAL'; loadedQty: number }
+  | { kind: 'MISSING' };
+
+export function resolveTypedQuantity(plannedQty: number, raw: string): TypedQuantityResolution {
+  const text = raw.trim();
+  if (text === '') return { kind: 'UNCHANGED' };
+  const parsed = Number(text.replace(',', '.'));
+  if (!Number.isFinite(parsed)) return { kind: 'UNCHANGED' };
+  const qty = Math.round(Math.min(Math.max(parsed, 0), plannedQty) * 100) / 100;
+  if (qty >= plannedQty) return { kind: 'FULL' };
+  if (qty <= 0) return { kind: 'MISSING' };
+  return { kind: 'PARTIAL', loadedQty: qty };
+}
+
+/** Cantidad que representa el estado actual del renglón en el input. */
+export function lineEffectiveQty(
+  line: Pick<DispatchSheetLine, 'plannedQty' | 'loadedQty' | 'status'>,
+): number {
+  return line.status === 'PENDIENTE' ? line.plannedQty : line.loadedQty ?? 0;
+}
+
+
 export interface SheetTotals {
   lines: number;
+  /** Renglones resueltos: cargados, parciales o no cargados. */
   done: number;
   progress: number;
+  /** Desglose por marca. */
+  loaded: number;
+  partial: number;
+  missing: number;
   plannedSacks: number;
   plannedKg: number;
   loadedSacks: number;
@@ -131,6 +171,9 @@ export function computeTotals(lines: DispatchSheetLine[]): SheetTotals {
   let loadedKg = 0;
   let checkedPlannedKg = 0;
   let done = 0;
+  let loaded = 0;
+  let partial = 0;
+  let missing = 0;
   for (const line of lines) {
     if (line.uom === 'SAC') {
       plannedSacks += line.plannedQty;
@@ -138,15 +181,27 @@ export function computeTotals(lines: DispatchSheetLine[]): SheetTotals {
     }
     plannedKg += line.plannedKg;
     loadedKg += lineLoadedKg(line);
-    // Solo «Cargado» avanza el trabajo. Las marcas históricas
-    // (parcial/faltante) siguen pesando en la diferencia del reporte.
-    if (line.status === 'CARGADO') done += 1;
+    // Cargado, parcial y no cargado resuelven el renglón; solo pendiente
+    // bloquea el cierre. La diferencia pesa sobre lo confirmado.
+    if (line.status === 'CARGADO') {
+      loaded += 1;
+      done += 1;
+    } else if (line.status === 'PARCIAL') {
+      partial += 1;
+      done += 1;
+    } else if (line.status === 'FALTANTE' || line.status === 'NOVEDAD') {
+      missing += 1;
+      done += 1;
+    }
     if (line.status !== 'PENDIENTE') checkedPlannedKg += line.plannedKg;
   }
   return {
     lines: lines.length,
     done,
     progress: lines.length > 0 ? done / lines.length : 0,
+    loaded,
+    partial,
+    missing,
     plannedSacks: Math.round(plannedSacks * 100) / 100,
     plannedKg: Math.round(plannedKg * 100) / 100,
     loadedSacks: Math.round(loadedSacks * 100) / 100,
@@ -161,9 +216,11 @@ export interface CustomerGroup {
   lines: DispatchSheetLine[];
   plannedKg: number;
   loadedKg: number;
-  /** Renglones que aún no están completados (incluye marcas históricas). */
+  /** Renglones aún sin resolver: solo pendientes. */
   pendingLines: number;
   completedLines: number;
+  partialLines: number;
+  missingLines: number;
 }
 
 /** Agrupa los renglones por cliente (para la vista de carga en móvil). */
@@ -181,6 +238,8 @@ export function groupByCustomer(lines: DispatchSheetLine[]): CustomerGroup[] {
         loadedKg: 0,
         pendingLines: 0,
         completedLines: 0,
+        partialLines: 0,
+        missingLines: 0,
       };
       map.set(key, group);
     }
@@ -188,6 +247,8 @@ export function groupByCustomer(lines: DispatchSheetLine[]): CustomerGroup[] {
     group.plannedKg += line.plannedKg;
     group.loadedKg += lineLoadedKg(line);
     if (line.status === 'CARGADO') group.completedLines += 1;
+    else if (line.status === 'PARCIAL') group.partialLines += 1;
+    else if (line.status === 'FALTANTE' || line.status === 'NOVEDAD') group.missingLines += 1;
     else group.pendingLines += 1;
   }
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'es'));
@@ -204,7 +265,10 @@ export interface DispatchReportCounts {
 export interface DispatchReport {
   totals: SheetTotals;
   groups: CustomerGroup[];
+  /** Renglones resueltos por marca. */
   completed: DispatchReportCounts;
+  partial: DispatchReportCounts;
+  missing: DispatchReportCounts;
   pending: DispatchReportCounts;
 }
 
@@ -214,23 +278,39 @@ function round2(value: number): number {
 
 /**
  * Reporte completo de la hoja: todos los renglones agrupados por cliente y
- * los conteos de completados/pendientes. Se usa en el modal de cierre y en
- * la tarjeta de una hoja ya despachada.
+ * los conteos de cargados, parciales, no cargados y pendientes. Se usa en el
+ * modal de cierre y en la tarjeta de una hoja ya despachada.
  */
 export function buildDispatchReport(lines: DispatchSheetLine[]): DispatchReport {
   const completed: DispatchReportCounts = { lines: 0, sacks: 0, kg: 0 };
+  const partial: DispatchReportCounts = { lines: 0, sacks: 0, kg: 0 };
+  const missing: DispatchReportCounts = { lines: 0, sacks: 0, kg: 0 };
   const pending: DispatchReportCounts = { lines: 0, sacks: 0, kg: 0 };
   for (const line of lines) {
-    const bucket = line.status === 'CARGADO' ? completed : pending;
+    const bucket =
+      line.status === 'CARGADO'
+        ? completed
+        : line.status === 'PARCIAL'
+          ? partial
+          : line.status === 'PENDIENTE'
+            ? pending
+            : missing;
     bucket.lines += 1;
     if (line.uom === 'SAC') bucket.sacks += line.plannedQty;
     bucket.kg += line.plannedKg;
   }
+  const rounded = (counts: DispatchReportCounts): DispatchReportCounts => ({
+    ...counts,
+    sacks: round2(counts.sacks),
+    kg: round2(counts.kg),
+  });
   return {
     totals: computeTotals(lines),
     groups: groupByCustomer(lines),
-    completed: { ...completed, sacks: round2(completed.sacks), kg: round2(completed.kg) },
-    pending: { ...pending, sacks: round2(pending.sacks), kg: round2(pending.kg) },
+    completed: rounded(completed),
+    partial: rounded(partial),
+    missing: rounded(missing),
+    pending: rounded(pending),
   };
 }
 
@@ -272,7 +352,7 @@ export const SHEET_EXPORT_HEADERS = [
   'Cargado',
   'Kg real',
   'Estado',
-  'Nota',
+  'Nota / motivo',
 ];
 
 const SHEET_EXPORT_WIDTHS = [7, 11, 14, 40, 34, 10, 11, 7, 12, 10, 11, 10, 12, 30];
@@ -334,9 +414,9 @@ export function sheetExport(detail: DispatchSheetDetail, generatedAt: Date = new
   aoa.push([
     `TOTAL · ${totals.lines} renglón(es) · planificado ${formatNumber(totals.plannedSacks)} sacos / ${formatNumber(
       totals.plannedKg,
-    )} kg · cargado ${formatNumber(totals.loadedSacks)} sacos / ${formatNumber(totals.loadedKg)} kg · diferencia ${formatNumber(
-      totals.differenceKg,
-    )} kg`,
+    )} kg · cargado ${formatNumber(totals.loadedSacks)} sacos / ${formatNumber(totals.loadedKg)} kg · parciales ${
+      totals.partial
+    } · no cargados ${totals.missing} · diferencia ${formatNumber(totals.differenceKg)} kg`,
   ]);
   merges.push({ s: { r: totalRow, c: 0 }, e: { r: totalRow, c: lastColumn } });
   aoa.push([`Generado ${formatDateTime(generatedAt.toISOString())} · CORPOAGRO · solo lectura`]);

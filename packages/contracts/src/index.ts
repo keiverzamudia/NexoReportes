@@ -22,7 +22,7 @@ export const zRoleCode = z
   .max(40)
   .regex(/^[A-Z][A-Z0-9_]*$/, 'Usa MAYÚSCULAS, números y guion bajo (ej. SUPERVISOR)');
 
-export const PERMISSION_ACTIONS = ['read', 'create', 'update', 'delete', 'view_all'] as const;
+export const PERMISSION_ACTIONS = ['read', 'create', 'update', 'delete', 'view_all', 'override'] as const;
 export const zPermissionAction = z.enum(PERMISSION_ACTIONS);
 export type PermissionAction = z.infer<typeof zPermissionAction>;
 
@@ -66,6 +66,7 @@ export const APP_MODULES: AppModuleDefinition[] = [
       { action: 'create', label: 'Guardar simulación' },
       { action: 'update', label: 'Editar fechas' },
       { action: 'delete', label: 'Eliminar simulación' },
+      { action: 'override', label: 'Quitar selecciones de otros' },
     ],
   },
   {
@@ -470,6 +471,26 @@ export const zInventorySnapshotSummary = z.object({
 export type InventorySnapshotSummary = z.infer<typeof zInventorySnapshotSummary>;
 
 // ---------- Pedidos y clientes (Fase 4) ----------
+// Periodo de ventas del módulo Clientes. «todos» = actividad de los últimos
+// 12 meses (pedido activo o venta); el resto son ventanas móviles por mes
+// calendario (mes en curso + N-1 meses anteriores).
+export const CUSTOMER_SALES_PERIODS = ['todos', 'mes', '3m', '6m', '12m'] as const;
+export const zCustomerSalesPeriod = z.enum(CUSTOMER_SALES_PERIODS);
+export type CustomerSalesPeriod = z.infer<typeof zCustomerSalesPeriod>;
+
+// Ventas del periodo medidas con notas de entrega (dbo.not_ent/reng_nde).
+// La unidad manda: los renglones con unidad de venta SAC se reportan en
+// sacos; el resto (KG y otras) se reporta en kg. `totalKg` es el equivalente
+// total del periodo y solo se usa para ordenar/agregar.
+export const zCustomerSales = z.object({
+  sacks: z.number(),
+  kg: z.number(),
+  totalKg: z.number(),
+  notes: z.number().int(),
+  lastSaleDate: z.string().nullable(),
+});
+export type CustomerSales = z.infer<typeof zCustomerSales>;
+
 export const zCustomer = z.object({
   id: z.string(),
   externalCode: z.string(),
@@ -480,6 +501,8 @@ export const zCustomer = z.object({
   isActive: z.boolean(),
   // Número de pedidos activos del cliente.
   ordersCount: z.number().int(),
+  // Ventas del periodo consultado; null si Profit no respondió.
+  sales: zCustomerSales.nullable(),
 });
 export type Customer = z.infer<typeof zCustomer>;
 
@@ -489,8 +512,29 @@ export const zCustomerQuery = zPaginationQuery.extend({
     .union([z.boolean(), z.enum(['true', 'false'])])
     .transform((v) => v === true || v === 'true')
     .optional(),
+  salesPeriod: zCustomerSalesPeriod.default('todos'),
+  // Conserva el comportamiento histórico: solo clientes con pedido activo.
+  onlyWithOrders: z
+    .union([z.boolean(), z.enum(['true', 'false'])])
+    .transform((v) => v === true || v === 'true')
+    .optional(),
 });
 export type CustomerQuery = z.infer<typeof zCustomerQuery>;
+
+// Respuesta de /customers: además de la página, el resumen del conjunto
+// filtrado (no solo de la página) y si Profit pudo responder.
+export const zCustomerListResponse = zPaginated(zCustomer).extend({
+  salesAvailable: z.boolean(),
+  salesPeriod: zCustomerSalesPeriod,
+  summary: z.object({
+    withSales: z.number().int(),
+    // Sacos de renglones SAC y kg de los renglones que no son SAC: el resumen
+    // respeta la unidad, igual que la columna por cliente.
+    totalSacks: z.number(),
+    totalKg: z.number(),
+  }),
+});
+export type CustomerListResponse = z.infer<typeof zCustomerListResponse>;
 
 // ---------- Estado de cuenta del cliente (cartera) ----------
 // Los documentos salen de Profit en vivo (`docum_cc`), no de la base local.
@@ -598,6 +642,192 @@ export const zCustomerStatementSummaryResponse = z.object({
   source: zCustomerStatementSource,
 });
 export type CustomerStatementSummaryResponse = z.infer<typeof zCustomerStatementSummaryResponse>;
+
+// ---------- Ficha 360 de clientes ----------
+// Informe comercial por cliente. El volumen sale de las notas de entrega
+// (`not_ent`/`reng_nde`) y el dinero de la facturación neta (`docum_cc`).
+// La ventana se mide en meses móviles; con 24 o 36 se compara contra los 12
+// anteriores y se detectan productos que el cliente dejó de comprar.
+export const CUSTOMER_INSIGHT_MONTH_OPTIONS = [12, 24, 36] as const;
+export type CustomerInsightMonthOption = (typeof CUSTOMER_INSIGHT_MONTH_OPTIONS)[number];
+
+export const zCustomerInsightQuery = z.object({
+  months: z.coerce
+    .number()
+    .int()
+    .refine((value) => (CUSTOMER_INSIGHT_MONTH_OPTIONS as readonly number[]).includes(value), {
+      message: 'La ventana debe ser 12, 24 o 36 meses',
+    })
+    .default(24),
+  currency: zCustomerStatementCurrency.default('USD'),
+});
+export type CustomerInsightQuery = z.infer<typeof zCustomerInsightQuery>;
+
+export const CUSTOMER_INSIGHT_PRODUCT_STATUSES = ['NUEVO', 'CRECIENDO', 'ESTABLE', 'CAYENDO', 'PERDIDO'] as const;
+export const zCustomerInsightProductStatus = z.enum(CUSTOMER_INSIGHT_PRODUCT_STATUSES);
+export type CustomerInsightProductStatus = z.infer<typeof zCustomerInsightProductStatus>;
+
+export const CUSTOMER_INSIGHT_SEGMENTS = ['ACTIVO', 'EN_RIESGO', 'INACTIVO', 'SIN_DATOS'] as const;
+export const zCustomerInsightSegment = z.enum(CUSTOMER_INSIGHT_SEGMENTS);
+export type CustomerInsightSegment = z.infer<typeof zCustomerInsightSegment>;
+
+export const CUSTOMER_INSIGHT_SEVERITIES = ['critical', 'warning', 'info', 'success'] as const;
+export const zCustomerInsightSeverity = z.enum(CUSTOMER_INSIGHT_SEVERITIES);
+export type CustomerInsightSeverity = z.infer<typeof zCustomerInsightSeverity>;
+
+// Bloque de volumen de una ventana (actual o anteriores 12 meses).
+export const zCustomerInsightWindow = z.object({
+  sacks: z.number(),
+  kg: z.number(),
+  tonnes: z.number(),
+  notes: z.number().int(),
+  // Importe estimado del producto (reparto del facturado según toneladas).
+  // null si no hay facturación disponible.
+  billed: z.number().nullable(),
+  lastSaleDate: z.string().nullable(),
+});
+export type CustomerInsightWindow = z.infer<typeof zCustomerInsightWindow>;
+
+export const zCustomerInsightProduct = z.object({
+  code: z.string(),
+  description: z.string().nullable(),
+  uom: z.string().nullable(),
+  kgPerUom: z.number().nullable(),
+  status: zCustomerInsightProductStatus,
+  // Participación en el volumen actual (0–100).
+  sharePct: z.number(),
+  // Variación de toneladas contra los 12 meses anteriores (null si no hay base).
+  deltaPct: z.number().nullable(),
+  current: zCustomerInsightWindow,
+  previous: zCustomerInsightWindow,
+});
+export type CustomerInsightProduct = z.infer<typeof zCustomerInsightProduct>;
+
+export const zCustomerInsightMonth = z.object({
+  // yyyy-MM
+  month: z.string(),
+  sacks: z.number(),
+  kg: z.number(),
+  tonnes: z.number(),
+  notes: z.number().int(),
+  billed: z.number().nullable(),
+});
+export type CustomerInsightMonth = z.infer<typeof zCustomerInsightMonth>;
+
+export const zCustomerInsightYear = z.object({
+  year: z.number().int(),
+  sacks: z.number(),
+  kg: z.number(),
+  tonnes: z.number(),
+  notes: z.number().int(),
+  billed: z.number().nullable(),
+  monthsWithSales: z.number().int(),
+});
+export type CustomerInsightYear = z.infer<typeof zCustomerInsightYear>;
+
+export const zCustomerInsightTotals = z.object({
+  sacks: z.number(),
+  kg: z.number(),
+  tonnes: z.number(),
+  notes: z.number().int(),
+  billed: z.number().nullable(),
+  firstSaleDate: z.string().nullable(),
+  lastSaleDate: z.string().nullable(),
+  products: z.number().int(),
+});
+export type CustomerInsightTotals = z.infer<typeof zCustomerInsightTotals>;
+
+export const zCustomerInsightCadence = z.object({
+  avgDaysBetweenNotes: z.number().nullable(),
+  daysSinceLastSale: z.number().int().nullable(),
+  expectedNextDate: z.string().nullable(),
+  purchasesPerMonth: z.number().nullable(),
+  segment: zCustomerInsightSegment,
+});
+export type CustomerInsightCadence = z.infer<typeof zCustomerInsightCadence>;
+
+export const zCustomerInsightAccount = z.object({
+  saldo: z.number(),
+  saldoVencido: z.number(),
+  credito: z.number(),
+  limiteCredito: z.number().nullable(),
+  documentos: z.number().int(),
+  vencidos: z.number().int(),
+});
+export type CustomerInsightAccount = z.infer<typeof zCustomerInsightAccount>;
+
+export const zCustomerInsightOrders = z.object({
+  activeCount: z.number().int(),
+  pendingQty: z.number(),
+  pendingKg: z.number(),
+  nextDeliveryDate: z.string().nullable(),
+});
+export type CustomerInsightOrders = z.infer<typeof zCustomerInsightOrders>;
+
+export const zCustomerInsightSimilar = z.object({
+  code: z.string(),
+  description: z.string().nullable(),
+  uom: z.string().nullable(),
+  kgPerUom: z.number().nullable(),
+  adopters: z.number().int(),
+  adoptersPct: z.number().nullable(),
+  avgTonnes: z.number(),
+  totalTonnes: z.number(),
+});
+export type CustomerInsightSimilar = z.infer<typeof zCustomerInsightSimilar>;
+
+export const zCustomerInsightAlert = z.object({
+  key: z.string(),
+  severity: zCustomerInsightSeverity,
+  title: z.string(),
+  detail: z.string(),
+  // Monto asociado (facturado estimado en riesgo / recuperable), si aplica.
+  amount: z.number().nullable(),
+});
+export type CustomerInsightAlert = z.infer<typeof zCustomerInsightAlert>;
+
+export const zCustomerInsightCustomer = z.object({
+  code: z.string(),
+  name: z.string(),
+  customerType: z.string().nullable(),
+  vendor: z.string().nullable(),
+  isActive: z.boolean(),
+});
+export type CustomerInsightCustomer = z.infer<typeof zCustomerInsightCustomer>;
+
+export const zCustomerInsightResponse = z.object({
+  customer: zCustomerInsightCustomer,
+  asOf: z.string(),
+  currency: zCustomerStatementCurrency,
+  months: z.number().int(),
+  currentPeriod: z.object({ from: z.string(), to: z.string() }),
+  previousPeriod: z.object({ from: z.string(), to: z.string() }).nullable(),
+  totals: zCustomerInsightTotals,
+  previousTotals: zCustomerInsightTotals.nullable(),
+  trend: z.object({
+    volumePct: z.number().nullable(),
+    billingPct: z.number().nullable(),
+    notesPct: z.number().nullable(),
+  }),
+  monthly: z.array(zCustomerInsightMonth),
+  annual: z.array(zCustomerInsightYear),
+  products: z.array(zCustomerInsightProduct),
+  // Subconjunto de `products` con estado PERDIDO (ordenado por volumen perdido).
+  lostProducts: z.array(zCustomerInsightProduct),
+  similarProducts: z.array(zCustomerInsightSimilar),
+  cadence: zCustomerInsightCadence,
+  account: zCustomerInsightAccount.nullable(),
+  orders: zCustomerInsightOrders,
+  alerts: z.array(zCustomerInsightAlert),
+  available: z.boolean(),
+  billingAvailable: z.boolean(),
+  billingPartial: z.boolean(),
+  // true si el $ por producto se repartió por toneladas (no es precio real).
+  productBillingEstimated: z.boolean(),
+  truncated: z.boolean(),
+  source: z.enum(['profit', 'fixtures']),
+});
+export type CustomerInsightResponse = z.infer<typeof zCustomerInsightResponse>;
 
 export const ORDER_STATUSES = ['ABIERTO', 'NOTA_ENTREGA', 'CERRADO', 'CANCELADO', 'DESCONOCIDO'] as const;
 export const zOrderStatus = z.enum(ORDER_STATUSES);
@@ -928,9 +1158,15 @@ export type ScenarioFilters = z.infer<typeof zScenarioFilters>;
 
 // Renglón identificado por pedido + artículo (misma convención que la fecha
 // tentativa). Sobrevive a la sincronización y es legible en la base.
+// `selectedBy*` y `selectedAt` solo existen en el plan vivo del equipo: quien
+// marca primero reserva el renglón y el resto lo ve tomado. En una foto
+// guardada se conservan como referencia histórica.
 export const zScenarioLineRef = z.object({
   orderNumber: z.string().trim().min(1).max(40),
   productCode: z.string().trim().min(1).max(60),
+  selectedById: z.string().nullable().optional(),
+  selectedByName: z.string().nullable().optional(),
+  selectedAt: z.string().nullable().optional(),
 });
 export type ScenarioLineRef = z.infer<typeof zScenarioLineRef>;
 
@@ -1031,6 +1267,9 @@ export const zScenarioPayload = z.object({
   snapshot: zScenarioSnapshot.nullable(),
   // Guía visual de carga del camión. Opcional para payloads históricos.
   loadPlan: zLoadPlan.nullable().default(null),
+  // Comentarios del planificador por renglón (clave «pedido#artículo»).
+  // Viajan al almacén y se conservan en el plan vivo.
+  comments: z.record(z.string(), z.string().trim().max(240)).default({}),
 });
 export type ScenarioPayload = z.infer<typeof zScenarioPayload>;
 
@@ -1050,6 +1289,7 @@ export const zScenarioDraftInput = z.object({
   recipe: zScenarioRecipe,
   selected: z.array(zScenarioLineRef).max(MAX_SCENARIO_LINES),
   loadPlan: zLoadPlan.nullable().optional(),
+  comments: z.record(z.string(), z.string().trim().max(240)).optional(),
   // Versionado optimista y lock del plan global.
   version: z.number().int().min(1).optional(),
   lockToken: z.string().trim().max(120).optional(),
@@ -1171,10 +1411,54 @@ export const zScenarioListResponse = z.object({
 });
 export type ScenarioListResponse = z.infer<typeof zScenarioListResponse>;
 
+// Enriquecimiento del plan vivo. El servidor resuelve los renglones
+// seleccionados contra la cartera y calcula la asignación en orden de marcado:
+// así las tres pantallas ven el mismo 30/20 aunque cada una filtre clientes
+// distintos. `freeByProduct` es el stock que queda tras descontar TODO lo que
+// el equipo ya marcó.
+export const zDraftAssignment = z.object({
+  orderNumber: z.string(),
+  productCode: z.string(),
+  assignedQty: z.number(),
+  assignedKg: z.number(),
+  missingQty: z.number(),
+  missingKg: z.number(),
+  stockTotal: z.number(),
+  freeAfter: z.number(),
+});
+export type DraftAssignment = z.infer<typeof zDraftAssignment>;
+
+export const zDraftFreeStock = z.object({
+  productCode: z.string(),
+  stock: z.number(),
+  committed: z.number(),
+  free: z.number(),
+});
+export type DraftFreeStock = z.infer<typeof zDraftFreeStock>;
+
+export const zDraftActiveSheet = z.object({
+  id: z.string(),
+  number: z.string(),
+  status: z.string(),
+});
+export type DraftActiveSheet = z.infer<typeof zDraftActiveSheet>;
+
 export const zScenarioDraftResponse = z.object({
   scenario: zScenarioDetail.nullable(),
+  lines: z.array(zOrderGroupLine).default([]),
+  assignments: z.array(zDraftAssignment).default([]),
+  freeByProduct: z.array(zDraftFreeStock).default([]),
+  activeSheet: zDraftActiveSheet.nullable().default(null),
 });
 export type ScenarioDraftResponse = z.infer<typeof zScenarioDraftResponse>;
+
+// Liberar selecciones: sin `all` ni `lines` libera solo las mías; `all` exige
+// el permiso «Quitar selecciones de otros».
+export const zDraftReleaseInput = z.object({
+  all: z.boolean().optional(),
+  lines: z.array(zScenarioLineRef).max(MAX_SCENARIO_LINES).optional(),
+});
+export type DraftReleaseInput = z.infer<typeof zDraftReleaseInput>;
 
 // Respuesta al tomar/renovar el lock del plan global.
 export const zScenarioLockResponse = zScenarioLock.extend({
@@ -1214,9 +1498,10 @@ export const DISPATCH_LINE_STATUSES = ['PENDIENTE', 'CARGADO', 'PARCIAL', 'FALTA
 export const zDispatchLineStatus = z.enum(DISPATCH_LINE_STATUSES);
 export type DispatchLineStatus = z.infer<typeof zDispatchLineStatus>;
 
-// Marcas que el almacén puede aplicar hoy: todo o nada. Los estados
-// históricos (PARCIAL/FALTANTE/NOVEDAD) se conservan solo para lectura.
-export const DISPATCH_LINE_MARKS = ['PENDIENTE', 'CARGADO'] as const;
+// Marcas que el almacén puede aplicar hoy. Cargado toma el plan completo;
+// parcial guarda X unidades; faltante (= no cargado) deja todo en cero.
+// NOVEDAD se conserva solo como histórico de lectura.
+export const DISPATCH_LINE_MARKS = ['PENDIENTE', 'CARGADO', 'PARCIAL', 'FALTANTE'] as const;
 export const zDispatchLineMark = z.enum(DISPATCH_LINE_MARKS);
 export type DispatchLineMark = z.infer<typeof zDispatchLineMark>;
 
@@ -1381,10 +1666,33 @@ export type DispatchSheetCreateInput = z.infer<typeof zDispatchSheetCreateInput>
 export const zDispatchAckInput = z.object({ event: zDispatchAckEvent });
 export type DispatchAckInput = z.infer<typeof zDispatchAckInput>;
 
-export const zDispatchLineInput = z.object({
-  // CARGADO = completado (toma la cantidad planificada); PENDIENTE = deshacer.
-  status: zDispatchLineMark,
-});
+export const zDispatchLineInput = z
+  .object({
+    // CARGADO = plan completo; PARCIAL = X unidades; FALTANTE = no cargado;
+    // PENDIENTE = deshacer la marca.
+    status: zDispatchLineMark,
+    // Unidades cargadas en la unidad del renglón (solo para PARCIAL).
+    loadedQty: z.coerce.number().min(0).max(1_000_000).optional(),
+    // Motivo de la diferencia. Obligatorio en PARCIAL/FALTANTE.
+    note: z.string().trim().max(240).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.status !== 'PARCIAL' && value.status !== 'FALTANTE') return;
+    if (!value.note || value.note.length < 3) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['note'],
+        message: 'Escribe el motivo de la diferencia.',
+      });
+    }
+    if (value.status === 'PARCIAL' && (value.loadedQty === undefined || value.loadedQty <= 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['loadedQty'],
+        message: 'Indica cuántas unidades cargaste.',
+      });
+    }
+  });
 export type DispatchLineInput = z.infer<typeof zDispatchLineInput>;
 
 export const zDispatchCompleteInput = z.object({ note: z.string().trim().max(500).optional() });
@@ -1629,8 +1937,10 @@ export type ApiError = z.infer<typeof zApiError>;
 
 // ============================================================
 // Forecast (pronóstico de producción).
-//   - Forecast MENSUAL por artículo: se lee de Profit (`xart_fore.kg_mes`),
-//     en KILOGRAMOS y sin conversión. Solo lectura.
+//   - Forecast MENSUAL por artículo: se lee de Profit
+//     (`forecast.kg_mensual`), que viene en la presentación del artículo y se
+//     normaliza a KILOGRAMOS (SAC × `uni_relac`; KG tal cual). Solo lectura.
+//     `forecast.fecha` indica el mes de vigencia (primer día del mes).
 //   - Reparto en 4 semanas (bloques 1-7 / 8-14 / 15-21 / 22-fin), editable
 //     en Nexo. Por defecto = forecast mensual / 4.
 // ============================================================
@@ -1675,7 +1985,8 @@ export const zForecastRow = z.object({
   stockTotal: z.number(),
   demandMonthQty: z.number(),
   demandMonthKg: z.number(),
-  // Forecast mensual leído de Profit (`xart_fore.kg_mes`), sin conversión.
+  // Forecast mensual leído de Profit (`forecast.kg_mensual`), convertido a kg
+  // según la presentación del artículo.
   monthlyQty: z.number(),
   // Promedio sugerido por semana = forecast mensual / 4 (valor por defecto de `weeks`).
   averageQty: z.number(),
@@ -1689,7 +2000,7 @@ export const zForecastResponse = z.object({
   month: z.number().int(),
   weekRanges: z.array(zForecastWeekRange),
   rows: z.array(zForecastRow),
-  // false = no se pudo leer `xart_fore`; la UI avisa y muestra 0.
+  // false = no se pudo leer `forecast`; la UI avisa y muestra 0.
   profitForecastAvailable: z.boolean(),
 });
 export type ForecastResponse = z.infer<typeof zForecastResponse>;
@@ -1782,10 +2093,12 @@ export const zForecastSalesStatus = z.enum(FORECAST_SALES_STATUSES);
 export type ForecastSalesStatus = z.infer<typeof zForecastSalesStatus>;
 
 // De dónde salió la meta del mes del informe:
-//   LIVE     = mes en curso, leída de `xart_fore` ahora mismo.
+//   LIVE     = leída de `forecast` ahora mismo (mes en curso/futuro o cerrado
+//              sin snapshot).
+//   CAPTURED = mes en curso sin lectura viva disponible; se usa la captura local.
 //   SNAPSHOT = mes cerrado con la meta guardada en `ForecastTarget`.
-//   NONE     = no hay meta (mes futuro o cerrado sin snapshot).
-export const FORECAST_SALES_SOURCES = ['LIVE', 'SNAPSHOT', 'NONE'] as const;
+//   NONE     = no hay meta para ese mes.
+export const FORECAST_SALES_SOURCES = ['LIVE', 'CAPTURED', 'SNAPSHOT', 'NONE'] as const;
 export const zForecastSalesSource = z.enum(FORECAST_SALES_SOURCES);
 export type ForecastSalesSource = z.infer<typeof zForecastSalesSource>;
 
@@ -1821,11 +2134,22 @@ export const zForecastSalesDays = z.object({
 });
 export type ForecastSalesDays = z.infer<typeof zForecastSalesDays>;
 
+// Desglose por artículo de un día con despachos (panel «Ventas del día»).
+// La descripción y la UOM se resuelven con `rows` para no duplicarlas.
+export const zForecastSalesDayProduct = z.object({
+  productCode: z.string(),
+  kg: z.number(),
+  units: z.number(),
+});
+export type ForecastSalesDayProduct = z.infer<typeof zForecastSalesDayProduct>;
+
 export const zForecastSalesDaily = z.object({
   date: z.string(),
   actualKg: z.number(),
   actualUnits: z.number(),
   invoiceCount: z.number().int(),
+  // Artículos despachados ese día, ordenados por kg descendente.
+  products: z.array(zForecastSalesDayProduct).default([]),
   // Null después del corte: la línea real no se dibuja a futuro.
   cumulativeKg: z.number().nullable(),
   // Proyección desde el corte hasta fin de mes (null antes del corte).
@@ -1840,7 +2164,7 @@ export const zForecastSalesHistory = z.object({
   month: z.number().int(),
   actualKg: z.number(),
   actualUnits: z.number(),
-  // La meta histórica requiere snapshot (Fase 2); sin él queda null.
+  // Meta histórica: snapshot congelado o, si no hay, la de `forecast`.
   forecastKg: z.number().nullable(),
 });
 export type ForecastSalesHistory = z.infer<typeof zForecastSalesHistory>;
@@ -1850,7 +2174,17 @@ export const zForecastSalesRow = z.object({
   description: z.string(),
   uom: z.string(),
   kgPerUom: z.number().nullable(),
+  // Meta que usa el informe: viva de `forecast` o capturada (mes cerrado).
   forecastKg: z.number(),
+  // Meta guardada en `ForecastTarget` (histórico). Puede diferir de `forecastKg`
+  // si Profit cambió la meta después de congelarla.
+  forecastCapturedKg: z.number().nullable().default(null),
+  // Meta leída de `forecast` cuando manda la lectura viva; null si el mes
+  // cerrado conserva su snapshot congelado.
+  forecastLiveKg: z.number().nullable().default(null),
+  // Primera captura de la meta y detección de un cambio posterior.
+  forecastCapturedAt: z.string().nullable().default(null),
+  forecastDriftAt: z.string().nullable().default(null),
   actualKg: z.number(),
   actualUnits: z.number(),
   // Solo para artículos SAC (kg / kg por saco). Null en granel.
@@ -1877,9 +2211,9 @@ export const zForecastSalesResponse = z.object({
   status: zForecastSalesStatus,
   // false = Profit no respondió: la UI avisa, no muestra ceros como ventas.
   salesAvailable: z.boolean(),
-  // false = no se pudo leer `xart_fore`.
+  // false = no se pudo leer `forecast`.
   forecastAvailable: z.boolean(),
-  // Origen de la meta: viva (mes en curso), snapshot local o sin meta.
+  // Origen de la meta: `forecast` en vivo, snapshot local o sin meta.
   forecastSource: zForecastSalesSource,
   days: zForecastSalesDays,
   totals: z.object({
@@ -1969,12 +2303,18 @@ export const AUDIT_ACTIONS: Record<string, AuditActionDefinition> = {
   SCENARIO_LOCK: { module: 'scenarios', label: 'Tomó el control del plan global', severity: 'INFO' },
   SCENARIO_UNLOCK: { module: 'scenarios', label: 'Liberó el control del plan global', severity: 'INFO' },
   SCENARIO_TAKEOVER: { module: 'scenarios', label: 'Arrebató el control del plan global', severity: 'WARN' },
+  SCENARIO_RELEASE: { module: 'scenarios', label: 'Liberó renglones de la simulación del equipo', severity: 'INFO' },
   ORDER_LIFECYCLE_CLOSE: { module: 'orders', label: 'Cerró un pedido por nota de entrega', severity: 'INFO' },
   ORDER_LIFECYCLE_CANCEL: { module: 'orders', label: 'Anuló un pedido desde Profit', severity: 'WARN' },
   ORDER_LIFECYCLE_REVIEW: { module: 'orders', label: 'Marcó un pedido para revisión', severity: 'WARN' },
   ORDER_REOPEN: { module: 'orders', label: 'Reabrió un pedido cerrado', severity: 'WARN' },
   ORDER_RECONCILE_RUN: { module: 'orders', label: 'Ejecutó la reconciliación de pedidos', severity: 'INFO' },
   FORECAST_SET_WEEKS: { module: 'forecast', label: 'Editó semanas del forecast', severity: 'INFO' },
+  FORECAST_TARGET_ACCEPTED: {
+    module: 'forecast',
+    label: 'Aceptó un cambio de meta de Profit',
+    severity: 'WARN',
+  },
   DELIVERY_DATE_SET: { module: 'orders', label: 'Asignó fecha tentativa a pedidos', severity: 'INFO' },
   DELIVERY_DATE_RESTORE: { module: 'orders', label: 'Restauró la fecha tentativa', severity: 'INFO' },
 };

@@ -9,10 +9,16 @@
 // ampliada; si faltan, se muestran "—" (nunca inventados).
 // ============================================================
 
-import type { Customer, OrderGroupedResponse } from '@nexo/contracts';
+import type {
+  Customer,
+  CustomerListResponse,
+  CustomerSalesPeriod,
+} from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, ChevronDown, ChevronLeft, ChevronRight, Receipt, Search, ShoppingCart, Users } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { AlertTriangle, BarChart3, ChevronDown, ChevronLeft, ChevronRight, Receipt, Search, ShoppingCart, Users } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
+import { CustomerInsightsModal } from '../../components/CustomerInsightsModal';
+import { CustomerOrdersPanel } from '../../components/CustomerOrdersPanel';
 import { CustomerStatementDialog } from '../../components/CustomerStatementDialog';
 import { AppNav, LoginScreen } from '../../components/shell';
 import {
@@ -23,23 +29,25 @@ import {
   EmptyState,
   Kpi,
   PageHeader,
-  Td,
+  Select,
   TextInput,
-  Th,
   fmtDate,
   fmtQty,
   useGreeting,
 } from '../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
 
-interface Paginated<T> {
-  items: T[];
-  page: number;
-  pageSize: number;
-  total: number;
-}
-
 const PAGE_SIZE = 50;
+
+// Periodos del filtro de ventas. «todos» = actividad de 12 meses
+// (pedido activo o venta); el resto son ventanas móviles por mes calendario.
+const SALES_PERIOD_OPTIONS: { value: CustomerSalesPeriod; label: string }[] = [
+  { value: 'todos', label: 'Todas con actividad (12 meses)' },
+  { value: 'mes', label: 'Ventas de este mes' },
+  { value: '3m', label: 'Ventas últimos 3 meses' },
+  { value: '6m', label: 'Ventas últimos 6 meses' },
+  { value: '12m', label: 'Ventas últimos 12 meses' },
+];
 
 // Columnas del catálogo paginado. La última despliega los pedidos en la fila
 // o abre el estado de cuenta del cliente.
@@ -47,6 +55,7 @@ function buildColumns(
   expanded: string | null,
   onToggle: (id: string) => void,
   onStatement: (customer: Customer) => void,
+  onInsights: (customer: Customer) => void,
 ): Column<Customer>[] {
   return [
     {
@@ -78,6 +87,14 @@ function buildColumns(
       render: (c) => <span className="text-on-surface-variant">{c.vendor ?? '—'}</span>,
     },
     {
+      key: 'ventas',
+      header: 'Ventas del periodo',
+      align: 'right',
+      kind: 'metric',
+      sortValue: (c) => c.sales?.totalKg ?? 0,
+      render: (c) => <SalesCell sales={c.sales} />,
+    },
+    {
       key: 'pedidos',
       header: 'Pedidos activos',
       align: 'right',
@@ -92,6 +109,15 @@ function buildColumns(
       kind: 'action',
       render: (c) => (
         <div className="flex flex-wrap items-center justify-end gap-space-2xs">
+          <button
+            type="button"
+            onClick={() => onInsights(c)}
+            title={`Ver ficha 360 de ${c.name}`}
+            className="inline-flex items-center gap-space-2xs rounded-pill border border-outline-variant/40 px-2.5 py-1 font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low"
+          >
+            <BarChart3 aria-hidden className="size-4" />
+            Ficha
+          </button>
           {c.ordersCount > 0 && (
             <button
               type="button"
@@ -122,22 +148,57 @@ function buildColumns(
   ];
 }
 
+// Ventas del periodo respetando la unidad: sacos para renglones SAC y kg
+// para el resto. Si un cliente tiene ambos, se muestran las dos etiquetas.
+function SalesCell({ sales }: { sales: Customer['sales'] }) {
+  if (!sales) {
+    return (
+      <span className="text-outline" title="Sin datos de ventas para el periodo">
+        —
+      </span>
+    );
+  }
+  const parts: string[] = [];
+  if (sales.sacks !== 0) parts.push(`${fmtQty(sales.sacks, 0)} sacos`);
+  if (sales.sacks === 0 && sales.kg !== 0) parts.push(`${fmtQty(sales.kg, 0)} kg`);
+  if (parts.length === 0) return <span className="text-outline">—</span>;
+  return (
+    <span className="flex flex-col items-end">
+      <span className="font-bold tabular-nums text-primary">{parts.join(' · ')}</span>
+      <span className="text-label-sm text-on-surface-variant">
+        {fmtQty(sales.totalKg / 1000, 1)} t · {sales.notes} nota{sales.notes === 1 ? '' : 's'} · última{' '}
+        {fmtDate(sales.lastSaleDate)}
+      </span>
+    </span>
+  );
+}
+
 export default function ClientesPage() {
   const [tick, setTick] = useState(0);
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
+  const [salesPeriod, setSalesPeriod] = useState<CustomerSalesPeriod>('todos');
+  const [onlyWithOrders, setOnlyWithOrders] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [statementCustomer, setStatementCustomer] = useState<Customer | null>(null);
+  const [insightsCustomer, setInsightsCustomer] = useState<Customer | null>(null);
   const greeting = useGreeting();
+
+  const openStatement = useCallback((customer: Customer) => {
+    setInsightsCustomer(null);
+    setStatementCustomer(customer);
+  }, []);
 
   const params = new URLSearchParams();
   if (q.trim()) params.set('q', q.trim());
   params.set('page', String(page));
   params.set('pageSize', String(PAGE_SIZE));
+  params.set('salesPeriod', salesPeriod);
+  if (onlyWithOrders) params.set('onlyWithOrders', 'true');
 
-  const { data, isLoading, error } = useQuery<Paginated<Customer>>({
-    queryKey: ['customers', tick, q, page],
-    queryFn: () => apiFetch<Paginated<Customer>>(`/customers?${params.toString()}`),
+  const { data, isLoading, error } = useQuery<CustomerListResponse>({
+    queryKey: ['customers', tick, q, page, salesPeriod, onlyWithOrders],
+    queryFn: () => apiFetch<CustomerListResponse>(`/customers?${params.toString()}`),
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
 
@@ -146,9 +207,10 @@ export default function ClientesPage() {
       buildColumns(
         expanded,
         (id) => setExpanded((previous) => (previous === id ? null : id)),
-        (customer) => setStatementCustomer(customer),
+        openStatement,
+        (customer) => setInsightsCustomer(customer),
       ),
-    [expanded],
+    [expanded, openStatement],
   );
 
   const withOrders = useMemo(() => (data?.items ?? []).filter((c) => c.ordersCount > 0).length, [data]);
@@ -159,6 +221,12 @@ export default function ClientesPage() {
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
 
+  // Cambiar de filtro siempre vuelve a la primera página y cierra el detalle.
+  const resetView = () => {
+    setPage(1);
+    setExpanded(null);
+  };
+
   return (
     <>
       <AppNav />
@@ -168,7 +236,7 @@ export default function ClientesPage() {
           icon={Users}
           greeting={greeting}
           title="Clientes"
-          subtitle="Catálogo de clientes con pedidos sincronizados desde Profit. «Ver pedidos» despliega sus renglones pendientes y «Cuenta» abre su estado de cuenta de la cartera."
+          subtitle="Cartera con actividad de los últimos 12 meses (pedido activo o venta). Filtra por ventas del mes, 3, 6 o 12 meses; «Ficha» abre el informe 360 del cliente, «Ver pedidos» despliega sus renglones pendientes y «Cuenta» muestra su estado de cuenta."
           actions={
             <div className="flex flex-wrap items-stretch gap-space-sm">
               <Kpi
@@ -178,11 +246,15 @@ export default function ClientesPage() {
                 hint={data ? `página ${data.page} de ${totalPages}` : undefined}
               />
               <Kpi
-                label="Con pedidos (pág.)"
-                value={String(withOrders)}
+                label="Con ventas (periodo)"
+                value={data ? String(data.summary.withSales) : '—'}
                 tone="success"
                 icon={ShoppingCart}
-                hint={data ? `${Math.round((withOrders / Math.max(1, data.items.length)) * 100)}% de la página` : undefined}
+                hint={
+                  data
+                    ? `${fmtQty(data.summary.totalSacks, 0)} sacos · ${fmtQty(data.summary.totalKg / 1000, 1)} t`
+                    : undefined
+                }
               />
             </div>
           }
@@ -191,28 +263,56 @@ export default function ClientesPage() {
         <Card className="p-space-md">
           <div className="grid grid-cols-1 gap-space-md lg:grid-cols-12 lg:items-center">
             <TextInput
-              className="lg:col-span-5"
+              className="lg:col-span-4"
               icon={Search}
               value={q}
               onChange={(v) => {
                 setQ(v);
-                setPage(1);
-                setExpanded(null);
+                resetView();
               }}
               placeholder="Buscar por código o nombre…"
               ariaLabel="Buscar cliente"
             />
-            <p className="text-body-md text-on-surface-variant lg:col-span-5">
-              {q.trim()
-                ? `Resultados para “${q.trim()}” en la cartera de Profit.`
-                : 'Escribe un código o un nombre para filtrar la cartera completa.'}
-            </p>
-            <div className="flex justify-start lg:col-span-2 lg:justify-end">
+            <Select
+              className="lg:col-span-4"
+              value={salesPeriod}
+              onChange={(value) => {
+                setSalesPeriod(value as CustomerSalesPeriod);
+                resetView();
+              }}
+              options={SALES_PERIOD_OPTIONS}
+              ariaLabel="Filtrar clientes por ventas"
+            />
+            <div className="flex flex-wrap items-center justify-start gap-space-sm lg:col-span-4 lg:justify-end">
+              <button
+                type="button"
+                aria-pressed={onlyWithOrders}
+                onClick={() => {
+                  setOnlyWithOrders((value) => !value);
+                  resetView();
+                }}
+                className={`inline-flex h-10 items-center gap-space-2xs rounded-pill border px-space-md font-semibold text-label-md transition-colors ${
+                  onlyWithOrders
+                    ? 'border-primary-container bg-primary-container text-on-primary'
+                    : 'border-outline-variant/40 text-primary-container hover:bg-surface-container-low'
+                }`}
+              >
+                Solo con pedidos activos
+              </button>
               <Badge tone="muted" dot>
                 {data ? `${data.items.length} en pantalla` : 'Cargando'}
               </Badge>
             </div>
           </div>
+          <p className="mt-space-sm text-body-md text-on-surface-variant">
+            {q.trim()
+              ? `Resultados para “${q.trim()}” en la cartera de Profit.`
+              : salesPeriod === 'todos'
+                ? 'Cartera con pedido activo o venta en los últimos 12 meses.'
+                : `Clientes con ventas en ${
+                    salesPeriod === 'mes' ? 'el mes en curso' : salesPeriod === '3m' ? 'los últimos 3 meses' : salesPeriod === '6m' ? 'los últimos 6 meses' : 'los últimos 12 meses'
+                  }.`}
+          </p>
         </Card>
 
         {isLoading && <p className="text-body-md text-on-surface-variant">Consultando clientes…</p>}
@@ -222,13 +322,21 @@ export default function ClientesPage() {
           </p>
         )}
 
+        {data && !data.salesAvailable && (
+          <p role="status" className="flex items-center gap-space-sm text-body-md text-warning">
+            <AlertTriangle aria-hidden className="size-4" />
+            No se pudieron leer las ventas en Profit; se muestra solo la cartera de pedidos.
+          </p>
+        )}
+
         {data && (
           <Card className="overflow-hidden">
             <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-outline-variant/30 px-space-md py-space-sm">
               <div className="flex flex-col">
                 <span className="text-title-md font-semibold text-primary">Cartera sincronizada</span>
                 <span className="text-label-sm text-on-surface-variant">
-                  {data.total} cliente{data.total === 1 ? '' : 's'} · datos de solo lectura desde Profit
+                  {data.total} cliente{data.total === 1 ? '' : 's'} ·{' '}
+                  {salesPeriod === 'todos' ? 'actividad de 12 meses' : 'ventas del periodo'} · solo lectura desde Profit
                 </span>
               </div>
               <Badge tone="primary" dot>
@@ -240,12 +348,22 @@ export default function ClientesPage() {
               rows={data.items}
               rowKey={(c) => c.id}
               expandedKey={expanded}
-              renderExpanded={(customer) => <ClientePedidos customer={customer} />}
+              renderExpanded={(customer) => <CustomerOrdersPanel customer={customer} />}
               empty={
                 <EmptyState
                   icon={Users}
-                  title={q ? `Sin clientes para “${q}”` : 'No hay clientes sincronizados'}
-                  description="Prueba con otro código o nombre, o vuelve a la primera página."
+                  title={
+                    q
+                      ? `Sin clientes para “${q}”`
+                      : salesPeriod === 'todos'
+                        ? 'No hay clientes con actividad'
+                        : 'Sin clientes con ventas en el periodo'
+                  }
+                  description={
+                    q
+                      ? 'Prueba con otro código o nombre, o vuelve a la primera página.'
+                      : 'Prueba con otro periodo o quita «Solo con pedidos activos».'
+                  }
                 />
               }
             />
@@ -290,103 +408,13 @@ export default function ClientesPage() {
           onClose={() => setStatementCustomer(null)}
         />
       )}
+
+      <CustomerInsightsModal
+        open={insightsCustomer !== null}
+        customer={insightsCustomer}
+        onClose={() => setInsightsCustomer(null)}
+        onOpenStatement={openStatement}
+      />
     </>
-  );
-}
-
-// Renglones pendientes del cliente, desplegados dentro de su fila.
-function ClientePedidos({ customer }: { customer: Customer }) {
-  const { data, isLoading, error } = useQuery<OrderGroupedResponse>({
-    queryKey: ['customer-orders', customer.externalCode],
-    queryFn: () =>
-      apiFetch<OrderGroupedResponse>(
-        `/orders/grouped?by=cliente&customerCode=${encodeURIComponent(customer.externalCode)}`,
-      ),
-    retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
-  });
-
-  if (isLoading) {
-    return <p className="text-label-md text-on-surface-variant">Consultando pedidos…</p>;
-  }
-  if (error) {
-    return (
-      <p role="alert" className="text-label-md text-error">
-        {error instanceof Error ? error.message : 'No se pudieron consultar los pedidos'}
-      </p>
-    );
-  }
-
-  const lines = (data?.groups ?? []).flatMap((group) => group.lines);
-  if (lines.length === 0) {
-    return <p className="text-label-md text-on-surface-variant">Este cliente no tiene renglones pendientes ahora mismo.</p>;
-  }
-
-  const pendingQty = lines.reduce((sum, line) => sum + line.pendingQty, 0);
-  const pendingKg = lines.reduce((sum, line) => sum + (line.pendingKg ?? 0), 0);
-
-  return (
-    <div className="flex flex-col gap-space-sm animate-fade">
-      <div className="flex flex-wrap items-center gap-space-sm">
-        <Badge tone="primary" dot>
-          {lines.length} renglón{lines.length === 1 ? '' : 'es'}
-        </Badge>
-        <Badge tone="success" dot>
-          {fmtQty(pendingQty, 0)} unid. pendientes
-        </Badge>
-        <Badge tone="muted" dot>
-          {fmtQty(pendingKg, 0)} kg
-        </Badge>
-        <span className="ml-auto text-label-sm text-on-surface-variant">Despacho sugerido por entrega más próxima</span>
-      </div>
-      <div className="overflow-x-auto rounded-xl border border-outline-variant/35 bg-surface-container-lowest shadow-soft">
-        <table className="w-full border-collapse text-label-md">
-          <thead>
-            <tr className="border-b border-outline-variant/30 bg-surface-container-low/80">
-              <Th>Pedido</Th>
-              <Th>Entrega</Th>
-              <Th>Artículo</Th>
-              <Th align="right">Pendiente</Th>
-              <Th align="right">Kg</Th>
-              <Th>Alm.</Th>
-              <Th align="center">Aut.</Th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-outline-variant/20">
-            {lines.map((line) => (
-              <tr key={`${line.orderId}#${line.productCode}`} className="transition-colors hover:bg-surface-container-low/70">
-                <Td className="font-bold tabular-nums text-primary">{line.orderNumber}</Td>
-                <Td
-                  className={`tabular-nums ${line.tentativeDate ? 'font-semibold text-secondary' : 'text-on-surface-variant'}`}
-                  title={line.tentativeDate ? `Original: ${fmtDate(line.requestedDate)}` : undefined}
-                >
-                  {fmtDate(line.tentativeDate ?? line.requestedDate)}
-                </Td>
-                <Td>
-                  <span className="block max-w-[26rem] truncate" title={line.description ?? ''}>
-                    <span className="font-bold text-primary">{line.productCode}</span>
-                    <span className="text-on-surface-variant"> · {line.description ?? '—'}</span>
-                  </span>
-                </Td>
-                <Td align="right" className={`tabular-nums font-bold ${line.pendingQty < 0 ? 'text-error' : 'text-on-surface'}`}>
-                  {fmtQty(line.pendingQty, 0)}
-                </Td>
-                <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(line.pendingKg, 0)}</Td>
-                <Td className="text-on-surface-variant">{line.warehouseCode ?? '—'}</Td>
-                <Td align="center">
-                  {line.authorized === null ? (
-                    <span className="text-outline">—</span>
-                  ) : (
-                    <Badge tone={line.authorized ? 'success' : 'muted'} dot>{line.authorized ? 'SÍ' : 'NO'}</Badge>
-                  )}
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-label-sm text-on-surface-variant">
-        {lines.length} renglón(es) · {fmtQty(pendingQty, 0)} unid. pendientes · {fmtQty(pendingKg, 0)} kg
-      </p>
-    </div>
   );
 }

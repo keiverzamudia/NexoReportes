@@ -38,6 +38,25 @@ export interface DispatchInput {
   stockTotal: number;
 }
 
+/**
+ * Asignación ya calculada por el servidor para un renglón del plan del equipo.
+ * Cuando existe, el cliente NO vuelve a repartir ese renglón: usa el valor
+ * compartido para que las tres pantallas vean el mismo compromiso.
+ */
+export interface CommittedEntry {
+  assignedQty: number;
+  assignedKg: number;
+  missingQty: number;
+  missingKg: number;
+  freeAfter: number;
+}
+
+export interface DispatchSeed {
+  committed?: Map<string, CommittedEntry>;
+  /** Stock libre por producto tras descontar TODO lo seleccionado por el equipo. */
+  freeByProduct?: Map<string, number>;
+}
+
 export interface QueueEntry {
   key: string;
   selected: boolean;
@@ -106,23 +125,39 @@ export function buildDispatchQueue(
   inputs: DispatchInput[],
   selectedKeys: string[],
   mode: DispatchMode,
+  seed?: DispatchSeed,
 ): QueueEntry[] {
   const selectedSet = new Set(selectedKeys);
   const selected = inputs.filter((l) => selectedSet.has(l.key));
   const unselected = inputs.filter((l) => !selectedSet.has(l.key));
 
-  // Existencia inicial por producto.
+  // Existencia inicial por producto. Si el servidor ya repartió el plan del
+  // equipo, arrancamos del stock LIBRE (ya descontado lo de todos).
   const remaining = new Map<string, number>();
   for (const line of inputs) {
-    if (!remaining.has(line.productCode)) remaining.set(line.productCode, line.stockTotal);
+    if (!remaining.has(line.productCode)) {
+      remaining.set(line.productCode, seed?.freeByProduct?.get(line.productCode) ?? line.stockTotal);
+    }
   }
 
   // DESCUENTO INMEDIATO: los marcados consumen en el ORDEN EN QUE SE MARCARON,
-  // así lo ya reservado no se lo quita un marcado posterior. El resto compite
-  // por lo que quede, en orden de prioridad (entrega + existencia).
+  // así lo ya reservado no se lo quita un marcado posterior. Los valores que
+  // ya calculó el servidor mandan; los recién marcados (aún sin respuesta) se
+  // reparten localmente con el stock libre.
   const markIndex = new Map(selectedKeys.map((k, i) => [k, i]));
   const selectedInMarkOrder = [...selected].sort((a, b) => (markIndex.get(a.key) ?? 0) - (markIndex.get(b.key) ?? 0));
-  const selectedAlloc = allocateOrdered(selectedInMarkOrder, remaining, mode);
+  const selectedAlloc = new Map<string, { assigned: number; missing: number; after: number }>();
+  for (const line of selectedInMarkOrder) {
+    const fixed = seed?.committed?.get(line.key);
+    if (fixed) {
+      selectedAlloc.set(line.key, { assigned: fixed.assignedQty, missing: fixed.missingQty, after: fixed.freeAfter });
+      continue;
+    }
+    const left = remaining.get(line.productCode) ?? 0;
+    const assigned = mode === 'disponible' ? Math.max(0, Math.min(left, line.pendingQty)) : line.pendingQty;
+    remaining.set(line.productCode, left - assigned);
+    selectedAlloc.set(line.key, { assigned, missing: line.pendingQty - assigned, after: left - assigned });
+  }
   const unselectedAlloc = allocateOrdered(sortLines(unselected), remaining, mode);
 
   // Turno para el Plan de despacho: entrega más próxima; a igual fecha, orden de marcado.
@@ -155,9 +190,10 @@ export function buildDispatchQueue(
   return orderedSlots.map((l, index) => {
     const isSel = selectedSet.has(l.key);
     const alloc = isSel ? selectedAlloc.get(l.key) : unselectedAlloc.get(l.key);
-    const assigned = alloc?.assigned ?? 0;
-    const missing = alloc?.missing ?? l.pendingQty;
-    const after = alloc?.after ?? (remaining.get(l.productCode) ?? 0);
+    const fixed = isSel ? seed?.committed?.get(l.key) : undefined;
+    const assigned = fixed ? fixed.assignedQty : (alloc?.assigned ?? 0);
+    const missing = fixed ? fixed.missingQty : (alloc?.missing ?? l.pendingQty);
+    const after = fixed ? fixed.freeAfter : (alloc?.after ?? (remaining.get(l.productCode) ?? 0));
     const kpu = kgPerUnit(l);
     return {
       key: l.key,
@@ -166,8 +202,8 @@ export function buildDispatchQueue(
       pendingKg: l.pendingKg,
       assignedQty: round3(assigned),
       missingQty: round3(missing),
-      assignedKg: kpu === null ? 0 : round3(assigned * kpu),
-      missingKg: kpu === null ? 0 : round3(missing * kpu),
+      assignedKg: fixed ? round3(fixed.assignedKg) : kpu === null ? 0 : round3(assigned * kpu),
+      missingKg: fixed ? round3(fixed.missingKg) : kpu === null ? 0 : round3(missing * kpu),
       dispatchable: assigned > 0,
       productRemaining: round3(after),
       priority: isSel ? (selectedPriority.get(l.key) ?? 0) : (unselectedPriority.get(l.key) ?? 0),

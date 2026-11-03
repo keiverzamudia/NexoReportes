@@ -5,9 +5,11 @@ import {
   computeTotals,
   groupByCustomer,
   humanAge,
+  lineEffectiveQty,
   lineLoadedKg,
   lineStatusMeta,
   relativeTime,
+  resolveTypedQuantity,
   sheetExport,
   sheetStatusMeta,
   sortSheets,
@@ -89,11 +91,11 @@ describe('estados y lenguaje de planta', () => {
     expect(sheetStatusMeta('CON_NOVEDAD').tone).toBe('danger');
   });
 
-  it('usa «Cargado» para la marca actual y conserva los estados históricos', () => {
+  it('nombra las marcas actuales de carga', () => {
     expect(lineStatusMeta('PENDIENTE')).toMatchObject({ label: 'Pendiente', tone: 'muted' });
     expect(lineStatusMeta('CARGADO')).toMatchObject({ label: 'Cargado', tone: 'success' });
-    expect(lineStatusMeta('FALTANTE').label).toBe('No cargado (histórico)');
-    expect(lineStatusMeta('PARCIAL').label).toBe('Parcial (histórico)');
+    expect(lineStatusMeta('FALTANTE')).toMatchObject({ label: 'No cargado', tone: 'danger' });
+    expect(lineStatusMeta('PARCIAL')).toMatchObject({ label: 'Parcial', tone: 'warning' });
   });
 
   it('formatea el tiempo relativo en lenguaje humano', () => {
@@ -123,6 +125,31 @@ describe('carga y avance', () => {
     expect(lineLoadedKg(line({ loadedQty: null }))).toBe(0);
   });
 
+  it('interpreta la cantidad digitada como completa, parcial o no cargada', () => {
+    // Igual al plan → cargado.
+    expect(resolveTypedQuantity(900, '900')).toEqual({ kind: 'FULL' });
+    // Baja del plan → parcial con esa cantidad.
+    expect(resolveTypedQuantity(900, '850')).toEqual({ kind: 'PARTIAL', loadedQty: 850 });
+    expect(resolveTypedQuantity(900, '17,5')).toEqual({ kind: 'PARTIAL', loadedQty: 17.5 });
+    // Cero → no cargado.
+    expect(resolveTypedQuantity(900, '0')).toEqual({ kind: 'MISSING' });
+    // Vacío o inválido no toca la marca.
+    expect(resolveTypedQuantity(900, '')).toEqual({ kind: 'UNCHANGED' });
+    expect(resolveTypedQuantity(900, '   ')).toEqual({ kind: 'UNCHANGED' });
+    expect(resolveTypedQuantity(900, 'abc')).toEqual({ kind: 'UNCHANGED' });
+    // No se permite cargar más que el plan.
+    expect(resolveTypedQuantity(900, '1200')).toEqual({ kind: 'FULL' });
+    // Decimales de KG se conservan con dos cifras.
+    expect(resolveTypedQuantity(100, '66.666')).toEqual({ kind: 'PARTIAL', loadedQty: 66.67 });
+  });
+
+  it('muestra en el input la cantidad efectiva del renglón', () => {
+    expect(lineEffectiveQty(line({ status: 'PENDIENTE' }))).toBe(60);
+    expect(lineEffectiveQty(line({ status: 'CARGADO', loadedQty: 60 }))).toBe(60);
+    expect(lineEffectiveQty(line({ status: 'PARCIAL', loadedQty: 24 }))).toBe(24);
+    expect(lineEffectiveQty(line({ status: 'FALTANTE', loadedQty: 0 }))).toBe(0);
+  });
+
   it('acumula planificado, cargado y diferencia con los renglones completados', () => {
     const totals = computeTotals([
       line({ id: 'a', status: 'CARGADO', loadedQty: 60, loadedKg: 2400 }),
@@ -136,19 +163,38 @@ describe('carga y avance', () => {
         loadedKg: 400,
       }),
       line({ id: 'c', productCode: 'ABAGRA', plannedQty: 100, plannedKg: 100, uom: 'KG', status: 'PENDIENTE' }),
-      // Marca histórica: no avanza el trabajo, pero pesa en la diferencia.
+      // No cargado: resuelve el renglón y pesa en la diferencia.
       line({ id: 'd', productCode: 'ABAFAL', plannedQty: 20, plannedKg: 400, status: 'FALTANTE', loadedQty: 0, loadedKg: 0 }),
     ]);
 
     expect(totals.lines).toBe(4);
-    expect(totals.done).toBe(2);
-    expect(totals.progress).toBeCloseTo(2 / 4, 5);
+    expect(totals.done).toBe(3);
+    expect(totals.progress).toBeCloseTo(3 / 4, 5);
+    expect(totals.loaded).toBe(2);
+    expect(totals.partial).toBe(0);
+    expect(totals.missing).toBe(1);
     expect(totals.plannedSacks).toBe(90);
     expect(totals.plannedKg).toBe(3300);
     expect(totals.loadedSacks).toBe(70);
     expect(totals.loadedKg).toBe(2800);
     // Solo los renglones marcados entran en la diferencia (2400 + 400 + 400 = 3200).
     expect(totals.differenceKg).toBe(-400);
+  });
+
+  it('cuenta el parcial como resuelto y calcula su diferencia real', () => {
+    const totals = computeTotals([
+      line({ id: 'a', status: 'PARCIAL', loadedQty: 24, loadedKg: 960 }),
+      line({ id: 'b', productCode: 'ABABOV85', plannedQty: 10, plannedKg: 400, status: 'CARGADO', loadedQty: 10, loadedKg: 400 }),
+    ]);
+
+    expect(totals.done).toBe(2);
+    expect(totals.loaded).toBe(1);
+    expect(totals.partial).toBe(1);
+    expect(totals.missing).toBe(0);
+    expect(totals.loadedSacks).toBe(34);
+    expect(totals.loadedKg).toBe(1360);
+    // 1360 reales contra 2800 planificados.
+    expect(totals.differenceKg).toBe(-1440);
   });
 
   it('agrupa por cliente con pendientes y completados', () => {
@@ -163,17 +209,42 @@ describe('carga y avance', () => {
     expect(groups[1]!.completedLines).toBe(1);
   });
 
-  it('arma el reporte completo de la hoja', () => {
+  it('arma el reporte completo de la hoja con cargados, parciales, no cargados y pendientes', () => {
     const report = buildDispatchReport([
       line({ id: 'a', status: 'CARGADO', loadedQty: 60, loadedKg: 2400 }),
-      line({ id: 'b', productCode: 'ABABOV85', plannedQty: 10, plannedKg: 400 }),
+      line({
+        id: 'b',
+        productCode: 'ABABOV85',
+        plannedQty: 10,
+        plannedKg: 400,
+        status: 'PARCIAL',
+        loadedQty: 4,
+        loadedKg: 160,
+        note: 'Solo había 4',
+      }),
+      line({
+        id: 'c',
+        productCode: 'ABAFAL',
+        plannedQty: 20,
+        plannedKg: 400,
+        status: 'FALTANTE',
+        loadedQty: 0,
+        loadedKg: 0,
+        note: 'No llegó',
+      }),
+      line({ id: 'd', productCode: 'ABAGRA', plannedQty: 5, plannedKg: 100, uom: 'KG' }),
     ]);
 
     expect(report.completed).toMatchObject({ lines: 1, sacks: 60, kg: 2400 });
-    expect(report.pending).toMatchObject({ lines: 1, sacks: 10, kg: 400 });
-    expect(report.totals.done).toBe(1);
+    expect(report.partial).toMatchObject({ lines: 1, sacks: 10, kg: 400 });
+    expect(report.missing).toMatchObject({ lines: 1, sacks: 20, kg: 400 });
+    expect(report.pending).toMatchObject({ lines: 1, sacks: 0, kg: 100 });
+    expect(report.totals.done).toBe(3);
     expect(report.groups).toHaveLength(1);
-    expect(report.groups[0]!.lines).toHaveLength(2);
+    expect(report.groups[0]!.lines).toHaveLength(4);
+    expect(report.groups[0]!.partialLines).toBe(1);
+    expect(report.groups[0]!.missingLines).toBe(1);
+    expect(report.groups[0]!.pendingLines).toBe(1);
   });
 });
 

@@ -5,8 +5,9 @@
 //
 // · Arriba: proyección de cierre (run-rate sobre días hábiles) con anillo de
 //   cumplimiento y KPIs.
-// · En medio: acumulado real vs proyección vs ritmo del forecast (ECharts) y
-//   desviación por producto (barras animadas, clic para enfocar).
+// · En medio: acumulado real vs proyección vs ritmo del forecast (ECharts),
+//   la tira de ventas por día con scroll horizontal y desviación por producto
+//   (barras animadas, clic para enfocar).
 // · Abajo: tabla ordenable con semáforo, sacos para artículos SAC y CSV.
 //
 // Las cifras las calcula el API (`/forecast/sales`); aquí solo se da formato.
@@ -18,54 +19,62 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   BookOpen,
-  CalendarClock,
   CalendarDays,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Download,
-  Gauge,
   Info,
+  ListFilter,
   PackageSearch,
   RotateCw,
-  Sparkles,
-  Target,
-  TrendingUp,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { EChart } from '../EChart';
 import { ModuleHelp } from '../help/ColumnHelp';
 import { ProductPicker } from '../ProductPicker';
 import { SALES_COLUMN_HELP, SALES_HELP_RULES, SALES_HELP_TERMS, SALES_HELP_TITLE } from '../../content/help/forecast';
+import { apiFetch } from '../../lib/api';
 import {
   Badge,
   Card,
   Column,
   DataTable,
   EmptyState,
-  Kpi,
   Skeleton,
   TextInput,
   cx,
   fmtDate,
 } from '../ui';
 import {
+  META_MARKER_PCT,
   buildCumulativeSeries,
+  buildDayBars,
   buildNarrative,
   buildSalesCsv,
+  dailySalesScale,
   dayLabel,
   filterSalesRows,
   fmtKg,
   fmtPct,
   fmtTonnes,
   monthLabel,
+  productsForDay,
   salesCsvFileName,
+  salesDaysWithSales,
+  salesDeviationGeometry,
   salesTone,
-  topSalesRows,
+  type DailySalesScale,
+  type SalesDayBar,
   type SalesTone,
 } from '../../lib/sales-report';
 import { useHelpRow } from '../../lib/use-help-row';
 
 const C = {
   navy: '#003366',
+  navyLight: '#1d5a96',
   lime: '#95C800',
   grid: '#eef6ff',
   outline: '#737780',
@@ -108,12 +117,8 @@ const TONE_BADGE: Record<SalesTone, 'success' | 'warning' | 'danger' | 'muted'> 
   none: 'muted',
 };
 
-const TONE_KPI: Record<SalesTone, 'success' | 'warning' | 'danger' | 'muted'> = {
-  good: 'success',
-  warn: 'warning',
-  bad: 'danger',
-  none: 'muted',
-};
+/** Artículos visibles antes de pedir «ver todos» en la lista de desviación. */
+const DEVIATION_PREVIEW = 20;
 
 function compact(value: number): string {
   const abs = Math.abs(value);
@@ -232,29 +237,132 @@ export function SalesReport({
   isLoading,
   error,
   unit,
+  canEdit = false,
   onRetry,
 }: {
   report?: ForecastSalesResponse;
   isLoading: boolean;
   error?: Error | null;
   unit: 'ALL' | 'SAC' | 'KG';
+  /** Permite aceptar un cambio de meta detectado en Profit. */
+  canEdit?: boolean;
   onRetry: () => void;
 }) {
   const [search, setSearch] = useState('');
   const [onlyWithSales, setOnlyWithSales] = useState(false);
   const [onlyWithForecast, setOnlyWithForecast] = useState(false);
+  const [onlyWithData, setOnlyWithData] = useState(false);
   const [focusCode, setFocusCode] = useState<string | null>(null);
+  const [pinnedDay, setPinnedDay] = useState<string | null>(null);
+  const [hoverDay, setHoverDay] = useState<string | null>(null);
   const [helpRow, setHelpRow] = useHelpRow();
+  // Listas largas: el informe no debe pintar cientos de filas de golpe.
+  const [deviationExpanded, setDeviationExpanded] = useState(false);
+  const detailRef = useRef<HTMLElement | null>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
+
+  // El input responde al instante; la lista se filtra cuando hay hueco.
+  const deferredSearch = useDeferredValue(search);
 
   const filtered = useMemo(
     () =>
       report
-        ? filterSalesRows(report.rows, { unit, search, onlyWithSales, onlyWithForecast })
+        ? filterSalesRows(report.rows, {
+            unit,
+            search: deferredSearch,
+            onlyWithSales,
+            onlyWithForecast,
+            onlyWithData,
+          })
         : [],
-    [report, unit, search, onlyWithSales, onlyWithForecast],
+    [report, unit, deferredSearch, onlyWithSales, onlyWithForecast, onlyWithData],
   );
 
-  const chartOption = useMemo(() => (report ? cumulativeOption(report) : {}), [report]);
+  const deviationPreview = useMemo(
+    () => (deviationExpanded ? filtered : filtered.slice(0, DEVIATION_PREVIEW)),
+    [filtered, deviationExpanded],
+  );
+
+  const openProduct = useCallback((code: string) => {
+    previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setFocusCode((current) => (current === code ? null : code));
+  }, []);
+  const closeProduct = useCallback(() => setFocusCode(null), []);
+
+  const chartOption = useMemo(() => (report ? cumulativeOption(report, pinnedDay) : {}), [report, pinnedDay]);
+  const daysWithSales = useMemo(() => (report ? salesDaysWithSales(report) : []), [report]);
+  // Una ranura por día del mes: la tira muestra también los días futuros.
+  const dayBars = useMemo(() => (report ? buildDayBars(report) : []), [report]);
+  const dayScale = useMemo<DailySalesScale>(
+    () => (report ? dailySalesScale(report, dayBars) : { maxKg: 1, goalKg: null }),
+    [report, dayBars],
+  );
+  const activeDay = hoverDay ?? pinnedDay;
+  const activeBar = useMemo(
+    () => (activeDay ? dayBars.find((bar) => bar.date === activeDay) ?? null : null),
+    [activeDay, dayBars],
+  );
+  const pinnedBar = useMemo(
+    () => (pinnedDay ? dayBars.find((bar) => bar.date === pinnedDay) ?? null : null),
+    [pinnedDay, dayBars],
+  );
+  // El desglose se ancla al clic, no al hover: la tabla debe quedarse quieta
+  // mientras el puntero viaja de la barra a la tabla.
+  const pinnedDayProducts = useMemo(
+    () => (report && pinnedDay ? productsForDay(report, pinnedDay) : []),
+    [report, pinnedDay],
+  );
+  // Arranque del scroll: hoy si está en el mes, si no el último día con venta.
+  const initialBarDate = useMemo(() => {
+    if (!report) return null;
+    if (dayBars.some((bar) => bar.date === report.days.today)) return report.days.today;
+    const lastSale = [...dayBars].reverse().find((bar) => bar.kg > 0);
+    return lastSale?.date ?? dayBars[0]?.date ?? null;
+  }, [dayBars, report]);
+  const togglePinnedDay = useCallback((date: string) => {
+    setPinnedDay((current) => (current === date ? null : date));
+  }, []);
+
+  // La gráfica informa el índice del eje X; el panel lo traduce a fecha.
+  const handleIndexHover = useCallback(
+    (index: number | null) => {
+      setHoverDay(index === null ? null : report?.daily[index]?.date ?? null);
+    },
+    [report],
+  );
+  const handleIndexClick = useCallback(
+    (index: number) => {
+      const date = report?.daily[index]?.date;
+      if (!date) return;
+      setPinnedDay((current) => (current === date ? null : date));
+    },
+    [report],
+  );
+
+  // Al cambiar de mes se limpia la selección (las fechas ya no aplican).
+  useEffect(() => {
+    setPinnedDay(null);
+    setHoverDay(null);
+  }, [report?.year, report?.month]);
+
+  // El detalle del producto es un diálogo: Esc cierra, el fondo no scrollea
+  // y el foco entra al panel para que el clic tenga respuesta inmediata.
+  useEffect(() => {
+    if (!focusCode) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFocusCode(null);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const frame = requestAnimationFrame(() => detailRef.current?.focus());
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      cancelAnimationFrame(frame);
+      previousFocus.current?.focus();
+    };
+  }, [focusCode]);
   const focusRow = useMemo(
     () => (report && focusCode ? report.rows.find((row) => row.productCode === focusCode) ?? null : null),
     [report, focusCode],
@@ -276,6 +384,25 @@ export function SalesReport({
     report && report.totals.projectedKg !== null ? report.totals.projectedKg / 1000 : null,
   );
   const narrative = useMemo(() => (report ? buildNarrative(report) : ''), [report]);
+
+  const hasDeviationFilters =
+    Boolean(search.trim()) || onlyWithSales || onlyWithForecast || onlyWithData;
+  const clearDeviationFilters = useCallback(() => {
+    setSearch('');
+    setOnlyWithSales(false);
+    setOnlyWithForecast(false);
+    setOnlyWithData(false);
+  }, []);
+
+  // Aceptar un cambio de Profit sobre la meta capturada (solo mes en curso).
+  const acceptDrift = useMutation<void, Error, string>({
+    mutationFn: (code) =>
+      apiFetch(
+        `/forecast/targets/${encodeURIComponent(code)}/accept?year=${report?.year}&month=${report?.month}`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => onRetry(),
+  });
 
   if (isLoading && !report) return <SalesSkeleton />;
 
@@ -330,7 +457,6 @@ export function SalesReport({
   const attainment = totals.attainmentPct;
   const projectedAttainment = totals.projectedAttainmentPct;
   const tone = salesTone(projectedAttainment ?? attainment);
-  const toneNow = salesTone(attainment);
   // La brecha se mide sobre la venta real acumulada, no sobre la proyección de cierre.
   const gapKg = totals.forecastKg > 0 ? totals.actualKg - totals.forecastKg : null;
   const basisLabel = report.basis === 'WORKING' ? 'día hábil (lun–sáb)' : 'día calendario';
@@ -347,6 +473,7 @@ export function SalesReport({
     URL.revokeObjectURL(url);
   };
 
+  // Las columnas se definen por render, pero solo dependen de helpers del módulo.
   const columns: Column<ForecastSalesRow>[] = [
     {
       key: 'codigo',
@@ -391,12 +518,23 @@ export function SalesReport({
       align: 'right',
       kind: 'metric',
       sortValue: (row) => row.forecastKg,
-      render: (row) =>
-        row.forecastKg > 0 ? (
-          <span className="font-semibold tabular-nums text-on-surface">{fmtKg(row.forecastKg)}</span>
-        ) : (
-          <span className="text-outline">—</span>
-        ),
+      render: (row) => (
+        <span
+          className="inline-flex items-center justify-end gap-1"
+          title={
+            row.forecastDriftAt
+              ? `Profit cambió la meta después de la captura${row.forecastCapturedKg !== null ? ` (capturada: ${fmtKg(row.forecastCapturedKg)} kg)` : ''}`
+              : undefined
+          }
+        >
+          {row.forecastKg > 0 ? (
+            <span className="font-semibold tabular-nums text-on-surface">{fmtKg(row.forecastKg)}</span>
+          ) : (
+            <span className="text-outline">—</span>
+          )}
+          {row.forecastDriftAt && <AlertTriangle aria-label="Meta cambiada en Profit" className="size-3 shrink-0 text-warning" />}
+        </span>
+      ),
     },
     {
       key: 'ventaKg',
@@ -557,8 +695,10 @@ export function SalesReport({
       {!report.forecastAvailable && (
         <p role="status" className="flex items-start gap-space-sm rounded-xl bg-warning-container/60 px-space-md py-space-sm text-body-md text-on-warning-container">
           <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-          No se pudo leer el forecast de Profit (<code>xart_fore</code>): la venta real se muestra, pero los
-          porcentajes de cumplimiento quedan sin meta.
+          No se pudo leer el forecast de Profit (<code>forecast</code>):{' '}
+          {report.forecastSource === 'CAPTURED'
+            ? 'se usa la meta capturada localmente y la venta real se muestra igual.'
+            : 'la venta real se muestra, pero los porcentajes de cumplimiento quedan sin meta.'}
         </p>
       )}
 
@@ -573,15 +713,15 @@ export function SalesReport({
       {report.status !== 'OPEN' && report.forecastSource === 'NONE' && (
         <p role="status" className="flex items-start gap-space-sm rounded-xl bg-surface-container-low px-space-md py-space-sm text-body-md text-on-surface-variant">
           <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
-          No hay meta guardada para {monthLabel(report.year, report.month)}. Se muestra la venta real y la comparación
-          contra el promedio histórico; el snapshot de la meta se captura mientras el mes está en curso.
+          No hay meta en Profit ni snapshot guardado para {monthLabel(report.year, report.month)}. Se muestra la venta real y
+          la comparación contra el promedio histórico; el snapshot de la meta se captura mientras el mes está en curso.
         </p>
       )}
 
       {report.status === 'OPEN' && report.forecastSource === 'NONE' && report.forecastAvailable && (
         <p role="status" className="flex items-start gap-space-sm rounded-xl bg-surface-container-low px-space-md py-space-sm text-body-md text-on-surface-variant">
           <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
-          xart_fore no tiene metas para este mes: la venta real se muestra sin porcentajes de cumplimiento.
+          forecast no tiene metas para este mes: la venta real se muestra sin porcentajes de cumplimiento.
         </p>
       )}
 
@@ -608,6 +748,9 @@ export function SalesReport({
                 {report.forecastSource === 'SNAPSHOT' && (
                   <span className="font-semibold normal-case tracking-normal text-white/60">· meta histórica</span>
                 )}
+                {report.forecastSource === 'CAPTURED' && (
+                  <span className="font-semibold normal-case tracking-normal text-white/60">· meta capturada</span>
+                )}
               </span>
               <span className="text-label-md text-white/65">
                 Corte {report.asOf ? dayLabel(report.asOf) : 'sin ventas'} · {report.days.workingElapsed}/{report.days.workingInMonth} días hábiles
@@ -615,6 +758,10 @@ export function SalesReport({
               <span className="text-label-md text-white/45">·</span>
               <span className="text-label-md text-white/65">
                 Histórico: {report.history.length} meses cerrados
+              </span>
+              <span className="text-label-md text-white/45">·</span>
+              <span className="text-label-md text-white/65">
+                Promedio {fmtKg(totals.dailyAvgKg)} kg/día
               </span>
             </div>
 
@@ -636,7 +783,15 @@ export function SalesReport({
 
             <div className="grid grid-cols-2 gap-space-sm sm:grid-cols-4">
               <HeroStat label="Venta acumulada" value={`${fmtKg(totals.actualKg)} kg`} hint={`${fmtTonnes(totals.actualKg)} t`} />
-              <HeroStat label="Forecast" value={totals.forecastKg > 0 ? `${fmtKg(totals.forecastKg)} kg` : 'Sin meta'} hint={report.forecastSource === 'SNAPSHOT' ? `${fmtTonnes(totals.forecastKg)} t · guardada` : `${fmtTonnes(totals.forecastKg)} t`} />
+              <HeroStat
+                label="Forecast"
+                value={totals.forecastKg > 0 ? `${fmtKg(totals.forecastKg)} kg` : 'Sin meta'}
+                hint={
+                  report.forecastSource === 'SNAPSHOT' || report.forecastSource === 'CAPTURED'
+                    ? `${fmtTonnes(totals.forecastKg)} t · guardada`
+                    : `${fmtTonnes(totals.forecastKg)} t`
+                }
+              />
               <HeroStat
                 label="Brecha"
                 value={gapKg === null ? '—' : `${gapKg > 0 ? '+' : ''}${fmtKg(gapKg)} kg`}
@@ -653,70 +808,24 @@ export function SalesReport({
           <div className="flex flex-col items-center gap-space-sm justify-self-center rounded-2xl border border-white/10 bg-white/5 p-space-md">
             <AttainmentRing pct={isFuture ? null : projectedAttainment} tone={tone} />
             <div className="flex flex-col items-center gap-space-2xs text-center">
-              <span className="text-label-sm font-semibold uppercase tracking-[0.14em] text-white/50">Cumplimiento actual</span>
-              <span className={cx('tabular-nums text-title-md font-bold', toneNow === 'good' ? 'text-secondary-container' : 'text-white/85')}>
-                {fmtPct(attainment)}
+              <span className="text-label-sm font-semibold uppercase tracking-[0.14em] text-white/50">
+                Cumplimiento proyectado
+              </span>
+              <span className={cx('tabular-nums text-title-md font-bold', tone === 'good' ? 'text-secondary-container' : 'text-white/85')}>
+                {fmtPct(projectedAttainment)}
               </span>
               <span className="text-label-sm text-white/45">Meta {fmtKg(totals.forecastKg)} kg</span>
+              <span className="mt-1 flex items-center gap-1 text-label-sm text-white/55">
+                Actual
+                <strong className="tabular-nums text-white/85">{fmtPct(attainment)}</strong>
+              </span>
             </div>
           </div>
         </div>
       </section>
 
-      {/* ---------- KPIs ---------- */}
-      <div className="stagger grid grid-cols-1 gap-space-md sm:grid-cols-2 xl:grid-cols-6">
-        <Kpi
-          label="Venta acumulada"
-          value={fmtKg(totals.actualKg)}
-          suffix="kg"
-          hint={`${fmtTonnes(totals.actualKg)} t · ${report.days.elapsed} días corridos`}
-          icon={PackageSearch}
-        />
-        <Kpi
-          label="Promedio diario"
-          value={fmtKg(totals.dailyAvgKg)}
-          suffix="kg"
-          hint={`por ${basisLabel}`}
-          icon={Gauge}
-        />
-        <Kpi
-          label={isFuture ? 'Meta del mes' : isOpen ? 'Proyección de cierre' : 'Venta del mes'}
-          value={projected === null ? '—' : fmtKg(projected / 1000, 1)}
-          suffix={projected === null ? undefined : 't'}
-          hint={projected === null ? 'sin ventas todavía' : `${fmtKg(projected)} kg`}
-          icon={TrendingUp}
-          tone="primary"
-        />
-        <Kpi
-          label="Cumplimiento actual"
-          value={fmtPct(attainment)}
-          hint={
-            totals.forecastKg > 0
-              ? `Forecast ${fmtKg(totals.forecastKg)} kg${report.forecastSource === 'SNAPSHOT' ? ' · meta histórica' : ''}`
-              : 'sin meta registrada'
-          }
-          icon={Target}
-          tone={TONE_KPI[toneNow]}
-        />
-        <Kpi
-          label="Cumplimiento proyectado"
-          value={fmtPct(projectedAttainment)}
-          hint={totals.vsHistoricalPct === null ? 'sin comparación histórica' : `${fmtPct(totals.vsHistoricalPct)} vs promedio histórico`}
-          icon={Sparkles}
-          tone={TONE_KPI[tone]}
-        />
-        <Kpi
-          label={isOpen ? 'Ritmo necesario' : 'Días restantes'}
-          value={isOpen ? fmtKg(totals.requiredDailyKg) : fmtKg(report.days.workingRemaining, 0)}
-          suffix={isOpen ? 'kg/día' : 'días'}
-          hint={isOpen ? `${report.days.workingRemaining} hábiles restantes` : 'mes sin días pendientes'}
-          icon={CalendarClock}
-          tone={isOpen && totals.requiredDailyKg !== null && totals.requiredDailyKg > 0 ? 'warning' : 'muted'}
-        />
-      </div>
-
       {/* ---------- Gráficas ---------- */}
-      <div className="grid gap-space-lg xl:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
+      <div className="grid items-start gap-space-lg xl:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
         <Card className="overflow-hidden animate-rise">
           <header className="flex flex-wrap items-end justify-between gap-space-sm px-space-md pt-space-md">
             <div>
@@ -725,126 +834,382 @@ export function SalesReport({
                 {isOpen
                   ? 'Real hasta el corte · proyección punteada · ritmo uniforme del forecast'
                   : 'Venta real acumulada · ritmo uniforme del forecast'}
+                {report.daily.length > 0 && totals.actualKg > 0
+                  ? ' · pasa el mouse o haz clic en un día: la barra de abajo se sincroniza'
+                  : ''}
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
-              <span className="inline-flex items-center gap-1.5">
-                <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.navy }} /> Real
-              </span>
-              {isOpen && (
+            {totals.actualKg > 0 && (
+              <div className="flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
                 <span className="inline-flex items-center gap-1.5">
-                  <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.lime }} /> Proyección
+                  <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.navy }} /> Real
                 </span>
-              )}
-              <span className="inline-flex items-center gap-1.5">
-                <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.outline }} /> Ritmo forecast
-              </span>
-            </div>
+                {isOpen && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.lime }} /> Proyección
+                  </span>
+                )}
+                <span className="inline-flex items-center gap-1.5">
+                  <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.outline }} /> Ritmo forecast
+                </span>
+              </div>
+            )}
           </header>
           <div className="px-space-sm pb-space-sm">
-            {report.daily.length > 0 ? (
-              <EChart option={chartOption} height={300} ariaLabel="Acumulado del mes: venta real, proyección y ritmo del forecast" />
+            {report.daily.length > 0 && totals.actualKg > 0 ? (
+              <>
+                <EChart
+                  option={chartOption}
+                  height={280}
+                  ariaLabel="Acumulado del mes: venta real, proyección y ritmo del forecast"
+                  onIndexHover={handleIndexHover}
+                  onIndexClick={handleIndexClick}
+                />
+
+                {/* Tira de barras sincronizada con el acumulado: un día por columna. */}
+                <DailySalesBars
+                  bars={dayBars}
+                  scale={dayScale}
+                  activeDate={activeDay}
+                  pinnedDate={pinnedDay}
+                  initialDate={initialBarDate}
+                  fallbackSummary={`${daysWithSales.length} días con venta · ${fmtKg(totals.actualKg)} kg · ${fmtKg(totals.invoiceCount)} notas`}
+                  onHover={setHoverDay}
+                  onPin={togglePinnedDay}
+                />
+
+                {/* Desglose del día fijado con clic (el hover solo previsualiza). */}
+                <section
+                  aria-label="Desglose por producto del día"
+                  className="mt-space-sm border-t border-surface-container pt-space-sm"
+                >
+                  <header className="mb-space-xs flex flex-wrap items-center justify-between gap-space-sm px-space-xs">
+                    <div className="min-w-0">
+                      <h3 className="text-label-sm font-bold uppercase tracking-[0.14em] text-outline">
+                        Desglose por producto
+                      </h3>
+                      <p className="text-label-md text-on-surface-variant">
+                        {pinnedBar
+                          ? `${dayLabel(pinnedBar.date)}${pinnedBar.partial ? ' · en curso' : ''} · ${fmtKg(pinnedBar.kg)} kg · ${fmtKg(pinnedBar.invoices)} notas`
+                          : 'Haz clic en un día del acumulado o en una barra para fijar su desglose.'}
+                      </p>
+                    </div>
+                  </header>
+
+                  {pinnedBar && (
+                    <div className="max-h-[200px] overflow-y-auto pr-1">
+                      {pinnedDayProducts.length > 0 ? (
+                        <table className="w-full border-collapse text-label-md">
+                          <caption className="sr-only">
+                            Productos despachados el {dayLabel(pinnedBar.date)}
+                          </caption>
+                          <thead>
+                            <tr className="text-label-sm uppercase tracking-[0.1em] text-outline">
+                              <th scope="col" className="py-1 text-left font-semibold">
+                                Producto
+                              </th>
+                              <th scope="col" className="py-1 text-right font-semibold">
+                                Kg
+                              </th>
+                              <th scope="col" className="py-1 text-right font-semibold">
+                                Sacos
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pinnedDayProducts.map((line) => (
+                              <tr key={line.productCode} className="border-t border-surface-container/70">
+                                <td className="py-1 pr-2">
+                                  <span className="block truncate text-on-surface">{line.description}</span>
+                                  <span className="text-label-sm text-outline">
+                                    {line.productCode}
+                                    {line.uom ? ` · ${line.uom}` : ''}
+                                  </span>
+                                </td>
+                                <td className="py-1 text-right tabular-nums text-on-surface">{fmtKg(line.kg)}</td>
+                                <td className="py-1 text-right tabular-nums text-on-surface-variant">
+                                  {line.sacks === null ? '—' : fmtKg(line.sacks, 1)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <p className="px-space-xs py-3 text-label-md text-outline">
+                          Este día no tiene desglose por producto (sin despachos).
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </section>
+              </>
             ) : (
               <EmptyState
                 icon={CalendarDays}
-                title="Sin serie diaria"
-                description="No hay entregas en el rango consultado para dibujar el acumulado."
+                title="Aún no hay ventas en el mes"
+                description={
+                  report.daily.length === 0
+                    ? 'No hay entregas en el rango consultado para dibujar el acumulado.'
+                    : 'Cuando Profit registre la primera nota de entrega verás aquí la venta real contra la meta.'
+                }
               />
             )}
           </div>
         </Card>
 
         <Card className="overflow-hidden animate-rise">
-          <header className="flex items-end justify-between gap-space-sm px-space-md pt-space-md">
-            <div>
-              <h2 className="text-title-md font-bold text-on-surface">Desviación por producto</h2>
-              <p className="text-label-md text-on-surface-variant">Top 10 por meta · clic para enfocar</p>
+          <header className="px-space-md pt-space-md">
+            <div className="flex items-start justify-between gap-space-sm">
+              <div className="min-w-0">
+                <h2 className="flex items-center gap-1.5 text-title-md font-bold text-on-surface">
+                  <ListFilter aria-hidden className="size-4 shrink-0 text-primary" />
+                  Desviación por producto
+                </h2>
+                <p className="text-label-md text-on-surface-variant">
+                  {hasDeviationFilters
+                    ? `${fmtKg(filtered.length, 0)} de ${fmtKg(report.rows.length, 0)} artículos · cada barra se mide contra su meta`
+                    : `${fmtKg(report.rows.length, 0)} artículos · cada barra se mide contra su meta`}
+                  <span className="block text-outline">Haz clic en un artículo para abrir su detalle.</span>
+                </p>
+              </div>
+              <Badge tone="primary">{fmtKg(filtered.length, 0)} art.</Badge>
             </div>
-            <Badge tone="primary">{fmtKg(filtered.length, 0)} art.</Badge>
+
+            <div
+              className="mt-space-sm flex flex-wrap items-center gap-space-2xs"
+              role="group"
+              aria-label="Filtros de la desviación por producto"
+            >
+              <TextInput
+                icon={PackageSearch}
+                value={search}
+                onChange={setSearch}
+                placeholder="Buscar código o descripción…"
+                ariaLabel="Buscar producto en la desviación"
+                className="min-w-[12rem] flex-1"
+              />
+              <FilterChip active={onlyWithData} onClick={() => setOnlyWithData((value) => !value)} label="Con datos" />
+              <FilterChip
+                active={onlyWithForecast}
+                onClick={() => setOnlyWithForecast((value) => !value)}
+                label="Con forecast"
+              />
+              <FilterChip active={onlyWithSales} onClick={() => setOnlyWithSales((value) => !value)} label="Con venta" />
+              {hasDeviationFilters && (
+                <button
+                  type="button"
+                  onClick={clearDeviationFilters}
+                  className="inline-flex h-10 shrink-0 items-center gap-1 rounded-xl px-space-xs text-label-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70"
+                >
+                  <X aria-hidden className="size-3.5" /> Limpiar
+                </button>
+              )}
+            </div>
           </header>
           <div className="px-space-md pb-space-md pt-space-sm">
             <DeviationBars
-              rows={filtered}
+              rows={deviationPreview}
               focus={focusCode}
               showProjection={isOpen}
-              onFocus={(code) => setFocusCode((current) => (current === code ? null : code))}
+              onFocus={openProduct}
             />
+            {filtered.length > DEVIATION_PREVIEW && (
+              <button
+                type="button"
+                onClick={() => setDeviationExpanded((value) => !value)}
+                aria-expanded={deviationExpanded}
+                className="mt-space-xs inline-flex h-9 w-full items-center justify-center gap-1 rounded-xl border border-outline-variant/40 text-label-md font-semibold text-on-surface-variant transition-colors hover:border-primary-container/40 hover:text-primary"
+              >
+                <ChevronDown
+                  aria-hidden
+                  className={cx('size-4 transition-transform', deviationExpanded && 'rotate-180')}
+                />
+                {deviationExpanded
+                  ? 'Ver solo los principales'
+                  : `Ver los ${fmtKg(filtered.length, 0)} artículos`}
+              </button>
+            )}
           </div>
         </Card>
       </div>
 
       {focusRow && (
-        <Card className="overflow-hidden animate-rise">
-          <div className="flex flex-wrap items-start justify-between gap-space-md px-space-md pt-space-md">
-            <div className="min-w-0">
-              <p className="text-label-sm font-semibold uppercase tracking-[0.14em] text-outline">Producto enfocado</p>
-              <h2 className="flex flex-wrap items-baseline gap-space-sm text-title-md font-bold text-on-surface">
-                <span className="tabular-nums text-primary">{focusRow.productCode}</span>
-                <span className="min-w-0 truncate text-body-md font-normal text-on-surface-variant">{focusRow.description}</span>
-              </h2>
-              <p className="text-label-md text-on-surface-variant">
-                {focusRow.uom}
-                {focusRow.kgPerUom !== null ? ` · ${fmtKg(focusRow.kgPerUom, 2)} kg/unidad` : ' · granel'}
-                {focusRow.lastInvoiceDate ? ` · última entrega ${fmtDate(focusRow.lastInvoiceDate)}` : ''}
-              </p>
+        <>
+          <div
+            aria-hidden
+            className="animate-fade fixed inset-0 z-40 bg-[#081d2c]/45 backdrop-blur-[2px]"
+            onClick={closeProduct}
+          />
+          <aside
+            ref={detailRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="focus-product-title"
+            tabIndex={-1}
+            className="animate-slide-in fixed inset-y-0 right-0 z-50 flex w-full max-w-2xl flex-col overflow-y-auto overscroll-contain bg-surface-container-lowest shadow-2xl outline-none"
+          >
+            <header className="sticky top-0 z-10 flex items-start justify-between gap-space-md border-b border-surface-container bg-surface-container-lowest/95 px-space-md py-space-sm backdrop-blur">
+              <div className="min-w-0">
+                <p className="text-label-sm font-semibold uppercase tracking-[0.14em] text-outline">Detalle del producto</p>
+                <h2
+                  id="focus-product-title"
+                  className="flex flex-wrap items-baseline gap-space-sm text-title-md font-bold text-on-surface"
+                >
+                  <span className="tabular-nums text-primary">{focusRow.productCode}</span>
+                  <span className="min-w-0 truncate text-body-md font-normal text-on-surface-variant">
+                    {focusRow.description}
+                  </span>
+                </h2>
+                <p className="text-label-md text-on-surface-variant">
+                  {focusRow.uom}
+                  {focusRow.kgPerUom !== null ? ` · ${fmtKg(focusRow.kgPerUom, 2)} kg/unidad` : ' · granel'}
+                  {focusRow.lastInvoiceDate ? ` · última entrega ${fmtDate(focusRow.lastInvoiceDate)}` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeProduct}
+                className="grid size-9 shrink-0 place-items-center rounded-full border border-outline-variant/40 text-on-surface-variant transition-colors hover:bg-surface-container-low"
+                aria-label="Cerrar detalle del producto"
+              >
+                <X aria-hidden className="size-4" />
+              </button>
+            </header>
+
+            <div className="flex flex-col gap-space-md p-space-md">
+              {focusRow.forecastDriftAt && (
+                <div className="flex flex-wrap items-center gap-space-sm rounded-xl bg-warning-container/60 px-space-md py-space-xs text-label-md text-on-warning-container">
+                  <AlertTriangle aria-hidden className="size-4 shrink-0" />
+                  <span>
+                    Profit cambió la meta: ahora{' '}
+                    <strong className="tabular-nums">{fmtKg(focusRow.forecastLiveKg ?? 0)} kg</strong>.
+                    {focusRow.forecastCapturedKg !== null && (
+                      <>
+                        {' '}La captura histórica sigue en{' '}
+                        <strong className="tabular-nums">{fmtKg(focusRow.forecastCapturedKg)} kg</strong>.
+                      </>
+                    )}
+                  </span>
+                  {canEdit && (
+                    <button
+                      type="button"
+                      onClick={() => acceptDrift.mutate(focusRow.productCode)}
+                      disabled={acceptDrift.isPending}
+                      className="inline-flex h-7 items-center rounded-pill border border-warning/50 bg-white/60 px-space-sm text-label-sm font-bold text-on-warning-container transition-colors hover:bg-white disabled:opacity-60"
+                    >
+                      {acceptDrift.isPending ? 'Aceptando…' : 'Aceptar cambio'}
+                    </button>
+                  )}
+                </div>
+              )}
+              {acceptDrift.error && (
+                <p role="alert" className="text-label-md text-critical">
+                  {acceptDrift.error.message}
+                </p>
+              )}
+
+              <div>
+                <div className="mb-space-2xs flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
+                  <span className="inline-flex items-center gap-1">
+                    <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Venta real
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span aria-hidden className="size-2 rounded-full bg-[#1d5a96]" /> Mes en curso
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span aria-hidden className="h-2 w-0.5 rounded-pill bg-secondary" /> Meta capturada por mes
+                  </span>
+                </div>
+                <EChart option={focusOption} height={230} ariaLabel={`Histórico de ventas de ${focusRow.productCode}`} />
+              </div>
+
+              <div className="grid grid-cols-1 gap-space-sm sm:grid-cols-2">
+                <MiniStat
+                  label="Venta del mes"
+                  value={`${fmtKg(focusRow.actualKg)} kg`}
+                  hint={`${fmtKg(focusRow.actualUnits)} unid. · ${fmtKg(focusRow.actualSacks)} sacos`}
+                />
+                <MiniStat
+                  label={isOpen ? 'Proyección' : 'Cierre real'}
+                  value={focusRow.projectedKg === null ? '—' : `${fmtKg(focusRow.projectedKg)} kg`}
+                  hint={
+                    focusRow.projectedAttainmentPct === null
+                      ? 'sin meta'
+                      : `${fmtPct(focusRow.projectedAttainmentPct)} del forecast${
+                          isOpen && report.days.workingElapsed === 0 ? ' · aún sin días hábiles' : ''
+                        }`
+                  }
+                  tone={salesTone(focusRow.projectedAttainmentPct)}
+                />
+                <MiniStat label="Promedio/día" value={`${fmtKg(focusRow.dailyAvgKg)} kg`} hint={`por ${basisLabel}`} />
+                <MiniStat
+                  label={isOpen ? 'Ritmo necesario' : 'Meta del mes'}
+                  value={
+                    isOpen
+                      ? focusRow.requiredDailyKg === null
+                        ? '—'
+                        : `${fmtKg(focusRow.requiredDailyKg)} kg/día`
+                      : focusRow.forecastKg > 0
+                        ? `${fmtKg(focusRow.forecastKg)} kg`
+                        : '—'
+                  }
+                  hint={
+                    isOpen
+                      ? focusRow.forecastKg > 0
+                        ? `meta ${fmtKg(focusRow.forecastKg)} kg${
+                            focusRow.forecastCapturedAt
+                              ? ` · capturada ${fmtDate(focusRow.forecastCapturedAt.slice(0, 10))}`
+                              : ''
+                          }`
+                        : 'sin meta'
+                      : focusRow.forecastKg > 0
+                        ? `meta histórica guardada${
+                            focusRow.forecastCapturedAt
+                              ? ` · ${fmtDate(focusRow.forecastCapturedAt.slice(0, 10))}`
+                              : ''
+                          }`
+                        : 'sin meta guardada'
+                  }
+                  tone="warn"
+                />
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setFocusCode(null)}
-              className="grid size-9 place-items-center rounded-full border border-outline-variant/40 text-on-surface-variant transition-colors hover:bg-surface-container-low"
-              aria-label="Cerrar producto enfocado"
-            >
-              <X aria-hidden className="size-4" />
-            </button>
-          </div>
-          <div className="grid gap-space-md p-space-md xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
-            <EChart option={focusOption} height={210} ariaLabel={`Histórico de ventas de ${focusRow.productCode}`} />
-            <div className="grid grid-cols-2 gap-space-sm">
-              <MiniStat label="Venta del mes" value={`${fmtKg(focusRow.actualKg)} kg`} hint={`${fmtKg(focusRow.actualUnits)} unid. · ${fmtKg(focusRow.actualSacks)} sacos`} />
-              <MiniStat label={isOpen ? 'Proyección' : 'Cierre real'} value={focusRow.projectedKg === null ? '—' : `${fmtKg(focusRow.projectedKg)} kg`} hint={focusRow.projectedAttainmentPct === null ? 'sin meta' : `${fmtPct(focusRow.projectedAttainmentPct)} del forecast`} tone={salesTone(focusRow.projectedAttainmentPct)} />
-              <MiniStat label="Promedio/día" value={`${fmtKg(focusRow.dailyAvgKg)} kg`} hint={`por ${basisLabel}`} />
-              <MiniStat label={isOpen ? 'Ritmo necesario' : 'Meta del mes'} value={isOpen ? (focusRow.requiredDailyKg === null ? '—' : `${fmtKg(focusRow.requiredDailyKg)} kg/día`) : (focusRow.forecastKg > 0 ? `${fmtKg(focusRow.forecastKg)} kg` : '—')} hint={isOpen ? (focusRow.forecastKg > 0 ? `meta ${fmtKg(focusRow.forecastKg)} kg` : 'sin meta') : (focusRow.forecastKg > 0 ? 'meta histórica guardada' : 'sin meta guardada')} tone="warn" />
-            </div>
-          </div>
-        </Card>
+          </aside>
+        </>
       )}
 
       {/* ---------- Tabla ---------- */}
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-space-md border-b border-surface-container px-space-md py-space-sm">
-          <div className="flex flex-wrap items-center gap-space-sm">
-            <TextInput
-              icon={PackageSearch}
-              value={search}
-              onChange={setSearch}
-              placeholder="Buscar código o descripción…"
-              ariaLabel="Buscar producto en el informe"
-              className="w-full sm:w-64"
-            />
-            <label className="flex items-center gap-space-xs text-body-md text-on-surface-variant">
-              <input
-                type="checkbox"
-                checked={onlyWithSales}
-                onChange={(event) => setOnlyWithSales(event.target.checked)}
-                className="size-4 accent-[var(--color-primary-container)]"
-              />
-              Solo con venta
-            </label>
-            <label className="flex items-center gap-space-xs text-body-md text-on-surface-variant">
-              <input
-                type="checkbox"
-                checked={onlyWithForecast}
-                onChange={(event) => setOnlyWithForecast(event.target.checked)}
-                className="size-4 accent-[var(--color-primary-container)]"
-              />
-              Solo con forecast
-            </label>
+          <div className="flex flex-wrap items-center gap-space-sm text-label-md text-on-surface-variant">
+            <span>
+              {hasDeviationFilters ? (
+                <>
+                  <strong className="tabular-nums text-on-surface">{fmtKg(filtered.length, 0)}</strong> de{' '}
+                  <strong className="tabular-nums text-on-surface">{fmtKg(report.rows.length, 0)}</strong> artículos
+                </>
+              ) : (
+                <>
+                  <strong className="tabular-nums text-on-surface">{fmtKg(report.rows.length, 0)}</strong> artículos
+                </>
+              )}
+            </span>
+            {hasDeviationFilters && (
+              <button
+                type="button"
+                onClick={clearDeviationFilters}
+                className="inline-flex h-8 items-center gap-1 rounded-lg px-space-xs font-semibold text-primary transition-colors hover:bg-primary-container/10"
+              >
+                <X aria-hidden className="size-3.5" /> Limpiar filtros
+              </button>
+            )}
+            <span className="hidden text-outline md:inline">Los filtros se aplican desde «Desviación por producto».</span>
           </div>
           <div className="flex flex-wrap items-center gap-space-sm">
             <div className="w-full sm:w-64">
               <ProductPicker
                 value={focusCode}
-                onChange={setFocusCode}
+                onChange={(code) => (code ? openProduct(code) : closeProduct())}
                 options={pickerOptions}
                 allLabel="Todos los productos"
               />
@@ -888,18 +1253,19 @@ export function SalesReport({
               icon={PackageSearch}
               title="Sin ventas registradas"
               description={
-                search || onlyWithSales || onlyWithForecast
+                search || onlyWithSales || onlyWithForecast || onlyWithData
                   ? 'Ningún artículo coincide con los filtros. Prueba a limpiar la búsqueda.'
                   : 'Profit no reporta entregas ABA para el rango consultado.'
               }
               action={
-                search || onlyWithSales || onlyWithForecast ? (
+                search || onlyWithSales || onlyWithForecast || onlyWithData ? (
                   <button
                     type="button"
                     onClick={() => {
                       setSearch('');
                       setOnlyWithSales(false);
                       setOnlyWithForecast(false);
+                      setOnlyWithData(false);
                     }}
                     className="text-label-md font-semibold text-primary underline-offset-2 hover:underline"
                   >
@@ -933,7 +1299,44 @@ export function SalesReport({
   );
 }
 
+function FilterChip({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cx(
+        'inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl border px-space-sm text-label-md font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70',
+        active
+          ? 'border-primary-container/60 bg-primary-container/10 text-primary'
+          : 'border-outline-variant/50 bg-surface-container-lowest text-on-surface-variant hover:border-primary-container/40 hover:text-primary',
+      )}
+    >
+      <span
+        aria-hidden
+        className={cx('size-1.5 rounded-full', active ? 'bg-primary-container' : 'bg-outline/40')}
+      />
+      {label}
+    </button>
+  );
+}
+
 function Semaphore({ row }: { row: ForecastSalesRow }) {
+  if (row.forecastKg <= 0 && row.actualKg <= 0) {
+    return (row.forecastCapturedKg ?? 0) > 0 ? (
+      <Badge tone="warning">Meta sin leer</Badge>
+    ) : (
+      <Badge tone="muted">Sin datos</Badge>
+    );
+  }
   if (row.forecastKg <= 0 && row.actualKg > 0) {
     return <Badge tone="muted">Sin meta</Badge>;
   }
@@ -950,7 +1353,280 @@ function Semaphore({ row }: { row: ForecastSalesRow }) {
   );
 }
 
-function DeviationBars({
+/** Ancho de cada día en la tira: fija el scroll horizontal del mes. */
+const DAY_SLOT_PX = 38;
+/** Alto de la pista de barras y de la fila de días. */
+const BAR_AREA_PX = 148;
+const DAY_LABEL_PX = 22;
+
+/**
+ * Tira de ventas por día: una columna por día del mes dentro de una caja con
+ * scroll horizontal. Comparte `activeDate`/`pinnedDate` con la gráfica de
+ * acumulado, así el clic arriba marca la barra y el clic en la barra fija el
+ * día en la línea.
+ */
+const DailySalesBars = memo(function DailySalesBars({
+  bars,
+  scale,
+  activeDate,
+  pinnedDate,
+  initialDate,
+  fallbackSummary,
+  onHover,
+  onPin,
+}: {
+  bars: SalesDayBar[];
+  scale: DailySalesScale;
+  activeDate: string | null;
+  pinnedDate: string | null;
+  initialDate: string | null;
+  fallbackSummary: string;
+  onHover: (date: string | null) => void;
+  onPin: (date: string) => void;
+}) {
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const anchors = useRef(new Map<string, HTMLButtonElement>());
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  // Centra un día sin mover la página: solo se toca el scroll de la tira.
+  const centerOn = useCallback((date: string | null, smooth: boolean) => {
+    const box = scroller.current;
+    const node = date ? anchors.current.get(date) : null;
+    if (!box || !node) return;
+    const left = node.offsetLeft + node.offsetWidth / 2 - box.clientWidth / 2;
+    const maxLeft = Math.max(0, box.scrollWidth - box.clientWidth);
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    box.scrollTo({
+      left: Math.max(0, Math.min(left, maxLeft)),
+      behavior: smooth && !reduceMotion ? 'smooth' : 'auto',
+    });
+  }, []);
+
+  // Al abrir el mes, el tramo con actividad queda a la vista.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => centerOn(initialDate, false));
+    return () => cancelAnimationFrame(frame);
+  }, [centerOn, initialDate]);
+
+  // Un clic (en la línea o en una barra) centra el día elegido.
+  useEffect(() => {
+    if (!pinnedDate) return;
+    const frame = requestAnimationFrame(() => centerOn(pinnedDate, true));
+    return () => cancelAnimationFrame(frame);
+  }, [centerOn, pinnedDate]);
+
+  const shift = (direction: -1 | 1) => {
+    scroller.current?.scrollBy({ left: direction * DAY_SLOT_PX * 7, behavior: 'smooth' });
+  };
+
+  if (bars.length === 0) return null;
+
+  const goalPct =
+    scale.goalKg !== null && scale.maxKg > 0 ? Math.min(100, (scale.goalKg / scale.maxKg) * 100) : null;
+  const activeBar = activeDate ? bars.find((bar) => bar.date === activeDate) ?? null : null;
+  const summary = activeBar
+    ? `${dayLabel(activeBar.date)}${activeBar.partial ? ' · en curso' : ''} · ${fmtKg(activeBar.kg)} kg · ${fmtKg(activeBar.invoices)} notas`
+    : fallbackSummary;
+
+  return (
+    <section aria-label="Ventas por día" className="mt-space-sm border-t border-surface-container pt-space-sm">
+      <header className="mb-space-xs flex flex-wrap items-center justify-between gap-space-sm px-space-xs">
+        <div className="min-w-0">
+          <h3 className="text-label-sm font-bold uppercase tracking-[0.14em] text-outline">Ventas por día</h3>
+          <p className="text-label-md text-on-surface-variant">{summary}</p>
+        </div>
+        <div className="flex items-center gap-space-2xs">
+          <button
+            type="button"
+            onClick={() => shift(-1)}
+            aria-label="Ver días anteriores"
+            className="grid size-7 place-items-center rounded-pill border border-outline-variant/40 text-on-surface-variant transition-colors hover:bg-surface-container-low"
+          >
+            <ChevronLeft aria-hidden className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => shift(1)}
+            aria-label="Ver días siguientes"
+            className="grid size-7 place-items-center rounded-pill border border-outline-variant/40 text-on-surface-variant transition-colors hover:bg-surface-container-low"
+          >
+            <ChevronRight aria-hidden className="size-3.5" />
+          </button>
+          {pinnedDate && (
+            <button
+              type="button"
+              onClick={() => {
+                onHover(null);
+                onPin(pinnedDate);
+              }}
+              className="inline-flex h-7 items-center gap-1 rounded-pill border border-outline-variant/40 px-space-sm text-label-sm font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
+            >
+              <X aria-hidden className="size-3.5" /> Ver todo el mes
+            </button>
+          )}
+        </div>
+      </header>
+
+      <div className="flex items-start gap-1.5 px-space-xs">
+        {/* Eje de kg/día fuera del scroll: no se va con las barras. */}
+        <div
+          aria-hidden
+          className="relative w-9 shrink-0 text-right text-[10px] tabular-nums text-outline"
+          style={{ height: BAR_AREA_PX }}
+        >
+          <span className="absolute right-0 top-0 -translate-y-1/2 leading-none">{compact(scale.maxKg)}</span>
+          <span className="absolute right-0 top-1/2 -translate-y-1/2 leading-none">{compact(scale.maxKg / 2)}</span>
+          <span className="absolute bottom-0 right-0 translate-y-1/2 leading-none">0</span>
+        </div>
+
+        <div
+          ref={scroller}
+          role="group"
+          aria-label="Días del mes"
+          tabIndex={0}
+          className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain rounded-lg pb-1 [scrollbar-width:thin] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/60"
+        >
+          <div className="relative" style={{ width: bars.length * DAY_SLOT_PX }}>
+            {/* Guías horizontales y meta diaria. */}
+            <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0" style={{ height: BAR_AREA_PX }}>
+              <span className="absolute inset-x-0 top-0 border-t border-dashed border-surface-container" />
+              <span className="absolute inset-x-0 top-1/2 border-t border-dashed border-surface-container" />
+              <span className="absolute inset-x-0 bottom-0 border-t border-outline-variant/50" />
+              {goalPct !== null && (
+                <span
+                  className="absolute inset-x-0 border-t-2 border-dashed border-secondary"
+                  style={{ bottom: `${goalPct}%` }}
+                />
+              )}
+            </div>
+
+            <ul className="relative flex items-end" style={{ height: BAR_AREA_PX + DAY_LABEL_PX }}>
+              {bars.map((bar) => {
+                const isActive = activeDate === bar.date;
+                const isPinned = pinnedDate === bar.date;
+                const height = bar.kg > 0 ? Math.max(3, (bar.kg / scale.maxKg) * BAR_AREA_PX) : 2;
+
+                return (
+                  <li
+                    key={bar.date}
+                    className="shrink-0"
+                    style={{ width: DAY_SLOT_PX, height: BAR_AREA_PX + DAY_LABEL_PX }}
+                  >
+                    <button
+                      type="button"
+                      ref={(node) => {
+                        if (node) anchors.current.set(bar.date, node);
+                        else anchors.current.delete(bar.date);
+                      }}
+                      aria-pressed={isPinned}
+                      aria-label={`Día ${bar.dayNumber}: ${fmtKg(bar.kg)} kg, ${fmtKg(bar.invoices)} notas${
+                        bar.partial ? ', día en curso' : bar.future ? ', día futuro' : ''
+                      }`}
+                      onClick={() => onPin(bar.date)}
+                      onMouseEnter={() => onHover(bar.date)}
+                      onMouseLeave={() => onHover(null)}
+                      onFocus={() => onHover(bar.date)}
+                      onBlur={() => onHover(null)}
+                      className={cx(
+                        'group flex h-full w-full flex-col items-center justify-end rounded-md px-[3px] pb-0 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70',
+                        isActive ? 'bg-surface-container-low' : 'hover:bg-surface-container-low/60',
+                      )}
+                    >
+                      <span className="flex w-full items-end justify-center" style={{ height: BAR_AREA_PX }}>
+                        <span
+                          aria-hidden
+                          className={cx(
+                            'relative w-full max-w-[22px] rounded-t-[4px] transition-[height] duration-500 ease-out',
+                            bar.future
+                              ? 'bg-surface-container-high/60'
+                              : bar.kg <= 0
+                                ? 'bg-surface-container-high'
+                                : bar.partial
+                                  ? 'bg-primary-container/45'
+                                  : 'bg-primary-container',
+                            isPinned && 'ring-2 ring-secondary ring-offset-1',
+                            isActive && !isPinned && 'ring-1 ring-primary/30',
+                          )}
+                          style={{ height: mounted ? height : 0 }}
+                        >
+                          {bar.partial && bar.kg > 0 && (
+                            <span className="absolute inset-x-0 top-0 h-1 rounded-t-[4px] bg-secondary" />
+                          )}
+                        </span>
+                      </span>
+                      <span
+                        className={cx(
+                          'flex h-[22px] min-w-[20px] items-center justify-center rounded-pill px-1 text-[10px] tabular-nums',
+                          isPinned
+                            ? 'bg-primary-container font-bold text-white'
+                            : bar.isToday
+                              ? 'font-bold text-primary'
+                              : bar.future
+                                ? 'text-outline/55'
+                                : 'text-outline',
+                        )}
+                      >
+                        {bar.dayNumber}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-space-xs flex flex-wrap items-center gap-space-sm px-space-xs text-label-sm text-on-surface-variant">
+        <span className="inline-flex items-center gap-1">
+          <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Real
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span aria-hidden className="size-2 rounded-full bg-secondary" /> En curso
+        </span>
+        {scale.goalKg !== null && (
+          <span className="inline-flex items-center gap-1">
+            <span aria-hidden className="w-4 border-t-2 border-dashed border-secondary" /> Meta/día{' '}
+            {fmtKg(scale.goalKg)} kg
+          </span>
+        )}
+        <span className="text-outline">Clic en una barra para fijar el día.</span>
+      </div>
+    </section>
+  );
+});
+
+/** Eje de referencia: 0 % a la izquierda y el 100 % de la meta en el marcador. */
+function DeviationScale({ markerPct }: { markerPct: number }) {
+  return (
+    <div className="px-space-xs">
+      <div className="relative h-4 text-label-sm text-outline">
+        <span className="absolute left-0 top-0 leading-none">0 %</span>
+        <span
+          className="absolute top-0 -translate-x-1/2 whitespace-nowrap font-semibold leading-none text-secondary"
+          style={{ left: `${markerPct}%` }}
+        >
+          meta 100 %
+        </span>
+      </div>
+      <div className="relative h-3">
+        <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-surface-container-high" />
+        <span
+          aria-hidden
+          className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 rounded-pill bg-secondary"
+          style={{ left: `calc(${markerPct}% - 1px)` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+const DeviationBars = memo(function DeviationBars({
   rows,
   focus,
   showProjection,
@@ -961,7 +1637,6 @@ function DeviationBars({
   showProjection: boolean;
   onFocus: (code: string) => void;
 }) {
-  const top = useMemo(() => topSalesRows(rows, 10), [rows]);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -969,62 +1644,95 @@ function DeviationBars({
     return () => cancelAnimationFrame(frame);
   }, []);
 
-  const max = Math.max(1, ...top.flatMap((row) => [row.forecastKg, row.projectedKg ?? 0, row.actualKg]));
-
-  if (top.length === 0) {
+  if (rows.length === 0) {
     return <p className="py-space-lg text-center text-body-md text-on-surface-variant">Sin artículos para graficar.</p>;
   }
 
   return (
-    <ul className="flex flex-col gap-space-2xs">
-      {top.map((row) => {
-        const pct = row.projectedAttainmentPct ?? row.attainmentPct;
-        const tone = salesTone(pct);
-        const widthProjected = Math.max(0, Math.min(100, ((row.projectedKg ?? row.actualKg) / max) * 100));
-        const widthActual = Math.max(0, Math.min(100, (row.actualKg / max) * 100));
-        const marker = Math.max(0, Math.min(100, (row.forecastKg / max) * 100));
-        return (
-          <li key={row.productCode}>
-            <button
-              type="button"
-              onClick={() => onFocus(row.productCode)}
-              aria-pressed={focus === row.productCode}
-              className={cx(
-                'group w-full rounded-xl px-space-xs py-2 text-left transition-all duration-200 hover:bg-surface-container-low',
-                focus === row.productCode && 'bg-surface-container-low ring-1 ring-primary-container/25',
-              )}
-            >
-              <div className="flex items-center justify-between gap-space-sm">
-                <span className="flex min-w-0 items-baseline gap-space-xs">
-                  <span className="shrink-0 tabular-nums text-label-md font-bold text-primary">{row.productCode}</span>
-                  <span className="truncate text-label-sm text-on-surface-variant">{row.description}</span>
-                </span>
-                <span className={cx('shrink-0 tabular-nums text-label-md font-bold', TONE_TEXT[tone])}>{fmtPct(pct)}</span>
-              </div>
-              <div className="relative mt-1.5 h-2.5 w-full overflow-hidden rounded-pill bg-surface-container">
-                {showProjection && (
-                  <div
-                    className="absolute inset-y-0 left-0 rounded-pill bg-secondary-container/45 transition-[width] duration-700 ease-out"
-                    style={{ width: mounted ? `${widthProjected}%` : '0%' }}
-                  />
-                )}
-                <div
-                  className="absolute inset-y-0 left-0 rounded-pill bg-primary-container transition-[width] duration-700 ease-out"
-                  style={{ width: mounted ? `${widthActual}%` : '0%', transitionDelay: '80ms' }}
-                />
-                {row.forecastKg > 0 && (
-                  <span
-                    aria-hidden
-                    className="absolute -inset-y-0.5 w-[2px] rounded-pill bg-secondary"
-                    style={{ left: `calc(${marker}% - 1px)` }}
-                  />
-                )}
-              </div>
-            </button>
-          </li>
-        );
-      })}
-      <li className="mt-space-xs flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
+    <div className="flex flex-col gap-space-2xs">
+      <div className="max-h-[520px] overflow-y-auto pr-1">
+        <div className="sticky top-0 z-10 border-b border-surface-container bg-surface-container-lowest pb-space-2xs">
+          <DeviationScale markerPct={META_MARKER_PCT} />
+        </div>
+        <ul className="flex flex-col gap-space-2xs">
+          {rows.map((row) => {
+            const pct = row.projectedAttainmentPct ?? row.attainmentPct;
+            const tone = salesTone(pct);
+            const geo = salesDeviationGeometry(row);
+            // El % mostrado es la proyección: si cruza el marcador, se dice cuánto.
+            const overPct = pct !== null && Number.isFinite(pct) && pct > 100 ? pct - 100 : null;
+            return (
+              <li key={row.productCode}>
+                <button
+                  type="button"
+                  onClick={() => onFocus(row.productCode)}
+                  aria-pressed={focus === row.productCode}
+                  aria-haspopup="dialog"
+                  title={`Ver detalle de ${row.productCode}`}
+                  className={cx(
+                    'group w-full rounded-xl px-space-xs py-2 text-left transition-all duration-200 hover:bg-surface-container-low',
+                    focus === row.productCode && 'bg-surface-container-low ring-1 ring-primary-container/25',
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-space-sm">
+                    <span className="flex min-w-0 items-baseline gap-space-xs">
+                      <span className="shrink-0 tabular-nums text-label-md font-bold text-primary">{row.productCode}</span>
+                      <span className="truncate text-label-sm text-on-surface-variant">{row.description}</span>
+                      {row.forecastDriftAt && (
+                        <AlertTriangle
+                          aria-label="Profit cambió la meta después de la captura"
+                          className="size-3 shrink-0 text-warning"
+                        />
+                      )}
+                    </span>
+                    <span className="flex shrink-0 flex-col items-end leading-tight">
+                      <span className={cx('tabular-nums text-label-md font-bold', TONE_TEXT[tone])}>
+                        {geo.hasMeta ? fmtPct(pct) : 'Sin meta'}
+                      </span>
+                      {overPct !== null && (
+                        <span className="whitespace-nowrap text-label-sm font-semibold text-success">
+                          +{fmtPct(overPct)} sobre meta
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="relative mt-1.5">
+                    <div
+                      className={cx(
+                        'h-2.5 w-full rounded-pill',
+                        geo.hasMeta ? 'bg-surface-container' : 'border border-dashed border-outline-variant/60',
+                      )}
+                    >
+                      {geo.hasMeta && (
+                        <div className="relative h-full w-full overflow-hidden rounded-pill">
+                          {showProjection && (
+                            <div
+                              className="absolute inset-y-0 left-0 rounded-pill bg-secondary-container/45 transition-[width] duration-700 ease-out"
+                              style={{ width: mounted ? `${geo.projectedWidthPct}%` : '0%' }}
+                            />
+                          )}
+                          <div
+                            className="absolute inset-y-0 left-0 rounded-pill bg-primary-container transition-[width] duration-700 ease-out"
+                            style={{ width: mounted ? `${geo.actualWidthPct}%` : '0%', transitionDelay: '80ms' }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                    {geo.hasMeta && (
+                      <span
+                        aria-hidden
+                        className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 rounded-pill bg-secondary shadow-[0_0_0_1px_white]"
+                        style={{ left: `calc(${geo.markerPct}% - 1px)` }}
+                      />
+                    )}
+                  </div>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+      <div className="mt-space-xs flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
         <span className="inline-flex items-center gap-1">
           <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Real
         </span>
@@ -1034,14 +1742,17 @@ function DeviationBars({
           </span>
         )}
         <span className="inline-flex items-center gap-1">
-          <span aria-hidden className="h-2 w-0.5 rounded-pill bg-secondary" /> Meta
+          <span aria-hidden className="h-3 w-[2px] rounded-pill bg-secondary" /> Marcador verde = 100 % de la meta
         </span>
-      </li>
-    </ul>
+        <span className="inline-flex items-center gap-1">
+          <AlertTriangle aria-hidden className="size-3 text-warning" /> Meta cambiada en Profit
+        </span>
+      </div>
+    </div>
   );
-}
+});
 
-function cumulativeOption(report: ForecastSalesResponse): Record<string, unknown> {
+function cumulativeOption(report: ForecastSalesResponse, pinnedDate: string | null = null): Record<string, unknown> {
   const points = buildCumulativeSeries(report);
   const forecastKg = report.totals.forecastKg;
   const labels = points.map((point) => point.label);
@@ -1050,7 +1761,22 @@ function cumulativeOption(report: ForecastSalesResponse): Record<string, unknown
   const pace = points.map((point) => point.pace);
   const cutDay = report.asOf ? String(Number(report.asOf.slice(8, 10))) : null;
   const today = String(Number(report.days.today.slice(8, 10)));
-  const interval = Math.max(0, Math.ceil(labels.length / 10) - 1);
+  const labelStep = Math.max(1, Math.ceil(labels.length / 10));
+  // Día fijado con clic: banda vertical + etiqueta del eje resaltada.
+  const pinnedIndex = pinnedDate ? points.findIndex((point) => point.date === pinnedDate) : -1;
+  const pinnedLabel = pinnedIndex >= 0 ? labels[pinnedIndex] : null;
+
+  const highlightLine = pinnedLabel
+    ? {
+        symbol: 'none',
+        silent: true,
+        animation: false,
+        lineStyle: { color: 'rgba(149, 200, 0, 0.22)', type: 'solid', width: 26 },
+        label: { show: false },
+        z: 0,
+        data: [{ xAxis: pinnedLabel }],
+      }
+    : undefined;
 
   const markLine =
     cutDay === null
@@ -1075,7 +1801,7 @@ function cumulativeOption(report: ForecastSalesResponse): Record<string, unknown
         };
 
   return {
-    animationDuration: 900,
+    animationDuration: 600,
     animationEasing: 'cubicOut',
     grid: { left: 8, right: 16, top: 14, bottom: 4, containLabel: true },
     tooltip: {
@@ -1083,7 +1809,7 @@ function cumulativeOption(report: ForecastSalesResponse): Record<string, unknown
       confine: true,
       backgroundColor: 'rgba(8, 29, 44, 0.94)',
       borderWidth: 0,
-      padding: [10, 12],
+      padding: [8, 10],
       textStyle: { color: '#fff', fontSize: 12 },
       extraCssText: 'border-radius:12px;box-shadow:0 18px 40px -28px rgba(8,29,44,.6);',
       axisPointer: { type: 'line', lineStyle: { color: C.lime, opacity: 0.5 } },
@@ -1102,7 +1828,7 @@ function cumulativeOption(report: ForecastSalesResponse): Record<string, unknown
             </div>`;
           })
           .join('');
-        return `<div style="min-width:190px;"><div style="font-weight:700;margin-bottom:2px;">${dayLabel(point.date)}</div>${lines}</div>`;
+        return `<div style="min-width:170px;"><div style="font-weight:700;margin-bottom:2px;">${dayLabel(point.date)}</div>${lines}</div>`;
       },
     },
     xAxis: {
@@ -1111,7 +1837,24 @@ function cumulativeOption(report: ForecastSalesResponse): Record<string, unknown
       boundaryGap: false,
       axisLine: { lineStyle: { color: '#d6ebff' } },
       axisTick: { show: false },
-      axisLabel: { color: C.outline, fontSize: 10, interval },
+      axisLabel: {
+        color: C.outline,
+        fontSize: 10,
+        // Etiquetas cada `labelStep` días, pero el día fijado siempre se ve.
+        interval: (index: number, value: string) =>
+          (pinnedLabel !== null && value === pinnedLabel) || index % labelStep === 0,
+        formatter: (value: string) => (pinnedLabel !== null && value === pinnedLabel ? `{sel|${value}}` : value),
+        rich: {
+          sel: {
+            color: C.navy,
+            fontWeight: 'bold',
+            fontSize: 10,
+            backgroundColor: 'rgba(149,200,0,0.32)',
+            borderRadius: 3,
+            padding: [2, 3],
+          },
+        },
+      },
     },
     yAxis: {
       type: 'value',
@@ -1162,6 +1905,7 @@ function cumulativeOption(report: ForecastSalesResponse): Record<string, unknown
         data: pace,
         lineStyle: { width: 1.5, color: '#9aa3af', type: 'dotted' },
         itemStyle: { color: '#9aa3af' },
+        markLine: highlightLine,
         z: 2,
       },
     ],
@@ -1182,7 +1926,7 @@ function historyOption(report: ForecastSalesResponse, row: ForecastSalesRow): Re
   const axisMax = Math.max(...values, ...numericTargets, 1) * 1.08;
 
   return {
-    animationDuration: 700,
+    animationDuration: 450,
     grid: { left: 6, right: 12, top: 26, bottom: 2, containLabel: true },
     tooltip: {
       trigger: 'axis',
@@ -1191,6 +1935,7 @@ function historyOption(report: ForecastSalesResponse, row: ForecastSalesRow): Re
       borderWidth: 0,
       padding: [8, 10],
       textStyle: { color: '#fff', fontSize: 12 },
+      extraCssText: 'border-radius:12px;box-shadow:0 18px 40px -28px rgba(8,29,44,.6);',
       formatter: (params: Array<{ seriesName?: string; value?: number | null; dataIndex?: number }>) => {
         const index = params[0]?.dataIndex ?? 0;
         const label =
@@ -1229,7 +1974,7 @@ function historyOption(report: ForecastSalesResponse, row: ForecastSalesRow): Re
         data: values.map((value, index) => ({
           value,
           itemStyle: {
-            color: index === values.length - 1 ? C.lime : C.navy,
+            color: index === values.length - 1 ? C.navyLight : C.navy,
             borderRadius: [6, 6, 0, 0],
           },
         })),
@@ -1271,11 +2016,6 @@ function SalesSkeleton() {
         <RotateCw aria-hidden className="size-4 animate-spin" /> Calculando ventas del mes contra el forecast…
       </p>
       <div className="shimmer h-52 rounded-card bg-surface-container-low" />
-      <div className="grid grid-cols-1 gap-space-md sm:grid-cols-2 xl:grid-cols-6">
-        {Array.from({ length: 6 }).map((_, index) => (
-          <Skeleton key={index} className="h-28" />
-        ))}
-      </div>
       <div className="grid gap-space-lg xl:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
         <Skeleton className="h-80" />
         <Skeleton className="h-80" />

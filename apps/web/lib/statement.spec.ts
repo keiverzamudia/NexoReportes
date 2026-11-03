@@ -105,6 +105,7 @@ describe('customerForStatement', () => {
       vendor: null,
       isActive: true,
       ordersCount: 2,
+      sales: null,
     });
   });
 

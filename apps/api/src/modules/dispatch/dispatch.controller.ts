@@ -75,7 +75,7 @@ export class DispatchController {
 
   @Patch(':id/lines/:lineId')
   @RequirePermission('despacho:update')
-  @ApiOperation({ summary: 'Confirma la carga real de un renglón' })
+  @ApiOperation({ summary: 'Resuelve un renglón: cargado, parcial o no cargado' })
   updateLine(
     @Param('id') id: string,
     @Param('lineId') lineId: string,

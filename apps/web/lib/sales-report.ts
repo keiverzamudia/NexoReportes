@@ -117,6 +117,8 @@ export interface SalesFilters {
   search: string;
   onlyWithSales: boolean;
   onlyWithForecast: boolean;
+  /** Oculta los artículos del catálogo que no tienen meta ni venta. */
+  onlyWithData: boolean;
 }
 
 export function filterSalesRows(rows: ForecastSalesRow[], filters: SalesFilters): ForecastSalesRow[] {
@@ -126,18 +128,14 @@ export function filterSalesRows(rows: ForecastSalesRow[], filters: SalesFilters)
       (filters.unit === 'ALL' || row.uom === filters.unit) &&
       (!filters.onlyWithSales || row.actualKg > 0) &&
       (!filters.onlyWithForecast || row.forecastKg > 0) &&
+      (!filters.onlyWithData ||
+        row.forecastKg > 0 ||
+        row.actualKg > 0 ||
+        (row.forecastCapturedKg ?? 0) > 0) &&
       (!needle ||
         row.productCode.toLowerCase().includes(needle) ||
         row.description.toLowerCase().includes(needle)),
   );
-}
-
-/** Los N artículos con mayor meta (y, a igualdad, mayor venta). */
-export function topSalesRows(rows: ForecastSalesRow[], limit = 10): ForecastSalesRow[] {
-  return [...rows]
-    .filter((row) => row.forecastKg > 0 || row.actualKg > 0)
-    .sort((a, b) => b.forecastKg - a.forecastKg || b.actualKg - a.actualKg)
-    .slice(0, limit);
 }
 
 export interface CumulativePoint {
@@ -160,6 +158,227 @@ export function buildCumulativeSeries(report: ForecastSalesResponse): Cumulative
     projected: day.projectedCumulativeKg,
     pace: day.forecastCumulativeKg,
   }));
+}
+
+// ---------- Ventas del día (panel bajo la gráfica) ----------
+
+export interface SalesDayWithSales {
+  date: string;
+  dayNumber: number;
+  kg: number;
+  units: number;
+  invoices: number;
+  /** Acumulado del mes hasta ese día (incluido). */
+  cumulativeKg: number;
+  /** Día posterior al corte: se está vendiendo en este momento. */
+  partial: boolean;
+}
+
+/** Días del mes que ya tienen despachos, en orden cronológico. */
+export function salesDaysWithSales(report: ForecastSalesResponse): SalesDayWithSales[] {
+  const cut = report.asOf;
+  let running = 0;
+  const days: SalesDayWithSales[] = [];
+
+  for (const day of report.daily) {
+    if (day.actualKg <= 0) continue;
+    running += day.actualKg;
+    days.push({
+      date: day.date,
+      dayNumber: Number(day.date.slice(8, 10)),
+      kg: day.actualKg,
+      units: day.actualUnits,
+      invoices: day.invoiceCount,
+      cumulativeKg: running,
+      partial: cut !== null && day.date > cut,
+    });
+  }
+
+  return days;
+}
+
+// ---------- Barras diarias (ventas por día) ----------
+
+export interface SalesDayBar {
+  date: string;
+  dayNumber: number;
+  kg: number;
+  units: number;
+  invoices: number;
+  /** Día posterior al corte: todavía se está vendiendo. */
+  partial: boolean;
+  /** Día que aún no llega: la ranura queda vacía. */
+  future: boolean;
+  isToday: boolean;
+}
+
+/**
+ * Una entrada por cada día del mes (también los de 0 kg): la tira de barras
+ * necesita las ranuras vacías para mostrar el mes que falta por transcurrir.
+ */
+export function buildDayBars(report: ForecastSalesResponse): SalesDayBar[] {
+  const cut = report.asOf;
+  const today = report.days.today;
+
+  return report.daily.map((day) => ({
+    date: day.date,
+    dayNumber: Number(day.date.slice(8, 10)),
+    kg: day.actualKg,
+    units: day.actualUnits,
+    invoices: day.invoiceCount,
+    partial: cut !== null && day.date > cut && day.date <= today,
+    future: day.date > today,
+    isToday: day.date === today,
+  }));
+}
+
+export interface DailySalesScale {
+  /** Tope de la pista en kg/día (incluye la meta diaria cuando la hay). */
+  maxKg: number;
+  /** Meta uniforme por día del forecast; null si el mes no tiene meta. */
+  goalKg: number | null;
+}
+
+/** Redondeo «amable» para el eje (1, 1,2, 1,5, 2, 2,5… × 10^n). */
+function niceCeil(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const normalized = value / magnitude;
+  const steps = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+  const step = steps.find((candidate) => normalized <= candidate) ?? 10;
+  return step * magnitude;
+}
+
+/**
+ * Escala de la tira diaria. La meta por día usa la misma pendiente que la
+ * línea «Ritmo forecast» del acumulado (forecast ÷ días del mes).
+ */
+export function dailySalesScale(report: ForecastSalesResponse, bars: SalesDayBar[]): DailySalesScale {
+  const peak = bars.reduce((max, bar) => Math.max(max, bar.kg), 0);
+  const goalKg =
+    report.totals.forecastKg > 0 && report.days.workingInMonth > 0
+      ? report.totals.forecastKg / report.days.workingInMonth
+      : null;
+  const base = Math.max(peak, goalKg ?? 0);
+  // 5 % de aire: el día más alto no toca el borde de la pista.
+  return { maxKg: base > 0 ? niceCeil(base * 1.05) : 1, goalKg };
+}
+
+// ---------- Desglose del día (tabla del panel) ----------
+
+export interface SalesDayProductLine {
+  productCode: string;
+  description: string;
+  uom: string;
+  kg: number;
+  units: number;
+  sacks: number | null;
+}
+
+/**
+ * Artículos despachados en un día. El desglose del API solo trae código, kg y
+ * unidades; la descripción, la UOM y los sacos salen de `rows` (el mismo
+ * informe), así el payload no duplica el catálogo.
+ */
+export function productsForDay(report: ForecastSalesResponse, date: string): SalesDayProductLine[] {
+  const day = report.daily.find((entry) => entry.date === date);
+  if (!day) return [];
+
+  const rowsByCode = new Map(report.rows.map((row) => [row.productCode, row]));
+
+  return day.products
+    .map((product) => {
+      const row = rowsByCode.get(product.productCode);
+      const kgPerUom = row?.kgPerUom ?? null;
+      const isSack = row?.uom === 'SAC';
+      return {
+        productCode: product.productCode,
+        description: row?.description ?? product.productCode,
+        uom: row?.uom ?? '',
+        kg: product.kg,
+        units: product.units,
+        sacks:
+          isSack && kgPerUom !== null && kgPerUom > 0
+            ? product.kg / kgPerUom
+            : isSack
+              ? product.units
+              : null,
+      };
+    })
+    .sort((a, b) => b.kg - a.kg || a.productCode.localeCompare(b.productCode));
+}
+
+// ---------- Barras de desviación por producto ----------
+
+/**
+ * Posición del marcador de meta dentro de la pista (%). El resto de la pista
+ * (30 %) queda libre para ver cuánto superó la venta o la proyección a la meta.
+ * Al ser fija, todos los productos comparten la misma referencia visual: 100 %.
+ */
+export const META_MARKER_PCT = 70;
+
+export interface DeviationGeometry {
+  /** false = el artículo no tiene meta: no existe un 100 % de referencia. */
+  hasMeta: boolean;
+  /** Posición fija del marcador (100 % de la meta) en % del ancho de la pista. */
+  markerPct: number;
+  /** Ancho de la barra real en % de la pista (recortado a 100). */
+  actualWidthPct: number;
+  /** Ancho de la barra de proyección en % de la pista (recortado a 100). */
+  projectedWidthPct: number;
+  /** Venta real como % de la meta (sin recortar; null si no hay meta). */
+  actualPctOfMeta: number | null;
+  /** Proyección como % de la meta (sin recortar; null si no hay meta). */
+  projectedPctOfMeta: number | null;
+  /** La barra llegó al borde de la pista: el exceso se informa con texto. */
+  actualClipped: boolean;
+  projectedClipped: boolean;
+}
+
+/**
+ * Geometría de una barra de desviación. La pista se normaliza por producto:
+ * `meta = markerPct % del ancho`, así el marcador cae siempre en el mismo
+ * punto y las barras se leen como «% de la meta» (y no contra el artículo más
+ * grande, que además cambiaba al filtrar).
+ */
+export function salesDeviationGeometry(
+  row: Pick<ForecastSalesRow, 'forecastKg' | 'actualKg' | 'projectedKg'>,
+  markerPct: number = META_MARKER_PCT,
+): DeviationGeometry {
+  // Entre 5 % y 95 %: siempre hace falta algo de pista a ambos lados.
+  const marker = Math.min(95, Math.max(5, markerPct));
+  const forecastKg = Number.isFinite(row.forecastKg) ? row.forecastKg : 0;
+
+  if (forecastKg <= 0) {
+    return {
+      hasMeta: false,
+      markerPct: marker,
+      actualWidthPct: 0,
+      projectedWidthPct: 0,
+      actualPctOfMeta: null,
+      projectedPctOfMeta: null,
+      actualClipped: false,
+      projectedClipped: false,
+    };
+  }
+
+  // En un mes futuro no hay proyección: se usa la venta real (0).
+  const projectedKg = row.projectedKg ?? row.actualKg;
+  const actualPctOfMeta = (Math.max(0, row.actualKg) / forecastKg) * 100;
+  const projectedPctOfMeta = (Math.max(0, projectedKg) / forecastKg) * 100;
+  const toWidth = (pctOfMeta: number) => Math.max(0, Math.min(100, (pctOfMeta / 100) * marker));
+  const clips = (pctOfMeta: number) => (pctOfMeta / 100) * marker >= 100;
+
+  return {
+    hasMeta: true,
+    markerPct: marker,
+    actualWidthPct: toWidth(actualPctOfMeta),
+    projectedWidthPct: toWidth(projectedPctOfMeta),
+    actualPctOfMeta,
+    projectedPctOfMeta,
+    actualClipped: clips(actualPctOfMeta),
+    projectedClipped: clips(projectedPctOfMeta),
+  };
 }
 
 // ---------- CSV ----------

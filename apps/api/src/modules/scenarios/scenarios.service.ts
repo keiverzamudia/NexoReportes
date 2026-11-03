@@ -1,9 +1,11 @@
 import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import {
+  DraftReleaseInput,
   MAX_SCENARIOS,
   ScenarioDetail,
   ScenarioDraftInput,
+  ScenarioDraftResponse,
   ScenarioListItem,
   ScenarioListResponse,
   ScenarioLock,
@@ -12,6 +14,7 @@ import {
   ScenarioRestoreInput,
   ScenarioRestoreLog,
   ScenarioSaveInput,
+  ScenarioSendDispatchInput,
   ScenarioUpdateInput,
   SCENARIO_LOCK_SECONDS,
   zScenarioPayload,
@@ -19,6 +22,8 @@ import {
 import { DispatchDraft, DispatchScenario, DispatchScenarioRestore } from '@prisma/client';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
+import { DispatchService, DispatchViewer } from '../dispatch/dispatch.service';
+import { buildDraftPlan, draftLineKey } from './draft-plan';
 
 // ============================================================
 // Simulador de despacho: plan GLOBAL compartido + escenarios guardados.
@@ -43,13 +48,15 @@ export interface ScenarioActor {
 export interface ScenarioViewer {
   id: string;
   isAdmin: boolean;
+  /** Permiso «Quitar selecciones de otros» (pedidos:override). */
+  canOverride?: boolean;
 }
 
 export type ScenarioViewerInput = string | ScenarioViewer;
 export type ScenarioActorInput = string | ScenarioActor;
 
 function asViewer(input: ScenarioViewerInput): ScenarioViewer {
-  return typeof input === 'string' ? { id: input, isAdmin: false } : input;
+  return typeof input === 'string' ? { id: input, isAdmin: false, canOverride: false } : input;
 }
 
 function asActor(input: ScenarioActorInput): ScenarioActor {
@@ -98,6 +105,7 @@ export class ScenariosService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly dispatch: DispatchService,
   ) {}
 
   // Migración de los borradores por usuario al plan global. Se ejecuta una
@@ -196,13 +204,38 @@ export class ScenariosService implements OnModuleInit {
     };
   }
 
-  // Plan global (o null si nadie lo ha guardado todavía).
-  async getDraft(viewerInput: ScenarioViewerInput): Promise<{ scenario: ScenarioDetail | null }> {
+  // Plan vivo del equipo (o vacío si nadie lo ha guardado todavía). Devuelve
+  // los renglones resueltos y la asignación calculada en el servidor, para que
+  // todas las pantallas vean el mismo compromiso y el mismo stock libre.
+  async getDraft(viewerInput: ScenarioViewerInput): Promise<ScenarioDraftResponse> {
     const viewer = asViewer(viewerInput);
     const row = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
-    if (!row) return { scenario: null };
+    if (!row) {
+      return { scenario: null, lines: [], assignments: [], freeByProduct: [], activeSheet: null };
+    }
     const dataVersion = await this.currentDataVersion();
-    return { scenario: this.toDraftDetail(row, viewer, dataVersion) };
+    return this.buildDraftResponse(row, viewer, dataVersion);
+  }
+
+  private async buildDraftResponse(
+    row: DispatchDraft,
+    viewer: ScenarioViewer,
+    dataVersion: string | null,
+  ): Promise<ScenarioDraftResponse> {
+    const payload = this.parseDraftPayload(row);
+    const plan = await buildDraftPlan(this.prisma, payload.selected);
+    const activeSheet = await this.prisma.dispatchSheet.findFirst({
+      where: { draftId: 'GLOBAL', status: { notIn: ['DESPACHADO', 'CANCELADO'] } },
+      orderBy: { sentAt: 'desc' },
+      select: { id: true, number: true, status: true },
+    });
+    return {
+      scenario: this.toDraftDetail(row, viewer, dataVersion),
+      lines: plan.lines,
+      assignments: plan.assignments,
+      freeByProduct: plan.freeByProduct,
+      activeSheet,
+    };
   }
 
   // Detalle de un escenario guardado. No filtra por dueño: el equipo entero
@@ -238,7 +271,8 @@ export class ScenariosService implements OnModuleInit {
   ): Promise<ScenarioLockResponse> {
     const viewer = asViewer(viewerInput);
     let actor = asActor(actorInput);
-    if (!actor.id) throw new ForbiddenException('Sesión requerida');
+    const actorId = actor.id;
+    if (!actorId) throw new ForbiddenException('Sesión requerida');
     actor = await this.withName(actor);
     let draft = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
     if (!draft) draft = await this.createEmptyDraft(actor);
@@ -319,60 +353,255 @@ export class ScenariosService implements OnModuleInit {
     return { released: true };
   }
 
-  // ---------- Escritura del plan global ----------
+  // ---------- Escritura del plan compartido ----------
 
-  // Autoguardado del plan global. Exige versión y lock vigente del titular.
-  // Si el lock expiró, el guardado lo renueva (el usuario sigue en pantalla).
-  async saveDraft(actorInput: ScenarioActorInput, input: ScenarioDraftInput): Promise<ScenarioListItem> {
+  // Autoguardado del plan del equipo. No hay lock: aplica un DIFF sobre la
+  // selección vigente. Lo ajeno nunca se borra sin `pedidos:override`; lo nuevo
+  // se marca a nombre de quien guarda. El primero que guarda se queda con el
+  // renglón (los demás lo ven tomado en el siguiente refresco).
+  async saveDraft(
+    actorInput: ScenarioActorInput,
+    input: ScenarioDraftInput,
+    viewerInput?: ScenarioViewerInput,
+  ): Promise<ScenarioDraftResponse> {
     let actor = asActor(actorInput);
-    if (!actor.id) throw new ForbiddenException('Sesión requerida');
+    const actorId = actor.id;
+    if (!actorId) throw new ForbiddenException('Sesión requerida');
     actor = await this.withName(actor);
-    const payload: ScenarioPayload = {
-      recipe: input.recipe,
-      selected: input.selected,
-      snapshot: null,
-      loadPlan: input.loadPlan ?? null,
-    };
-    const dataVersion = await this.currentDataVersion();
-    const data = {
-      payload: JSON.stringify(payload),
-      dataVersion,
-      ...this.derive(payload),
-      lockedById: actor.id,
-      lockedByName: actor.name ?? null,
-      lockedUntil: new Date(Date.now() + SCENARIO_LOCK_SECONDS * 1000),
-      lockToken: input.lockToken ?? randomUUID(),
-      updatedById: actor.id,
-      updatedByCode: actor.code ?? null,
-      updatedByName: actor.name ?? null,
-    };
+    const viewer = viewerInput
+      ? asViewer(viewerInput)
+      : { id: actor.id!, isAdmin: false, canOverride: false };
 
     let existing = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
-    if (!existing) {
-      const row = await this.prisma.dispatchDraft.create({ data: { id: 'GLOBAL', ...data } });
-      return this.toDraftDetail(row, { id: actor.id!, isAdmin: false }, dataVersion);
+    if (!existing) existing = await this.createEmptyDraft(actor);
+
+    const previous = this.parseDraftPayload(existing);
+    const current = previous.selected;
+    const canOverride = Boolean(viewer.isAdmin || viewer.canOverride);
+    const incomingKeys = new Set(input.selected.map(draftLineKey));
+    const currentByKey = new Map(current.map((ref) => [draftLineKey(ref), ref]));
+    const now = new Date().toISOString();
+
+    // Lo que sigue en el plan conserva dueño y orden de marcado.
+    const kept: typeof current = [];
+    for (const ref of current) {
+      if (incomingKeys.has(draftLineKey(ref))) {
+        kept.push(ref);
+        continue;
+      }
+      const removable = canOverride || !ref.selectedById || ref.selectedById === actorId;
+      if (removable) continue;
+      kept.push(ref);
     }
 
-    if (lockIsActive(existing) && existing.lockedById !== actor.id) {
-      throw new ConflictException(
-        `El plan lo está editando ${existing.lockedByName ?? 'otro usuario'}. Toma el control para guardar.`,
-      );
-    }
-    if (existing.lockedById === actor.id && !input.lockToken && existing.lockToken) {
-      data.lockToken = existing.lockToken;
-    }
-    if (input.version !== undefined && input.version !== existing.version) {
-      throw new ConflictException('El plan cambió en otra pestaña. Recarga para ver la versión más reciente.');
-    }
-    if (existing.lockedById === actor.id && input.lockToken && existing.lockToken !== input.lockToken) {
-      throw new ConflictException('Tu control del plan expiró. Vuelve a tomar el control.');
+    // Lo nuevo se marca al final: el orden del arreglo es el turno de reserva.
+    const added: typeof current = [];
+    for (const ref of input.selected) {
+      if (currentByKey.has(draftLineKey(ref))) continue;
+      added.push({
+        orderNumber: ref.orderNumber,
+        productCode: ref.productCode,
+        selectedById: actorId,
+        selectedByName: actor.name ?? null,
+        selectedAt: now,
+      });
     }
 
+    const payload: ScenarioPayload = {
+      recipe: input.recipe,
+      selected: [...kept, ...added],
+      snapshot: null,
+      loadPlan: input.loadPlan ?? null,
+      comments: input.comments ?? previous.comments ?? {},
+    };
+    const dataVersion = await this.currentDataVersion();
     const row = await this.prisma.dispatchDraft.update({
       where: { id: 'GLOBAL' },
-      data: { ...data, version: { increment: 1 } },
+      data: {
+        payload: JSON.stringify(payload),
+        dataVersion,
+        ...this.derive(payload),
+        updatedById: actor.id,
+        updatedByCode: actor.code ?? null,
+        updatedByName: actor.name ?? null,
+        version: { increment: 1 },
+      },
     });
-    return this.toDraftDetail(row, { id: actor.id!, isAdmin: false }, dataVersion);
+
+    await this.syncSheetSafely(row);
+    return this.buildDraftResponse(row, viewer, dataVersion);
+  }
+
+  // Libera selecciones. `all` exige override; `lines` respeta al dueño; sin
+  // lista libera solo lo marcado por quien pide.
+  async releaseDraftLines(
+    actorInput: ScenarioActorInput,
+    input: DraftReleaseInput,
+    viewerInput?: ScenarioViewerInput,
+  ): Promise<ScenarioDraftResponse> {
+    let actor = asActor(actorInput);
+    const actorId = actor.id;
+    if (!actorId) throw new ForbiddenException('Sesión requerida');
+    actor = await this.withName(actor);
+    const viewer = viewerInput
+      ? asViewer(viewerInput)
+      : { id: actor.id!, isAdmin: false, canOverride: false };
+    const canOverride = Boolean(viewer.isAdmin || viewer.canOverride);
+
+    const existing = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
+    if (!existing) {
+      return { scenario: null, lines: [], assignments: [], freeByProduct: [], activeSheet: null };
+    }
+    if (input.all && !canOverride) {
+      throw new ForbiddenException(
+        'Solo un administrador o quien tenga «Quitar selecciones de otros» puede liberar todo.',
+      );
+    }
+
+    const payload = this.parseDraftPayload(existing);
+    const keys = new Set((input.lines ?? []).map(draftLineKey));
+    const selected = payload.selected.filter((ref) => {
+      if (input.all) return false;
+      if (keys.size > 0 && !keys.has(draftLineKey(ref))) return true;
+      if (ref.selectedById === actorId) return false;
+      if (keys.size > 0) return !canOverride;
+      return true;
+    });
+
+    const removed = payload.selected.length - selected.length;
+    const keptOrders = new Set(selected.map((ref) => ref.orderNumber));
+    const loadPlan = payload.loadPlan
+      ? {
+          ...payload.loadPlan,
+          segments: payload.loadPlan.segments
+            .map((segment) => ({
+              ...segment,
+              orderNumbers: segment.orderNumbers.filter((number) => keptOrders.has(number)),
+            }))
+            .filter((segment) => segment.orderNumbers.length > 0),
+        }
+      : null;
+    const keptKeys = new Set(selected.map((ref) => draftLineKey(ref)));
+    const comments = Object.fromEntries(
+      Object.entries(payload.comments ?? {}).filter(([key]) => keptKeys.has(key)),
+    );
+    const next: ScenarioPayload = { ...payload, selected, loadPlan, comments };
+    const dataVersion = await this.currentDataVersion();
+    const row = await this.prisma.dispatchDraft.update({
+      where: { id: 'GLOBAL' },
+      data: {
+        payload: JSON.stringify(next),
+        dataVersion,
+        ...this.derive(next),
+        updatedById: actor.id,
+        updatedByCode: actor.code ?? null,
+        updatedByName: actor.name ?? null,
+        version: { increment: 1 },
+      },
+    });
+
+    await this.audit.record({
+      actorId: actor.id,
+      actorEmail: actor.code ?? null,
+      action: 'SCENARIO_RELEASE',
+      entityType: 'DispatchDraft',
+      entityId: 'GLOBAL',
+      context: { removed, all: Boolean(input.all) },
+    });
+    await this.syncSheetSafely(row);
+    return this.buildDraftResponse(row, viewer, dataVersion);
+  }
+
+  // Envía la simulación VIVA al almacén. La hoja queda enlazada al borrador y
+  // se actualiza sola mientras sus renglones no estén CARGADOS.
+  async sendDraftToDispatch(
+    viewerInput: ScenarioViewerInput,
+    actorInput: ScenarioActorInput,
+    dispatchViewer: DispatchViewer,
+    input: ScenarioSendDispatchInput,
+  ) {
+    let actor = asActor(actorInput);
+    const actorId = actor.id;
+    if (!actorId) throw new ForbiddenException('Sesión requerida');
+    actor = await this.withName(actor);
+    const row = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
+    if (!row) throw new ConflictException('No hay una simulación del equipo para enviar.');
+    const payload = this.parseDraftPayload(row);
+    if (payload.selected.length === 0) {
+      throw new ConflictException('Marca al menos un renglón antes de enviar la simulación.');
+    }
+
+    const plan = await buildDraftPlan(this.prisma, payload.selected);
+    if (plan.lines.length === 0) {
+      throw new ConflictException('Los renglones marcados ya no están en la cartera. Actualiza y vuelve a intentar.');
+    }
+    const assignmentByKey = new Map(plan.assignments.map((item) => [draftLineKey(item), item]));
+    const snapshotLines = plan.lines.map((line, index) => {
+      const assignment = assignmentByKey.get(draftLineKey(line))!;
+      return {
+        orderNumber: line.orderNumber,
+        productCode: line.productCode,
+        selectedById: payload.selected.find((ref) => draftLineKey(ref) === draftLineKey(line))?.selectedById ?? null,
+        selectedByName: payload.selected.find((ref) => draftLineKey(ref) === draftLineKey(line))?.selectedByName ?? null,
+        selectedAt: payload.selected.find((ref) => draftLineKey(ref) === draftLineKey(line))?.selectedAt ?? null,
+        customerCode: line.customerCode,
+        customerName: line.customerName,
+        description: line.description,
+        uom: line.uom,
+        pendingQty: line.pendingQty,
+        pendingKg: line.pendingKg,
+        assignedQty: assignment.assignedQty,
+        assignedKg: assignment.assignedKg,
+        missingQty: assignment.missingQty,
+        missingKg: assignment.missingKg,
+        stockTotal: assignment.stockTotal,
+        effectiveDate: line.tentativeDate ?? line.requestedDate,
+        priority: index + 1,
+        comment: payload.comments?.[draftLineKey(line)] ?? null,
+      };
+    });
+    const totalKg = snapshotLines.reduce((sum, line) => sum + line.assignedKg, 0);
+    const missingKg = snapshotLines.reduce((sum, line) => sum + line.missingKg, 0);
+    const snapshot = {
+      takenAt: new Date().toISOString(),
+      carteraLines: plan.lines.length,
+      totals: {
+        lines: snapshotLines.length,
+        sacks: snapshotLines.reduce((sum, line) => sum + (line.uom === 'SAC' ? line.assignedQty : 0), 0),
+        pendingQty: snapshotLines.reduce((sum, line) => sum + line.pendingQty, 0),
+        pendingKg: snapshotLines.reduce((sum, line) => sum + (line.pendingKg ?? 0), 0),
+        assignedQty: snapshotLines.reduce((sum, line) => sum + line.assignedQty, 0),
+        assignedKg: totalKg,
+        missingQty: snapshotLines.reduce((sum, line) => sum + line.missingQty, 0),
+        missingKg,
+        coverage: totalKg + missingKg > 0 ? totalKg / (totalKg + missingKg) : 1,
+      },
+      lines: snapshotLines,
+    };
+
+    const payloadWithSnapshot: ScenarioPayload = { ...payload, snapshot };
+    return this.dispatch.createFromDraft(
+      dispatchViewer,
+      {
+        title: input.title?.trim() || 'Simulación del equipo',
+        instructions: input.instructions,
+        assignedToId: input.assignedToId ?? null,
+      },
+      payloadWithSnapshot,
+      row.version,
+      actor,
+    );
+  }
+
+  // El guardado nunca debe fallar porque el almacén no pudo sincronizarse.
+  private async syncSheetSafely(row: DispatchDraft): Promise<void> {
+    try {
+      await this.dispatch.syncFromDraft(row.id);
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo sincronizar la hoja de despacho: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   // ---------- Escenarios guardados ----------
@@ -392,6 +621,7 @@ export class ScenariosService implements OnModuleInit {
       selected: input.selected,
       snapshot: input.snapshot,
       loadPlan: input.loadPlan ?? null,
+      comments: input.comments ?? {},
     };
     const dataVersion = await this.currentDataVersion();
     const data = {
@@ -564,9 +794,8 @@ export class ScenariosService implements OnModuleInit {
     const closed = new Set(orderNumbers);
     const draft = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
     if (!draft) return { removed: 0 };
-    // No pisar a quien está editando: el cliente resuelve los renglones
-    // cerrados al hidratar y el borrador se poda en la siguiente ventana.
-    if (lockIsActive(draft) && draft.lockedById) return { removed: 0 };
+    // Ya no hay lock de pantalla: el plan se poda siempre y el cliente
+    // reconcilia los renglones cerrados en el siguiente refresco.
     const payload = this.parseDraftPayload(draft);
     const selected = payload.selected.filter((ref) => !closed.has(ref.orderNumber));
     const removed = payload.selected.length - selected.length;
@@ -583,6 +812,9 @@ export class ScenariosService implements OnModuleInit {
         }
       : null;
     const next: ScenarioPayload = { ...payload, selected, loadPlan };
+    next.comments = Object.fromEntries(
+      Object.entries(payload.comments ?? {}).filter(([key]) => selected.some((ref) => draftLineKey(ref) === key)),
+    );
     await this.prisma.dispatchDraft.update({
       where: { id: 'GLOBAL' },
       data: {
@@ -627,8 +859,6 @@ export class ScenariosService implements OnModuleInit {
         payload: JSON.stringify(payload),
         ...this.derive(payload),
         dataVersion: await this.currentDataVersion(),
-        lockedById: actor.id ?? null,
-        lockedByName: actor.name ?? null,
         updatedById: actor.id ?? null,
         updatedByCode: actor.code ?? null,
         updatedByName: actor.name ?? null,
@@ -726,10 +956,9 @@ export class ScenariosService implements OnModuleInit {
   }
 
   private toDraftDetail(row: DispatchDraft, viewer: ScenarioViewer, dataVersion: string | null): ScenarioDetail {
-    const lock = this.lockFor(row, viewer);
     return {
       id: 'GLOBAL',
-      name: 'Plan global',
+      name: 'Plan del equipo',
       kind: 'DRAFT',
       ownerId: row.updatedById ?? 'GLOBAL',
       ownerCode: row.updatedByCode ?? null,
@@ -743,11 +972,13 @@ export class ScenariosService implements OnModuleInit {
       version: row.version,
       restoredAt: null,
       restoreCount: 0,
-      canEdit: lock === null || lock.isMine,
+      // Sin lock: cualquiera con permiso puede sumar renglones; la propiedad
+      // se controla por renglón, no por pantalla.
+      canEdit: true,
       canDelete: false,
       canRestore: true,
       closedLines: 0,
-      lock,
+      lock: null,
       payload: this.parseDraftPayload(row),
       restores: [],
       createdAt: row.createdAt.toISOString(),

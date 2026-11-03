@@ -10,6 +10,7 @@ import {
 } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
 import { ProfitAdapter, PROFIT_ADAPTER } from '../sync/profit.adapter';
+import { normalizeCustomerCode } from './customer-code';
 
 // ============================================================
 // Estado de cuenta por cliente (cartera de Profit, solo lectura).
@@ -63,16 +64,6 @@ WHERE RTRIM(cc.co_cli) = @co_cli
 ORDER BY cc.fec_emis DESC, cc.tipo_doc, cc.nro_doc
 `;
 
-function normalizeCode(value: string): string {
-  const code = String(value ?? '').trim().toUpperCase();
-  if (!/^[A-Z0-9-]{1,10}$/.test(code)) {
-    throw new BadRequestException('Código de cliente inválido');
-  }
-  return code;
-}
-
-// Lista de códigos para la cartera agrupada: valida cada uno con la misma
-// regla del estado de cuenta y descarta duplicados.
 function normalizeCodes(value: string): string[] {
   const codes = [
     ...new Set(
@@ -81,7 +72,7 @@ function normalizeCodes(value: string): string[] {
         .map((code) => code.trim())
         .filter(Boolean),
     ),
-  ].map(normalizeCode);
+  ].map(normalizeCustomerCode);
   if (codes.length === 0) throw new BadRequestException('Indica al menos un cliente');
   if (codes.length > MAX_SUMMARY_CLIENTS) {
     throw new BadRequestException(`Máximo ${MAX_SUMMARY_CLIENTS} clientes por consulta`);
@@ -212,7 +203,7 @@ export class CustomerStatementService {
   }
 
   async statement(codeRaw: string, query: CustomerStatementQuery = {}): Promise<CustomerStatement> {
-    const code = normalizeCode(codeRaw);
+    const code = normalizeCustomerCode(codeRaw);
     const includeSettled = query.incluirSaldados ?? false;
     const currency: CustomerStatementCurrency = query.moneda ?? 'USD';
 

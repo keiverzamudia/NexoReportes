@@ -1,18 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import type { ForecastSalesResponse, ForecastSalesRow } from '@nexo/contracts';
 import {
+  META_MARKER_PCT,
   SALES_CSV_HEADERS,
   buildCumulativeSeries,
+  buildDayBars,
   buildNarrative,
   buildSalesCsv,
+  dailySalesScale,
   dayLabel,
   filterSalesRows,
   fmtPct,
   fmtTonnes,
   monthLabel,
+  productsForDay,
   salesCsvFileName,
+  salesDaysWithSales,
+  salesDeviationGeometry,
   salesTone,
-  topSalesRows,
 } from './sales-report';
 
 function row(overrides: Partial<ForecastSalesRow> = {}): ForecastSalesRow {
@@ -22,6 +27,10 @@ function row(overrides: Partial<ForecastSalesRow> = {}): ForecastSalesRow {
     uom: 'SAC',
     kgPerUom: 40,
     forecastKg: 480_000,
+    forecastCapturedKg: 480_000,
+    forecastLiveKg: 480_000,
+    forecastCapturedAt: '2026-10-01T00:00:00.000Z',
+    forecastDriftAt: null,
     actualKg: 300_000,
     actualUnits: 7_500,
     actualSacks: 7_500,
@@ -75,9 +84,9 @@ function report(overrides: Partial<ForecastSalesResponse> = {}): ForecastSalesRe
       lastInvoiceDate: '2026-10-28',
     },
     daily: [
-      { date: '2026-10-27', actualKg: 20_000, actualUnits: 500, invoiceCount: 3, cumulativeKg: 480_000, projectedCumulativeKg: 480_000, forecastCumulativeKg: 528_888.9 },
-      { date: '2026-10-28', actualKg: 20_000, actualUnits: 500, invoiceCount: 3, cumulativeKg: 500_000, projectedCumulativeKg: 500_000, forecastCumulativeKg: 549_999.9 },
-      { date: '2026-10-29', actualKg: 80, actualUnits: 2, invoiceCount: 1, cumulativeKg: null, projectedCumulativeKg: 520_833.3, forecastCumulativeKg: 571_110.9 },
+      { date: '2026-10-27', actualKg: 20_000, actualUnits: 500, invoiceCount: 3, products: [], cumulativeKg: 480_000, projectedCumulativeKg: 480_000, forecastCumulativeKg: 528_888.9 },
+      { date: '2026-10-28', actualKg: 20_000, actualUnits: 500, invoiceCount: 3, products: [], cumulativeKg: 500_000, projectedCumulativeKg: 500_000, forecastCumulativeKg: 549_999.9 },
+      { date: '2026-10-29', actualKg: 80, actualUnits: 2, invoiceCount: 1, products: [], cumulativeKg: null, projectedCumulativeKg: 520_833.3, forecastCumulativeKg: 571_110.9 },
     ],
     history: [],
     rows: [row()],
@@ -125,17 +134,42 @@ describe('filtros y orden', () => {
   ];
 
   it('filtra por presentación, texto y presencia de venta/meta', () => {
-    expect(filterSalesRows(rows, { unit: 'KG', search: '', onlyWithSales: false, onlyWithForecast: false })).toHaveLength(1);
     expect(
-      filterSalesRows(rows, { unit: 'ALL', search: 'vaca', onlyWithSales: false, onlyWithForecast: false }).map((r) => r.productCode),
+      filterSalesRows(rows, { unit: 'KG', search: '', onlyWithSales: false, onlyWithForecast: false, onlyWithData: false }),
+    ).toHaveLength(1);
+    expect(
+      filterSalesRows(rows, { unit: 'ALL', search: 'vaca', onlyWithSales: false, onlyWithForecast: false, onlyWithData: false }).map(
+        (r) => r.productCode,
+      ),
     ).toEqual(['ABABOV75']);
-    expect(filterSalesRows(rows, { unit: 'ALL', search: '', onlyWithSales: true, onlyWithForecast: false })).toHaveLength(2);
-    expect(filterSalesRows(rows, { unit: 'ALL', search: '', onlyWithSales: false, onlyWithForecast: true })).toHaveLength(2);
+    expect(
+      filterSalesRows(rows, { unit: 'ALL', search: '', onlyWithSales: true, onlyWithForecast: false, onlyWithData: false }),
+    ).toHaveLength(2);
+    expect(
+      filterSalesRows(rows, { unit: 'ALL', search: '', onlyWithSales: false, onlyWithForecast: true, onlyWithData: false }),
+    ).toHaveLength(2);
   });
 
-  it('top por meta y descarta filas sin meta ni venta', () => {
-    const result = topSalesRows([...rows, row({ productCode: 'VACIO', forecastKg: 0, actualKg: 0 })], 2);
-    expect(result.map((r) => r.productCode)).toEqual(['ABAGP13', 'ABABOV75']);
+  it('«Solo con datos» oculta las filas sin meta, venta ni captura', () => {
+    const withEmpty = [
+      ...rows,
+      row({ productCode: 'VACIO', forecastKg: 0, actualKg: 0, forecastCapturedKg: null, forecastLiveKg: 0 }),
+      row({
+        productCode: 'CAPTURADO',
+        forecastKg: 0,
+        actualKg: 0,
+        forecastCapturedKg: 90_000,
+        forecastLiveKg: 0,
+      }),
+    ];
+    const result = filterSalesRows(withEmpty, {
+      unit: 'ALL',
+      search: '',
+      onlyWithSales: false,
+      onlyWithForecast: false,
+      onlyWithData: true,
+    });
+    expect(result.map((r) => r.productCode)).toEqual(['ABAGP13', 'ABAKG01', 'ABABOV75', 'CAPTURADO']);
   });
 });
 
@@ -146,6 +180,223 @@ describe('serie acumulada para la gráfica', () => {
     expect(series[0]!.actual).toBe(480_000);
     expect(series[2]!.actual).toBeNull();
     expect(series[2]!.projected).toBeCloseTo(520_833.3, 1);
+  });
+});
+
+describe('ventas del día — panel bajo la gráfica', () => {
+  const data = report({
+    rows: [row(), row({ productCode: 'ABAKG01', description: 'GRANEL', uom: 'KG', kgPerUom: null })],
+    daily: [
+      {
+        date: '2026-10-27',
+        actualKg: 20_000,
+        actualUnits: 500,
+        invoiceCount: 3,
+        products: [
+          { productCode: 'ABAKG01', kg: 8_000, units: 8_000 },
+          { productCode: 'ABAGP13', kg: 12_000, units: 300 },
+        ],
+        cumulativeKg: 480_000,
+        projectedCumulativeKg: 480_000,
+        forecastCumulativeKg: 528_888.9,
+      },
+      {
+        date: '2026-10-28',
+        actualKg: 0,
+        actualUnits: 0,
+        invoiceCount: 0,
+        products: [],
+        cumulativeKg: 480_000,
+        projectedCumulativeKg: 500_000,
+        forecastCumulativeKg: 549_999.9,
+      },
+      {
+        date: '2026-10-29',
+        actualKg: 80,
+        actualUnits: 2,
+        invoiceCount: 1,
+        products: [{ productCode: 'ABAGP13', kg: 80, units: 2 }],
+        cumulativeKg: null,
+        projectedCumulativeKg: 520_833.3,
+        forecastCumulativeKg: 571_110.9,
+      },
+    ],
+  });
+
+  it('lista solo los días con venta y marca el día parcial', () => {
+    const days = salesDaysWithSales(data);
+    expect(days.map((day) => day.date)).toEqual(['2026-10-27', '2026-10-29']);
+    expect(days[0]!.cumulativeKg).toBe(20_000);
+    expect(days[0]!.partial).toBe(false);
+    expect(days[1]!.partial).toBe(true);
+    expect(days[1]!.cumulativeKg).toBe(20_080);
+  });
+
+  it('desglosa el día por producto con descripción, UOM y sacos', () => {
+    const products = productsForDay(data, '2026-10-27');
+    expect(products.map((line) => line.productCode)).toEqual(['ABAGP13', 'ABAKG01']);
+    expect(products[0]).toMatchObject({ description: 'GALLINA PONEDORA PLUS 18% - 40 KG', uom: 'SAC', sacks: 300 });
+    expect(products[1]).toMatchObject({ uom: 'KG', sacks: null });
+  });
+
+  it('un día sin desglose devuelve una lista vacía', () => {
+    expect(productsForDay(data, '2026-10-28')).toEqual([]);
+    expect(productsForDay(data, '2026-10-30')).toEqual([]);
+  });
+});
+
+describe('barras diarias — tira bajo el acumulado', () => {
+  const data = report({
+    daily: [
+      {
+        date: '2026-10-27',
+        actualKg: 20_000,
+        actualUnits: 500,
+        invoiceCount: 3,
+        products: [],
+        cumulativeKg: 480_000,
+        projectedCumulativeKg: 480_000,
+        forecastCumulativeKg: 528_888.9,
+      },
+      {
+        date: '2026-10-28',
+        actualKg: 0,
+        actualUnits: 0,
+        invoiceCount: 0,
+        products: [],
+        cumulativeKg: 480_000,
+        projectedCumulativeKg: 500_000,
+        forecastCumulativeKg: 549_999.9,
+      },
+      {
+        date: '2026-10-29',
+        actualKg: 80,
+        actualUnits: 2,
+        invoiceCount: 1,
+        products: [],
+        cumulativeKg: null,
+        projectedCumulativeKg: 520_833.3,
+        forecastCumulativeKg: 571_110.9,
+      },
+      {
+        date: '2026-10-30',
+        actualKg: 0,
+        actualUnits: 0,
+        invoiceCount: 0,
+        products: [],
+        cumulativeKg: null,
+        projectedCumulativeKg: null,
+        forecastCumulativeKg: 571_110.9,
+      },
+    ],
+  });
+
+  it('incluye todos los días y distingue corte, hoy y futuro', () => {
+    const bars = buildDayBars(data);
+
+    expect(bars.map((bar) => bar.dayNumber)).toEqual([27, 28, 29, 30]);
+    expect(bars[0]).toMatchObject({ kg: 20_000, partial: false, future: false, isToday: false });
+    expect(bars[1]).toMatchObject({ kg: 0, partial: false, future: false });
+    expect(bars[2]).toMatchObject({ kg: 80, partial: true, future: false, isToday: true });
+    expect(bars[3]).toMatchObject({ kg: 0, partial: false, future: true, isToday: false });
+  });
+
+  it('en un mes cerrado no quedan días parciales ni futuros', () => {
+    const closed = report({
+      asOf: '2026-10-31',
+      status: 'CLOSED',
+      days: {
+        ...data.days,
+        cut: '2026-10-31',
+        today: '2026-11-03',
+        elapsed: 31,
+        remaining: 0,
+      },
+    });
+
+    const bars = buildDayBars(closed);
+    expect(bars.every((bar) => !bar.partial && !bar.future)).toBe(true);
+  });
+
+  it('la escala incluye la meta diaria y deja aire para el día más alto', () => {
+    const scale = dailySalesScale(data, buildDayBars(data));
+
+    expect(scale.goalKg).toBeCloseTo(570_000 / 27, 1);
+    expect(scale.maxKg).toBe(25_000);
+  });
+
+  it('sin meta solo mide la venta real', () => {
+    const noMeta = report({ totals: { ...data.totals, forecastKg: 0 } });
+    const scale = dailySalesScale(noMeta, buildDayBars(noMeta));
+
+    expect(scale.goalKg).toBeNull();
+    expect(scale.maxKg).toBe(25_000);
+  });
+
+  it('sin días ni meta la pista no queda en cero', () => {
+    const empty = report({ daily: [], totals: { ...data.totals, forecastKg: 0 } });
+
+    expect(dailySalesScale(empty, [])).toEqual({ maxKg: 1, goalKg: null });
+  });
+});
+
+describe('barras de desviación — escala por producto', () => {
+  it('el marcador de meta siempre cae en el mismo punto de la pista', () => {
+    const base = row({ forecastKg: 480_000, actualKg: 0, projectedKg: 0 });
+    const small = salesDeviationGeometry(base);
+    const large = salesDeviationGeometry(row({ forecastKg: 90_000, actualKg: 120_000, projectedKg: 150_000 }));
+    expect(small.markerPct).toBe(META_MARKER_PCT);
+    expect(large.markerPct).toBe(small.markerPct);
+  });
+
+  it('100 % de la meta coincide con el marcador', () => {
+    const geometry = salesDeviationGeometry(row({ forecastKg: 100_000, actualKg: 100_000, projectedKg: 100_000 }));
+    expect(geometry.actualWidthPct).toBeCloseTo(META_MARKER_PCT, 6);
+    expect(geometry.projectedWidthPct).toBeCloseTo(META_MARKER_PCT, 6);
+    expect(geometry.actualClipped).toBe(false);
+  });
+
+  it('proporción lineal por debajo de la meta y sin recorte', () => {
+    const geometry = salesDeviationGeometry(row({ forecastKg: 480_000, actualKg: 300_000, projectedKg: 240_000 }));
+    expect(geometry.actualPctOfMeta).toBeCloseTo(62.5, 6);
+    expect(geometry.actualWidthPct).toBeCloseTo(META_MARKER_PCT * 0.625, 6);
+    expect(geometry.projectedWidthPct).toBeCloseTo(META_MARKER_PCT * 0.5, 6);
+    expect(geometry.actualClipped).toBe(false);
+    expect(geometry.projectedClipped).toBe(false);
+  });
+
+  it('pasarse de la meta cruza el marcador y se recorta solo en el borde', () => {
+    const passed = salesDeviationGeometry(row({ forecastKg: 100_000, actualKg: 120_000, projectedKg: 130_000 }));
+    expect(passed.actualWidthPct).toBeGreaterThan(META_MARKER_PCT);
+    expect(passed.projectedWidthPct).toBeGreaterThan(passed.actualWidthPct);
+    expect(passed.actualClipped).toBe(false);
+
+    // 143 % de la meta es el tope de la pista con el marcador al 70 %.
+    const huge = salesDeviationGeometry(row({ forecastKg: 100_000, actualKg: 200_000, projectedKg: 140_000 }));
+    expect(huge.actualWidthPct).toBe(100);
+    expect(huge.actualClipped).toBe(true);
+    expect(huge.projectedClipped).toBe(false);
+  });
+
+  it('sin meta no hay 100 % de referencia: ni barras ni marcador', () => {
+    const geometry = salesDeviationGeometry(row({ forecastKg: 0, actualKg: 50_000, projectedKg: 50_000 }));
+    expect(geometry.hasMeta).toBe(false);
+    expect(geometry.actualWidthPct).toBe(0);
+    expect(geometry.projectedWidthPct).toBe(0);
+    expect(geometry.actualPctOfMeta).toBeNull();
+    expect(geometry.projectedPctOfMeta).toBeNull();
+  });
+
+  it('mes futuro (proyección null) mide la venta real', () => {
+    const geometry = salesDeviationGeometry(row({ forecastKg: 100_000, actualKg: 25_000, projectedKg: null }));
+    expect(geometry.projectedPctOfMeta).toBeCloseTo(25, 6);
+    expect(geometry.projectedWidthPct).toBe(geometry.actualWidthPct);
+  });
+
+  it('acepta otra posición de marcador', () => {
+    const geometry = salesDeviationGeometry(row({ forecastKg: 100_000, actualKg: 100_000, projectedKg: 100_000 }), 50);
+    expect(geometry.markerPct).toBe(50);
+    expect(geometry.actualWidthPct).toBeCloseTo(50, 6);
   });
 });
 

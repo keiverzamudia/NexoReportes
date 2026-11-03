@@ -173,6 +173,31 @@ const SCENARIOS = [
   },
   { name: 'clientes', path: '/clientes', devices: ['desktop', 'phone'] },
   {
+    name: 'clientes-ficha',
+    path: '/clientes',
+    devices: ['desktop', 'phone'],
+    steps: [
+      { tag: 'ficha', js: clickByText('Ficha') },
+      { tag: 'productos', js: clickByText('Productos') },
+      { tag: 'oportunidades', js: clickByText('Oportunidades') },
+    ],
+  },
+  {
+    name: 'clientes-ficha-resumen',
+    path: '/clientes',
+    devices: ['desktop', 'phone'],
+    steps: [{ tag: 'ficha', js: clickByText('Ficha') }],
+  },
+  {
+    name: 'clientes-ficha-productos',
+    path: '/clientes',
+    devices: ['desktop', 'phone'],
+    steps: [
+      { tag: 'ficha', js: clickByText('Ficha') },
+      { tag: 'productos', js: clickByText('Productos') },
+    ],
+  },
+  {
     name: 'clientes-pedidos',
     path: '/clientes',
     devices: ['desktop', 'phone'],

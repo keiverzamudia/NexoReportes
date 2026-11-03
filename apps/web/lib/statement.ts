@@ -110,5 +110,6 @@ export function customerForStatement(
     vendor: null,
     isActive: true,
     ordersCount: group.ordersCount,
+    sales: null,
   };
 }

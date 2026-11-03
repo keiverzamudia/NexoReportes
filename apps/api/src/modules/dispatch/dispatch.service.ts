@@ -13,10 +13,13 @@ import {
   DispatchSheetListResponse,
   DispatchSheetQuery,
   DispatchSheetSummary,
+  DraftAssignment,
   LoadPlan,
   Notification,
   NotificationReadInput,
   NotificationListResponse,
+  OrderGroupLine,
+  ScenarioPayload,
   zLoadPlan,
   zScenarioPayload,
 } from '@nexo/contracts';
@@ -24,14 +27,16 @@ import { DispatchSheet, DispatchSheetEvent as EventRow, DispatchSheetLine as Lin
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
 import { ArrivalsService, ArrivalSourceLine } from '../arrivals/arrivals.service';
+import { buildDraftPlan, draftLineKey } from '../scenarios/draft-plan';
 
 // ============================================================
 // Despacho de almacén: hoja de trabajo + túnel de acuses.
 //
 // Un despacho nace de un escenario guardado del simulador. El planificador lo
-// publica, el almacén lo recibe, lo carga renglón por renglón y lo cierra.
-// Cada paso deja: sello temporal, evento en la bitácora y notificación al otro
-// lado. Nada de esto escribe en Profit.
+// publica, el almacén lo recibe, resuelve cada renglón (cargado, parcial con X
+// unidades o no cargado con motivo) y lo cierra. Cada paso deja: sello
+// temporal, evento en la bitácora y notificación al otro lado. Nada de esto
+// escribe en Profit.
 //
 // Máquina de estados (validada aquí, no en el controlador):
 //   ENVIADO → RECIBIDO → EN_PROCESO → { CON_NOVEDAD ⇄ EN_PROCESO } → DESPACHADO
@@ -379,6 +384,376 @@ export class DispatchService {
     };
   }
 
+  // Publica la simulación VIVA del equipo. No nace de un escenario guardado:
+  // queda enlazada al borrador (`draftId`) y se actualiza sola mientras sus
+  // renglones no estén CARGADOS.
+  async createFromDraft(
+    viewer: DispatchViewer,
+    input: { title: string; instructions?: string; assignedToId?: string | null },
+    payload: ScenarioPayload,
+    draftRevision: number,
+    actorInput?: { id?: string | null; code?: string | null; name?: string | null },
+  ): Promise<DispatchSheetDetail> {
+    if (!viewer.canPublish) {
+      throw new ForbiddenException('No tienes el permiso «Armar y enviar simulación» en Despacho.');
+    }
+    const actor =
+      actorInput?.id
+        ? { id: actorInput.id, code: actorInput.code ?? null, name: actorInput.name ?? null }
+        : await this.viewerInfo(viewer);
+
+    const snapshot = payload.snapshot;
+    if (!snapshot) throw new BadRequestException('La simulación no tiene una foto de renglones.');
+    const lines = [...snapshot.lines].filter((line) => line.assignedQty > 0).sort((a, b) => a.priority - b.priority);
+    if (lines.length === 0) {
+      throw new BadRequestException('Ningún renglón seleccionado tiene existencia para despachar.');
+    }
+
+    const candidates = await this.operatorCandidates();
+    let assignee: { id: string; displayName: string } | null = null;
+    if (input.assignedToId) {
+      const user = candidates.find((candidate) => candidate.id === input.assignedToId);
+      if (!user) throw new BadRequestException('El operador elegido no está disponible.');
+      assignee = { id: user.id, displayName: user.displayName };
+    }
+
+    const plannedSacks = round2(lines.reduce((sum, line) => sum + (line.uom === 'SAC' ? line.assignedQty : 0), 0));
+    const plannedKg = round2(lines.reduce((sum, line) => sum + line.assignedKg, 0));
+    const destination = assignee ? assignee.displayName : 'todo el almacén';
+    const arrivalLines: ArrivalSourceLine[] = lines.map((line) => ({
+      orderNumber: line.orderNumber,
+      customerCode: line.customerCode ?? null,
+      customerName: line.customerName ?? null,
+      uom: line.uom ?? null,
+      effectiveDate: line.effectiveDate ?? null,
+      plannedQty: line.assignedQty,
+      plannedKg: line.assignedKg,
+    }));
+    let arrivalCount = 0;
+
+    const sheet = await this.createWithNumber(async (number) => {
+      const arrivalRows = await this.arrivals.rowsForSheet({
+        sheetNumber: number,
+        sheetTitle: input.title,
+        lines: arrivalLines,
+        actor,
+      });
+      arrivalCount = arrivalRows.length;
+      return this.prisma.dispatchSheet.create({
+        data: {
+          number,
+          title: input.title,
+          status: 'ENVIADO',
+          instructions: input.instructions ?? null,
+          scenarioId: null,
+          scenarioName: 'Simulación del equipo',
+          draftId: 'GLOBAL',
+          source: 'DRAFT',
+          draftRevision,
+          recipeJson: JSON.stringify(payload.recipe),
+          photoJson: JSON.stringify(snapshot),
+          loadPlanJson: payload.loadPlan ? JSON.stringify(payload.loadPlan) : null,
+          assignedToId: assignee?.id ?? null,
+          assignedRole: 'ALMACEN',
+          createdById: actor.id,
+          createdByCode: actor.code,
+          createdByName: actor.name,
+          sentAt: new Date(),
+          plannedLines: lines.length,
+          plannedSacks,
+          plannedKg,
+          lines: {
+            create: lines.map((line, index) => ({
+              position: index + 1,
+              orderNumber: line.orderNumber,
+              productCode: line.productCode,
+              description: line.description,
+              uom: line.uom,
+              customerCode: line.customerCode,
+              customerName: line.customerName,
+              warehouseCode: null,
+              effectiveDate: line.effectiveDate,
+              plannedQty: line.assignedQty,
+              plannedKg: line.assignedKg,
+              note: line.comment ?? null,
+              status: 'PENDIENTE',
+            })),
+          },
+          events: {
+            create: {
+              kind: 'SYSTEM',
+              type: 'ENVIADO',
+              body: `Despacho enviado a ${destination} desde la simulación del equipo.`,
+              authorId: actor.id,
+              authorCode: actor.code,
+              authorName: actor.name,
+            },
+          },
+          arrivals: { create: arrivalRows },
+        },
+        include: {
+          lines: { orderBy: { position: 'asc' } },
+          events: { orderBy: { createdAt: 'asc' } },
+          assignedTo: { select: { displayName: true } },
+        },
+      });
+    });
+
+    await this.notify(await this.operatorRecipients(sheet), {
+      type: 'DESPACHO_ENVIADO',
+      title: `Nuevo despacho ${sheet.number}`,
+      body: `${sheet.title} · ${lines.length} renglón(es) · ${plannedSacks} sacos · ${plannedKg} kg`,
+      entityId: sheet.id,
+      actorId: actor.id,
+      actorName: actor.name,
+      linkPath: `/despacho/${sheet.id}`,
+    });
+    await this.arrivals.notifyExpected(sheet, { customers: arrivalCount, kg: plannedKg }, actor);
+    await this.audit.record({
+      actorId: actor.id,
+      actorEmail: actor.code,
+      action: 'DISPATCH_SEND',
+      entityType: 'DispatchSheet',
+      entityId: sheet.id,
+      context: { number: sheet.number, lines: lines.length, plannedKg, source: 'DRAFT', assignedTo: assignee?.id ?? 'ALMACEN' },
+    });
+
+    return {
+      ...this.toSummary(sheet, viewer),
+      lines: sheet.lines.map((line) => this.toLine(line)),
+      events: this.eventsFor(sheet, viewer),
+      loadPlan: this.parseLoadPlan(sheet.loadPlanJson),
+    };
+  }
+
+  // Refleja los cambios del plan vivo en las hojas abiertas. Los renglones ya
+  // resueltos son intocables; los PENDIENTES se agregan, actualizan o quitan.
+  async syncFromDraft(draftId = 'GLOBAL'): Promise<void> {
+    const sheets = await this.prisma.dispatchSheet.findMany({
+      where: { draftId, status: { notIn: ['DESPACHADO', 'CANCELADO'] } },
+      include: { lines: { orderBy: { position: 'asc' } } },
+    });
+    if (sheets.length === 0) return;
+
+    const draft = await this.prisma.dispatchDraft.findUnique({ where: { id: draftId } });
+    if (!draft) return;
+    const payload = zScenarioPayload.parse(JSON.parse(draft.payload) as unknown);
+    const plan = await buildDraftPlan(this.prisma, payload.selected);
+    const assignmentByKey = new Map(plan.assignments.map((item) => [draftLineKey(item), item]));
+    const planLines = plan.lines
+      .map((line, index) => {
+        const assignment = assignmentByKey.get(draftLineKey(line));
+        return assignment
+          ? {
+              line,
+              assignment,
+              priority: index + 1,
+              effectiveDate: line.tentativeDate ?? line.requestedDate,
+            }
+          : null;
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+
+    for (const sheet of sheets) {
+      await this.syncSheet(sheet, planLines, payload, draft.version);
+    }
+  }
+
+  private async syncSheet(
+    sheet: DispatchSheet & { lines: LineRow[] },
+    planLines: Array<{
+      line: OrderGroupLine;
+      assignment: DraftAssignment;
+      priority: number;
+      effectiveDate: string | null;
+    }>,
+    payload: ScenarioPayload,
+    draftRevision: number,
+  ): Promise<void> {
+    // Los renglones ya resueltos (cargado, parcial o no cargado) son
+    // intocables: la simulación viva solo agrega, actualiza o quita pendientes.
+    const lockedRows = sheet.lines.filter((row) => row.status !== 'PENDIENTE');
+    const lockedKeys = new Set(lockedRows.map((row) => draftLineKey(row)));
+    const planByKey = new Map(planLines.map((item) => [draftLineKey(item.line), item]));
+    const existingByKey = new Map(sheet.lines.map((row) => [draftLineKey(row), row]));
+
+    const toDelete: string[] = [];
+    const toUpdate: Array<{ row: LineRow; plan: (typeof planLines)[number] }> = [];
+    for (const row of sheet.lines) {
+      if (row.status !== 'PENDIENTE') continue;
+      const plan = planByKey.get(draftLineKey(row));
+      if (!plan || plan.assignment.assignedQty <= 0) {
+        toDelete.push(row.id);
+        continue;
+      }
+      const qtyChanged = round2(toNumber(row.plannedQty)) !== round2(plan.assignment.assignedQty);
+      const kgChanged = round2(toNumber(row.plannedKg)) !== round2(plan.assignment.assignedKg);
+      if (qtyChanged || kgChanged) toUpdate.push({ row, plan });
+    }
+    const toCreate = planLines.filter(
+      (item) =>
+        item.assignment.assignedQty > 0 &&
+        !existingByKey.has(draftLineKey(item.line)) &&
+        !lockedKeys.has(draftLineKey(item.line)),
+    );
+
+    const loadPlanJson = payload.loadPlan ? JSON.stringify(payload.loadPlan) : null;
+    const desiredPending = planLines.filter(
+      (item) => item.assignment.assignedQty > 0 && !lockedKeys.has(draftLineKey(item.line)),
+    );
+    const signature = [
+      ...lockedRows.map(
+        (row) =>
+          `${draftLineKey(row)}|${row.status}|${round2(toNumber(row.plannedQty))}|${round2(toNumber(row.plannedKg))}|${round2(toNumber(row.loadedQty))}|${row.note ?? ''}`,
+      ),
+      ...desiredPending.map(
+        (item) =>
+          `${draftLineKey(item.line)}|PENDIENTE|${round2(item.assignment.assignedQty)}|${round2(item.assignment.assignedKg)}|${payload.comments?.[draftLineKey(item.line)] ?? ''}`,
+      ),
+    ]
+      .sort()
+      .join(';');
+    const currentSignature = sheet.lines
+      .map(
+        (row) =>
+          `${draftLineKey(row)}|${row.status}|${round2(toNumber(row.plannedQty))}|${round2(toNumber(row.plannedKg))}${
+            row.status === 'PENDIENTE' ? `|${row.note ?? ''}` : `|${round2(toNumber(row.loadedQty))}|${row.note ?? ''}`
+          }`,
+      )
+      .sort()
+      .join(';');
+
+    if (signature === currentSignature && sheet.loadPlanJson === loadPlanJson) return;
+
+    const plannedSacks = round2(
+      desiredPending.reduce((sum, item) => sum + (item.line.uom === 'SAC' ? item.assignment.assignedQty : 0), 0) +
+        lockedRows.reduce((sum, row) => sum + (row.uom === 'SAC' ? toNumber(row.plannedQty) : 0), 0),
+    );
+    const plannedKg = round2(
+      desiredPending.reduce((sum, item) => sum + item.assignment.assignedKg, 0) +
+        lockedRows.reduce((sum, row) => sum + toNumber(row.plannedKg), 0),
+    );
+
+    const snapshotLines = [
+      ...lockedRows.map((row) => ({
+        orderNumber: row.orderNumber,
+        productCode: row.productCode,
+        selectedById: null,
+        selectedByName: null,
+        selectedAt: null,
+        customerCode: row.customerCode,
+        customerName: row.customerName,
+        description: row.description,
+        uom: row.uom,
+        pendingQty: toNumber(row.plannedQty),
+        pendingKg: toNumber(row.plannedKg),
+        assignedQty: toNumber(row.plannedQty),
+        assignedKg: toNumber(row.plannedKg),
+        missingQty: 0,
+        missingKg: 0,
+        stockTotal: 0,
+        effectiveDate: row.effectiveDate,
+        priority: row.position,
+        comment: row.note,
+      })),
+      ...desiredPending.map((item) => ({
+        orderNumber: item.line.orderNumber,
+        productCode: item.line.productCode,
+        selectedById: null,
+        selectedByName: null,
+        selectedAt: null,
+        customerCode: item.line.customerCode,
+        customerName: item.line.customerName,
+        description: item.line.description,
+        uom: item.line.uom,
+        pendingQty: item.line.pendingQty,
+        pendingKg: item.line.pendingKg,
+        assignedQty: item.assignment.assignedQty,
+        assignedKg: item.assignment.assignedKg,
+        missingQty: item.assignment.missingQty,
+        missingKg: item.assignment.missingKg,
+        stockTotal: item.assignment.stockTotal,
+        effectiveDate: item.effectiveDate,
+        priority: item.priority,
+        comment: payload.comments?.[draftLineKey(item.line)] ?? null,
+      })),
+    ];
+    const totalKg = snapshotLines.reduce((sum, line) => sum + line.assignedKg, 0);
+    const missingKg = snapshotLines.reduce((sum, line) => sum + line.missingKg, 0);
+    const snapshot = {
+      takenAt: new Date().toISOString(),
+      carteraLines: snapshotLines.length,
+      totals: {
+        lines: snapshotLines.length,
+        sacks: snapshotLines.reduce((sum, line) => sum + (line.uom === 'SAC' ? line.assignedQty : 0), 0),
+        pendingQty: snapshotLines.reduce((sum, line) => sum + line.pendingQty, 0),
+        pendingKg: snapshotLines.reduce((sum, line) => sum + (line.pendingKg ?? 0), 0),
+        assignedQty: snapshotLines.reduce((sum, line) => sum + line.assignedQty, 0),
+        assignedKg: totalKg,
+        missingQty: snapshotLines.reduce((sum, line) => sum + line.missingQty, 0),
+        missingKg,
+        coverage: totalKg + missingKg > 0 ? totalKg / (totalKg + missingKg) : 1,
+      },
+      lines: snapshotLines,
+    };
+
+    await this.prisma.$transaction([
+      ...toDelete.map((id) => this.prisma.dispatchSheetLine.delete({ where: { id } })),
+      ...toUpdate.map(({ row, plan }) =>
+        this.prisma.dispatchSheetLine.update({
+          where: { id: row.id },
+          data: {
+            plannedQty: plan.assignment.assignedQty,
+            plannedKg: plan.assignment.assignedKg,
+            effectiveDate: plan.effectiveDate,
+            note: payload.comments?.[draftLineKey(plan.line)] ?? row.note ?? null,
+            status: 'PENDIENTE',
+          },
+        }),
+      ),
+      ...toCreate.map((item) =>
+        this.prisma.dispatchSheetLine.create({
+          data: {
+            sheetId: sheet.id,
+            position: item.priority,
+            orderNumber: item.line.orderNumber,
+            productCode: item.line.productCode,
+            description: item.line.description,
+            uom: item.line.uom,
+            customerCode: item.line.customerCode,
+            customerName: item.line.customerName,
+            warehouseCode: null,
+            effectiveDate: item.effectiveDate,
+            plannedQty: item.assignment.assignedQty,
+            plannedKg: item.assignment.assignedKg,
+            note: payload.comments?.[draftLineKey(item.line)] ?? null,
+            status: 'PENDIENTE',
+          },
+        }),
+      ),
+      this.prisma.dispatchSheet.update({
+        where: { id: sheet.id },
+        data: {
+          plannedLines: desiredPending.length + lockedRows.length,
+          plannedSacks,
+          plannedKg,
+          photoJson: JSON.stringify(snapshot),
+          loadPlanJson,
+          draftRevision,
+        },
+      }),
+      this.prisma.dispatchSheetEvent.create({
+        data: {
+          sheetId: sheet.id,
+          kind: 'SYSTEM',
+          type: 'SIMULACION_ACTUALIZADA',
+          body: `La simulación del equipo cambió: ${toCreate.length} renglón(es) agregado(s), ${toDelete.length} quitado(s), ${toUpdate.length} actualizado(s).`,
+          authorName: 'Simulación del equipo',
+        },
+      }),
+    ]);
+  }
+
   // ---------- Carga por renglón ----------
 
   async updateLine(viewer: DispatchViewer, id: string, lineId: string, input: DispatchLineInput): Promise<DispatchSheetDetail> {
@@ -391,31 +766,74 @@ export class DispatchService {
     if (!line) throw new NotFoundException('Renglón no encontrado.');
 
     const actor = await this.viewerInfo(viewer);
-    const completed = input.status === 'CARGADO';
     const plannedQty = toNumber(line.plannedQty);
     const plannedKg = toNumber(line.plannedKg);
+    const previousStatus = line.status;
+    const hadDifference = NOVEDAD_LINE_STATUSES.includes(previousStatus);
+    const note = input.note?.trim() || null;
 
-    // Todo o nada: completar toma la cantidad planificada; deshacer la limpia.
-    // El `note` es el comentario del planificador: NO se borra al marcar.
+    if (input.status === 'PARCIAL') {
+      const loadedQty = round2(input.loadedQty ?? 0);
+      if (loadedQty <= 0) {
+        throw new BadRequestException('Indica cuántas unidades cargaste (mayor que cero).');
+      }
+      if (loadedQty >= plannedQty) {
+        throw new BadRequestException('Si cargaste todo, marca el renglón como «Cargado».');
+      }
+      if (!note) throw new BadRequestException('Escribe el motivo de la carga parcial.');
+    }
+    if (input.status === 'FALTANTE' && !note) {
+      throw new BadRequestException('Escribe el motivo por el que no se cargó.');
+    }
+
+    // Cargado toma el plan completo; parcial deriva los kg del ratio de la
+    // unidad; faltante deja todo en cero. El almacén nunca digita dos veces
+    // el mismo dato.
+    const loadedQty =
+      input.status === 'CARGADO'
+        ? plannedQty
+        : input.status === 'PARCIAL'
+          ? round2(input.loadedQty ?? 0)
+          : input.status === 'FALTANTE'
+            ? 0
+            : null;
+    const loadedKg =
+      loadedQty === null
+        ? null
+        : plannedQty > 0
+          ? round2((loadedQty * plannedKg) / plannedQty)
+          : round2(loadedQty);
+    // El motivo reemplaza la nota del renglón; al deshacer una diferencia o
+    // volver a cargado completo se limpia para no dejar motivos obsoletos.
+    const nextNote =
+      input.status === 'PARCIAL' || input.status === 'FALTANTE'
+        ? note
+        : hadDifference
+          ? null
+          : line.note;
+
     await this.prisma.dispatchSheetLine.update({
       where: { id: line.id },
-      data: completed
-        ? {
-            loadedQty: plannedQty,
-            loadedKg: plannedKg,
-            status: 'CARGADO',
-            checkedAt: new Date(),
-            checkedById: actor.id,
-            checkedByName: actor.name,
-          }
-        : {
-            loadedQty: null,
-            loadedKg: null,
-            status: 'PENDIENTE',
-            checkedAt: null,
-            checkedById: null,
-            checkedByName: null,
-          },
+      data:
+        input.status === 'PENDIENTE'
+          ? {
+              loadedQty: null,
+              loadedKg: null,
+              status: 'PENDIENTE',
+              note: nextNote,
+              checkedAt: null,
+              checkedById: null,
+              checkedByName: null,
+            }
+          : {
+              loadedQty,
+              loadedKg,
+              status: input.status,
+              note: nextNote,
+              checkedAt: new Date(),
+              checkedById: actor.id,
+              checkedByName: actor.name,
+            },
     });
 
     // El estado de la hoja refleja si hay novedades entre los renglones.
@@ -459,7 +877,7 @@ export class DispatchService {
         await this.notify([refreshed.createdById], {
           type: 'DESPACHO_NOVEDAD',
           title: `${refreshed.number}: novedad en la carga`,
-          body: `${actor.name ?? 'Almacén'} reportó renglones con una marca anterior. Revisa la bitácora.`,
+          body: `${actor.name ?? 'Almacén'} reportó cargas parciales o no cargadas. Revisa el detalle.`,
           entityId: refreshed.id,
           actorId: actor.id,
           actorName: actor.name,
@@ -479,8 +897,9 @@ export class DispatchService {
         orderNumber: line.orderNumber,
         productCode: line.productCode,
         plannedQty,
-        loadedQty: completed ? plannedQty : null,
+        loadedQty,
         status: input.status,
+        note: nextNote,
       },
     });
 
@@ -497,10 +916,19 @@ export class DispatchService {
     if (!['RECIBIDO', 'EN_PROCESO', 'CON_NOVEDAD'].includes(sheet.status)) {
       throw new ConflictException('Carga al menos un renglón antes de cerrarlo.');
     }
-    const pending = sheet.lines.filter((line) => line.status !== 'CARGADO');
+    const pending = sheet.lines.filter((line) => line.status === 'PENDIENTE');
     if (pending.length > 0) {
       throw new BadRequestException(
-        `Faltan ${pending.length} renglón(es) por cargar. Carga cada uno antes de cerrar.`,
+        `Faltan ${pending.length} renglón(es) por resolver. Marca cada uno como cargado, parcial o no cargado.`,
+      );
+    }
+    // Las diferencias exigen motivo: sin él, el cierre no deja rastro del porqué.
+    const sinMotivo = sheet.lines.filter(
+      (line) => NOVEDAD_LINE_STATUSES.includes(line.status) && !line.note?.trim(),
+    );
+    if (sinMotivo.length > 0) {
+      throw new BadRequestException(
+        `Hay ${sinMotivo.length} renglón(es) con diferencia sin motivo. Agrega el motivo antes de cerrar.`,
       );
     }
 
@@ -858,7 +1286,8 @@ export class DispatchService {
   private toSummary(sheet: SheetWithLines, viewer: DispatchViewer): DispatchSheetSummary {
     const lines = sheet.lines ?? [];
     const totals = this.liveTotals(lines);
-    const linesDone = lines.filter((line) => line.status === 'CARGADO').length;
+    // «Resuelto» = cargado, parcial o no cargado. Solo pendiente bloquea.
+    const linesDone = lines.filter((line) => line.status !== 'PENDIENTE').length;
     const closed = ['DESPACHADO', 'CANCELADO'].includes(sheet.status);
     // «Recibido» era el acuse anterior: se muestra como «en carga».
     const status = sheet.status === 'RECIBIDO' ? 'EN_PROCESO' : sheet.status;

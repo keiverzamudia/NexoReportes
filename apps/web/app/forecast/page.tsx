@@ -4,9 +4,11 @@
 // Forecast — pronóstico de producción (línea ABA = alimentos balanceados).
 //
 //  · Pestaña «Asignador»: forecast MENSUAL por artículo leído de Profit
-//    (`xart_fore.kg_mes`, sin conversión; solo lectura) + CANTIDAD por cada
-//    una de las 4 semanas. Por defecto las semanas se llenan con el PROMEDIO
-//    (forecast mensual / 4) y es lo único que se ajusta en Nexo.
+//    (`forecast.kg_mensual`, convertido a kg según la presentación del
+//    artículo; solo lectura) + CANTIDAD por cada una de las 4 semanas.
+//    `forecast.fecha` indica el mes de vigencia. Por defecto las semanas se
+//    llenan con el PROMEDIO (forecast mensual / 4) y es lo único que se ajusta
+//    en Nexo.
 //  · Pestaña «Reporte»: se elige la SEMANA a evaluar (o «Todas»). Para una
 //    semana se muestra, por artículo, el forecast y además los mismos campos de
 //    la tabla de Disponibilidad (Stock 03/9999/68, Existencia, Solicitado,
@@ -181,6 +183,11 @@ export default function ForecastPage() {
         }`,
       ),
     enabled: tab === 'ventas',
+    // El informe es caro (Profit + catálogo): evitar refetch al volver a la
+    // pestaña o al cambiar de tab dentro del mismo minuto. «Sincronizar»
+    // incrementa `tick` y fuerza la recarga cuando el usuario lo pide.
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
 
@@ -301,7 +308,7 @@ export default function ForecastPage() {
         {tab === 'asignador' && forecast.data && !forecast.data.profitForecastAvailable && (
           <p role="status" className="flex items-center gap-space-sm text-body-md text-amber-700">
             <AlertTriangle aria-hidden className="size-4" /> No se pudo leer el forecast desde Profit (
-            <code>xart_fore</code>); los artículos se muestran en 0.
+            <code>forecast</code>); los artículos se muestran en 0.
           </p>
         )}
 
@@ -322,7 +329,8 @@ export default function ForecastPage() {
                 <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
                   Semanas del mes: {weeks.map((w) => w.label).join(' · ')}. Las cantidades de cada semana se llenan por
                   defecto con el <strong>promedio = forecast mes / 4</strong> y son libremente editables. El forecast mensual se
-                  administra en Profit (<code>xart_fore</code>); aquí no se modifica.
+                  administra en Profit (<code>forecast</code>) y se muestra en <strong>kilogramos</strong>: los artículos SAC se
+                  multiplican por su kg por saco y el granel se mantiene en kg. Aquí no se modifica.
                 </div>
               </Card>
             )}
@@ -342,6 +350,7 @@ export default function ForecastPage() {
             isLoading={sales.isLoading}
             error={sales.error instanceof Error ? sales.error : null}
             unit={unit}
+            canEdit={canEdit}
             onRetry={() => void sales.refetch()}
           />
         )}
@@ -435,8 +444,11 @@ function ForecastAsignador({
       header: 'Descripción',
       sortValue: (r) => r.description,
       render: (r) => (
-        <span className="block max-w-[13rem] truncate" title={r.description}>
-          {r.description}
+        <span className="flex min-w-0 items-center gap-space-xs">
+          <span className="block max-w-[13rem] truncate" title={r.description}>
+            {r.description}
+          </span>
+          <Badge tone="muted">{r.uom}</Badge>
         </span>
       ),
     },
@@ -462,7 +474,7 @@ function ForecastAsignador({
       header: 'Forecast mes (kg)',
       align: 'right',
       render: (r) => (
-        <span className="font-semibold tabular-nums text-on-surface" title="Valor leído de Profit (xart_fore.kg_mes), en kilogramos">
+        <span className="font-semibold tabular-nums text-on-surface" title="Valor de Profit (forecast.kg_mensual) convertido a kilogramos según la presentación del artículo para el mes de vigencia">
           {fmtQty(r.monthlyQty, 0)}
         </span>
       ),
@@ -579,9 +591,10 @@ function FocusProductButton({ code, onClick }: { code: string; onClick: () => vo
 }
 
 // Reporte: dos vistas sobre el mismo payload. «Plan de producción» es la de
-// siempre; «Control» es la tabla comparativa forecast / solicitado / venta.
+// siempre; «Básico» es la tabla comparativa con el stock por almacén,
+// forecast / solicitado / venta.
 function ReporteBlock({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilter }) {
-  const [view, setView] = useState<'plan' | 'control'>('plan');
+  const [view, setView] = useState<'plan' | 'basico'>('plan');
   return (
     <>
       <div className="flex justify-end">
@@ -591,7 +604,7 @@ function ReporteBlock({ data, unit }: { data: ForecastPlanResponse; unit: UnitFi
           onChange={setView}
           options={[
             { value: 'plan', label: 'Plan de producción' },
-            { value: 'control', label: 'Control' },
+            { value: 'basico', label: 'Básico' },
           ]}
         />
       </div>

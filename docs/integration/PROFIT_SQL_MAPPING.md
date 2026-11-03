@@ -163,33 +163,43 @@ WHERE f.anulada = 0 AND f.status <> '2' AND r.pendiente > 0;
 
 ---
 
-## Forecast mensual (23/10/2026) — `dbo.xart_fore`
+## Forecast mensual (02/11/2026) — `dbo.forecast`
 
 El módulo **Forecast** ya no captura el mensual en Nexo: lo lee de Profit con una
-consulta de solo lectura (`ForecastService`), sin conversión de unidades.
+consulta de solo lectura (`ForecastService`). `kg_mensual` viene en la
+**presentación del artículo** (sacos o kg) y el servicio lo normaliza a kg.
 
 | Tabla | Columnas | Uso |
 |---|---|---|
-| `dbo.xart_fore` | `nom` (varchar 150), `kg_mes` (int), `kg_sem` (int) | Forecast por artículo: `kg_mes` se usa **tal cual** como cantidad mensual. `kg_sem` se ignora (las semanas se reparten en Nexo como `kg_mes / 4`). |
-| `dbo.art` | `co_art`, `art_des`, `anulado` | Cruce por descripción: `RTRIM(art_des) = RTRIM(xart_fore.nom)`. |
+| `dbo.forecast` | `fecha` (datetime), `co_art` (char), `kg_mensual` (int), `kg_semanal` (int) | Forecast por artículo y **mes de vigencia**: `fecha` es el primer día del mes. `kg_mensual` viene en la presentación del artículo: **SAC × `uni_relac`** = kg; **KG se usa tal cual**. `kg_semanal` se ignora (las semanas se reparten en Nexo como kg mensual / 4). |
+| `dbo.art` | `co_art`, `uni_venta`, `uni_relac` | Presentación del artículo y kg por unidad. Solo se usa `LEFT JOIN` para convertir a kg; no se cruza por descripción. |
 
 ```sql
-SELECT RTRIM(a.co_art) AS co_art, f.kg_mes AS forecast_mes
-FROM dbo.xart_fore AS f
-INNER JOIN dbo.art AS a
-        ON RTRIM(LTRIM(a.art_des)) = RTRIM(LTRIM(f.nom))
-       AND a.anulado = 0
+SELECT
+  RTRIM(f.co_art) AS co_art,
+  f.kg_mensual AS forecast_mes,
+  f.fecha,
+  RTRIM(a.uni_venta) AS uni_venta,
+  a.uni_relac
+FROM dbo.forecast AS f
+LEFT JOIN dbo.art AS a ON a.co_art = f.co_art
+WHERE f.fecha >= @desde
+  AND f.fecha < @hasta
 ```
 
 Notas:
-- `xart_fore` no tiene `co_art` ni columna de mes: es una foto del **mes en
-  curso**. Para cualquier otro mes el forecast se muestra en 0.
-- Los 40 artículos de la tabla pertenecen a la línea `ABA`; los ABA sin fila en
-  `xart_fore` quedan en 0.
-- Si producción agrega artículos, la descripción debe coincidir con
-  `art.art_des` (o, idealmente, agregar `co_art` a `xart_fore`).
-- La suma de `kg_mes` (1.888.000 en octubre 2026) coincide con
-  `dbo.xmeta_toneladas` de ese mes (1.888 t).
+- `fecha` es el **mes de vigencia** del forecast. Con el rango
+  `[@desde, @hasta)` se puede leer un mes suelto o varios meses de histórico en
+  una sola consulta.
+- **Conversión a kg**: si `art.uni_venta = 'SAC'`, `kg = kg_mensual × art.uni_relac`;
+  si es `KG` (granel), `kg = kg_mensual`. Sin `uni_relac` no se inventa el factor
+  y se deja el valor tal cual.
+- `co_art` elimina el cruce por descripción que exigía la tabla anterior; el
+  `JOIN dbo.art` ahora solo aporta la presentación.
+- Los artículos ABA sin fila en `forecast` para el mes pedido quedan en 0.
+- Si producción edita el valor durante el mes, el informe del mes en curso lo
+  refleja en vivo; el histórico conserva el snapshot congelado
+  (`ForecastTarget`) cuando existe.
 - En Nexo solo se persisten las cantidades por semana (`ForecastWeek`); nunca
   se escribe en Profit.
 
@@ -295,17 +305,18 @@ parametrizadas con `@desde` y `@hasta` (rango semiabierto).
   cantidades negativas (0 de 6.036 líneas); venta neta = venta bruta.
 - **Notas vs facturas**: las notas van ~1–2 % por encima de lo facturado,
   porque incluyen despachos aún no facturados. Es la cifra que se reporta.
-- **`xart_fore.kg_mes` está en KILOGRAMOS**, no en unidades de venta. La UI
-  muestra kg/t en los totales y añade **sacos** (`kg / art.uni_relac`) solo en
-  artículos `SAC`.
+- **`forecast.kg_mensual` se normaliza a KILOGRAMOS**: los artículos SAC se
+  multiplican por `art.uni_relac` y el granel se deja tal cual. La UI muestra
+  kg/t en los totales y añade **sacos** (`kg / art.uni_relac`) solo en artículos
+  `SAC`.
 - **Corte a ayer**: el día en curso está incompleto y se excluye del promedio
   (opción `includeToday=true` para contrastar). **Días hábiles = lun–sáb**; el
   domingo casi no se despacha. `basis=CALENDAR` usa días corridos.
 - **Zona horaria** `America/Caracas` calculada con `Intl` en el servidor, no
   con la hora del proceso (un contenedor en UTC cambiaría de día a las 20:00).
-- Sin `xart_fore` la venta se muestra igual, pero los porcentajes quedan en
-  `null` («sin meta»), nunca `Infinity`. Si Profit falla, el API responde
-  `salesAvailable: false` y la UI NO pinta ceros.
+- Sin forecast para el mes la venta se muestra igual, pero los porcentajes
+  quedan en `null` («sin meta»), nunca `Infinity`. Si Profit falla, el API
+  responde `salesAvailable: false` y la UI NO pinta ceros.
 
 ### Volumen por renglón (mes del informe)
 
@@ -375,30 +386,164 @@ Contrato: `ForecastSalesResponse` en `packages/contracts` (`zForecastSalesQuery`
 
 ### Meta histórica: snapshot mensual (`ForecastTarget`)
 
-`dbo.xart_fore` es una **foto del mes en curso**: no tiene columna de mes ni
-histórico. Para comparar un mes cerrado contra su meta, Nexo guarda la meta
-mientras el mes está vigente en la tabla local `ForecastTarget`
+`forecast` identifica el mes con `fecha`, pero producción puede editar la meta
+después de cargarla. Para que el histórico no cambie, Nexo guarda el valor
+oficial mientras el mes está vigente en la tabla local `ForecastTarget`
 (`apps/api/prisma/schema.prisma`):
 
 | Columna | Uso |
 |---|---|
 | `year`, `month` | Mes al que pertenece la meta. |
-| `productCode` | Código del artículo (`art.co_art`). |
-| `targetKg` | `xart_fore.kg_mes` en **kilogramos**. |
-| `capturedAt` | Última captura desde Profit (no es la fecha de la meta). |
+| `productCode` | Código del artículo (`forecast.co_art`). |
+| `targetKg` | `forecast.kg_mensual` normalizado a **kilogramos** (SAC × `uni_relac`). Valor oficial que se conserva. |
+| `firstCapturedAt` | Primera captura del mes; ancla la ventana de gracia. |
+| `frozenAt` | Momento en que la meta quedó congelada. |
+| `lastSeenKg`, `lastSeenAt` | Última lectura viva de Profit (para detectar diferencias). |
+| `driftDetectedAt` | Cambio detectado después de congelar; **no** modifica `targetKg`. |
+| `capturedAt` | Última escritura oficial del target (creación, corrección o aceptación). |
 
-- **Captura**: al abrir el informe del mes en curso y por un reloj del módulo
-  (`FORECAST_TARGET_INTERVAL_MINUTES`, por defecto 60; `0` lo desactiva). Es un
-  `upsert` idempotente por `[year, month, productCode]` y solo escribe en la BD
-  local: **nunca** en Profit.
+- **Captura**: por un reloj del módulo
+  (`FORECAST_TARGET_INTERVAL_MINUTES`, por defecto 60; `0` lo desactiva). Solo
+  escribe en la BD local: **nunca** en Profit.
+- **Regla de negocio**: la meta se coloca una sola vez al mes en Profit. La
+  primera lectura crea el snapshot; durante `FORECAST_TARGET_GRACE_HOURS`
+  (72 por defecto) se puede corregir ante una carga tardía; después queda
+  congelado.
+- **Cambio posterior en Profit**: si el valor vivo difiere del congelado, se
+  guarda `lastSeenKg`/`driftDetectedAt` y la UI avisa. La meta histórica no se
+  pisa sola; un usuario con `forecast:update` puede aceptar el cambio con
+  `POST /api/forecast/targets/:code/accept?year=YYYY&month=MM` (queda en la
+  bitácora).
 - **Forzar captura**: `POST /api/forecast/sales/capture` (permiso
   `forecast:update`).
-- **Lectura**: el mes en curso usa `xart_fore` en vivo (`forecastSource=LIVE`);
-  los meses cerrados usan `ForecastTarget` (`SNAPSHOT`). Sin snapshot,
-  `forecastSource=NONE` y el cumplimiento queda en `null` («sin meta»), sin
-  tratarlo como error de Profit.
-- El histórico de la respuesta (`history[].forecastKg`) también sale del
-  snapshot, para poder comparar cada mes contra su propia meta.
+- **Lectura**: se pide `forecast` por el mes de `fecha`. El mes en curso (y un
+  mes futuro) usa la lectura viva (`forecastSource=LIVE`). Un mes cerrado usa
+  su snapshot congelado (`SNAPSHOT`); si no existe, también cae a `forecast`
+  (`LIVE`). En el mes en curso, si Profit no responde, cae a la captura local
+  (`CAPTURED`). Sin meta en ninguno de los dos, `forecastSource=NONE` y el
+  cumplimiento queda en `null` («sin meta»), sin tratarlo como error de Profit.
+- El histórico de la respuesta (`history[].forecastKg`) usa el snapshot si
+  existe y, si no, la meta de `forecast` para ese mes, para poder comparar cada
+  mes contra su propia meta.
 - La UI dibuja una línea punteada con la meta de cada mes en el gráfico de foco
   del producto.
+- El catálogo de la tabla es **todo** `Product` con `isProduction=true` e
+  `isActive=true`, aunque no tenga meta ni venta; la UI ofrece el filtro «Solo
+  con datos».
 
+---
+
+## Ventas por cliente en la cartera (02/11/2026) — `dbo.not_ent` + `dbo.reng_nde`
+
+El módulo **Clientes** filtra la cartera por actividad de ventas. La fuente es
+la misma que usa Forecast: notas de entrega (no facturas). La consulta es en
+vivo y de solo lectura, con caché en memoria de 5 minutos por periodo.
+
+| Tabla | Columnas usadas | Uso |
+|---|---|---|
+| `dbo.not_ent` | `fact_num`, `fec_emis`, `co_cli`, `anulada` | Encabezado de la nota de entrega. |
+| `dbo.reng_nde` | `fact_num`, `co_art`, `total_art` | Renglones (unidades vendidas). |
+| `dbo.art` | `co_art`, `uni_venta`, `uni_relac`, `anulado`, `co_lin` | Unidad de venta y kg por unidad. |
+| `dbo.clientes` | `co_cli`, `cli_des`, `tipo`, `co_ven` | Catálogo completo (metadata de clientes sin pedido). |
+
+Consulta (`CustomerSalesService`, marcador `nexo:customer_sales`):
+
+```sql
+SELECT RTRIM(f.co_cli) AS co_cli,
+       SUM(CASE WHEN RTRIM(ISNULL(a.uni_venta, '')) = 'SAC' THEN r.total_art ELSE 0 END) AS sacos,
+       SUM(CASE WHEN RTRIM(ISNULL(a.uni_venta, '')) <> 'SAC' THEN r.total_art * ISNULL(a.uni_relac, 1) ELSE 0 END) AS kg,
+       SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg_total,
+       COUNT(DISTINCT f.fact_num) AS notas,
+       MAX(f.fec_emis) AS ultima
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND a.co_lin = 'ABA'
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+GROUP BY RTRIM(f.co_cli)
+```
+
+- **La unidad manda**: los renglones `SAC` se reportan en **sacos**; el resto
+  (`KG` u otras) en **kg**. `kg_total` solo se usa para ordenar y agregar.
+- **Periodos**: `mes` (día 1 → mañana), `3m`, `6m` y `12m` (mes actual + N−1
+  anteriores). `todos` usa 12 meses como universo de actividad.
+- **Universo visible**: clientes con pedido activo **o** venta en los últimos
+  12 meses. El catálogo completo se sincroniza para conservar nombre, tipo y
+  vendedor de los clientes sin pedido (marcador `nexo:customer_catalog`).
+- **Contrato**: `GET /api/customers?salesPeriod=mes|3m|6m|12m|todos&onlyWithOrders=true`
+  (`zCustomerQuery`, `zCustomerListResponse`). Permiso `clientes:read`.
+- **Degradación**: si Profit no responde, `salesAvailable=false`; la lista
+  conserva la cartera de pedidos y las ventas van en `null` (nunca ceros
+  inventados).
+- **Fixtures**: `nexo:customer_catalog` (clientes sin pedido) y
+  `nexo:customer_sales` (ventas deterministas SAC/KG por cliente).
+
+---
+
+## Ficha 360 de clientes (03/11/2026) — `GET /api/customers/:code/insights`
+
+El módulo **Clientes** abre un informe por cliente con volumen, facturación,
+productos perdidos, surtido del segmento y diagnóstico comercial. Permiso
+`clientes:read`; ventana `months=12|24|36` (default 24) y moneda `USD|BS`.
+
+### Fuentes
+
+| Tabla | Columnas usadas | Uso |
+|---|---|---|
+| `dbo.not_ent` | `fact_num`, `fec_emis`, `co_cli`, `anulada` | Encabezado de la nota de entrega. |
+| `dbo.reng_nde` | `fact_num`, `co_art`, `total_art` | Renglones (sacos/unidades y kg). |
+| `dbo.art` | `co_art`, `art_des`, `uni_venta`, `uni_relac`, `anulado`, `co_lin` | Descripción, unidad y kg por unidad. |
+| `dbo.docum_cc` | `co_cli`, `tipo_doc`, `nro_doc`, `fec_emis`, `monto_net`, `tasa`, `anulado` | Facturación neta. |
+| `dbo.clientes` | `co_cli`, `tipo` | Segmento para el surtido comparable. |
+| `dbo.tipo_cli` | `tip_cli`, `des_tipo` | Descripción del segmento (`L1 EXCLUSIVOS`, …). |
+
+### Consultas (marcadores)
+
+- `nexo:customer_insights_products`: volumen por cliente, mes, nota y artículo.
+  Misma regla que Ventas: nota no anulada, artículo vigente y línea `ABA`.
+- `nexo:customer_insights_billing`: facturación mensual
+  `FACT + N/DB − N/CR`; en USD divide `monto_net` por `tasa` con `NULLIF`.
+  Los documentos sin tasa se cuentan en `sin_tasa` y marcan `billingPartial`.
+- `nexo:customer_insights_similar`: productos que compran clientes del mismo
+  segmento (`RTRIM(clientes.tipo) + ' ' + RTRIM(tipo_cli.des_tipo)`) en los
+  últimos 12 meses. El servicio excluye los que el cliente ya compró en el
+  histórico consultado.
+
+### Reglas de negocio
+
+- **Sacos** = renglones `SAC`; **toneladas** = kg totales / 1000.
+- **Facturado** = documentos de venta netos (`FACT` + `N/DB` − `N/CR`), no
+  incluye adelantos ni ajustes de cartera.
+- **Ventana actual** = 12 meses móviles; **anteriores** = los 12 previos
+  (solo con `months >= 24`).
+- **Producto perdido** = 0 t en la ventana actual y > 0 t en la anterior;
+  se listan solo los que superan 1 t para no generar ruido.
+- **Estado del producto**: `NUEVO` (sin base anterior), `CRECIENDO` (+30 % o
+  más), `ESTABLE`, `CAYENDO` (−30 % o más) y `PERDIDO`.
+- **Segmento de compra**: `ACTIVO`, `EN_RIESGO` (días sin comprar >
+  `max(60, 2 × cadencia)`), `INACTIVO` (sin compras en 12 meses) o `SIN_DATOS`.
+- **Concentración**: el producto principal ≥ 60 % del volumen actual.
+- **Cobranza**: saldo vencido > 0 o límite de crédito usado ≥ 80 %.
+- **Facturado por producto**: es una estimación por reparto proporcional a las
+  toneladas (`productBillingEstimated=true`); `docum_cc` no da importe por
+  artículo.
+- **Degradación**: si falla el volumen, `available=false`; si falla la
+  facturación, `billingAvailable=false` y los montos van en `null`. Pedidos y
+  cartera se mantienen desde la capa local/existente. No se inventan ceros.
+- **Caché**: 5 minutos por cliente + meses + moneda. Un fallo no se cachea.
+
+### Contrato
+
+`zCustomerInsightQuery` y `zCustomerInsightResponse` en `@nexo/contracts`.
+Respuesta: totales actuales y anteriores, tendencia, serie mensual, tabla anual,
+productos, perdidos, surtido comparable, cadencia, cartera, pedidos y alertas.
+
+### Fixtures
+
+`nexo:customer_insights_products`, `nexo:customer_insights_billing` y
+`nexo:customer_insights_similar` generan datos deterministas a partir de
+`CUSTOMER_SALES_PROFILES` (producto principal, producto perdido, producto en
+caída y producto nuevo).

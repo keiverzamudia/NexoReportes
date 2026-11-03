@@ -3,6 +3,8 @@ import { AuditModule } from '../audit/audit.module';
 import { ScenariosModule } from '../scenarios/scenarios.module';
 import { SyncModule } from '../sync/sync.module';
 import { CustomerStatementService } from './customer-statement.service';
+import { CustomerInsightsService } from './customer-insights.service';
+import { CustomerSalesService } from './customer-sales.service';
 import { DeliveryDatesService } from './delivery-dates.service';
 import { OrderLifecycleScheduler } from './order-lifecycle.scheduler';
 import { OrderLifecycleService } from './order-lifecycle.service';
@@ -16,7 +18,15 @@ import { SalesService } from './sales.service';
 @Module({
   imports: [AuditModule, SyncModule, ScenariosModule],
   controllers: [SalesController],
-  providers: [SalesService, DeliveryDatesService, CustomerStatementService, OrderLifecycleService, OrderLifecycleScheduler],
-  exports: [SalesService, DeliveryDatesService, CustomerStatementService, OrderLifecycleService],
+  providers: [
+    SalesService,
+    DeliveryDatesService,
+    CustomerStatementService,
+    CustomerSalesService,
+    CustomerInsightsService,
+    OrderLifecycleService,
+    OrderLifecycleScheduler,
+  ],
+  exports: [SalesService, DeliveryDatesService, CustomerStatementService, CustomerSalesService, CustomerInsightsService, OrderLifecycleService],
 })
 export class SalesModule {}

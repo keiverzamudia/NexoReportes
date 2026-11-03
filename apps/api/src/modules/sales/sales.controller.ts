@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
+  CustomerInsightQuery,
   CustomerQuery,
   CustomerStatementQuery,
   CustomerStatementSummaryQuery,
@@ -21,6 +22,7 @@ import {
   OrderQuery,
   OrderReconcileInput,
   OrderReopenInput,
+  zCustomerInsightQuery,
   zCustomerQuery,
   zCustomerStatementQuery,
   zCustomerStatementSummaryQuery,
@@ -37,6 +39,7 @@ import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RequireAnyPermission, RequirePermission } from '../permissions/permissions.decorator';
 import { PermissionsGuard } from '../permissions/permissions.guard';
 import { CustomerStatementService } from './customer-statement.service';
+import { CustomerInsightsService } from './customer-insights.service';
 import { DeliveryDatesService } from './delivery-dates.service';
 import { OrderLifecycleService } from './order-lifecycle.service';
 import { SalesService } from './sales.service';
@@ -52,6 +55,7 @@ export class SalesController {
     private readonly sales: SalesService,
     private readonly deliveryDates: DeliveryDatesService,
     private readonly customerStatements: CustomerStatementService,
+    private readonly customerInsights: CustomerInsightsService,
     private readonly lifecycle: OrderLifecycleService,
   ) {}
 
@@ -78,6 +82,16 @@ export class SalesController {
     @Query(new ZodValidationPipe(zCustomerStatementQuery)) query: CustomerStatementQuery,
   ) {
     return this.customerStatements.statement(code, query);
+  }
+
+  // Ficha 360: volumen, facturación, productos perdidos y diagnóstico.
+  @Get('customers/:code/insights')
+  @RequirePermission('clientes:read')
+  customerInsightsReport(
+    @Param('code') code: string,
+    @Query(new ZodValidationPipe(zCustomerInsightQuery)) query: CustomerInsightQuery,
+  ) {
+    return this.customerInsights.get(code, query);
   }
 
   @Get('orders')

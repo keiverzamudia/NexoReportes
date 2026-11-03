@@ -13,6 +13,7 @@ import {
   OrderSummary,
 } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
+import { CustomerSalesService } from './customer-sales.service';
 import { DeliveryDatesService, deliveryDateKey } from './delivery-dates.service';
 
 // ============================================================
@@ -112,38 +113,106 @@ export class SalesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly deliveryDates: DeliveryDatesService,
+    private readonly customerSales: CustomerSalesService,
   ) {}
 
+  // ============================================================
+  // Cartera de clientes con ventas por periodo.
+  //
+  // Universo por defecto («todos»): clientes con pedido activo O venta en
+  // los últimos 12 meses. Los filtros «mes»/«3m»/«6m»/«12m» recortan a los
+  // clientes con ventas en esa ventana (notas de entrega).
+  //
+  // Si Profit no responde, la pantalla no se cae: se devuelve la cartera de
+  // pedidos con `salesAvailable: false` y las ventas en null.
+  // ============================================================
   async listCustomers(query: CustomerQuery) {
+    const period = query.salesPeriod ?? 'todos';
+
+    // Conteo de pedidos activos de TODA la cartera (una sola consulta).
+    const groupedOrders = await this.prisma.salesOrder.groupBy({
+      by: ['customerCode'],
+      where: { isActive: true, customerCode: { not: null } },
+      _count: { _all: true },
+    });
+    const ordersByCode = new Map<string, number>();
+    for (const row of groupedOrders) {
+      if (row.customerCode) ordersByCode.set(row.customerCode, row._count._all);
+    }
+    const orderCodes = new Set(ordersByCode.keys());
+
+    // Actividad de 12 meses = universo; el periodo elegido = filtro/columna.
+    const activity = await this.customerSales.aggregate('12m');
+    const periodSales = period === 'todos' ? activity : await this.customerSales.aggregate(period);
+
+    let universe: Set<string>;
+    if (!periodSales.available) {
+      // Sin Profit: se conserva el comportamiento histórico (pedidos activos).
+      universe = new Set(orderCodes);
+    } else if (period === 'todos') {
+      universe = new Set([...orderCodes, ...activity.byCode.keys()]);
+      if (query.onlyWithOrders) universe = new Set(orderCodes);
+    } else {
+      universe = new Set(periodSales.byCode.keys());
+      if (query.onlyWithOrders) {
+        universe = new Set([...universe].filter((code) => orderCodes.has(code)));
+      }
+    }
+
     const where = {
       ...(query.includeInactive ? {} : { isActive: true }),
+      ...(universe.size ? { externalCode: { in: [...universe] } } : {}),
       ...(query.q
         ? { OR: [{ externalCode: { contains: query.q } }, { name: { contains: query.q } }] }
         : {}),
     };
 
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.customer.findMany({
-        where,
-        skip: (query.page - 1) * query.pageSize,
-        take: query.pageSize,
-        orderBy: { externalCode: 'asc' },
-      }),
-      this.prisma.customer.count({ where }),
-    ]);
+    // El universo con actividad es de cientos de clientes: se ordena y pagina
+    // en memoria para poder ordenar por ventas sin una consulta por página.
+    const rows =
+      universe.size === 0
+        ? []
+        : await this.prisma.customer.findMany({
+            where,
+            select: {
+              id: true,
+              externalCode: true,
+              name: true,
+              customerType: true,
+              vendor: true,
+              isActive: true,
+            },
+          });
 
-    const codes = items.map((c) => c.externalCode);
-    const grouped = codes.length
-      ? await this.prisma.salesOrder.groupBy({
-          by: ['customerCode'],
-          where: { isActive: true, customerCode: { in: codes } },
-          _count: { _all: true },
-        })
-      : [];
-    const countByCode = new Map(grouped.map((g) => [g.customerCode, g._count._all]));
+    const bySales = period !== 'todos' && periodSales.available;
+    rows.sort((a, b) => {
+      if (bySales) {
+        const diff =
+          (periodSales.byCode.get(b.externalCode)?.totalKg ?? -1) -
+          (periodSales.byCode.get(a.externalCode)?.totalKg ?? -1);
+        if (diff !== 0) return diff;
+      }
+      return a.externalCode.localeCompare(b.externalCode);
+    });
+
+    const total = rows.length;
+    const start = (query.page - 1) * query.pageSize;
+    const pageRows = rows.slice(start, start + query.pageSize);
+
+    let withSales = 0;
+    let totalSacks = 0;
+    let totalKg = 0;
+    for (const row of rows) {
+      const sale = periodSales.byCode.get(row.externalCode);
+      if (!sale) continue;
+      withSales += 1;
+      // El resumen respeta la unidad: sacos de renglones SAC y kg del resto.
+      totalSacks += sale.sacks;
+      totalKg += sale.kg;
+    }
 
     return {
-      items: items.map(
+      items: pageRows.map(
         (c): Customer => ({
           id: c.id,
           externalCode: c.externalCode,
@@ -151,12 +220,20 @@ export class SalesService {
           customerType: c.customerType,
           vendor: c.vendor,
           isActive: c.isActive,
-          ordersCount: countByCode.get(c.externalCode) ?? 0,
+          ordersCount: ordersByCode.get(c.externalCode) ?? 0,
+          sales: periodSales.available ? (periodSales.byCode.get(c.externalCode) ?? null) : null,
         }),
       ),
       page: query.page,
       pageSize: query.pageSize,
       total,
+      salesAvailable: periodSales.available,
+      salesPeriod: period,
+      summary: {
+        withSales,
+        totalSacks: Math.round(totalSacks * 100) / 100,
+        totalKg: Math.round(totalKg * 100) / 100,
+      },
     };
   }
 

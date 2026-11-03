@@ -365,9 +365,10 @@ model InventorySnapshotLine {
 // ============================================================
 // Forecast (pronóstico de producción).
 //   Forecast      = cabecera por artículo/mes. `monthlyQty` guarda el valor
-//                   de Profit (`xart_fore.kg_mes`) vigente cuando se editaron
-//                   las semanas: sirve para detectar si Profit lo cambió.
-//                   El mensual NO se captura en Nexo. `locked`/`lockedAt` se
+//                   de Profit (`forecast.kg_mensual` convertido a kg según la
+//                   presentación del artículo) vigente cuando se editaron las
+//                   semanas: sirve para detectar si Profit lo cambió. El
+//                   mensual NO se captura en Nexo. `locked`/`lockedAt` se
 //                   conservan por compatibilidad y ya no se usan.
 //   ForecastWeek  = reparto por semana (bloques 1-7 / 8-14 / 15-21 / 22-fin)
 //                   con una CANTIDAD editable. Por defecto = forecast mensual / 4.
@@ -403,14 +404,23 @@ model ForecastWeek {
 }
 
 // ============================================================
-// Snapshot mensual de la meta (`xart_fore.kg_mes`).
+// Snapshot mensual de la meta (`forecast.kg_mensual`).
 //
-// `xart_fore` es una foto del mes EN CURSO: no tiene columna de mes ni
-// histórico. Para poder comparar meses cerrados (venta real vs meta) se
-// captura la meta mientras el mes está vigente y se guarda aquí por artículo.
+// `forecast` identifica el mes en `fecha`, pero producción puede editar la
+// meta después de cargarla. Para que el histórico no cambie, se captura el
+// valor oficial mientras el mes está vigente y se guarda aquí por artículo.
 // Es una copia LOCAL de solo lectura sobre Profit: Nexo nunca escribe allí.
 //
-// `targetKg` está en KILOGRAMOS (igual que `xart_fore.kg_mes`).
+// Regla de negocio: la meta se coloca UNA sola vez al mes en Profit. Nexo la
+// captura en la primera lectura y la conserva. Durante las primeras
+// `FORECAST_TARGET_GRACE_HOURS` horas (72 por defecto) se permite corregirla
+// ante una carga tardía; después se congela. Si Profit cambia la meta con el
+// mes ya congelado, NO se pisa: se registra la última lectura viva
+// (`lastSeenKg`) y la fecha (`driftDetectedAt`) para que la UI avise y un
+// usuario autorizado pueda aceptar el cambio a mano.
+//
+// `targetKg` está en KILOGRAMOS (`forecast.kg_mensual` normalizado según la
+// presentación del artículo).
 // ============================================================
 model ForecastTarget {
   id          String   @id @default(cuid())
@@ -418,7 +428,16 @@ model ForecastTarget {
   month       Int
   productCode String
   targetKg    Decimal  @default(0)
-  // Última vez que se refrescó desde Profit (no es la fecha de la meta).
+  // Primera captura de la meta (la que se conserva para el histórico).
+  firstCapturedAt DateTime?
+  // Momento en que la meta quedó congelada (fin de la ventana de gracia).
+  frozenAt        DateTime?
+  // Última lectura viva de Profit y cuándo se vio.
+  lastSeenKg      Decimal?
+  lastSeenAt      DateTime?
+  // Diferencia detectada DESPUÉS de congelar; no cambia `targetKg`.
+  driftDetectedAt DateTime?
+  // Última escritura oficial del target (creación, corrección o aceptación).
   capturedAt  DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -525,6 +544,11 @@ model DispatchSheet {
   // Origen: escenario del simulador (receta + foto para comparar).
   scenarioId   String?
   scenarioName String?
+  // Plan vivo del equipo: cuando la hoja nace del borrador compartido se
+  // sincroniza sola mientras sus renglones no estén CARGADOS.
+  draftId      String?
+  source       String  @default("SCENARIO")
+  draftRevision Int    @default(0)
   recipeJson   String?
   photoJson    String?
   // Guía visual de carga del camión (bloques, orden y colores) copiada del escenario.
@@ -596,8 +620,9 @@ model DispatchSheetLine {
   // Lo que el almacén cargó de verdad.
   loadedQty     Decimal?
   loadedKg      Decimal?
-  // PENDIENTE | CARGADO (marcas actuales)
-  // PARCIAL | FALTANTE | NOVEDAD quedan solo como histórico de lectura.
+  // PENDIENTE | CARGADO | PARCIAL | FALTANTE (marcas actuales)
+  // NOVEDAD queda solo como histórico de lectura. La nota guarda el
+  // comentario del planificador o, si hay diferencia, el motivo.
   status        String        @default("PENDIENTE")
   note          String?
   checkedAt     DateTime?

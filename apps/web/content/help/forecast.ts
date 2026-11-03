@@ -15,6 +15,12 @@ export const SALES_HELP_RULES = [
   'Días hábiles de lunes a sábado; el domingo casi no se despacha.',
   'Venta = nota de entrega no anulada, línea ABA y artículo activo.',
   'Sin devoluciones ABA: la venta neta es igual a la bruta.',
+  'En las barras: real = venta acumulada; proyección = cierre estimado; la rayita = meta.',
+  'Ventas por día: una columna por día del mes; los días futuros quedan vacíos y el día en curso va marcado. El clic fija el día arriba y abajo.',
+  'La línea punteada de la tira diaria es la meta por día (forecast ÷ días del mes).',
+  'La meta se captura una vez al mes y se conserva para el histórico.',
+  'El mes en curso muestra la meta viva de Profit; si allá la cambian, se avisa.',
+  'Sin días hábiles contados, la proyección es 0 y el % es 0: el mes aún no empieza a contar.',
   'Si Profit no responde, el informe no muestra ceros: avisa y espera.',
 ];
 
@@ -55,9 +61,10 @@ export const SALES_COLUMN_HELP = {
     id: 'forecast',
     title: 'Forecast kg',
     short: 'Meta mensual del artículo',
-    what: 'Meta mensual cargada por producción en Profit, ya expresada en kilogramos.',
-    formula: 'xart_fore.kg_mes',
-    source: 'dbo.xart_fore · sin conversión',
+    what:
+      'Meta mensual cargada por producción en Profit, ya expresada en kilogramos. `forecast.fecha` indica el mes de vigencia. `kg_mensual` viene en la presentación del artículo (sacos para SAC, kg para granel) y se multiplica por los kg por saco cuando corresponde. En el mes en curso se lee viva; en los meses cerrados se usa la copia capturada y, si no existe, la meta de Profit para ese mes. Si Profit la cambia después de capturarla, se muestra un aviso.',
+    formula: 'kg_mensual × uni_relac (SAC) · fecha = mes · cerrado: captura local',
+    source: 'dbo.forecast · dbo.art · ForecastTarget',
   },
   ventaKg: {
     id: 'ventaKg',
@@ -95,7 +102,8 @@ export const SALES_COLUMN_HELP = {
     id: 'proyeccion',
     title: 'Proyección kg',
     short: 'Cierre estimado del mes',
-    what: 'Venta que se alcanzaría al cierre si se mantiene el ritmo actual.',
+    what:
+      'Venta que se alcanzaría al cierre si se mantiene el ritmo actual. Si aún no hay días hábiles contados, queda en 0: no significa que el mes esté perdido.',
     formula: 'promedio/día × días del mes',
     source: 'Mes cerrado = venta real',
   },

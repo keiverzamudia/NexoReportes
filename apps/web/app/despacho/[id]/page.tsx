@@ -5,10 +5,12 @@
 // planificador sigue el avance.
 //
 //   · Guía de carga del camión y comentarios del planificador.
-//   · Carga todo o nada: cada renglón se marca «Cargar» (toma la
-//     cantidad planificada) o se deshace. No hay parciales ni faltantes.
+//   · Carga por renglón: el input «Cargado» se edita en la fila. Si baja del
+//     plan se marca parcial y pide el motivo; si queda en 0, no cargado.
+//     «Cargar» completa el plan de un clic y «Cargar todo» hace lo mismo por
+//     cliente. Las diferencias dejan su motivo en el reporte.
 //   · Los clientes van plegados: el encabezado muestra el resumen y
-//     «Cargar todo» marca de una vez los renglones de ese cliente.
+//     «Cargar todo» marca de una vez los renglones pendientes de ese cliente.
 //   · Reporte de cierre con todos los renglones, disponible antes y
 //     después de cerrar.
 //   · Bitácora solo para ADMIN (drawer).
@@ -30,6 +32,8 @@ import {
   Download,
   Loader2,
   MessageSquare,
+  PackageX,
+  Pencil,
   RotateCcw,
   Truck,
   UserCheck,
@@ -38,8 +42,9 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { DispatchBitacoraDrawer } from '../../../components/DispatchBitacoraDrawer';
+import { DispatchLineDialog } from '../../../components/DispatchLineDialog';
 import { DispatchReportDialog } from '../../../components/DispatchReportDialog';
-import { SheetStatusBadge } from '../../../components/DispatchSheetParts';
+import { LineStatusBadge, SheetStatusBadge } from '../../../components/DispatchSheetParts';
 import { TruckLoadPlan } from '../../../components/TruckLoadPlan';
 import type { LoadPlanLine } from '../../../components/TruckLoadPlan';
 import { AppNav, LoginScreen } from '../../../components/shell';
@@ -50,10 +55,26 @@ import {
   formatBusinessDate,
   formatDateTime,
   formatNumber,
-  lineStatusMeta,
+  lineEffectiveQty,
+  resolveTypedQuantity,
   sheetExport,
   type CustomerGroup,
 } from '../../../lib/dispatch-sheet';
+
+// Guardado de un renglón: el input de cantidad decide la marca y este modal
+// solo agrega el motivo cuando hay diferencia.
+interface LineResolution {
+  status: DispatchLineMark;
+  loadedQty?: number;
+  note?: string;
+}
+
+interface NoteTarget {
+  line: DispatchSheetLine;
+  status: 'PARCIAL' | 'FALTANTE';
+  loadedQty: number;
+  note: string;
+}
 
 export default function DispatchSheetPage() {
   const params = useParams<{ id: string }>();
@@ -61,6 +82,8 @@ export default function DispatchSheetPage() {
   const queryClient = useQueryClient();
 
   const [savingLine, setSavingLine] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [noteTarget, setNoteTarget] = useState<NoteTarget | null>(null);
   const [openGroup, setOpenGroup] = useState<string | null>(null);
   const [bulkGroup, setBulkGroup] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -100,6 +123,8 @@ export default function DispatchSheetPage() {
   useEffect(() => {
     setOpenGroup(null);
     setBulkGroup(null);
+    setDrafts({});
+    setNoteTarget(null);
   }, [id]);
 
   const report = useMemo(() => (sheet ? buildDispatchReport(sheet.lines) : null), [sheet]);
@@ -120,9 +145,13 @@ export default function DispatchSheetPage() {
       })),
     [sheet],
   );
-  const completedLines = sheet?.lines.filter((line) => line.status === 'CARGADO').length ?? 0;
-  const blockingLines = sheet ? sheet.lines.length - completedLines : 0;
-  const progress = sheet && sheet.lines.length > 0 ? completedLines / sheet.lines.length : 0;
+  // «Resuelto» = cargado, parcial o no cargado. Solo pendiente bloquea el cierre.
+  const resolvedLines = sheet?.lines.filter((line) => line.status !== 'PENDIENTE').length ?? 0;
+  const partialLines = sheet?.lines.filter((line) => line.status === 'PARCIAL').length ?? 0;
+  const missingLines =
+    sheet?.lines.filter((line) => line.status === 'FALTANTE' || line.status === 'NOVEDAD').length ?? 0;
+  const blockingLines = sheet ? sheet.lines.length - resolvedLines : 0;
+  const progress = sheet && sheet.lines.length > 0 ? resolvedLines / sheet.lines.length : 0;
 
   if (error instanceof AuthRequiredError) {
     return <LoginScreen onSuccess={() => queryClient.invalidateQueries()} />;
@@ -152,16 +181,35 @@ export default function DispatchSheetPage() {
     }
   }
 
-  async function markLine(line: DispatchSheetLine, status: DispatchLineMark) {
+  function setDraft(lineId: string, value: string | null) {
+    setDrafts((current) => {
+      const next = { ...current };
+      if (value === null) delete next[lineId];
+      else next[lineId] = value;
+      return next;
+    });
+  }
+
+  async function saveLine(line: DispatchSheetLine, resolution: LineResolution) {
     if (!sheet || !editable || bulkGroup) return;
     setSavingLine(line.id);
     try {
       const updated = await apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${sheet.id}/lines/${line.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(resolution),
       });
       applyDetail(updated);
-      setToast(status === 'CARGADO' ? 'Renglón cargado.' : 'Renglón devuelto a pendiente.');
+      setDraft(line.id, null);
+      setNoteTarget(null);
+      setToast(
+        resolution.status === 'CARGADO'
+          ? 'Renglón cargado.'
+          : resolution.status === 'PARCIAL'
+            ? `Carga parcial guardada: ${resolution.loadedQty} de ${line.plannedQty} ${line.uom ?? ''}.`
+            : resolution.status === 'FALTANTE'
+              ? 'Renglón marcado como no cargado.'
+              : 'Renglón devuelto a pendiente.',
+      );
     } catch (err) {
       setToast(err instanceof Error ? err.message : 'No se pudo guardar el renglón');
     } finally {
@@ -169,10 +217,76 @@ export default function DispatchSheetPage() {
     }
   }
 
+  function openNote(line: DispatchSheetLine, status: 'PARCIAL' | 'FALTANTE', loadedQty: number, note: string) {
+    setNoteTarget({ line, status, loadedQty, note });
+  }
+
+  /** Motivo ya escrito en una diferencia previa (se reutiliza al corregirla). */
+  function existingReason(line: DispatchSheetLine): string {
+    return line.status === 'PARCIAL' || line.status === 'FALTANTE' || line.status === 'NOVEDAD'
+      ? line.note ?? ''
+      : '';
+  }
+
+  /** Abre el motivo de «no cargado» y refleja 0 en el input de la fila. */
+  function openMissing(line: DispatchSheetLine) {
+    if (!sheet || !editable || bulkGroup) return;
+    setDraft(line.id, '0');
+    openNote(line, 'FALTANTE', 0, existingReason(line));
+  }
+
+  function editNote(line: DispatchSheetLine) {
+    if (!editable) return;
+    if (line.status === 'PARCIAL') {
+      openNote(line, 'PARCIAL', line.loadedQty ?? 0, line.note ?? '');
+    } else if (line.status === 'FALTANTE' || line.status === 'NOVEDAD') {
+      openNote(line, 'FALTANTE', 0, line.note ?? '');
+    }
+  }
+
+  /** El input se confirma al salir o con Enter: completa, parcial o no cargado. */
+  function commitQuantity(line: DispatchSheetLine) {
+    if (!sheet || !editable || bulkGroup || savingLine !== null) return;
+    const raw = drafts[line.id];
+    if (raw === undefined) return;
+    const resolution = resolveTypedQuantity(line.plannedQty, raw);
+    if (resolution.kind === 'UNCHANGED') {
+      setDraft(line.id, null);
+      return;
+    }
+    const typed =
+      resolution.kind === 'FULL'
+        ? line.plannedQty
+        : resolution.kind === 'MISSING'
+          ? 0
+          : resolution.loadedQty;
+    // Si dejó el mismo valor que ya estaba guardado, no hay nada que hacer.
+    if (line.status !== 'PENDIENTE' && typed === lineEffectiveQty(line)) {
+      setDraft(line.id, null);
+      return;
+    }
+    if (resolution.kind === 'FULL') {
+      setDraft(line.id, null);
+      void saveLine(line, { status: 'CARGADO' });
+      return;
+    }
+    if (resolution.kind === 'MISSING') {
+      openNote(line, 'FALTANTE', 0, existingReason(line));
+      return;
+    }
+    openNote(line, 'PARCIAL', resolution.loadedQty, existingReason(line));
+  }
+
+  function closeNote() {
+    const target = noteTarget;
+    setNoteTarget(null);
+    if (target) setDraft(target.line.id, null);
+  }
+
   /** «Cargar todo»: marca de una vez los renglones pendientes de un cliente. */
   async function cargarGrupo(group: CustomerGroup) {
     if (!sheet || !editable || bulkGroup) return;
-    const pending = group.lines.filter((line) => line.status !== 'CARGADO');
+    const pending = group.lines.filter((line) => line.status === 'PENDIENTE');
     if (pending.length === 0) return;
     setBulkGroup(group.key);
     try {
@@ -186,6 +300,11 @@ export default function DispatchSheetPage() {
         });
       }
       applyDetail(updated);
+      setDrafts((current) => {
+        const next = { ...current };
+        for (const line of pending) delete next[line.id];
+        return next;
+      });
       setToast(
         pending.length === 1
           ? `Renglón de ${group.name} cargado.`
@@ -377,7 +496,7 @@ export default function DispatchSheetPage() {
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
                 {editable
-                  ? 'Abre un cliente para cargar sus pedidos, o usa «Cargar todo». Si te equivocas, usa Deshacer.'
+                  ? 'Digita la cantidad real en «Cargado»: si baja del plan se marca parcial y te pide el motivo; usa «No cargado» si no salió nada. «Cargar todo» completa el plan.'
                   : sheet.claimedByName && !closed
                     ? `Lo tomó ${sheet.claimedByName}: puedes verlo, pero solo esa persona lo carga.`
                     : 'Solo lectura.'}
@@ -404,7 +523,7 @@ export default function DispatchSheetPage() {
             <div className="min-w-[12rem] flex-1">
               <div className="mb-1 flex items-center justify-between text-label-sm text-on-surface-variant">
                 <span>
-                  {completedLines}/{sheet.lines.length} renglones cargados
+                  {resolvedLines}/{sheet.lines.length} renglones resueltos
                 </span>
                 <span className="tabular-nums">{Math.round(progress * 100)}%</span>
               </div>
@@ -415,15 +534,27 @@ export default function DispatchSheetPage() {
                 />
               </div>
             </div>
-            {blockingLines > 0 ? (
-              <Badge tone="warning" dot>
-                {blockingLines} por cargar
-              </Badge>
-            ) : (
-              <Badge tone="success" dot>
-                todo cargado
-              </Badge>
-            )}
+            <div className="flex flex-wrap items-center gap-space-xs">
+              {partialLines > 0 && (
+                <Badge tone="warning" dot>
+                  {partialLines} parcial(es)
+                </Badge>
+              )}
+              {missingLines > 0 && (
+                <Badge tone="danger" dot>
+                  {missingLines} no cargado(s)
+                </Badge>
+              )}
+              {blockingLines > 0 ? (
+                <Badge tone="warning" dot>
+                  {blockingLines} por resolver
+                </Badge>
+              ) : (
+                <Badge tone="success" dot>
+                  todo resuelto
+                </Badge>
+              )}
+            </div>
           </div>
 
           <div className="divide-y divide-outline-variant/25">
@@ -445,7 +576,10 @@ export default function DispatchSheetPage() {
                       <span className="block truncate font-semibold text-on-surface">{group.name}</span>
                       <span className="block text-label-sm tabular-nums text-on-surface-variant">
                         {group.lines.length} pedido(s) · {formatNumber(group.plannedKg)} kg plan ·{' '}
-                        {group.completedLines}/{group.lines.length} cargados
+                        {group.completedLines} cargado(s)
+                        {group.partialLines > 0 ? ` · ${group.partialLines} parcial(es)` : ''}
+                        {group.missingLines > 0 ? ` · ${group.missingLines} no cargado(s)` : ''}
+                        {group.pendingLines > 0 ? ` · ${group.pendingLines} pendiente(s)` : ''}
                       </span>
                     </span>
                   </button>
@@ -453,7 +587,11 @@ export default function DispatchSheetPage() {
                   <div className="flex shrink-0 flex-wrap items-center gap-space-xs">
                     {group.pendingLines > 0 ? (
                       <Badge tone="warning" dot>
-                        {group.pendingLines} por cargar
+                        {group.pendingLines} por resolver
+                      </Badge>
+                    ) : group.partialLines + group.missingLines > 0 ? (
+                      <Badge tone="danger" dot>
+                        con diferencia
                       </Badge>
                     ) : (
                       <Badge tone="success" dot>
@@ -464,6 +602,7 @@ export default function DispatchSheetPage() {
                       <button
                         type="button"
                         disabled={bulkGroup !== null || savingLine !== null}
+                        onMouseDown={(event) => event.preventDefault()}
                         onClick={() => void cargarGrupo(group)}
                         title={`Cargar los ${group.pendingLines} renglón(es) pendientes de ${group.name}`}
                         className="inline-flex h-8 items-center gap-space-xs rounded-pill bg-secondary-container px-space-sm font-semibold text-label-md text-on-secondary transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
@@ -480,9 +619,10 @@ export default function DispatchSheetPage() {
                 </div>
 
                 <div hidden={openGroup !== group.key}>
-                  <div className="hidden gap-space-sm border-b border-outline-variant/20 px-space-md py-1 font-semibold uppercase tracking-wider text-label-sm text-outline lg:grid lg:grid-cols-[minmax(0,1fr)_7rem_minmax(0,10rem)_8rem]">
+                  <div className="hidden gap-space-sm border-b border-outline-variant/20 px-space-md py-1 font-semibold uppercase tracking-wider text-label-sm text-outline lg:grid lg:grid-cols-[minmax(0,1fr)_6.5rem_8rem_8rem_12.5rem]">
                     <span>Pedido / artículo</span>
                     <span className="text-right">Entrega</span>
+                    <span className="text-right">Cargado</span>
                     <span className="text-right">Cantidad</span>
                     <span className="text-right">Acción</span>
                   </div>
@@ -490,16 +630,26 @@ export default function DispatchSheetPage() {
                   <ul>
                     {group.lines.map((line) => {
                       const completed = line.status === 'CARGADO';
+                      const difference =
+                        line.status === 'PARCIAL' || line.status === 'FALTANTE' || line.status === 'NOVEDAD';
                       const saving = savingLine === line.id;
+                      const draftValue = drafts[line.id] ?? String(lineEffectiveQty(line));
+                      const parsedDraft = Number(draftValue.replace(',', '.'));
+                      const typedQty = Number.isFinite(parsedDraft)
+                        ? Math.min(Math.max(parsedDraft, 0), line.plannedQty)
+                        : 0;
+                      const typedKg =
+                        line.plannedQty > 0 ? (typedQty * line.plannedKg) / line.plannedQty : typedQty;
                       return (
                         <li
                           key={line.id}
                           className={cx(
                             'border-b border-outline-variant/15 px-space-md py-space-sm transition-colors',
                             completed && 'bg-success-container/25',
+                            difference && 'bg-warning-container/15',
                           )}
                         >
-                          <div className="grid grid-cols-2 gap-x-space-sm gap-y-space-xs lg:grid-cols-[minmax(0,1fr)_7rem_minmax(0,10rem)_8rem] lg:items-center">
+                          <div className="grid grid-cols-2 gap-x-space-sm gap-y-space-xs lg:grid-cols-[minmax(0,1fr)_6.5rem_8rem_8rem_12.5rem] lg:items-center">
                             <div className="col-span-2 min-w-0 lg:col-span-1">
                               <p className="flex items-center gap-space-xs">
                                 <span className="font-bold tabular-nums text-primary">{line.orderNumber}</span>
@@ -510,9 +660,36 @@ export default function DispatchSheetPage() {
                                 {line.description ?? '—'}
                               </p>
                               {line.note && (
-                                <p className="mt-space-2xs flex items-start gap-space-xs rounded-lg bg-secondary-container/15 px-space-xs py-1 text-label-md text-on-surface">
-                                  <MessageSquare aria-hidden className="mt-0.5 size-3.5 shrink-0 text-secondary" />
-                                  <span className="min-w-0 whitespace-pre-wrap">{line.note}</span>
+                                <p
+                                  className={cx(
+                                    'mt-space-2xs flex items-start gap-space-xs rounded-lg px-space-xs py-1 text-label-md text-on-surface',
+                                    difference ? 'bg-warning-container/30' : 'bg-secondary-container/15',
+                                  )}
+                                >
+                                  {difference ? (
+                                    <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-error" />
+                                  ) : (
+                                    <MessageSquare aria-hidden className="mt-0.5 size-3.5 shrink-0 text-secondary" />
+                                  )}
+                                  <span className="min-w-0 flex-1 whitespace-pre-wrap">
+                                    {difference ? <span className="font-semibold">Motivo: </span> : null}
+                                    {line.note}
+                                  </span>
+                                  {difference && editable && (
+                                    <button
+                                      type="button"
+                                      onMouseDown={(event) => event.preventDefault()}
+                                      onClick={() => {
+                                        setDraft(line.id, null);
+                                        editNote(line);
+                                      }}
+                                      title="Editar solo el motivo"
+                                      aria-label={`Editar el motivo de ${line.productCode} en el pedido ${line.orderNumber}`}
+                                      className="grid size-6 shrink-0 place-items-center rounded-full text-on-surface-variant transition-colors hover:bg-surface-container-high"
+                                    >
+                                      <Pencil aria-hidden className="size-3" />
+                                    </button>
+                                  )}
                                 </p>
                               )}
                             </div>
@@ -521,6 +698,69 @@ export default function DispatchSheetPage() {
                               <span className="tabular-nums text-on-surface-variant">
                                 {formatBusinessDate(line.effectiveDate)}
                               </span>
+                            </Cell>
+
+                            <Cell label="Cargado" align="right">
+                              {editable ? (
+                                <div className="flex w-full flex-col items-end gap-0.5">
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="number"
+                                      inputMode="decimal"
+                                      min={0}
+                                      max={line.plannedQty}
+                                      step={line.uom === 'SAC' ? 1 : 0.01}
+                                      value={draftValue}
+                                      disabled={saving || bulkGroup !== null}
+                                      onFocus={(event) => event.target.select()}
+                                      onChange={(event) => setDraft(line.id, event.target.value)}
+                                      onBlur={() => commitQuantity(line)}
+                                      onWheel={(event) => event.currentTarget.blur()}
+                                      onKeyDown={(event) => {
+                                        if (event.key === 'Enter') event.currentTarget.blur();
+                                        if (event.key === 'Escape') {
+                                          setDraft(line.id, null);
+                                          event.currentTarget.blur();
+                                        }
+                                      }}
+                                      aria-label={`Cantidad cargada de ${line.productCode} en el pedido ${line.orderNumber}`}
+                                      title="Cantidad real cargada. Si baja del plan se marca parcial; si es 0, no cargado."
+                                      className="h-9 w-[5.5rem] rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-sm text-right font-semibold tabular-nums text-primary outline-none focus:border-transparent focus:ring-2 focus:ring-secondary-container/70 disabled:opacity-50"
+                                    />
+                                    <span className="w-8 shrink-0 text-left text-label-sm font-semibold text-outline">
+                                      {line.uom ?? ''}
+                                    </span>
+                                  </div>
+                                  <span
+                                    className={cx(
+                                      'text-label-sm tabular-nums',
+                                      typedQty < line.plannedQty ? 'font-semibold text-error' : 'text-outline',
+                                    )}
+                                  >
+                                    {formatNumber(typedKg)} kg
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="flex flex-col items-end leading-tight tabular-nums">
+                                  <span
+                                    className={cx(
+                                      'font-semibold',
+                                      line.status === 'PENDIENTE'
+                                        ? 'text-outline'
+                                        : difference
+                                          ? 'text-error'
+                                          : 'text-secondary',
+                                    )}
+                                  >
+                                    {line.status === 'PENDIENTE'
+                                      ? '—'
+                                      : `${formatNumber(lineEffectiveQty(line))} ${line.uom ?? ''}`}
+                                  </span>
+                                  {line.status !== 'PENDIENTE' && (
+                                    <span className="text-label-sm text-outline">{formatNumber(line.loadedKg ?? 0)} kg</span>
+                                  )}
+                                </span>
+                              )}
                             </Cell>
 
                             <Cell label="Cantidad" align="right">
@@ -534,35 +774,67 @@ export default function DispatchSheetPage() {
 
                             <Cell label="Acción" align="right">
                               {editable ? (
-                                <button
-                                  type="button"
-                                  disabled={saving || bulkGroup !== null}
-                                  onClick={() => void markLine(line, completed ? 'PENDIENTE' : 'CARGADO')}
-                                  className={cx(
-                                    'inline-flex h-8 min-w-[7.5rem] items-center justify-center gap-space-xs rounded-pill px-space-sm font-semibold text-label-md transition-all disabled:opacity-40',
-                                    completed
-                                      ? 'border border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low'
-                                      : 'bg-secondary-container text-on-secondary hover:-translate-y-0.5',
-                                  )}
-                                >
-                                  {saving ? (
-                                    <Loader2 aria-hidden className="size-3.5 animate-spin" />
-                                  ) : completed ? (
-                                    <RotateCcw aria-hidden className="size-3.5" />
+                                <div className="flex flex-wrap items-center justify-end gap-space-xs">
+                                  {line.status === 'PENDIENTE' ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        disabled={saving || bulkGroup !== null}
+                                        onMouseDown={(event) => event.preventDefault()}
+                                        onClick={() => {
+                                          setDraft(line.id, null);
+                                          void saveLine(line, { status: 'CARGADO' });
+                                        }}
+                                        className="inline-flex h-8 items-center justify-center gap-space-xs rounded-pill bg-secondary-container px-space-sm font-semibold text-label-md text-on-secondary transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
+                                      >
+                                        {saving ? (
+                                          <Loader2 aria-hidden className="size-3.5 animate-spin" />
+                                        ) : (
+                                          <CheckCheck aria-hidden className="size-3.5" />
+                                        )}
+                                        Cargar
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={saving || bulkGroup !== null}
+                                        onMouseDown={(event) => event.preventDefault()}
+                                        onClick={() => {
+                                          setDraft(line.id, null);
+                                          openMissing(line);
+                                        }}
+                                        title="Marcar el renglón como no cargado y pedir el motivo"
+                                        className="inline-flex h-8 items-center justify-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-sm font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                                      >
+                                        <PackageX aria-hidden className="size-3.5" />
+                                        No cargado
+                                      </button>
+                                    </>
                                   ) : (
-                                    <CheckCheck aria-hidden className="size-3.5" />
+                                    <>
+                                      <LineStatusBadge status={line.status} />
+                                      {saving ? (
+                                        <Loader2 aria-hidden className="size-3.5 animate-spin text-secondary" />
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          disabled={bulkGroup !== null}
+                                          onMouseDown={(event) => event.preventDefault()}
+                                          onClick={() => {
+                                            setDraft(line.id, null);
+                                            void saveLine(line, { status: 'PENDIENTE' });
+                                          }}
+                                          title="Deshacer la marca y volver a pendiente"
+                                          aria-label={`Deshacer la marca de ${line.productCode} en el pedido ${line.orderNumber}`}
+                                          className="grid size-8 place-items-center rounded-full border border-outline-variant/50 text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                                        >
+                                          <RotateCcw aria-hidden className="size-3.5" />
+                                        </button>
+                                      )}
+                                    </>
                                   )}
-                                  {completed ? 'Deshacer' : 'Cargar'}
-                                </button>
+                                </div>
                               ) : (
-                                <span
-                                  className={cx(
-                                    'text-label-sm font-semibold',
-                                    completed ? 'text-secondary' : 'text-outline',
-                                  )}
-                                >
-                                  {lineStatusMeta(line.status).label}
-                                </span>
+                                <LineStatusBadge status={line.status} />
                               )}
                             </Cell>
                           </div>
@@ -582,13 +854,13 @@ export default function DispatchSheetPage() {
             <div className="min-w-0">
               <p className="font-semibold text-primary">
                 {blockingLines > 0
-                  ? `Faltan ${blockingLines} renglón(es) por cargar.`
-                  : 'Todo cargado: revisa el reporte y cierra el despacho.'}
+                  ? `Faltan ${blockingLines} renglón(es) por resolver.`
+                  : 'Todo resuelto: revisa el reporte y cierra el despacho.'}
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
-                {sheet.status === 'ENVIADO' && completedLines === 0
+                {sheet.status === 'ENVIADO' && resolvedLines === 0
                   ? 'Carga el primer renglón para tomar el despacho. No hay paso de recibo.'
-                  : 'Al cerrarlo se genera el reporte y planificación recibe los totales.'}
+                  : 'Cada renglón debe quedar cargado, parcial o no cargado (con motivo) antes de cerrar.'}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-space-sm">
@@ -596,7 +868,7 @@ export default function DispatchSheetPage() {
                 type="button"
                 disabled={blockingLines > 0 || busy !== null}
                 onClick={() => openReport(false)}
-                title={blockingLines > 0 ? 'Completa todos los renglones antes de cerrar' : undefined}
+                title={blockingLines > 0 ? 'Resuelve todos los renglones antes de cerrar' : undefined}
                 className="flex h-10 items-center gap-space-xs rounded-pill bg-primary-container px-space-lg font-bold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
               >
                 <CheckCheck aria-hidden className="size-4" /> Cerrar despacho
@@ -670,6 +942,27 @@ export default function DispatchSheetPage() {
           onSend={sendMessage}
           onClose={() => setBitacoraOpen(false)}
           busy={busy === 'message'}
+        />
+      )}
+
+      {/* Motivo de la diferencia (parcial o no cargado) */}
+      {noteTarget && (
+        <DispatchLineDialog
+          key={`${noteTarget.line.id}-${noteTarget.status}-${noteTarget.loadedQty}`}
+          line={noteTarget.line}
+          status={noteTarget.status}
+          loadedQty={noteTarget.loadedQty}
+          initialNote={noteTarget.note}
+          saving={savingLine === noteTarget.line.id}
+          onClose={closeNote}
+          onSave={(note) => {
+            const target = noteTarget;
+            void saveLine(target.line, {
+              status: target.status,
+              ...(target.status === 'PARCIAL' ? { loadedQty: target.loadedQty } : {}),
+              note,
+            });
+          }}
         />
       )}
 

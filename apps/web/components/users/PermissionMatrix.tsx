@@ -20,6 +20,7 @@ const ACTION_LABEL: Record<(typeof PERMISSION_ACTIONS)[number], string> = {
   update: 'Editar',
   delete: 'Eliminar',
   view_all: 'Ver todos',
+  override: 'Quitar de otros',
 };
 
 export interface PermissionMatrixProps {

@@ -119,9 +119,13 @@ controlador.
 - **Bandeja compartida**: si el despacho no se asigna a una persona, lo ve todo
   `ALMACEN` y el primero que lo abre lo reclama (`claimedById`); el resto lo ve
   pero no puede cargarlo.
-- **Carga todo o nada**: cada renglón se marca `CARGADO` (completado, toma la
-  cantidad planificada) o se deshace a `PENDIENTE`; no hay parciales. Las marcas
-  `PARCIAL`/`FALTANTE`/`NOVEDAD` quedan solo como histórico de lectura.
+- **Carga con diferencias**: el almacén digita la cantidad real en el input
+  «Cargado» de cada renglón. Si iguala el plan queda `CARGADO`; si baja, se
+  marca `PARCIAL` (X unidades; los kg se derivan del ratio de la unidad); si
+  queda en 0, `FALTANTE` (no cargado). Parcial y no cargado exigen motivo, que
+  se captura en un modal centrado y se guarda en la nota del renglón. Solo
+  `PENDIENTE` bloquea el cierre: al cerrar se guardan los totales reales y la
+  diferencia contra lo planificado. `NOVEDAD` queda como histórico de lectura.
 - **Bitácora solo ADMIN**: el detalle entrega `events` únicamente al rol ADMIN;
   el resto sigue el avance por la cinta de acuses y el reporte de cierre.
 - **Notificaciones bidireccionales**: cada transición avisa a la contraparte

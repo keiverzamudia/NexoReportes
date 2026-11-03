@@ -497,11 +497,82 @@ describe('DispatchService — carga y cierre', () => {
     expect(updated.status).toBe('EN_PROCESO');
   });
 
+  it('guarda una entrega parcial con motivo, kg derivados y estado con novedad', async () => {
+    const { service, sheet } = await inProgress();
+
+    const updated = await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, {
+      status: 'PARCIAL',
+      loadedQty: 24,
+      note: 'Solo había 24 sacos en el lote',
+    });
+
+    const line = updated.lines.find((item) => item.id === sheet.lines[0]!.id)!;
+    expect(line.status).toBe('PARCIAL');
+    expect(line.loadedQty).toBe(24);
+    // 60 SAC = 2.400 kg → 24 SAC = 960 kg (kg por ratio de la unidad).
+    expect(line.loadedKg).toBe(960);
+    expect(line.note).toBe('Solo había 24 sacos en el lote');
+    expect(updated.status).toBe('CON_NOVEDAD');
+    expect(updated.linesDone).toBe(1);
+  });
+
+  it('rechaza parciales sin motivo o fuera de rango y faltantes sin motivo', async () => {
+    const { service, sheet } = await inProgress();
+    const lineId = sheet.lines[0]!.id;
+
+    await expect(service.updateLine(operator1, sheet.id, lineId, { status: 'PARCIAL', loadedQty: 10 })).rejects.toThrow(
+      /motivo/i,
+    );
+    await expect(
+      service.updateLine(operator1, sheet.id, lineId, { status: 'PARCIAL', loadedQty: 0, note: 'Sin stock' }),
+    ).rejects.toThrow(/mayor que cero/i);
+    await expect(
+      service.updateLine(operator1, sheet.id, lineId, { status: 'PARCIAL', loadedQty: 60, note: 'Todo el lote' }),
+    ).rejects.toThrow(/Cargado/i);
+    await expect(service.updateLine(operator1, sheet.id, lineId, { status: 'FALTANTE' })).rejects.toThrow(/motivo/i);
+  });
+
+  it('cierra con un parcial y un no cargado (cada uno con motivo) y totales reales', async () => {
+    const { service, sheet } = await inProgress();
+
+    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, {
+      status: 'PARCIAL',
+      loadedQty: 24,
+      note: 'Solo había 24 sacos',
+    });
+    await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, {
+      status: 'FALTANTE',
+      note: 'El cliente no lo recibió',
+    });
+    const closed = await service.complete(operator1, sheet.id, { note: 'Se despachó lo disponible' });
+
+    expect(closed.status).toBe('DESPACHADO');
+    expect(closed.loadedSacks).toBe(24);
+    expect(closed.loadedKg).toBe(960);
+    // 960 kg reales contra 2.800 kg planificados.
+    expect(closed.differenceKg).toBe(-1840);
+  });
+
+  it('no cierra si una diferencia quedó sin motivo', async () => {
+    const { prisma, service, sheet } = await inProgress();
+
+    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, {
+      status: 'PARCIAL',
+      loadedQty: 24,
+      note: 'Solo había 24 sacos',
+    });
+    await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
+    // Simula una marca vieja sin motivo (antes el motivo no era obligatorio).
+    prisma.state.lines.find((line) => line.id === sheet.lines[0]!.id)!.note = null;
+
+    await expect(service.complete(operator1, sheet.id, {})).rejects.toThrow(/sin motivo/i);
+  });
+
   it('no cierra con renglones incompletos y cierra con totales reales', async () => {
     const { prisma, service, sheet } = await inProgress();
 
     await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
-    await expect(service.complete(operator1, sheet.id, {})).rejects.toThrow(/por cargar/i);
+    await expect(service.complete(operator1, sheet.id, {})).rejects.toThrow(/por resolver/i);
 
     await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
     const closed = await service.complete(operator1, sheet.id, { note: 'Carga completa' });

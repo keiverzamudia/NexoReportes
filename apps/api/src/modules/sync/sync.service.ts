@@ -75,6 +75,24 @@ FROM dbo.art AS a
 WHERE a.co_lin = 'ABA' AND a.anulado = 0
 `;
 
+// Catálogo COMPLETO de clientes (incluidos los que hoy no tienen pedido),
+// para que la cartera pueda filtrar por ventas históricas sin perder nombre,
+// tipo ni vendedor. Solo lectura.
+//
+// Nota: no se filtra por baja porque la columna de anulación de `clientes` no
+// está documentada en este Profit; el universo visible lo recorta la actividad
+// (pedido o venta), no este catálogo.
+const CUSTOMERS_SQL = `
+SELECT /* nexo:customer_catalog */
+  RTRIM(c.co_cli) AS co_cli,
+  RTRIM(c.cli_des) AS cli_des,
+  RTRIM(c.tipo) + ' ' + RTRIM(tc.des_tipo) AS tipo_cliente,
+  RTRIM(cv.ven_des) AS vendedor
+FROM dbo.clientes AS c
+LEFT JOIN dbo.tipo_cli AS tc ON tc.tip_cli = c.tipo
+LEFT JOIN dbo.vendedor AS cv ON cv.co_ven = c.co_ven
+`;
+
 @Injectable()
 export class SyncService {
   private readonly logger = new Logger(SyncService.name);
@@ -484,19 +502,59 @@ export class SyncService {
     return count;
   }
 
-  // Clientes derivados: un cliente por co_cli distinto.
-  // El tipo de cliente (tipo_cli.des_tipo) y el vendedor asignado al cliente
-  // (clientes.co_ven → vendedor.ven_des) llegan del reporte ampliado; si no
-  // vienen, se conserva el valor previo (nunca se inventa ni se borra con null).
+  // Clientes: catálogo completo + enriquecimiento desde los pedidos.
+  //
+  // El catálogo (`dbo.clientes`) es la fuente de nombre/tipo/vendedor para
+  // clientes que hoy no tienen pedido; las líneas de la vista completan esos
+  // campos cuando el catálogo no los trae. Si el catálogo falla, se conservan
+  // los clientes existentes (no se desactivan por una lectura parcial).
   private async syncCustomers(lines: RawSolicitudLine[], seen: Set<string>): Promise<number> {
     const now = new Date();
     const byCode = new Map<string, RawSolicitudLine>();
     for (const line of lines) {
       if (!byCode.has(line.coCli)) byCode.set(line.coCli, line);
     }
-    let count = 0;
+    const touched = new Set<string>();
+
+    const pageSize = this.config.get<number>('sync.pageSize') ?? 5000;
+    try {
+      const catalog = await this.profit.selectQuery(CUSTOMERS_SQL, pageSize);
+      for (const raw of catalog) {
+        const code = String(raw.co_cli ?? '').trim();
+        if (!code) continue;
+        const name = String(raw.cli_des ?? '').trim() || code;
+        const customerType = String(raw.tipo_cliente ?? '').trim() || null;
+        const vendor = String(raw.vendedor ?? '').trim() || null;
+        seen.add(code);
+        touched.add(code);
+        await this.prisma.customer.upsert({
+          where: { externalCode: code },
+          update: {
+            name,
+            ...(customerType ? { customerType } : {}),
+            ...(vendor ? { vendor } : {}),
+            isActive: true,
+            removedAt: null,
+            lastSyncedAt: now,
+          },
+          create: { externalCode: code, name, customerType, vendor, lastSyncedAt: now },
+        });
+      }
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo leer el catálogo completo de clientes; se conserva la cartera actual: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      // Sin catálogo no hay universo completo: se protege a los clientes ya
+      // conocidos para que markMissing no los desactive.
+      const existing = await this.prisma.customer.findMany({ select: { externalCode: true } });
+      for (const row of existing) seen.add(row.externalCode);
+    }
+
     for (const [code, line] of byCode) {
       seen.add(code);
+      touched.add(code);
       // Vendedor ASIGNADO AL CLIENTE (clientes.co_ven). Se usa como respaldo el
       // vendedor del pedido si la consulta ampliada no expone el primero.
       const vendor = line.vendedorCliente ?? line.vendedor;
@@ -513,9 +571,8 @@ export class SyncService {
         },
         create: { externalCode: code, name: line.cliDes, vendor, customerType: line.tipoCliente, lastSyncedAt: now },
       });
-      count += 1;
     }
-    return count;
+    return touched.size;
   }
 
   // Un encabezado por nro_solicitud distinto.

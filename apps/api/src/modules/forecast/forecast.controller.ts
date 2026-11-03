@@ -45,6 +45,17 @@ export class ForecastController {
     return this.forecast.captureForecastTargets();
   }
 
+  // Acepta un cambio de Profit sobre una meta ya congelada. Solo mes en curso
+  // y con permiso de edición; queda registrado en la bitácora.
+  @Post('targets/:code/accept')
+  @RequirePermission('forecast:update')
+  acceptTarget(
+    @Param('code') code: string,
+    @Query(new ZodValidationPipe(zForecastQuery)) query: ForecastQuery,
+  ) {
+    return this.forecast.acceptTargetDrift(query.year, query.month, code);
+  }
+
   @Get()
   @RequirePermission('forecast:read')
   list(@Query(new ZodValidationPipe(zForecastQuery)) query: ForecastQuery) {

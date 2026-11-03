@@ -14,12 +14,14 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
+  DraftReleaseInput,
   ScenarioDraftInput,
   ScenarioLockInput,
   ScenarioRestoreInput,
   ScenarioSaveInput,
   ScenarioSendDispatchInput,
   ScenarioUpdateInput,
+  zDraftReleaseInput,
   zScenarioDraftInput,
   zScenarioLockInput,
   zScenarioRestoreInput,
@@ -29,7 +31,7 @@ import {
 } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { RequirePermission } from '../permissions/permissions.decorator';
+import { RequireAnyPermission, RequirePermission } from '../permissions/permissions.decorator';
 import { PermissionsGuard } from '../permissions/permissions.guard';
 import { DispatchService, DispatchViewer } from '../dispatch/dispatch.service';
 import { ScenariosService } from './scenarios.service';
@@ -60,12 +62,38 @@ export class ScenariosController {
   }
 
   @Put('draft')
-  @RequirePermission('pedidos:create')
+  @RequireAnyPermission('pedidos:create', 'pedidos:override')
   putDraft(
     @Body(new ZodValidationPipe(zScenarioDraftInput)) body: ScenarioDraftInput,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.scenarios.saveDraft(this.actorOf(request), body);
+    return this.scenarios.saveDraft(this.actorOf(request), body, this.viewerOf(request));
+  }
+
+  // Liberar selecciones (las mías, unas concretas o todo con `override`).
+  @Delete('draft/lines')
+  @RequireAnyPermission('pedidos:create', 'pedidos:override')
+  releaseLines(
+    @Body(new ZodValidationPipe(zDraftReleaseInput)) body: DraftReleaseInput,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.scenarios.releaseDraftLines(this.actorOf(request), body, this.viewerOf(request));
+  }
+
+  // Enviar la simulación VIVA al almacén. Debe ir antes de ':id/send-dispatch'
+  // para que Nest no la capture como un id.
+  @Post('draft/send-dispatch')
+  @RequirePermission('despacho:create')
+  sendDraftToDispatch(
+    @Body(new ZodValidationPipe(zScenarioSendDispatchInput)) body: ScenarioSendDispatchInput,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.scenarios.sendDraftToDispatch(
+      this.viewerOf(request),
+      this.actorOf(request),
+      this.dispatchViewerOf(request),
+      body,
+    );
   }
 
   // El lock es lo que permite que el plan sea global sin que dos personas se
@@ -151,6 +179,7 @@ export class ScenariosController {
     return {
       id: this.requireUser(request),
       isAdmin: request.access?.isAdmin ?? false,
+      canOverride: request.access?.permissions.includes('pedidos:override') ?? false,
     };
   }
 

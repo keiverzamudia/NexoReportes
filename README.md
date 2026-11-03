@@ -37,7 +37,9 @@ pnpm dev                        # api (4010) + web (puerto de WEB_PORT; 4120 en 
 
 Nota: si el puerto 4000 está ocupado por otro proyecto, usa `API_PORT=4010`. En esta máquina el 4000 está ocupado, por eso la API de desarrollo y la de `pnpm start` usan **4010** (configúralo en `apps/api/.env`).
 
-> Un solo `pnpm dev` por worktree: dos instancias comparten `apps/web/.next` y lo corrompen (`Cannot find module './NNN.js'`). Los scripts de arranque ahora comprueban el puerto y fallan con un mensaje claro si ya hay otra instancia. Para trabajar en paralelo usa otro worktree con otro `WEB_PORT`/`API_PORT` (p. ej. Reportes-pruebas: web 4130, API 4030).
+> Un solo `pnpm dev` por worktree: dos instancias comparten `apps/web/.next` y lo corrompen (`Cannot find module './NNN.js'`). El preflight del puerto muestra el PID y la línea de comandos de quien lo ocupa; si es del mismo worktree lo cierra solo (desactívalo con `WEB_DEV_NO_AUTOSTOP=1`) y, si es de otro worktree, pide usar `pnpm stop <puerto>`. Para trabajar en paralelo usa otro worktree con otro `WEB_PORT`/`API_PORT` (p. ej. Reportes-pruebas: web 4130, API 4030).
+
+> Si al cerrar la terminal queda un `next dev` huérfano ocupando el puerto, `pnpm stop` sube por el árbol de procesos hasta el `pnpm dev`/turbo que lo lanzó y lo cierra completo. `pnpm stop:list` muestra qué cerraría sin tocar nada; `pnpm stop 4130` apaga solo ese puerto.
 
 ### Producción (un solo comando)
 
@@ -55,6 +57,9 @@ pnpm start            # levanta API (4010) y Web (4100) juntos vía Turbo
 | Comando | Descripción |
 |---|---|
 | `pnpm dev` | Desarrollo de todos los paquetes (api 4010 + web según `WEB_PORT`) |
+| `pnpm stop` | Detiene web y api de este worktree (incluye árboles huérfanos) |
+| `pnpm stop:list` | Muestra qué procesos cerraría `pnpm stop`, sin detener nada |
+| `pnpm stop 4130` | Detiene solo el proceso que escucha en ese puerto |
 | `pnpm build` | Build de producción |
 | `pnpm start` | Producción: build + API y Web juntos (Turbo) |
 | `pnpm typecheck` | Verificación de tipos |

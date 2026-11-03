@@ -187,13 +187,15 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
     const service = serviceWith(new FixturesProfitAdapter(), prisma);
 
     await service.run('CLIENTES');
-    expect(prisma.tables.customers.size).toBe(2);
+    expect(prisma.tables.customers.size).toBe(5);
     expect(prisma.tables.customers.get('153064128')?.['name']).toBe('JOSEF HENDRIX HERNANDEZ REYES');
     expect(prisma.tables.customers.get('505835220')?.['name']).toBe('AGRO INVERSIONES MP, C.A');
     // El reporte ampliado SÍ trae tipo de cliente y vendedor del cliente.
     expect(prisma.tables.customers.get('153064128')?.['customerType']).toBe('L1 EXCLUSIVOS');
     expect(prisma.tables.customers.get('153064128')?.['vendor']).toBe('MEIDY CRISTINA ARIAS VIDAL');
     expect(prisma.tables.customers.get('505835220')?.['vendor']).toBe('LIZ ANTONELLA PEREZ BAEZ');
+    // Catálogo completo: clientes sin pedido también existen para el filtro de ventas.
+    expect(prisma.tables.customers.get('900000001')?.['name']).toBe('AVICOLA LOS LLANOS, C.A');
   });
 
   it('ALMACENES: se derivan de las columnas de existencia de la vista', async () => {

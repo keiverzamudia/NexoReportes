@@ -137,16 +137,19 @@ function statementSummaries(params: Record<string, unknown> = {}, limit = 1000):
   });
 }
 
-// Forecast mensual de desarrollo (equivalente a `dbo.xart_fore.kg_mes`).
-// `kg_mes` es KILOGRAMOS, no unidades de venta: los valores se eligen para
-// que la pestaña «Ventas vs Forecast» tenga metas realistas (~1,5 M kg/mes).
+// Forecast mensual de desarrollo (equivalente a `dbo.forecast`).
+// `forecast_mes` viene en la presentación del artículo (sacos para SAC, kg para
+// granel), igual que en Profit; el servicio lo convierte a kg con `uni_relac`.
+// Los valores se eligen para que la pestaña «Ventas vs Forecast» tenga metas
+// realistas (~1,5 M kg/mes). `fecha` (mes de vigencia) se genera por cada mes
+// pedido en `forecastRows`.
 const FORECAST: Record<string, unknown>[] = [
-  { co_art: 'ABABOV58', forecast_mes: 160_000 },
-  { co_art: 'ABAGP13', forecast_mes: 360_000 },
-  { co_art: 'ABAEQUI01', forecast_mes: 100_000 },
-  { co_art: 'ABABOV67', forecast_mes: 340_000 },
-  { co_art: 'ABAPOR47', forecast_mes: 155_000 },
-  { co_art: 'ABABOV75', forecast_mes: 85_000 },
+  { co_art: 'ABABOV58', forecast_mes: 4_571, uni_venta: 'SAC', uni_relac: 35 }, // ≈159.985 kg
+  { co_art: 'ABAGP13', forecast_mes: 9_000, uni_venta: 'SAC', uni_relac: 40 }, // 360.000 kg
+  { co_art: 'ABAEQUI01', forecast_mes: 10_000, uni_venta: 'SAC', uni_relac: 10 }, // 100.000 kg
+  { co_art: 'ABABOV67', forecast_mes: 9_714, uni_venta: 'SAC', uni_relac: 35 }, // ≈339.990 kg
+  { co_art: 'ABAPOR47', forecast_mes: 3_875, uni_venta: 'SAC', uni_relac: 40 }, // 155.000 kg
+  { co_art: 'ABABOV75', forecast_mes: 2_429, uni_venta: 'SAC', uni_relac: 35 }, // ≈85.015 kg
 ];
 
 // ============================================================
@@ -219,6 +222,355 @@ function paramDay(value: unknown): string {
   return String(value ?? '').slice(0, 10);
 }
 
+// ============================================================
+// Clientes de desarrollo: catálogo completo y ventas por cliente.
+//
+// El catálogo añade clientes SIN pedido para probar la cartera por ventas.
+// Las ventas son deterministas y respetan la unidad: los perfiles SAC se
+// reportan en sacos y los KG en kg (nunca se mezclan en la misma columna).
+// ============================================================
+const EXTRA_CLIENTS = [
+  {
+    co_cli: '900000001',
+    cli_des: 'AVICOLA LOS LLANOS, C.A',
+    tipo_cliente: 'L2 DISTRIBUIDORES',
+    vendedor: 'JULIARD ANGULO',
+  },
+  {
+    co_cli: '900000002',
+    cli_des: 'GRANJA SAN JOSE, C.A',
+    tipo_cliente: 'L3 MINORISTA',
+    vendedor: 'MEIDY CRISTINA ARIAS VIDAL',
+  },
+  {
+    co_cli: '900000003',
+    cli_des: 'INACTIVO DESDE 2025, C.A',
+    tipo_cliente: 'L3 MINORISTA',
+    vendedor: 'LIZ ANTONELLA PEREZ BAEZ',
+  },
+];
+
+interface FixtureCustomerSalesProfile {
+  code: string;
+  uom: 'SAC' | 'KG';
+  /** Sacos/mes si SAC; kg/mes si KG. */
+  base: number;
+  /** Kg por saco (1 para KG). */
+  kgPerUom: number;
+  seed: number;
+  /** 0 = vende este mes; 13 = dejó de vender hace más de un año. */
+  lastSaleMonthsAgo: number;
+  firstSaleMonthsAgo: number;
+}
+
+const CUSTOMER_SALES_PROFILES: FixtureCustomerSalesProfile[] = [
+  { code: '153064128', uom: 'SAC', base: 140, kgPerUom: 35, seed: 1, lastSaleMonthsAgo: 0, firstSaleMonthsAgo: 17 },
+  { code: '505835220', uom: 'KG', base: 4200, kgPerUom: 1, seed: 2, lastSaleMonthsAgo: 0, firstSaleMonthsAgo: 17 },
+  { code: '900000001', uom: 'SAC', base: 180, kgPerUom: 40, seed: 3, lastSaleMonthsAgo: 0, firstSaleMonthsAgo: 17 },
+  { code: '900000002', uom: 'KG', base: 3800, kgPerUom: 1, seed: 4, lastSaleMonthsAgo: 0, firstSaleMonthsAgo: 17 },
+  // Solo vendió entre 13 y 17 meses atrás: no debe salir en el universo de 12m.
+  { code: '900000003', uom: 'SAC', base: 90, kgPerUom: 35, seed: 5, lastSaleMonthsAgo: 13, firstSaleMonthsAgo: 17 },
+];
+
+function customerCatalog(limit: number): Record<string, unknown>[] {
+  const byCode = new Map<string, Record<string, unknown>>();
+  for (const row of SOLICITUDES) {
+    const code = String(row.co_cli);
+    if (byCode.has(code)) continue;
+    byCode.set(code, {
+      co_cli: code,
+      cli_des: row.cli_des,
+      tipo_cliente: row.tipo_cliente,
+      vendedor: row.vendedor_cliente ?? row.vendedor,
+    });
+  }
+  for (const extra of EXTRA_CLIENTS) {
+    byCode.set(extra.co_cli, { ...extra });
+  }
+  return [...byCode.values()].slice(0, limit);
+}
+
+function customerSales(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  if (!from || !to || from >= to) return [];
+
+  const now = new Date();
+  const rows: Record<string, unknown>[] = [];
+  for (const profile of CUSTOMER_SALES_PROFILES) {
+    let sacks = 0;
+    let kg = 0;
+    let totalKg = 0;
+    let notas = 0;
+    let ultima: string | null = null;
+
+    for (let offset = profile.firstSaleMonthsAgo; offset >= profile.lastSaleMonthsAgo; offset -= 1) {
+      const start = isoUtc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - offset, 1)));
+      const next = isoUtc(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - offset + 1, 1)));
+      // Intersección del mes con la ventana [desde, hasta).
+      if (next <= from || start >= to) continue;
+
+      const factor = 0.85 + ((offset * 7 + profile.seed) % 9) / 40;
+      const monthSacks = profile.uom === 'SAC' ? Math.round(profile.base * factor) : 0;
+      const monthKg = profile.uom === 'KG' ? Math.round(profile.base * factor) : 0;
+      sacks += monthSacks;
+      kg += monthKg;
+      totalKg += monthSacks * profile.kgPerUom + monthKg;
+      notas += 1 + (offset % 3);
+
+      const lastDay = isoUtc(new Date(Math.min(Date.parse(next) - 86_400_000, Date.parse(to) - 86_400_000)));
+      if (!ultima || lastDay > ultima) ultima = lastDay;
+    }
+
+    if (sacks === 0 && kg === 0) continue;
+    rows.push({ co_cli: profile.code, sacos: sacks, kg, kg_total: totalKg, notas, ultima });
+  }
+  return rows.slice(0, limit);
+}
+
+// ============================================================
+// Ficha 360 de clientes (desarrollo).
+//
+// A partir del perfil de ventas de `CUSTOMER_SALES_PROFILES` se reparte la
+// cantidad mensual entre 3–4 artículos, de modo que siempre haya un producto
+// principal, uno que dejó de comprarse y (en clientes activos) uno nuevo.
+// Los importes usan un precio/kg determinista para que la facturación sea
+// coherente con el volumen y el gráfico tenga las dos series.
+// ============================================================
+const INSIGHT_SIMILAR_PRODUCTS = [
+  { co_art: 'ABASIM01', art_des: 'CRECIMIENTO PESO 20% - 40 KG', uni_venta: 'SAC', uni_relac: 40 },
+  { co_art: 'ABASIM02', art_des: 'LECHONES INICIADOR 22% - 25 KG', uni_venta: 'SAC', uni_relac: 25 },
+  { co_art: 'ABASIM03', art_des: 'ENGORDE FINAL 18% - 40 KG', uni_venta: 'SAC', uni_relac: 40 },
+  { co_art: 'ABASIM04', art_des: 'BOVINO DESARROLLO 16% - 35 KG', uni_venta: 'SAC', uni_relac: 35 },
+  { co_art: 'ABASIM05', art_des: 'EQUINO MANTENIMIENTO 12% - 35 KG', uni_venta: 'SAC', uni_relac: 35 },
+  { co_art: 'ABASIM06', art_des: 'CONEJO PRODUCCION 17% - 20 KG', uni_venta: 'SAC', uni_relac: 20 },
+];
+
+interface FixtureInsightAssignment {
+  code: string;
+  description: string;
+  uom: 'SAC' | 'KG';
+  kgPerUom: number;
+  share: number;
+  startMonthsAgo: number;
+  endMonthsAgo: number;
+  pricePerKg: number;
+  /** Multiplicador para la ventana actual (0.5 = producto en caída). */
+  currentFactor: number;
+}
+
+function insightAssignments(profile: FixtureCustomerSalesProfile): FixtureInsightAssignment[] {
+  const productCount = SALES_PRODUCTS.length;
+  const picks = [0, 2, 4].map((offset) => SALES_PRODUCTS[(profile.seed + offset) % productCount]!);
+  const active = profile.lastSaleMonthsAgo === 0;
+  const shares = active ? [0.55, 0.25, 0.15] : [0.6, 0.3, 0.1];
+
+  const assignments: FixtureInsightAssignment[] = picks.map((product, index) => ({
+    code: product.co_art,
+    description: profile.uom === 'KG' ? `${product.art_des} - GRANEL` : product.art_des,
+    uom: profile.uom,
+    kgPerUom: profile.uom === 'SAC' ? profile.kgPerUom : 1,
+    share: shares[index]!,
+    startMonthsAgo: profile.firstSaleMonthsAgo,
+    // El tercer artículo deja de comprarse hace 13 meses: queda como PERDIDO
+    // en la ventana de 12 meses, pero se ve en los 12 anteriores.
+    endMonthsAgo: index === 2 ? Math.max(13, profile.lastSaleMonthsAgo) : profile.lastSaleMonthsAgo,
+    pricePerKg: 0.42 + index * 0.035,
+    // El segundo artículo baja a la mitad en los últimos 12 meses (CAYENDO).
+    currentFactor: index === 1 ? 0.35 : 1,
+  }));
+
+  if (active) {
+    const newcomer = SALES_PRODUCTS[(profile.seed + 5) % productCount]!;
+    assignments.push({
+      code: newcomer.co_art,
+      description: profile.uom === 'KG' ? `${newcomer.art_des} - GRANEL` : newcomer.art_des,
+      uom: profile.uom,
+      kgPerUom: profile.uom === 'SAC' ? profile.kgPerUom : 1,
+      share: 0.05,
+      startMonthsAgo: 4,
+      endMonthsAgo: 0,
+      pricePerKg: 0.5,
+      currentFactor: 1,
+    });
+  }
+
+  return assignments;
+}
+
+function monthStart(offset: number, now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - offset, 1));
+}
+
+function customerInsightRows(
+  params: Record<string, unknown>,
+  limit: number,
+): Record<string, unknown>[] {
+  const code = String(params.co_cli ?? '').trim().toUpperCase();
+  const profile = CUSTOMER_SALES_PROFILES.find((item) => item.code.toUpperCase() === code);
+  if (!profile) return [];
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  if (!from || !to || from >= to) return [];
+
+  const now = new Date();
+  const assignments = insightAssignments(profile);
+  const rows: Record<string, unknown>[] = [];
+
+  for (let offset = profile.firstSaleMonthsAgo; offset >= 0; offset -= 1) {
+    const start = monthStart(offset, now);
+    const next = monthStart(offset - 1, now);
+    const startKey = isoUtc(start);
+    const nextKey = isoUtc(next);
+    if (nextKey <= from || startKey >= to) continue;
+
+    const factor = 0.85 + ((offset * 7 + profile.seed) % 9) / 40;
+    const monthQty = Math.max(0, Math.round(profile.base * factor));
+    if (monthQty === 0) continue;
+
+    const active = assignments.filter(
+      (assignment) => offset <= assignment.startMonthsAgo && offset >= assignment.endMonthsAgo,
+    );
+    const weights = active.map((assignment) => {
+      const currentWindow = offset <= 11;
+      return assignment.share * (currentWindow ? assignment.currentFactor : 1);
+    });
+    const totalWeight = weights.reduce((acc, value) => acc + value, 0);
+    if (totalWeight <= 0) continue;
+
+    const noteCount = 1 + (offset % 3);
+    const daysInMonth = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0)).getUTCDate();
+    const todayDay = start.getUTCFullYear() === now.getUTCFullYear() && start.getUTCMonth() === now.getUTCMonth()
+      ? now.getUTCDate()
+      : daysInMonth;
+
+    for (let noteIndex = 0; noteIndex < noteCount; noteIndex += 1) {
+      const day = Math.min(
+        todayDay,
+        3 + ((profile.seed + offset * 5 + noteIndex * 7) % Math.max(1, Math.min(24, todayDay - 2))),
+      );
+      const fecha = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      if (fecha < from || fecha >= to) continue;
+      const nota = 900000 + profile.seed * 1000 + offset * 10 + noteIndex;
+
+      active.forEach((assignment, index) => {
+        const weight = weights[index]!;
+        const qty = (monthQty * weight) / totalWeight / noteCount;
+        const units = profile.uom === 'SAC' ? Math.round(qty * 100) / 100 : Math.round(qty * 100) / 100;
+        rows.push({
+          anio: start.getUTCFullYear(),
+          mes: start.getUTCMonth() + 1,
+          nota,
+          co_art: assignment.code,
+          art_des: assignment.description,
+          uni_venta: assignment.uom,
+          uni_relac: assignment.kgPerUom,
+          unid: units,
+          kg: round2(units * assignment.kgPerUom),
+          fecha,
+          precio_kg: assignment.pricePerKg,
+        });
+      });
+    }
+  }
+
+  return rows.slice(0, limit);
+}
+
+function customerInsightBilling(
+  params: Record<string, unknown>,
+  limit: number,
+): Record<string, unknown>[] {
+  const rows = customerInsightRows(params, 20000);
+  const buckets = new Map<
+    string,
+    { anio: number; mes: number; facturado: number; documentos: Set<string> }
+  >();
+
+  for (const row of rows) {
+    const key = `${row.anio}-${String(row.mes).padStart(2, '0')}`;
+    const bucket = buckets.get(key) ?? {
+      anio: Number(row.anio),
+      mes: Number(row.mes),
+      facturado: 0,
+      documentos: new Set<string>(),
+    };
+    bucket.facturado += Number(row.kg) * Number(row.precio_kg ?? 0.45);
+    bucket.documentos.add(String(row.nota));
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .sort((a, b) => a.anio - b.anio || a.mes - b.mes)
+    .slice(0, limit)
+    .map((bucket) => ({
+      anio: bucket.anio,
+      mes: bucket.mes,
+      facturado: round2(bucket.facturado),
+      creditos: 0,
+      documentos: bucket.documentos.size,
+      sin_tasa: 0,
+    }));
+}
+
+function customerInsightSimilar(
+  params: Record<string, unknown>,
+  limit: number,
+): Record<string, unknown>[] {
+  const type = String(params.tipo ?? '').trim().toUpperCase();
+  const seed = [...type].reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  const totalType = 42 + (seed % 27);
+  return INSIGHT_SIMILAR_PRODUCTS.slice(0, limit).map((product, index) => {
+    const clients = Math.max(1, totalType - index * 5);
+    const kg = clients * (1800 + index * 350);
+    return {
+      co_art: product.co_art,
+      art_des: product.art_des,
+      uni_venta: product.uni_venta,
+      uni_relac: product.uni_relac,
+      clientes: clients,
+      unid: Math.round((kg / product.uni_relac) * 100) / 100,
+      kg,
+      total_tipo: totalType,
+    };
+  });
+}
+
+// Filas de `forecast` para todos los meses del rango [desde, hasta): una fila
+// por artículo y mes, con `fecha` en el primer día del mes de vigencia.
+function forecastRows(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  if (!from || !to || from >= to) return [];
+  const [fromYear, fromMonth] = from.split('-').map(Number) as [number, number];
+  if (!Number.isFinite(fromYear) || !Number.isFinite(fromMonth)) return [];
+  const rows: Record<string, unknown>[] = [];
+  let year = fromYear;
+  let month = fromMonth;
+  // Tope defensivo: 20 años de meses, de sobra para el histórico del informe.
+  for (let guard = 0; guard < 240; guard += 1) {
+    const fecha = `${year}-${String(month).padStart(2, '0')}-01`;
+    if (fecha >= to) break;
+    if (fecha >= from) {
+      for (const item of FORECAST) {
+        rows.push({
+          co_art: item.co_art,
+          forecast_mes: item.forecast_mes,
+          uni_venta: item.uni_venta,
+          uni_relac: item.uni_relac,
+          fecha,
+        });
+      }
+    }
+    month += 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+  }
+  return rows.slice(0, limit);
+}
+
 function salesMonthly(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
   const from = paramDay(params.desde);
   const to = paramDay(params.hasta);
@@ -275,6 +627,30 @@ function salesDaily(params: Record<string, unknown>, limit: number): Record<stri
   }
 
   return [...buckets.values()].sort((a, b) => a.fecha.localeCompare(b.fecha)).slice(0, limit);
+}
+
+// Desglose por artículo y día (panel «Ventas del día»): misma data fixture que
+// `salesDaily`, pero agrupada por `fecha + co_art`.
+function salesDailyProducts(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const buckets = new Map<string, { fecha: string; co_art: string; kg: number; unid: number }>();
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const code = String(row.co_art);
+    const key = `${day}|${code}`;
+    const bucket = buckets.get(key) ?? { fecha: day, co_art: code, kg: 0, unid: 0 };
+    bucket.kg += Number(row.kg);
+    bucket.unid += Number(row.unid);
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .sort((a, b) => a.fecha.localeCompare(b.fecha) || b.kg - a.kg)
+    .slice(0, limit);
 }
 
 function datasetFor(viewName: string): Record<string, unknown>[] {
@@ -381,7 +757,7 @@ export class FixturesProfitAdapter implements ProfitAdapter {
   }
 
   // En fixtures la consulta ampliada devuelve el mismo dataset determinista,
-  // salvo las consultas con fuente propia: forecast (`xart_fore`) y estado de
+  // salvo las consultas con fuente propia: forecast (`forecast`) y estado de
   // cuenta (`docum_cc` / `Documentos_Pendientes`).
   async selectQuery(
     sqlText: string,
@@ -389,11 +765,22 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     params: Record<string, unknown> = {},
   ): Promise<Record<string, unknown>[]> {
     const lower = sqlText.toLowerCase();
-    if (lower.includes('xart_fore')) return FORECAST.slice(0, limit);
+    if (lower.includes('dbo.forecast')) return forecastRows(params, limit);
+    // Ficha 360 de clientes (volumen, facturación y surtido del segmento).
+    // Va antes de `reng_nde` porque la consulta de volumen usa esa tabla.
+    if (lower.includes('nexo:customer_insights_products')) return customerInsightRows(params, limit);
+    if (lower.includes('nexo:customer_insights_billing')) return customerInsightBilling(params, limit);
+    if (lower.includes('nexo:customer_insights_similar')) return customerInsightSimilar(params, limit);
+    // Catálogo completo de clientes y ventas por cliente (módulo Clientes).
+    // Van antes de `reng_nde` porque la consulta de ventas usa esa tabla.
+    if (lower.includes('nexo:customer_catalog')) return customerCatalog(limit);
+    if (lower.includes('nexo:customer_sales')) return customerSales(params, limit);
     // Reconciliación de pedidos: se detecta por el marcador del SELECT.
     if (lower.includes('order_lifecycle_header')) return lifecycleHeaders(params, limit);
     if (lower.includes('order_lifecycle_pending')) return lifecyclePending(params, limit);
     if (lower.includes('reng_nde')) {
+      // Desglose por artículo del día (panel «Ventas del día»).
+      if (lower.includes('nexo:daily_products')) return salesDailyProducts(params, limit);
       // Serie diaria (la consulta agrupa por `CAST(f.fec_emis AS date)`) vs
       // agregado mensual por artículo.
       return lower.includes('as fecha') ? salesDaily(params, limit) : salesMonthly(params, limit);

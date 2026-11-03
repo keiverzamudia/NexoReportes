@@ -36,10 +36,12 @@ function buildDaily(kgPerWorkingDay = 500_000 / 24) {
 function adapterWith(options: {
   monthly?: Record<string, unknown>[];
   daily?: Record<string, unknown>[];
+  dailyProducts?: Record<string, unknown>[];
   weekly?: Record<string, unknown>[];
   forecast?: Record<string, unknown>[];
   fail?: boolean;
   failWeekly?: boolean;
+  failDailyProducts?: boolean;
 }) {
   const calls = { total: 0, monthly: 0, daily: 0, weekly: 0, forecast: 0 };
   const adapter: ProfitAdapter = {
@@ -51,9 +53,11 @@ function adapterWith(options: {
     selectQuery: async (sqlText: string) => {
       calls.total += 1;
       const lower = sqlText.toLowerCase();
-      if (lower.includes('xart_fore')) {
+      if (lower.includes('dbo.forecast')) {
         calls.forecast += 1;
-        return options.forecast ?? [];
+        // El servicio agrupa por `fecha`; por defecto las filas de prueba son
+        // de octubre 2026 (el mes en curso de los tests).
+        return (options.forecast ?? []).map((row) => ({ fecha: '2026-10-01', ...row }));
       }
       if (lower.includes('reng_nde')) {
         // La consulta semanal (plan de producción) va PRIMERO: también toca
@@ -64,6 +68,12 @@ function adapterWith(options: {
           return options.weekly ?? [];
         }
         if (options.fail) throw new Error('Profit caído');
+        // El desglose por artículo también agrupa por fecha: se detecta por el
+        // marcador propio de la consulta.
+        if (lower.includes('nexo:daily_products')) {
+          if (options.failDailyProducts) throw new Error('Desglose caído');
+          return options.dailyProducts ?? [];
+        }
         if (lower.includes('as fecha')) {
           calls.daily += 1;
           return options.daily ?? [];
@@ -80,18 +90,24 @@ function adapterWith(options: {
 }
 
 interface FakeTargetRow {
+  id: string;
   year: number;
   month: number;
   productCode: string;
   targetKg: number;
   capturedAt: Date;
+  firstCapturedAt: Date | null;
+  frozenAt: Date | null;
+  lastSeenKg: number | null;
+  lastSeenAt: Date | null;
+  driftDetectedAt: Date | null;
 }
 
 // Prisma falso: catálogo local + tabla `ForecastTarget` en memoria. Cada test
 // recibe una instancia limpia para que la captura de la meta no se mezcle.
 // `products` permite simular artículos de producción (lo usa el plan).
 function createFakePrisma(
-  seed: Array<Omit<FakeTargetRow, 'capturedAt'>> = [],
+  seed: Array<Pick<FakeTargetRow, 'year' | 'month' | 'productCode' | 'targetKg'>> = [],
   products: Array<{ externalCode: string; description: string; uom: string; kgPerUom: number | null }> = [
     {
       externalCode: 'ABABOV75',
@@ -101,7 +117,17 @@ function createFakePrisma(
     },
   ],
 ) {
-  const targets: FakeTargetRow[] = seed.map((row) => ({ ...row, capturedAt: new Date('2026-10-01T00:00:00Z') }));
+  const capturedAt = new Date('2026-10-01T00:00:00Z');
+  const targets: FakeTargetRow[] = seed.map((row) => ({
+    ...row,
+    id: `${row.year}-${row.month}-${row.productCode}`,
+    capturedAt,
+    firstCapturedAt: capturedAt,
+    frozenAt: null,
+    lastSeenKg: row.targetKg,
+    lastSeenAt: capturedAt,
+    driftDetectedAt: null,
+  }));
 
   return {
     targets,
@@ -129,32 +155,40 @@ function createFakePrisma(
             : where?.year === undefined || (where.year === row.year && where.month === row.month),
         );
       },
-      upsert: async ({
+      findUnique: async ({
         where,
-        update,
-        create,
       }: {
         where: { year_month_productCode: { year: number; month: number; productCode: string } };
-        update: Record<string, unknown>;
-        create: Record<string, unknown>;
       }) => {
         const key = where.year_month_productCode;
-        const index = targets.findIndex(
-          (row) => row.year === key.year && row.month === key.month && row.productCode === key.productCode,
+        return (
+          targets.find(
+            (row) => row.year === key.year && row.month === key.month && row.productCode === key.productCode,
+          ) ?? null
         );
-        if (index >= 0) {
-          targets[index] = { ...targets[index]!, ...(update as Partial<FakeTargetRow>) };
-          return targets[index];
-        }
+      },
+      create: async ({ data }: { data: Record<string, unknown> }) => {
         const created: FakeTargetRow = {
-          year: Number(create.year),
-          month: Number(create.month),
-          productCode: String(create.productCode),
-          targetKg: Number(create.targetKg),
-          capturedAt: (create.capturedAt as Date | undefined) ?? new Date(),
+          id: String(data.id ?? `${data.year}-${data.month}-${data.productCode}`),
+          year: Number(data.year),
+          month: Number(data.month),
+          productCode: String(data.productCode),
+          targetKg: Number(data.targetKg ?? 0),
+          capturedAt: (data.capturedAt as Date | undefined) ?? new Date(),
+          firstCapturedAt: (data.firstCapturedAt as Date | undefined) ?? null,
+          frozenAt: (data.frozenAt as Date | undefined) ?? null,
+          lastSeenKg: data.lastSeenKg === undefined ? null : Number(data.lastSeenKg),
+          lastSeenAt: (data.lastSeenAt as Date | undefined) ?? null,
+          driftDetectedAt: (data.driftDetectedAt as Date | undefined) ?? null,
         };
         targets.push(created);
         return created;
+      },
+      update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+        const row = targets.find((entry) => entry.id === where.id);
+        if (!row) throw new Error('ForecastTarget no encontrado');
+        Object.assign(row, data);
+        return row;
       },
     },
   };
@@ -162,8 +196,10 @@ function createFakePrisma(
 
 type FakePrisma = ReturnType<typeof createFakePrisma>;
 
+const fakeAudit = { record: async () => undefined };
+
 function service(adapter: ProfitAdapter, prisma: FakePrisma = createFakePrisma()) {
-  return new ForecastService(prisma as never, {} as never, adapter);
+  return new ForecastService(prisma as never, fakeAudit as never, adapter);
 }
 
 const QUERY: ForecastSalesQuery = { months: 3, basis: 'WORKING', includeToday: false } as ForecastSalesQuery;
@@ -232,12 +268,8 @@ describe('ForecastService.salesReport', () => {
     expect(sinVenta.attainmentPct).toBe(0);
     expect(sinVenta.description).toContain('VACA LECHERA'); // metadatos del catálogo local
 
-    // La meta viva se guarda como snapshot para cuando cierre el mes.
-    expect(db.targets).toHaveLength(2);
-    expect(db.targets.map((t) => [t.productCode, t.targetKg])).toEqual([
-      ['ABAGP13', 480_000],
-      ['ABABOV75', 90_000],
-    ]);
+    // El GET es de solo lectura: el snapshot lo hace el scheduler cada hora.
+    expect(db.targets).toHaveLength(0);
   });
 
   it('producto con venta y sin forecast: porcentajes nulos, nunca Infinity', async () => {
@@ -267,7 +299,7 @@ describe('ForecastService.salesReport', () => {
     expect(report.totals.actualKg).toBe(0);
   });
 
-  it('mes cerrado: la proyección es la venta real y no consulta meta viva', async () => {
+  it('mes cerrado: la proyección es la venta real y consulta el forecast de ese mes', async () => {
     const { adapter, calls } = adapterWith({
       monthly: BASE_MONTHLY.filter((row) => row.mes === 9),
       daily: [],
@@ -280,7 +312,9 @@ describe('ForecastService.salesReport', () => {
     expect(report.totals.actualKg).toBe(770_000);
     expect(report.totals.projectedKg).toBe(770_000);
     expect(report.totals.requiredDailyKg).toBeNull();
-    expect(calls.forecast).toBe(0); // xart_fore solo aplica al mes en curso
+    // `forecast.fecha` permite pedir el mes cerrado; sin filas, no hay meta.
+    expect(calls.forecast).toBe(1);
+    expect(report.forecastSource).toBe('NONE');
   });
 
   it('la segunda llamada sale de caché y no vuelve a consultar Profit', async () => {
@@ -314,6 +348,42 @@ describe('ForecastService.salesReport', () => {
     expect(report.daily[30]!.forecastCumulativeKg).toBeCloseTo(480_000, 0);
   });
 
+  it('la serie diaria trae el desglose por producto del día', async () => {
+    const { adapter } = adapterWith({
+      monthly: BASE_MONTHLY,
+      daily: buildDaily(),
+      dailyProducts: [
+        { fecha: '2026-10-27', co_art: 'ABAGP13', kg: 10_000, unid: 250 },
+        { fecha: '2026-10-27', co_art: 'ABABOV67', kg: 30_000, unid: 857 },
+        { fecha: '2026-10-28', co_art: 'ABAGP13', kg: 5_000, unid: 125 },
+      ],
+      forecast: [{ co_art: 'ABAGP13', forecast_mes: 480_000 }],
+    });
+    const report = await service(adapter).salesReport({ ...QUERY, year: 2026, month: 10 });
+
+    const day27 = report.daily[26]!;
+    expect(day27.products.map((product) => product.productCode)).toEqual(['ABABOV67', 'ABAGP13']);
+    expect(day27.products[0]).toEqual({ productCode: 'ABABOV67', kg: 30_000, units: 857 });
+    // El día posterior al corte también conserva su desglose (día parcial).
+    expect(report.daily[27]!.products).toHaveLength(1);
+    expect(report.daily[25]!.products).toEqual([]);
+  });
+
+  it('si el desglose por producto falla, el informe sigue disponible', async () => {
+    const { adapter } = adapterWith({
+      monthly: BASE_MONTHLY,
+      daily: buildDaily(),
+      forecast: [{ co_art: 'ABAGP13', forecast_mes: 480_000 }],
+      failDailyProducts: true,
+    });
+    const report = await service(adapter).salesReport({ ...QUERY, year: 2026, month: 10 });
+
+    expect(report.salesAvailable).toBe(true);
+    expect(report.totals.actualKg).toBe(500_000);
+    expect(report.daily).toHaveLength(31);
+    expect(report.daily.every((day) => day.products.length === 0)).toBe(true);
+  });
+
   it('mes cerrado: usa la meta guardada (snapshot) y la marca como histórica', async () => {
     const { adapter, calls } = adapterWith({
       monthly: BASE_MONTHLY.filter((row) => row.mes === 9),
@@ -332,7 +402,9 @@ describe('ForecastService.salesReport', () => {
     expect(report.totals.forecastKg).toBe(500_000);
     expect(report.totals.attainmentPct).toBeCloseTo(154, 1);
     expect(report.totals.projectedAttainmentPct).toBeCloseTo(154, 1);
-    expect(calls.forecast).toBe(0); // no se consulta xart_fore en un mes cerrado
+    // La consulta a `forecast` se hace igual (histórico/fallback), pero manda
+    // el snapshot congelado del mes cerrado.
+    expect(calls.forecast).toBe(1);
 
     // El histórico compara cada mes contra su propia meta guardada.
     expect(report.history.find((entry) => entry.month === 8)?.forecastKg).toBe(450_000);
@@ -358,6 +430,76 @@ describe('ForecastService.salesReport', () => {
     expect(report.history.every((entry) => entry.forecastKg === null)).toBe(true);
   });
 
+  it('mes cerrado sin snapshot: usa la meta viva de forecast para ese mes', async () => {
+    const { adapter } = adapterWith({
+      monthly: BASE_MONTHLY.filter((row) => row.mes === 9),
+      daily: [],
+      forecast: [{ fecha: '2026-09-01', co_art: 'ABAGP13', forecast_mes: 500_000 }],
+    });
+
+    const report = await service(adapter, createFakePrisma()).salesReport({ ...QUERY, year: 2026, month: 9 });
+
+    expect(report.forecastSource).toBe('LIVE');
+    expect(report.forecastAvailable).toBe(true);
+    expect(report.totals.forecastKg).toBe(500_000);
+    expect(report.totals.attainmentPct).toBeCloseTo(154, 1);
+  });
+
+  it('usa la fila de forecast cuyo fecha coincide con el mes pedido', async () => {
+    const { adapter } = adapterWith({
+      monthly: BASE_MONTHLY,
+      daily: buildDaily(),
+      forecast: [
+        { fecha: '2026-09-01', co_art: 'ABAGP13', forecast_mes: 1_000_000 },
+        { fecha: '2026-10-01', co_art: 'ABAGP13', forecast_mes: 480_000 },
+      ],
+    });
+
+    const report = await service(adapter, createFakePrisma()).salesReport({ ...QUERY, year: 2026, month: 10 });
+
+    // El mes del informe toma su propia `fecha`; el histórico compara cada mes
+    // contra la meta de `forecast` cuando no hay snapshot.
+    expect(report.totals.forecastKg).toBe(480_000);
+    expect(report.history.find((entry) => entry.month === 9)?.forecastKg).toBe(1_000_000);
+    expect(report.history.find((entry) => entry.month === 8)?.forecastKg).toBeNull();
+  });
+
+
+  it('convierte a kg el forecast en sacos y deja el granel tal cual', async () => {
+    const { adapter } = adapterWith({
+      monthly: BASE_MONTHLY,
+      daily: buildDaily(),
+      forecast: [
+        // 12.000 sacos × 40 kg = 480.000 kg.
+        { co_art: 'ABAGP13', forecast_mes: 12_000, uni_venta: 'SAC', uni_relac: 40 },
+        // Granel: el valor ya está en kg y no se multiplica.
+        { co_art: 'ABABOV75', forecast_mes: 90_000, uni_venta: 'KG', uni_relac: 1 },
+      ],
+    });
+
+    const report = await service(adapter, createFakePrisma()).salesReport({ ...QUERY, year: 2026, month: 10 });
+
+    const gallina = report.rows.find((entry) => entry.productCode === 'ABAGP13')!;
+    const granel = report.rows.find((entry) => entry.productCode === 'ABABOV75')!;
+    expect(gallina.forecastKg).toBe(480_000);
+    expect(granel.forecastKg).toBe(90_000);
+    expect(report.totals.forecastKg).toBe(570_000);
+  });
+
+  it('el asignador expone el mensual convertido a kg', async () => {
+    const { adapter } = adapterWith({
+      forecast: [{ co_art: 'ABAGP13', forecast_mes: 12_000, uni_venta: 'SAC', uni_relac: 40 }],
+    });
+    const db = createFakePrisma([], [
+      { externalCode: 'ABAGP13', description: 'GALLINA PONEDORA PLUS 18% - 40 KG', uom: 'SAC', kgPerUom: 40 },
+    ]);
+
+    const list = await service(adapter, db).list(2026, 10);
+    const row = list.rows.find((entry) => entry.productCode === 'ABAGP13')!;
+    expect(row.monthlyQty).toBe(480_000);
+    expect(row.averageQty).toBe(120_000);
+  });
+
   it('captureForecastTargets guarda la meta viva del mes en curso', async () => {
     const { adapter } = adapterWith({
       forecast: [
@@ -369,13 +511,106 @@ describe('ForecastService.salesReport', () => {
     const forecast = service(adapter, db);
 
     const first = await forecast.captureForecastTargets();
-    expect(first).toEqual({ year: 2026, month: 10, products: 2, captured: true });
+    expect(first).toMatchObject({ year: 2026, month: 10, products: 2, captured: true, created: 2 });
     expect(db.targets).toHaveLength(2);
 
     // Idempotente: una segunda captura no duplica filas.
     const second = await forecast.captureForecastTargets();
     expect(second.products).toBe(2);
     expect(db.targets).toHaveLength(2);
+  });
+
+  it('corrige la meta dentro de la ventana de gracia y la congela después', async () => {
+    vi.setSystemTime(new Date('2026-10-20T16:00:00.000Z')); // 20-oct 12:00 en Caracas
+    const options = { forecast: [{ co_art: 'ABAGP13', forecast_mes: 480_000 }] };
+    const { adapter } = adapterWith(options);
+    const db = createFakePrisma();
+    const forecast = service(adapter, db);
+
+    const first = await forecast.captureForecastTargets();
+    expect(first.created).toBe(1);
+    expect(db.targets[0]!.targetKg).toBe(480_000);
+    expect(db.targets[0]!.frozenAt).toBeNull();
+
+    // Cambio dentro de las 72 h: se corrige (evita congelar el mes anterior).
+    vi.setSystemTime(new Date('2026-10-21T16:00:00.000Z'));
+    options.forecast = [{ co_art: 'ABAGP13', forecast_mes: 500_000 }];
+    const second = await forecast.captureForecastTargets();
+    expect(second.corrected).toBe(1);
+    expect(db.targets[0]!.targetKg).toBe(500_000);
+    expect(db.targets[0]!.frozenAt).toBeNull();
+
+    // Pasada la gracia: se congela y solo se registra la diferencia.
+    vi.setSystemTime(new Date('2026-10-24T16:00:00.000Z'));
+    options.forecast = [{ co_art: 'ABAGP13', forecast_mes: 520_000 }];
+    const third = await forecast.captureForecastTargets();
+    expect(third.frozen).toBe(1);
+    expect(third.drifted).toBe(1);
+    expect(db.targets[0]!.targetKg).toBe(500_000);
+    expect(db.targets[0]!.lastSeenKg).toBe(520_000);
+    expect(db.targets[0]!.driftDetectedAt).toBeInstanceOf(Date);
+    expect(db.targets[0]!.frozenAt).toBeInstanceOf(Date);
+  });
+
+  it('incluye todo el catálogo de producción aunque no tenga meta ni venta', async () => {
+    const { adapter } = adapterWith({
+      monthly: BASE_MONTHLY,
+      daily: buildDaily(),
+      forecast: [{ co_art: 'ABAGP13', forecast_mes: 480_000 }],
+    });
+    const db = createFakePrisma([], [
+      {
+        externalCode: 'ABAGP13',
+        description: 'GALLINA PONEDORA PLUS 18% - 40 KG',
+        uom: 'SAC',
+        kgPerUom: 40,
+      },
+      {
+        externalCode: 'SINMETA',
+        description: 'ARTICULO SIN META NI VENTA',
+        uom: 'SAC',
+        kgPerUom: 40,
+      },
+    ]);
+
+    const report = await service(adapter, db).salesReport({ ...QUERY, year: 2026, month: 10 });
+    const sinMeta = report.rows.find((row) => row.productCode === 'SINMETA')!;
+    expect(sinMeta.forecastKg).toBe(0);
+    expect(sinMeta.actualKg).toBe(0);
+    expect(sinMeta.description).toBe('ARTICULO SIN META NI VENTA');
+    expect(sinMeta.forecastCapturedKg).toBeNull();
+  });
+
+  it('el mes en curso usa la meta viva y expone la captura y el drift', async () => {
+    const { adapter } = adapterWith({
+      monthly: BASE_MONTHLY,
+      daily: buildDaily(),
+      forecast: [{ co_art: 'ABAGP13', forecast_mes: 480_000 }],
+    });
+    const db = createFakePrisma([{ year: 2026, month: 10, productCode: 'ABAGP13', targetKg: 300_000 }]);
+    db.targets[0]!.lastSeenKg = 480_000;
+    db.targets[0]!.driftDetectedAt = new Date('2026-10-15T12:00:00Z');
+
+    const report = await service(adapter, db).salesReport({ ...QUERY, year: 2026, month: 10 });
+    const row = report.rows.find((entry) => entry.productCode === 'ABAGP13')!;
+    expect(row.forecastKg).toBe(480_000);
+    expect(row.forecastCapturedKg).toBe(300_000);
+    expect(row.forecastLiveKg).toBe(480_000);
+    expect(row.forecastDriftAt).not.toBeNull();
+  });
+
+  it('acepta el cambio de Profit y actualiza la captura histórica', async () => {
+    const db = createFakePrisma([{ year: 2026, month: 10, productCode: 'ABAGP13', targetKg: 300_000 }]);
+    db.targets[0]!.lastSeenKg = 320_000;
+    db.targets[0]!.lastSeenAt = new Date('2026-10-15T12:00:00Z');
+    db.targets[0]!.driftDetectedAt = new Date('2026-10-15T12:00:00Z');
+
+    const forecast = service(adapterWith({}).adapter, db);
+    const result = await forecast.acceptTargetDrift(2026, 10, 'ABAGP13');
+
+    expect(result).toEqual({ ok: true, targetKg: 320_000 });
+    expect(db.targets[0]!.targetKg).toBe(320_000);
+    expect(db.targets[0]!.driftDetectedAt).toBeNull();
   });
 });
 
@@ -419,6 +654,18 @@ describe('ForecastService.plan (despachos semanales)', () => {
     expect(row.soldMonthKg).toBe(1_500);
     expect(row.weeks.map((week) => week.soldKg)).toEqual([1_000, 0, 500, 0]);
     expect(row.demandMonthKg).toBe(0); // sin pedidos activos en el fixture
+  });
+
+  it('lee el forecast del mes pedido aunque ya esté cerrado', async () => {
+    const { adapter } = adapterWith({
+      forecast: [{ fecha: '2026-09-01', co_art: 'ABAGP13', forecast_mes: 123_000 }],
+    });
+
+    const report = await service(adapter, createFakePrisma([], [PRODUCT])).plan(2026, 9);
+
+    const row = report.rows.find((entry) => entry.productCode === 'ABAGP13')!;
+    expect(row.forecastMonthQty).toBe(123_000);
+    expect(row.averageQty).toBe(30_750);
   });
 
   it('si la consulta semanal falla: salesAvailable=false y soldMonthKg=0', async () => {

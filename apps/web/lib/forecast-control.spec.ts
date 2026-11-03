@@ -28,7 +28,7 @@ function row(overrides: Partial<ForecastPlanRow> = {}): ForecastPlanRow {
   };
 }
 
-describe('controlValues — diferencias de la vista Control', () => {
+describe('controlValues — diferencias de la vista Básico', () => {
   it('mensual: venta − forecast y venta + solicitado − forecast', () => {
     const values = controlValues(row(), null);
     expect(values.forecastKg).toBe(120_000);

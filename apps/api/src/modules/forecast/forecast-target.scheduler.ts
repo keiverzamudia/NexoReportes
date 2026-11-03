@@ -2,12 +2,14 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ForecastService } from './forecast.service';
 
 // ============================================================
-// Snapshot periódico de la meta (`xart_fore.kg_mes` → ForecastTarget).
+// Snapshot periódico de la meta (`forecast.kg_mensual` → ForecastTarget).
 //
-// `xart_fore` solo existe para el mes en curso. Este reloj guarda la meta cada
-// hora para que, cuando el mes cierre, el informe pueda comparar la venta real
-// contra la meta histórica. Es una escritura LOCAL (SQLite/PostgreSQL de Nexo),
-// nunca en Profit.
+// `forecast` identifica el mes con `fecha`, pero producción puede editar la
+// meta durante el mes. Este reloj guarda el valor oficial cada hora para que,
+// cuando el mes cierre, el informe pueda comparar la venta real contra la meta
+// histórica congelada. La primera captura crea la meta; durante
+// FORECAST_TARGET_GRACE_HOURS se puede corregir y después queda congelada. Es
+// una escritura LOCAL (SQLite/PostgreSQL de Nexo), nunca en Profit.
 //
 // Se puede desactivar con FORECAST_TARGET_INTERVAL_MINUTES=0 o vacío.
 // ============================================================
@@ -46,10 +48,14 @@ export class ForecastTargetScheduler implements OnModuleInit, OnModuleDestroy {
     try {
       const result = await this.forecast.captureForecastTargets();
       if (!result.captured) {
-        this.logger.warn('Snapshot de la meta omitido: xart_fore no respondió.');
+        this.logger.warn('Snapshot de la meta omitido: forecast no respondió.');
         return;
       }
-      this.logger.log(`Snapshot de la meta ${result.year}-${String(result.month).padStart(2, '0')}: ${result.products} artículos.`);
+      this.logger.log(
+        `Snapshot de la meta ${result.year}-${String(result.month).padStart(2, '0')}: ` +
+          `${result.products} artículos (${result.created} nuevas, ${result.corrected} corregidas, ` +
+          `${result.frozen} congeladas, ${result.drifted} con diferencia en Profit).`,
+      );
     } catch (error) {
       this.logger.warn(
         `Error al capturar la meta mensual: ${error instanceof Error ? error.message : 'error desconocido'}`,

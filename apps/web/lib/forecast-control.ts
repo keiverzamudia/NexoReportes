@@ -1,7 +1,7 @@
 import type { ForecastPlanRow, ForecastPlanWeek } from '@nexo/contracts';
 
 // ============================================================
-// Motor puro de la vista «Control» (Reporte → Control).
+// Motor puro de la vista «Básico» (Reporte → Básico).
 //
 // Trabaja SIEMPRE en kg para las diferencias (forecast y venta son kg; la
 // demanda tiene su propio kg) y solo convierte a la unidad de venta al pintar.

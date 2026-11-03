@@ -35,7 +35,6 @@ import type {
   ScenarioDraftResponse,
   ScenarioLineRef,
   ScenarioListResponse,
-  ScenarioLockResponse,
   ScenarioListItem,
   ScenarioRecipe,
   ScenarioSaveInput,
@@ -60,17 +59,17 @@ import { useLoadingOverlay } from '../../components/loading/LoadingOverlayProvid
 import { AppNav, LoginScreen } from '../../components/shell';
 import { Badge, Card, CoverageBar, DateInput, HeroCard, Kpi, PageHeader, Select, Segmented, Skeleton, Td, TextInput, Th, fmtDate, fmtQty, useGreeting } from '../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
-import { DispatchInput, DispatchMode, DispatchSort, QueueEntry, buildDispatchQueue, summarizeQueue } from '../../lib/dispatch';
+import { DispatchInput, DispatchMode, DispatchSort, CommittedEntry, QueueEntry, buildDispatchQueue, summarizeQueue } from '../../lib/dispatch';
 import { hasPermission } from '../../lib/permissions';
 import {
   buildLiveLines,
   buildSnapshot,
   diffScenario,
   recipeFromState,
-  refsFromSelection,
   resolveSelection,
   restoreSummaryFromDiff,
   scenarioQueryString,
+  scenarioRefKey,
   toDispatchInputs,
   totalsForEntries,
 } from '../../lib/scenario';
@@ -212,16 +211,16 @@ export default function PedidosPage() {
   // Simulaciones guardadas (global): plan del equipo + escenarios con nombre.
   const [scenariosOpen, setScenariosOpen] = useState(false);
   const [scenarioSaveIntent, setScenarioSaveIntent] = useState(false);
-  // Lock del plan global: solo el titular autoguarda.
-  const [planLock, setPlanLock] = useState<ScenarioLockResponse | null>(null);
-  const [lockBusy, setLockBusy] = useState(false);
-  const [lockNotice, setLockNotice] = useState<string | null>(null);
-  const autoLockTried = useRef(false);
-  const draftVersionRef = useRef<number | null>(null);
+  // Plan compartido: sin lock. Cada renglón tiene dueño y el servidor decide.
+  const [releaseBusy, setReleaseBusy] = useState(false);
+  // Última selección confirmada por el servidor (evita autoguardados vacíos).
+  const lastSavedRef = useRef<string>('');
+  // Renglones que este usuario acaba de marcar: si el servidor los devuelve
+  // con otro dueño, avisamos «lo tomó X».
+  const pendingAddsRef = useRef<Set<string>>(new Set());
+  const saveSeqRef = useRef(0);
   // Panel de cierres por nota de entrega (solo ADMIN).
   const [lifecycleOpen, setLifecycleOpen] = useState(false);
-  // Renglones del borrador que se resuelven cuando llega la cartera.
-  const [pendingRefs, setPendingRefs] = useState<ScenarioLineRef[] | null>(null);
   const [restorePreview, setRestorePreview] = useState<RestorePreviewState | null>(null);
   // Estado de cuenta del cliente: mismo modal que en Clientes, abierto desde la cartera.
   const [statementCustomer, setStatementCustomer] = useState<Customer | null>(null);
@@ -238,13 +237,14 @@ export default function PedidosPage() {
   const canSaveSimulation = hasPermission(sessionUser?.permissions, 'pedidos', 'create');
   // «Armar y enviar simulación» es un permiso propio de Despacho.
   const canSendToDispatch = hasPermission(sessionUser?.permissions, 'despacho', 'create');
-  // El estado de cuenta exige el mismo permiso que en Clientes.
-  const canViewStatement = hasPermission(sessionUser?.permissions, 'clientes', 'read');
   // El panel de cierres es exclusivo del ADMIN (decisión de negocio).
   const isAdmin = sessionUser?.role === 'ADMIN' || sessionUser?.baseRole === 'ADMIN';
-  // El plan global lo edita quien tenga el lock; el resto lo ve en lectura.
-  const planLockedByOther = Boolean(planLock && !planLock.isMine);
-  const canEditPlan = canSaveSimulation && !planLockedByOther;
+  // Quitar selecciones de otros: ADMIN o permiso explícito «Quitar selecciones de otros».
+  const canOverride = isAdmin || hasPermission(sessionUser?.permissions, 'pedidos', 'override');
+  // Editar el plan vivo: crear simulaciones o tener el permiso de quitar a otros.
+  const canEditSimulation = canSaveSimulation || canOverride;
+  // El estado de cuenta exige el mismo permiso que en Clientes.
+  const canViewStatement = hasPermission(sessionUser?.permissions, 'clientes', 'read');
 
   useEffect(() => {
     if (!toast) return;
@@ -344,67 +344,180 @@ export default function PedidosPage() {
     lineByKeyRef.current = lineByKey;
   }, [lineByKey]);
 
-  // ---------- Simulaciones guardadas: borrador por usuario ----------
-  // El borrador (receta + renglones) vive en el servidor: sobrevive al cierre
-  // de sesión y al cambio de equipo, y no se mezcla con otro usuario del PC.
+  // ---------- Plan vivo compartido (sin lock) ----------
+  // El servidor sella el dueño de cada renglón y devuelve la asignación ya
+  // calculada. Con eso las tres vendedoras ven el mismo compromiso y el mismo
+  // stock libre, aunque cada una filtre clientes distintos.
   const draftQuery = useQuery<ScenarioDraftResponse>({
     queryKey: ['scenario-draft'],
     queryFn: () => apiFetch<ScenarioDraftResponse>('/scenarios/draft'),
     retry: false,
     staleTime: 0,
-    refetchInterval: 15_000,
+    refetchInterval: 3_000,
+    refetchIntervalInBackground: true,
   });
 
-  useEffect(() => {
-    if (draftQuery.data?.scenario) draftVersionRef.current = draftQuery.data.scenario.version;
-  }, [draftQuery.data]);
-
-  // Refleja el lock del servidor en la UI. Si el plan está libre y tengo
-  // permiso, lo tomo automáticamente para que el autoguardado funcione.
-  useEffect(() => {
-    const scenario = draftQuery.data?.scenario;
-    if (!scenario) return;
-    const lock = scenario.lock;
-    if (lock?.isMine && lock.token) {
-      setPlanLock({
-        holderId: lock.holderId,
-        holderName: lock.holderName,
-        until: lock.until ?? new Date().toISOString(),
-        isMine: true,
-        token: lock.token,
-        version: scenario.version,
+  // Renglones seleccionados que quedan FUERA de los filtros de esta pantalla.
+  const externalLineByKey = useMemo(() => {
+    const map = new Map<string, { line: OrderGroupLine; group: OrderGroup }>();
+    for (const line of draftQuery.data?.lines ?? []) {
+      const key = lineKey(line);
+      if (lineByKey.has(key)) continue;
+      map.set(key, {
+        line,
+        group: {
+          key: line.customerCode ?? line.customerName ?? key,
+          code: line.customerCode,
+          label: line.customerName ?? line.customerCode ?? line.orderNumber,
+          ordersCount: 1,
+          linesCount: 1,
+          totalPendingQty: line.pendingQty,
+          totalPendingKg: line.pendingKg ?? 0,
+          itemsCount: 1,
+          lines: [line],
+        },
       });
-      setLockNotice(null);
-    } else if (lock && !lock.isMine) {
-      setPlanLock({
-        holderId: lock.holderId,
-        holderName: lock.holderName,
-        until: lock.until ?? '',
-        isMine: false,
-        token: '',
-        version: scenario.version,
-      });
-      setLockNotice(`El plan lo está editando ${lock.holderName ?? 'otro usuario'}.`);
-    } else {
-      setPlanLock(null);
     }
+    return map;
+  }, [draftQuery.data, lineByKey]);
+
+  const allLineByKey = useMemo(() => {
+    const map = new Map(lineByKey);
+    for (const [key, value] of externalLineByKey) map.set(key, value);
+    return map;
+  }, [lineByKey, externalLineByKey]);
+  const allLineByKeyRef = useRef(allLineByKey);
+  useEffect(() => {
+    allLineByKeyRef.current = allLineByKey;
+  }, [allLineByKey]);
+
+  const externalInputs: DispatchInput[] = useMemo(
+    () =>
+      [...externalLineByKey.values()].map(({ line }) => ({
+        key: lineKey(line),
+        productCode: line.productCode,
+        pendingQty: line.pendingQty,
+        pendingKg: line.pendingKg,
+        requestedDate: line.tentativeDate ?? line.requestedDate,
+        orderNumber: line.orderNumber,
+        customerName: line.customerName,
+        stockTotal: (line.stock03 ?? 0) + (line.stock9999 ?? 0) + (line.stock68 ?? 0),
+      })),
+    [externalLineByKey],
+  );
+  const allDispatchInputs = useMemo(
+    () => [...dispatchInputs, ...externalInputs],
+    [dispatchInputs, externalInputs],
+  );
+
+  // Dueño por renglón: solo para pintar el candado y bloquear el clic.
+  const ownerByKey = useMemo(() => {
+    const map = new Map<string, { id: string; name: string }>();
+    const byRef = new Map(
+      (draftQuery.data?.lines ?? []).map((line) => [
+        scenarioRefKey(line.orderNumber, line.productCode),
+        lineKey(line),
+      ]),
+    );
+    for (const ref of draftQuery.data?.scenario?.payload.selected ?? []) {
+      if (!ref.selectedById) continue;
+      const key = byRef.get(scenarioRefKey(ref.orderNumber, ref.productCode));
+      if (!key) continue;
+      map.set(key, { id: ref.selectedById, name: ref.selectedByName ?? 'otra vendedora' });
+    }
+    return map;
   }, [draftQuery.data]);
 
-  useEffect(() => {
-    if (autoLockTried.current || !sessionUser || !canSaveSimulation || !draftQuery.isFetched) return;
-    const lock = draftQuery.data?.scenario?.lock;
-    autoLockTried.current = true;
-    if (lock?.isMine || (lock && !lock.isMine)) return;
-    void acquirePlanLock(false, true);
-  }, [sessionUser, canSaveSimulation, draftQuery.isFetched, draftQuery.data]);
+  // Personas que tienen renglones reservados (para la sala de simulación).
+  const participants = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; count: number }>();
+    for (const ref of draftQuery.data?.scenario?.payload.selected ?? []) {
+      if (!ref.selectedById) continue;
+      const entry = map.get(ref.selectedById) ?? {
+        id: ref.selectedById,
+        name: ref.selectedByName ?? 'Sin nombre',
+        count: 0,
+      };
+      entry.count += 1;
+      map.set(ref.selectedById, entry);
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count);
+  }, [draftQuery.data]);
 
-  // Heartbeat: renueva el lock mientras el usuario sigue en la pantalla.
-  useEffect(() => {
-    if (!planLock?.isMine) return;
-    const id = window.setInterval(() => void acquirePlanLock(false, true), 60_000);
-    return () => window.clearInterval(id);
-  }, [planLock?.isMine]);
+  // Asignación del servidor por clave visible (`orderId#productCode`).
+  const committedByKey = useMemo(() => {
+    const map = new Map<string, CommittedEntry>();
+    const byRef = new Map(
+      (draftQuery.data?.lines ?? []).map((line) => [
+        scenarioRefKey(line.orderNumber, line.productCode),
+        lineKey(line),
+      ]),
+    );
+    for (const assignment of draftQuery.data?.assignments ?? []) {
+      const key = byRef.get(scenarioRefKey(assignment.orderNumber, assignment.productCode));
+      if (!key) continue;
+      map.set(key, {
+        assignedQty: assignment.assignedQty,
+        assignedKg: assignment.assignedKg,
+        missingQty: assignment.missingQty,
+        missingKg: assignment.missingKg,
+        freeAfter: assignment.freeAfter,
+      });
+    }
+    return map;
+  }, [draftQuery.data]);
 
+  const freeByProduct = useMemo(
+    () => new Map((draftQuery.data?.freeByProduct ?? []).map((item) => [item.productCode, item.free])),
+    [draftQuery.data],
+  );
+  const activeSheet = draftQuery.data?.activeSheet ?? null;
+
+  // Cambios locales sin confirmar: evita que el polling pise una selección
+  // recién marcada antes de que el autoguardado llegue al servidor.
+  const dirtyRef = useRef(false);
+  const signatureOfRefs = (
+    refs: ScenarioLineRef[],
+    plan: LoadPlan | null,
+    commentMap: Record<string, string> = {},
+  ) =>
+    JSON.stringify({
+      refs: refs.map((ref) => scenarioRefKey(ref.orderNumber, ref.productCode)).sort(),
+      plan,
+      comments: Object.entries(commentMap).sort(([a], [b]) => a.localeCompare(b)),
+    });
+  const sameKeys = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((value, index) => value === b[index]);
+
+  function refsForSelection(keys: string[]): ScenarioLineRef[] {
+    const seen = new Set<string>();
+    const refs: ScenarioLineRef[] = [];
+    for (const key of keys) {
+      const hit = allLineByKeyRef.current.get(key);
+      if (!hit) continue;
+      const refKey = scenarioRefKey(hit.line.orderNumber, hit.line.productCode);
+      if (seen.has(refKey)) continue;
+      seen.add(refKey);
+      refs.push({ orderNumber: hit.line.orderNumber, productCode: hit.line.productCode });
+    }
+    return refs;
+  }
+
+  // Convierte los comentarios (clave visible orderId#artículo) a la clave que
+  // guarda el servidor (pedido#artículo), solo para los renglones del plan.
+  function commentsForRefs(refs: ScenarioLineRef[]): Record<string, string> {
+    const allowed = new Set(refs.map((ref) => scenarioRefKey(ref.orderNumber, ref.productCode)));
+    const out: Record<string, string> = {};
+    for (const [key, text] of Object.entries(comments)) {
+      const hit = allLineByKeyRef.current.get(key);
+      if (!hit) continue;
+      const refKey = scenarioRefKey(hit.line.orderNumber, hit.line.productCode);
+      if (!allowed.has(refKey)) continue;
+      const clean = text.trim().slice(0, 240);
+      if (clean) out[refKey] = clean;
+    }
+    return out;
+  }
 
   const { data: scenarioList } = useQuery<ScenarioListResponse>({
     queryKey: ['scenarios'],
@@ -413,8 +526,8 @@ export default function PedidosPage() {
     enabled: hydrated,
   });
 
-  // Hidratación única: primero el borrador del servidor; si no existe, se
-  // migra la selección vieja de localStorage y se borra la clave.
+  // Hidratación única: receta/filtros del plan; la selección la manda el
+  // servidor en cada refresco para que las tres pantallas coincidan.
   useEffect(() => {
     if (hydrated || !draftQuery.isFetched) return;
     const scenario = draftQuery.data?.scenario;
@@ -425,83 +538,142 @@ export default function PedidosPage() {
       setSort(recipe.sort);
       applyFilters(recipe.filters);
       setLoadPlan(scenario.payload.loadPlan ?? null);
-      setPendingRefs(scenario.payload.selected);
+      const live = buildLiveLines(groups);
+      for (const line of draftQuery.data?.lines ?? []) {
+        const key = scenarioRefKey(line.orderNumber, line.productCode);
+        if (live.has(key)) continue;
+        live.set(key, {
+          orderId: line.orderId,
+          productCode: line.productCode,
+          pendingQty: line.pendingQty,
+          pendingKg: line.pendingKg,
+          stockTotal: (line.stock03 ?? 0) + (line.stock9999 ?? 0) + (line.stock68 ?? 0),
+          effectiveDate: line.tentativeDate ?? line.requestedDate,
+        });
+      }
+      setSelection(resolveSelection(scenario.payload.selected, live));
+      const payloadComments = scenario.payload.comments ?? {};
+      const restoredLiveComments: Record<string, string> = {};
+      for (const line of draftQuery.data?.lines ?? []) {
+        const text = payloadComments[scenarioRefKey(line.orderNumber, line.productCode)];
+        if (text) restoredLiveComments[lineKey(line)] = text;
+      }
+      setComments(restoredLiveComments);
+      lastSavedRef.current = signatureOfRefs(
+        scenario.payload.selected,
+        scenario.payload.loadPlan ?? null,
+        payloadComments,
+      );
+      dirtyRef.current = false;
+      setHydrated(true);
       return;
     }
     setSelection(loadSelection());
     if (typeof window !== 'undefined') window.localStorage.removeItem(SEL_KEY);
     setHydrated(true);
-  }, [hydrated, draftQuery.isFetched, draftQuery.data]);
+  }, [hydrated, draftQuery.isFetched, draftQuery.data, groups]);
 
-  // Los renglones guardados se resuelven contra la cartera ya cargada.
+  // Refresco del plan: si no hay cambios locales pendientes, adopta la
+  // selección autoritativa del servidor (incluye lo que marcaron las demás).
   useEffect(() => {
-    if (!pendingRefs || data === undefined) return;
-    setSelection(resolveSelection(pendingRefs, buildLiveLines(data.groups)));
-    setPendingRefs(null);
-    setHydrated(true);
-  }, [pendingRefs, data]);
+    const payload = draftQuery.data?.scenario?.payload;
+    if (!hydrated || !payload || dirtyRef.current) return;
+    const live = buildLiveLines(groups);
+    for (const line of draftQuery.data?.lines ?? []) {
+      const key = scenarioRefKey(line.orderNumber, line.productCode);
+      if (live.has(key)) continue;
+      live.set(key, {
+        orderId: line.orderId,
+        productCode: line.productCode,
+        pendingQty: line.pendingQty,
+        pendingKg: line.pendingKg,
+        stockTotal: (line.stock03 ?? 0) + (line.stock9999 ?? 0) + (line.stock68 ?? 0),
+        effectiveDate: line.tentativeDate ?? line.requestedDate,
+      });
+    }
+    const keys = resolveSelection(payload.selected, live);
+    setSelection((previous) => (sameKeys(previous, keys) ? previous : keys));
+    lastSavedRef.current = signatureOfRefs(
+      payload.selected,
+      payload.loadPlan ?? null,
+      payload.comments ?? {},
+    );
+  }, [hydrated, draftQuery.data, groups]);
 
-  // Autoguardado del plan global (debounce): receta + renglones visibles.
-  // Solo escribe el titular del lock; si no, el plan es de solo lectura.
+  // Autoguardado del plan (debounce corto: la reserva debe llegar rápido).
   useEffect(() => {
-    if (!hydrated || data === undefined || !canEditPlan || !planLock?.isMine) return;
+    if (!hydrated || data === undefined || !canEditSimulation) return;
+    const refs = refsForSelection(selection);
+    const commentMap = commentsForRefs(refs);
+    const signature = signatureOfRefs(refs, loadPlan, commentMap);
+    if (signature === lastSavedRef.current) return;
     const id = window.setTimeout(() => {
+      const seq = ++saveSeqRef.current;
       const body: ScenarioDraftInput = {
         recipe: currentRecipe(),
-        selected: refsFromSelection(selection, lineByKeyRef.current),
+        selected: refs,
         loadPlan,
-        version: draftVersionRef.current ?? planLock.version,
-        lockToken: planLock.token ?? undefined,
+        comments: commentMap,
       };
-      void apiFetch<ScenarioListItem>('/scenarios/draft', { method: 'PUT', body: JSON.stringify(body) })
+      void apiFetch<ScenarioDraftResponse>('/scenarios/draft', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      })
         .then((saved) => {
-          draftVersionRef.current = saved.version;
-          if (saved.lock?.isMine && saved.lock.token) {
-            setPlanLock({
-              holderId: saved.lock.holderId,
-              holderName: saved.lock.holderName,
-              until: saved.lock.until ?? new Date().toISOString(),
-              isMine: true,
-              token: saved.lock.token,
-              version: saved.version,
-            });
+          if (seq !== saveSeqRef.current) return;
+          const savedRefs = saved.scenario?.payload.selected ?? [];
+          const savedByKey = new Map(savedRefs.map((ref) => [scenarioRefKey(ref.orderNumber, ref.productCode), ref]));
+          for (const key of pendingAddsRef.current) {
+            const taken = savedByKey.get(key);
+            if (taken?.selectedById && taken.selectedById !== sessionUser?.id) {
+              const product = key.split('#')[1] ?? '';
+              setToast(`Lo tomó ${taken.selectedByName ?? 'otra vendedora'} (${product}).`);
+            }
           }
-          setLockNotice(null);
+          pendingAddsRef.current.clear();
+          dirtyRef.current = false;
+          lastSavedRef.current = signature;
+          queryClient.setQueryData(['scenario-draft'], saved);
         })
         .catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : 'No se pudo guardar el plan.';
-          setLockNotice(message);
-          if (/control|expir/i.test(message)) {
-            setPlanLock(null);
-            void acquirePlanLock(false, true);
-          }
+          if (seq !== saveSeqRef.current) return;
+          dirtyRef.current = false;
+          setToast(error instanceof Error ? error.message : 'No se pudo guardar el plan.');
           void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
         });
-    }, 900);
+    }, 350);
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, data, by, mode, sort, q, status, authorized, customerCode, emisionDesde, emisionHasta, entregaDesde, entregaHasta, selection, loadPlan, canEditPlan, planLock?.isMine, planLock?.token]);
+  }, [hydrated, data, selection, loadPlan, comments, canEditSimulation, sessionUser?.id, queryClient]);
+
 
   // Información agregada por producto (existencia, solicitado, kg por unidad).
   const productInfo = useMemo(() => {
     const map = new Map<string, { units: number; demandUnits: number; demandKg: number; kgPerUnit: number | null; description: string }>();
-    for (const g of groups) {
-      for (const l of g.lines) {
-        let e = map.get(l.productCode);
-        if (!e) {
-          e = { units: (l.stock03 ?? 0) + (l.stock9999 ?? 0) + (l.stock68 ?? 0), demandUnits: 0, demandKg: 0, kgPerUnit: null, description: l.description ?? l.productCode };
-          map.set(l.productCode, e);
-        }
-        e.demandUnits += l.pendingQty;
-        e.demandKg += l.pendingKg ?? 0;
+    const addLine = (l: OrderGroupLine) => {
+      let e = map.get(l.productCode);
+      if (!e) {
+        e = { units: (l.stock03 ?? 0) + (l.stock9999 ?? 0) + (l.stock68 ?? 0), demandUnits: 0, demandKg: 0, kgPerUnit: null, description: l.description ?? l.productCode };
+        map.set(l.productCode, e);
       }
-    }
+      e.demandUnits += l.pendingQty;
+      e.demandKg += l.pendingKg ?? 0;
+    };
+    for (const g of groups) for (const l of g.lines) addLine(l);
+    for (const { line } of externalLineByKey.values()) addLine(line);
     for (const e of map.values()) e.kgPerUnit = e.demandUnits !== 0 ? e.demandKg / e.demandUnits : null;
     return map;
-  }, [groups]);
+  }, [groups, externalLineByKey]);
 
-  // Cola de despacho: stock vivo, marcados fijos y el resto en turno.
-  const queue = useMemo(() => buildDispatchQueue(dispatchInputs, selection, mode), [dispatchInputs, selection, mode]);
+  // Cola de despacho: asignaciones del servidor + stock libre compartido.
+  const queue = useMemo(
+    () =>
+      buildDispatchQueue(allDispatchInputs, selection, mode, {
+        committed: committedByKey,
+        freeByProduct,
+      }),
+    [allDispatchInputs, selection, mode, committedByKey, freeByProduct],
+  );
   const queueByKey = useMemo(() => new Map(queue.map((e) => [e.key, e])), [queue]);
   const queueIndex = useMemo(() => new Map(queue.map((e) => [e.key, e.sortIndex])), [queue]);
   const liveSummary = useMemo(() => summarizeQueue(queue), [queue]);
@@ -512,13 +684,13 @@ export default function PedidosPage() {
     for (const [code, info] of productInfo) map.set(code, info.units);
     for (const e of queue) {
       if (!e.selected) continue;
-      const ref = lineByKey.get(e.key);
+      const ref = allLineByKey.get(e.key);
       if (!ref) continue;
       const code = ref.line.productCode;
       map.set(code, (map.get(code) ?? 0) - e.assignedQty);
     }
     return map;
-  }, [productInfo, queue, lineByKey]);
+  }, [productInfo, queue, allLineByKey]);
 
   const planEntries = useMemo(() => queue.filter((e) => e.selected).sort((a, b) => a.priority - b.priority), [queue]);
   const planSummary = useMemo(() => summarizeQueue(planEntries), [planEntries]);
@@ -528,11 +700,11 @@ export default function PedidosPage() {
   const planSacks = useMemo(() => {
     let sacks = 0;
     for (const e of planEntries) {
-      const ref = lineByKey.get(e.key);
+      const ref = allLineByKey.get(e.key);
       if (ref?.line.uom === 'SAC') sacks += e.assignedQty;
     }
     return sacks;
-  }, [planEntries, lineByKey]);
+  }, [planEntries, allLineByKey]);
 
   // Plan agrupado igual que la tabla (por cliente o por producto), 1 abierto.
   const planGroups = useMemo(() => {
@@ -550,7 +722,7 @@ export default function PedidosPage() {
       }
     >();
     for (const e of planEntries) {
-      const ref = lineByKey.get(e.key);
+      const ref = allLineByKey.get(e.key);
       if (!ref) continue;
       let g = map.get(ref.group.key);
       if (!g) {
@@ -565,13 +737,13 @@ export default function PedidosPage() {
       g.missingKg += e.missingKg;
     }
     return [...map.values()].map((g) => ({ ...g, entries: [...g.entries].sort((a, b) => a.priority - b.priority) }));
-  }, [planEntries, lineByKey]);
+  }, [planEntries, allLineByKey]);
 
   // Renglones del plan en el formato de la guía de carga del camión.
   const planLoadLines: LoadPlanLine[] = useMemo(
     () =>
       planEntries.flatMap((entry) => {
-        const ref = lineByKey.get(entry.key);
+        const ref = allLineByKey.get(entry.key);
         if (!ref) return [];
         return [
           {
@@ -588,7 +760,7 @@ export default function PedidosPage() {
           } satisfies LoadPlanLine,
         ];
       }),
-    [planEntries, lineByKey, comments],
+    [planEntries, allLineByKey, comments],
   );
 
   // Si el usuario libera un renglón, su pedido sale también de los espacios del
@@ -764,7 +936,7 @@ export default function PedidosPage() {
     const committed = new Map<string, { units: number; pending: number }>();
     for (const e of queue) {
       if (!e.selected) continue;
-      const ref = lineByKey.get(e.key);
+      const ref = allLineByKey.get(e.key);
       if (!ref) continue;
       const acc = committed.get(ref.line.productCode) ?? { units: 0, pending: 0 };
       acc.units += e.assignedQty;
@@ -824,7 +996,7 @@ export default function PedidosPage() {
         { name: 'Faltante', type: 'bar', stack: 't', data: rows.map((r) => r.missingKg), color: C.accent, barMaxWidth: 11, itemStyle: { borderRadius: [0, 4, 4, 0] } },
       ],
     };
-  }, [productInfo, queue, lineByKey]);
+  }, [productInfo, queue, allLineByKey]);
 
   const donutChart = useMemo(() => {
     const covered = Math.round(liveSummary.assignedKg);
@@ -906,27 +1078,44 @@ export default function PedidosPage() {
     setDateSelection(null);
   }
 
-  // Toma (o renueva) el control del plan global. `force` solo lo usa ADMIN.
-  async function acquirePlanLock(force = false, silent = false) {
-    if (lockBusy) return;
-    setLockBusy(true);
+  // Libera selecciones del plan compartido. `all` exige el permiso override.
+  async function releaseSelections(all: boolean) {
+    if (releaseBusy) return;
+    setReleaseBusy(true);
     try {
-      const lock = await apiFetch<ScenarioLockResponse>('/scenarios/draft/lock', {
-        method: 'POST',
-        body: JSON.stringify({ force }),
+      await apiFetch<ScenarioDraftResponse>('/scenarios/draft/lines', {
+        method: 'DELETE',
+        body: JSON.stringify(all ? { all: true } : {}),
       });
-      setPlanLock(lock);
-      draftVersionRef.current = lock.version;
-      setLockNotice(null);
-      void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
+      dirtyRef.current = false;
+      setSelection((previous) =>
+        all ? [] : previous.filter((key) => isTakenByOther(key)),
+      );
+      await queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
+      setToast(all ? 'Se liberaron todas las selecciones del equipo.' : 'Tus selecciones quedaron libres.');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'No se pudo tomar el control del plan.';
-      setLockNotice(message);
-      if (/editando|control/i.test(message)) setPlanLock(null);
-      if (!silent) setToast(message);
-      void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
+      setToast(error instanceof Error ? error.message : 'No se pudieron liberar las selecciones.');
     } finally {
-      setLockBusy(false);
+      setReleaseBusy(false);
+    }
+  }
+
+  // Envía la simulación viva al almacén. A partir de ahí, cada cambio se
+  // refleja solo mientras el renglón no esté CARGADO.
+  async function sendCurrentPlan() {
+    if (!canSendToDispatch) return;
+    try {
+      const sheet = await runWithOverlay('Enviando la simulación al almacén', () =>
+        apiFetch<DispatchSheetDetail>('/scenarios/draft/send-dispatch', {
+          method: 'POST',
+          body: JSON.stringify({ title: 'Simulación del equipo' }),
+        }),
+      );
+      setToast(`Despacho ${sheet.number} enviado. Los cambios se actualizan solos.`);
+      void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
+      void queryClient.invalidateQueries({ queryKey: ['dispatch-sheets'] });
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'No se pudo enviar la simulación.');
     }
   }
 
@@ -946,8 +1135,8 @@ export default function PedidosPage() {
     if (planEntries.length === 0) throw new Error('Marca al menos un renglón para guardar la simulación.');
     const snapshot = buildSnapshot({
       entries: planEntries,
-      lineByKey,
-      carteraLines: dispatchInputs.length,
+      lineByKey: allLineByKey,
+      carteraLines: allDispatchInputs.length,
       takenAt: new Date(),
       comments,
     });
@@ -966,14 +1155,14 @@ export default function PedidosPage() {
     const body: ScenarioSaveInput = {
       name,
       recipe: currentRecipe(),
-      selected: refsFromSelection(planEntries.map((entry) => entry.key), lineByKey),
+      selected: refsForSelection(planEntries.map((entry) => entry.key)),
       snapshot,
       loadPlan: safeLoadPlan,
     };
     const saved = await apiFetch<ScenarioDetail>('/scenarios', { method: 'POST', body: JSON.stringify(body) });
 
     if (options?.sendToDispatch) {
-      const sheet = await apiFetch<DispatchSheetDetail>(`/scenarios/${saved.id}/send-dispatch`, {
+      const sheet = await apiFetch<DispatchSheetDetail>('/scenarios/draft/send-dispatch', {
         method: 'POST',
         body: JSON.stringify({
           title: options.title?.trim() || name,
@@ -981,7 +1170,8 @@ export default function PedidosPage() {
           assignedToId: options.assignedToId ?? null,
         }),
       });
-      setToast(`Simulación «${name}» enviada a despacho ${sheet.number}.`);
+      setToast(`Simulación «${name}» enviada a despacho ${sheet.number}. Los cambios se actualizan solos.`);
+      void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
       void queryClient.invalidateQueries({ queryKey: ['dispatch-sheets'] });
       return;
     }
@@ -993,10 +1183,6 @@ export default function PedidosPage() {
   // con los filtros de la receta, recalcula y abre el diff. Recién al
   // confirmar se aplican filtros y selección.
   async function previewRestore(detail: ScenarioDetail) {
-    if (!canEditPlan) {
-      setToast('El plan lo está editando otro usuario. Toma el control para restaurar una simulación.');
-      return;
-    }
     const recipe = detail.payload.recipe;
     const live = await apiFetch<OrderGroupedResponse>(`/orders/grouped?${scenarioQueryString(recipe)}`);
     const liveLines = buildLiveLines(live.groups);
@@ -1029,14 +1215,18 @@ export default function PedidosPage() {
     );
     const restoredComments: Record<string, string> = {};
     for (const key of keys) {
-      const ref = lineByKey.get(key);
+      const ref = allLineByKey.get(key);
       if (!ref) continue;
       const comment = savedComments.get(`${ref.line.orderNumber}#${ref.line.productCode}`);
       if (comment) restoredComments[key] = comment;
     }
     setComments(restoredComments);
     setLoadPlan(detail.payload.loadPlan ?? null);
-    setSelection(keys);
+    // Restaurar suma lo del escenario y conserva lo que ya marcaron las demás:
+    // el servidor nunca permite que una restauración borre lo ajeno.
+    const foreign = selection.filter((key) => isTakenByOther(key));
+    dirtyRef.current = true;
+    setSelection([...new Set([...keys, ...foreign])]);
     setPlanExpanded(null);
     setExpanded(null);
     setDateSelection(null);
@@ -1070,32 +1260,55 @@ export default function PedidosPage() {
     if (typeof window !== 'undefined') window.history.replaceState(null, '', '/pedidos');
   }
 
+  // ¿El renglón ya lo reservó otra vendedora? El servidor manda; el cliente
+  // solo pinta el candado y evita el clic.
+  function isTakenByOther(key: string): boolean {
+    const owner = ownerByKey.get(key);
+    return Boolean(owner && owner.id !== sessionUser?.id);
+  }
+
   // Renglones seleccionables de un grupo: en «Solo despachable», únicamente los
   // que tienen existencia para despachar (completo o parcial). En «Solicitado
   // total» no se restringe: esa simulación sobregira el stock a propósito.
+  // Lo ya tomado por otra vendedora nunca entra en la selección masiva.
   function dispatchableKeys(group: OrderGroup): string[] {
-    return group.lines.map(lineKey).filter((k) => mode === 'total' || (queueByKey.get(k)?.dispatchable ?? false));
+    return group.lines
+      .map(lineKey)
+      .filter(
+        (key) =>
+          !isTakenByOther(key) &&
+          (mode === 'total' || (queueByKey.get(key)?.dispatchable ?? false)),
+      );
   }
 
   function toggleLine(line: OrderGroupLine) {
-    if (!canEditPlan) {
-      setToast('El plan lo está editando otro usuario. Toma el control para modificarlo.');
+    if (!canEditSimulation) {
+      setToast('No tienes permiso para modificar la simulación.');
       return;
     }
     const key = lineKey(line);
-    setSelection((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+    const owner = ownerByKey.get(key);
+    if (owner && owner.id !== sessionUser?.id && !canOverride) {
+      setToast(`Lo tomó ${owner.name}. Solo un administrador (o quien tenga el permiso) puede liberarlo.`);
+      return;
+    }
+    dirtyRef.current = true;
+    setSelection((prev) => {
+      if (prev.includes(key)) return prev.filter((k) => k !== key);
+      pendingAddsRef.current.add(`${line.orderNumber}#${line.productCode}`);
+      return [...prev, key];
+    });
   }
 
   function toggleGroup(group: OrderGroup) {
-    if (!canEditPlan) {
-      setToast('El plan lo está editando otro usuario. Toma el control para modificarlo.');
+    if (!canEditSimulation) {
+      setToast('No tienes permiso para modificar la simulación.');
       return;
     }
-    // Solo se marca o se suelta lo despachable. Cambiar de modo NO reinicia la
-    // selección: lo ya marcado se queda como está.
     const keys = dispatchableKeys(group);
     if (keys.length === 0) return;
     const all = keys.every((k) => selection.includes(k));
+    dirtyRef.current = true;
     setSelection((prev) => (all ? prev.filter((k) => !keys.includes(k)) : [...new Set([...prev, ...keys])]));
   }
 
@@ -1115,7 +1328,7 @@ export default function PedidosPage() {
 
     const byClient = new Map<string, ClientPlan>();
     for (const entry of planEntries) {
-      const ref = lineByKey.get(entry.key);
+      const ref = allLineByKey.get(entry.key);
       if (!ref) continue;
       const key = ref.line.customerCode ?? ref.line.customerName ?? ref.group.key;
       let client = byClient.get(key);
@@ -1200,7 +1413,7 @@ export default function PedidosPage() {
     const totalAssignedKg = planEntries.reduce((sum, entry) => sum + entry.assignedKg, 0);
     const totalMissingKg = planEntries.reduce((sum, entry) => sum + entry.missingKg, 0);
     const totalSacks = planEntries.reduce(
-      (sum, entry) => sum + (lineByKey.get(entry.key)?.line.uom === 'SAC' ? entry.assignedQty : 0),
+      (sum, entry) => sum + (allLineByKey.get(entry.key)?.line.uom === 'SAC' ? entry.assignedQty : 0),
       0,
     );
     const totalRow = aoa.length;
@@ -1230,44 +1443,60 @@ export default function PedidosPage() {
           subtitle="Simula qué puedes despachar hoy con tu existencia real. Marca renglones para armar el plan de despacho; se ordena por prioridad y nunca escribe en Profit."
         />
 
-        {/* Plan global: lock de edición. Sin el control, la pantalla es de solo lectura. */}
-        {!planLock?.isMine && canSaveSimulation ? (
-          <div className="flex flex-wrap items-center justify-between gap-space-sm rounded-xl border border-warning/40 bg-warning/10 px-space-md py-space-sm">
-            <p className="flex items-center gap-space-sm text-body-md text-on-surface">
-              <Lock aria-hidden className="size-4 shrink-0 text-warning" />
-              <span>
-                {planLock?.holderName ? (
-                  <>
-                    El plan global lo está editando <strong>{planLock.holderName}</strong>. Estás viendo la última versión
-                    en solo lectura.
-                  </>
-                ) : (
-                  <>Toma el control para editar el plan global del equipo.</>
-                )}
-              </span>
-            </p>
-            <button
-              type="button"
-              onClick={() => void acquirePlanLock(isAdmin)}
-              disabled={lockBusy}
-              title={isAdmin ? 'Un administrador puede tomar el control' : 'Solo funciona si el otro usuario lo liberó'}
-              className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-40"
-            >
-              {lockBusy ? <RefreshCw aria-hidden className="size-4 animate-spin" /> : <Unlock aria-hidden className="size-4" />}
-              Tomar control
-            </button>
+        {/* Sala de simulación: sin lock; cada renglón tiene dueño y se libera
+            solo al desmarcarlo o cuando un admin/permiso lo quita. */}
+        <div className="flex flex-wrap items-center justify-between gap-space-sm rounded-xl border border-secondary/30 bg-secondary-container/15 px-space-md py-space-sm">
+          <div className="flex min-w-0 flex-wrap items-center gap-space-sm text-label-md text-on-surface">
+            <ShieldCheck aria-hidden className="size-4 shrink-0 text-secondary" />
+            <span className="font-semibold">Simulación compartida</span>
+            <span aria-hidden className="text-outline">·</span>
+            {participants.length === 0 ? (
+              <span className="text-on-surface-variant">Nadie ha marcado renglones todavía.</span>
+            ) : (
+              participants.map((person) => (
+                <span
+                  key={person.id}
+                  className={`rounded-pill px-2 py-0.5 font-semibold ${
+                    person.id === sessionUser?.id
+                      ? 'bg-primary-container text-on-primary'
+                      : 'bg-surface-container-lowest text-on-surface-variant'
+                  }`}
+                  title={`${person.count} renglón(es) reservados`}
+                >
+                  {person.name} · {person.count}
+                </span>
+              ))
+            )}
+            {activeSheet && (
+              <Badge tone="success" dot>
+                Despacho {activeSheet.number} · se actualiza solo
+              </Badge>
+            )}
           </div>
-        ) : planLock?.isMine ? (
-          <p className="flex items-center gap-space-xs rounded-xl border border-secondary/30 bg-secondary-container/20 px-space-md py-space-xs text-label-md font-semibold text-on-surface">
-            <ShieldCheck aria-hidden className="size-4 text-secondary" />
-            Tienes el control del plan global. Los cambios se guardan automáticamente para todo el equipo.
-          </p>
-        ) : null}
-        {lockNotice && !planLockedByOther && (
-          <p role="status" className="flex items-center gap-space-xs rounded-xl border border-warning/30 bg-warning/10 px-space-md py-space-xs text-label-md text-on-surface">
-            <AlertTriangle aria-hidden className="size-4 text-warning" /> {lockNotice}
-          </p>
-        )}
+          <div className="flex items-center gap-space-xs">
+            {canEditSimulation && (
+              <button
+                type="button"
+                onClick={() => void releaseSelections(false)}
+                disabled={releaseBusy}
+                className="flex h-8 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-sm font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-lowest disabled:opacity-40"
+              >
+                <Unlock aria-hidden className="size-3.5" /> Liberar mis selecciones
+              </button>
+            )}
+            {canOverride && (
+              <button
+                type="button"
+                onClick={() => void releaseSelections(true)}
+                disabled={releaseBusy}
+                title="Quita las selecciones de todo el equipo (admin o permiso «Quitar selecciones de otros»)"
+                className="flex h-8 items-center gap-space-xs rounded-pill border border-error/40 px-space-sm font-semibold text-label-md text-error transition-colors hover:bg-critical-container/20 disabled:opacity-40"
+              >
+                <Trash2 aria-hidden className="size-3.5" /> Liberar todo
+              </button>
+            )}
+          </div>
+        </div>
 
         {/* Centro de decisión: hero + controles + gráficas */}
         <section className="grid gap-space-md xl:grid-cols-12">
@@ -1470,28 +1699,46 @@ export default function PedidosPage() {
                 {canSaveSimulation && (
                   <button
                     onClick={() => openScenarios(true)}
-                    title="Guardar la simulación actual y enviarla al almacén"
+                    title="Guardar una foto con nombre de la simulación actual"
                     className="flex h-9 items-center gap-space-xs rounded-pill border border-primary-container/30 bg-primary-fixed/60 px-space-md font-semibold text-primary transition-colors hover:bg-primary-fixed"
                   >
                     <Save aria-hidden className="size-4" /> Guardar
                   </button>
                 )}
+                {canSendToDispatch &&
+                  (activeSheet ? (
+                    <a
+                      href={`/despacho/${activeSheet.id}`}
+                      title="La hoja del almacén sigue esta simulación mientras sus renglones no estén cargados"
+                      className="flex h-9 items-center gap-space-xs rounded-pill border border-secondary/40 bg-secondary-container/20 px-space-md font-semibold text-secondary transition-colors hover:bg-secondary-container/30"
+                    >
+                      <Truck aria-hidden className="size-4" /> Despacho {activeSheet.number} · en vivo
+                    </a>
+                  ) : (
+                    <button
+                      onClick={() => void sendCurrentPlan()}
+                      title="Enviar la simulación del equipo al almacén; después se actualiza sola"
+                      className="flex h-9 items-center gap-space-xs rounded-pill bg-secondary-container px-space-md font-semibold text-primary shadow-soft transition-all hover:-translate-y-0.5 hover:brightness-95"
+                    >
+                      <Send aria-hidden className="size-4" /> Enviar al almacén
+                    </button>
+                  ))}
                 <button onClick={exportPlan} title="Descargar Excel con el detalle por cliente" className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary">
                   <Download aria-hidden className="size-4" /> Exportar
                 </button>
                 <button
                   onClick={() => {
-                    setSelection([]);
+                    void releaseSelections(false);
                     setPlanExpanded(null);
                     setDateSelection(null);
                     setComments({});
                     setLoadPlan(null);
                     setTruckOpen(false);
                   }}
-                  disabled={!canEditPlan}
+                  disabled={releaseBusy}
                   className="flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-lowest disabled:opacity-40"
                 >
-                  <Trash2 aria-hidden className="size-4" /> Limpiar
+                  <Trash2 aria-hidden className="size-4" /> Liberar mías
                 </button>
               </div>
             </div>
@@ -1516,7 +1763,7 @@ export default function PedidosPage() {
                     const selectedCount = selectedKeys.length;
                     const allSelected = groupKeys.length > 0 && selectedCount === groupKeys.length;
                     const selectedDateLines = selectedKeys
-                      .map((key) => lineByKey.get(key)?.line)
+                      .map((key) => allLineByKey.get(key)?.line)
                       .filter((line): line is OrderGroupLine => Boolean(line));
                     const selectableGroup = canEditDates && by === 'cliente';
                     return (
@@ -1629,12 +1876,14 @@ export default function PedidosPage() {
                                   </thead>
                                   <tbody className="divide-y divide-outline-variant/20">
                                     {g.entries.map((e) => {
-                                      const ref = lineByKey.get(e.key);
+                                      const ref = allLineByKey.get(e.key);
                                       if (!ref) return null;
                                       const checked = selectedKeys.includes(e.key);
+                                      const owner = ownerByKey.get(e.key);
+                                      const takenByOther = Boolean(owner && owner.id !== sessionUser?.id);
                                       const editKeys = checked && selectedDateLines.length > 0 ? selectedKeys : [e.key];
                                       const editLines = editKeys
-                                        .map((key) => lineByKey.get(key)?.line)
+                                        .map((key) => allLineByKey.get(key)?.line)
                                         .filter((line): line is OrderGroupLine => Boolean(line));
                                       const editMode: DeliveryDateTarget['kind'] = checked && selectedDateLines.length > 0 ? 'seleccion' : 'renglon';
                                       return (
@@ -1657,7 +1906,21 @@ export default function PedidosPage() {
                                             )}
                                           </Td>
                                           <Td align="right" className="tabular-nums font-bold text-primary">{e.priority}</Td>
-                                          <Td className="tabular-nums text-on-surface-variant">{ref.line.orderNumber}</Td>
+                                          <Td className="tabular-nums text-on-surface-variant">
+                                            {ref.line.orderNumber}
+                                            {owner && (
+                                              <span
+                                                className={`ml-1 rounded-pill px-1.5 py-0.5 text-[10px] font-bold ${
+                                                  takenByOther
+                                                    ? 'bg-surface-container-high text-on-surface-variant'
+                                                    : 'bg-primary-container text-on-primary'
+                                                }`}
+                                                title={`Reservado por ${owner.name}`}
+                                              >
+                                                {owner.name}
+                                              </span>
+                                            )}
+                                          </Td>
                                           <Td>
                                             <DeliveryDateButton
                                               tentativeDate={ref.line.tentativeDate}
@@ -1706,7 +1969,16 @@ export default function PedidosPage() {
                                               >
                                                 <MessageSquare aria-hidden className="size-3.5" />
                                               </button>
-                                              <button onClick={() => toggleLine(ref.line)} className="rounded-pill border border-outline-variant/40 px-2.5 py-1 font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low">
+                                              <button
+                                                onClick={() => toggleLine(ref.line)}
+                                                disabled={takenByOther && !canOverride}
+                                                title={
+                                                  takenByOther && !canOverride
+                                                    ? `Lo reservó ${owner?.name ?? 'otra vendedora'}`
+                                                    : 'Liberar este renglón'
+                                                }
+                                                className="rounded-pill border border-outline-variant/40 px-2.5 py-1 font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low disabled:cursor-not-allowed disabled:opacity-40"
+                                              >
                                                 Liberar
                                               </button>
                                             </div>
@@ -1793,11 +2065,35 @@ export default function PedidosPage() {
                     const allSelected = candidates.length > 0 && candidates.every((k) => selection.includes(k));
                     const coverage = groupCoverage.get(group.key) ?? 1;
                     const isOpen = expanded === group.key;
+                    // Resumen de dueños del grupo: se muestra en la cabecera para
+                    // verlo sin expandir. Con el bloqueo por renglón puede haber
+                    // más de un dueño; en ese caso se resume como «Varios».
+                    const owners = new Map<string, { id: string; name: string; count: number }>();
+                    for (const line of group.lines) {
+                      const owner = ownerByKey.get(lineKey(line));
+                      if (!owner) continue;
+                      const entry = owners.get(owner.id) ?? { ...owner, count: 0 };
+                      entry.count += 1;
+                      owners.set(owner.id, entry);
+                    }
+                    const ownerList = [...owners.values()];
+                    const clientOwner =
+                      ownerList.length === 0
+                        ? null
+                        : ownerList.length === 1
+                          ? { ...ownerList[0]!, names: [ownerList[0]!.name] }
+                          : {
+                              id: 'MULTI',
+                              name: `Varios (${ownerList.length})`,
+                              count: ownerList.reduce((sum, item) => sum + item.count, 0),
+                              names: ownerList.map((item) => item.name),
+                            };
                     return (
                       <GroupRow
                         key={group.key}
                         group={group}
                         by={by}
+                        clientOwner={by === 'cliente' ? clientOwner : null}
                         showCartera={by === 'cliente' && canViewStatement}
                         cartera={group.code ? carteraByCode.get(group.code) : undefined}
                         carteraLoading={carteraFetching}
@@ -1810,6 +2106,9 @@ export default function PedidosPage() {
                         mode={mode}
                         queueByKey={queueByKey}
                         liveStock={liveStock}
+                        ownerByKey={ownerByKey}
+                        currentUserId={sessionUser?.id}
+                        canOverride={canOverride}
                         canEditDates={canEditDates}
                         onToggleGroup={() => toggleGroup(group)}
                         onToggleLine={toggleLine}
@@ -2041,7 +2340,7 @@ export default function PedidosPage() {
       <ScenariosDialog
         open={scenariosOpen}
         onClose={closeScenarios}
-        canSave={planEntries.length > 0 && canSaveSimulation && canEditPlan}
+        canSave={planEntries.length > 0 && canSaveSimulation}
         canSend={canSendToDispatch}
         currentUserId={sessionUser?.id}
         current={{
@@ -2240,6 +2539,7 @@ function PortfolioBalance({ summary, loading }: { summary?: CustomerStatementSum
 function GroupRow({
   group,
   by,
+  clientOwner,
   showCartera,
   cartera,
   carteraLoading,
@@ -2252,6 +2552,9 @@ function GroupRow({
   mode,
   queueByKey,
   liveStock,
+  ownerByKey,
+  currentUserId,
+  canOverride,
   canEditDates,
   onToggleGroup,
   onToggleLine,
@@ -2263,6 +2566,8 @@ function GroupRow({
 }: {
   group: OrderGroup;
   by: OrderGroupBy;
+  /** Dueño(s) del grupo en la vista por cliente; se pinta en la cabecera. */
+  clientOwner?: { id: string; name: string; count: number; names?: string[] } | null;
   /** El resumen de cartera solo aplica a la vista por cliente y con permiso. */
   showCartera: boolean;
   /** Resumen de cartera del cliente (saldo/vencido/límite), si ya llegó. */
@@ -2279,6 +2584,10 @@ function GroupRow({
   queueByKey: Map<string, QueueEntry>;
   /** Existencia viva por producto (ya descontado lo marcado). */
   liveStock: Map<string, number>;
+  /** Dueño de cada renglón seleccionado (id + nombre). */
+  ownerByKey: Map<string, { id: string; name: string }>;
+  currentUserId?: string;
+  canOverride: boolean;
   canEditDates: boolean;
   onToggleGroup: () => void;
   onToggleLine: (line: OrderGroupLine) => void;
@@ -2354,6 +2663,31 @@ function GroupRow({
             <div className="ml-7 mt-0.5 flex flex-wrap items-center gap-x-space-xs text-label-sm">
               {group.code && <span className="tabular-nums text-outline">{group.code}</span>}
               {group.code && <span className="text-outline">·</span>}
+              {clientOwner && (
+                <>
+                  <span
+                    className={`inline-flex max-w-[15rem] items-center gap-1 rounded-pill border px-2 py-0.5 font-semibold ${
+                      clientOwner.id === currentUserId
+                        ? 'border-primary-container/30 bg-primary-fixed/70 text-primary'
+                        : clientOwner.id === 'MULTI'
+                          ? 'border-outline-variant/50 bg-surface-container-low text-on-surface-variant'
+                          : 'border-warning/40 bg-warning/10 text-warning'
+                    }`}
+                    title={`Reservado por ${
+                      clientOwner.names?.join(', ') ?? clientOwner.name
+                    } · ${clientOwner.count} de ${group.lines.length} renglón(es)`}
+                  >
+                    <Lock aria-hidden className="size-3 shrink-0" />
+                    <span className="truncate">
+                      {clientOwner.id === currentUserId ? 'Tú' : clientOwner.name}
+                    </span>
+                    <span className="shrink-0 tabular-nums opacity-80">
+                      · {clientOwner.count}/{group.lines.length}
+                    </span>
+                  </span>
+                  <span aria-hidden className="text-outline">·</span>
+                </>
+              )}
               {by === 'cliente' ? (
                 <DeliveryDateButton
                   tentativeDate={earliestIsTentative ? earliestEffective : null}
@@ -2426,7 +2760,10 @@ function GroupRow({
                     const selected = selection.includes(key);
                     const r = queueByKey.get(key);
                     const dispatchable = r?.dispatchable ?? false;
-                    const blocked = mode === 'disponible' && !selected && !dispatchable;
+                    const owner = ownerByKey.get(key);
+                    const takenByOther = Boolean(owner && owner.id !== currentUserId);
+                    const blockedByOwner = takenByOther && !canOverride;
+                    const blocked = (mode === 'disponible' && !selected && !dispatchable) || blockedByOwner;
                     return (
                       <tr key={key} className={`transition-colors ${selected ? 'bg-success-container' : blocked ? 'opacity-55' : 'hover:bg-surface-container-low'}`}>
                         <Td>
@@ -2436,11 +2773,31 @@ function GroupRow({
                             disabled={blocked}
                             onChange={() => onToggleLine(line)}
                             aria-label="Seleccionar renglón para despacho"
-                            title={blocked ? 'Sin existencia para despachar' : undefined}
+                            title={
+                              blockedByOwner
+                                ? `Lo reservó ${owner?.name ?? 'otra vendedora'}`
+                                : blocked
+                                  ? 'Sin existencia para despachar'
+                                  : undefined
+                            }
                             className="size-4 accent-[var(--color-primary-container)] disabled:cursor-not-allowed"
                           />
                         </Td>
-                        <Td className="font-bold tabular-nums text-primary">{line.orderNumber}</Td>
+                        <Td className="font-bold tabular-nums text-primary">
+                          {line.orderNumber}
+                          {by === 'producto' && owner && (
+                            <span
+                              className={`ml-1 rounded-pill px-1.5 py-0.5 text-[10px] font-bold ${
+                                takenByOther
+                                  ? 'bg-surface-container-high text-on-surface-variant'
+                                  : 'bg-primary-container text-on-primary'
+                              }`}
+                              title={`Reservado por ${owner.name}`}
+                            >
+                              {owner.name}
+                            </span>
+                          )}
+                        </Td>
                         <Td>
                           <DeliveryDateButton
                             tentativeDate={line.tentativeDate}

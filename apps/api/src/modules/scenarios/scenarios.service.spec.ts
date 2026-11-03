@@ -24,6 +24,7 @@ function createFakePrisma() {
     runs: [] as Row[],
     restores: [] as Row[],
     users: [] as Row[],
+    sheets: [] as Row[],
   };
 
   // Prisma devuelve el `_count` y las relaciones incluidas en la misma fila.
@@ -38,6 +39,19 @@ function createFakePrisma() {
 
   const prisma = {
     state,
+    dispatchSheet: {
+      findFirst: async ({ where }: Row) =>
+        state.sheets.find((row) => matchesWhere(where, row)) ?? null,
+    },
+    salesOrderLine: {
+      findMany: async () => [],
+    },
+    inventorySnapshot: {
+      findFirst: async () => null,
+    },
+    deliveryDateOverride: {
+      findMany: async () => [],
+    },
     dispatchScenario: {
       findFirst: async ({ where }: Row) => {
         const row = state.scenarios.find((item) => matchesWhere(where, item));
@@ -145,6 +159,7 @@ function restoreInput(overrides: Row = {}) {
 }
 
 const audit = { record: async () => undefined } as never;
+const dispatch = { syncFromDraft: async () => undefined, createFromDraft: async () => ({}) } as never;
 
 function snapshotLine(overrides: Row = {}) {
   return {
@@ -201,7 +216,7 @@ function saveInput(overrides: Row = {}) {
 describe('ScenariosService', () => {
   it('guarda la receta con su foto y deriva los totales de los renglones', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
+    const service = new ScenariosService(prisma as never, audit, dispatch);
 
     const detail = await service.create('u1', saveInput(), { id: 'u1', code: 'KZ' });
 
@@ -217,7 +232,7 @@ describe('ScenariosService', () => {
 
   it('el equipo ve las simulaciones de todos, pero solo el creador o ADMIN las elimina', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
+    const service = new ScenariosService(prisma as never, audit, dispatch);
     const created = await service.create('u1', saveInput(), {});
 
     // u2 puede verla, pero no restaurarla ni borrarla.
@@ -238,7 +253,7 @@ describe('ScenariosService', () => {
 
   it('un ADMIN ve y elimina cualquier simulación del equipo', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
+    const service = new ScenariosService(prisma as never, audit, dispatch);
     prisma.state.users.push(
       { id: 'u1', profitCode: 'AAA', displayName: 'ANA' },
       { id: 'u2', profitCode: 'BBB', displayName: 'BETO' },
@@ -257,7 +272,7 @@ describe('ScenariosService', () => {
 
   it('respeta el límite de simulaciones guardadas', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
+    const service = new ScenariosService(prisma as never, audit, dispatch);
     for (let index = 0; index < 25; index += 1) {
       await service.create('u1', saveInput({ name: `Plan ${index}` }), {});
     }
@@ -266,14 +281,14 @@ describe('ScenariosService', () => {
 
   it('no permite dos nombres iguales del mismo usuario', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
+    const service = new ScenariosService(prisma as never, audit, dispatch);
     await service.create('u1', saveInput(), {});
     await expect(service.create('u1', saveInput(), {})).rejects.toThrow(/ese nombre/i);
   });
 
   it('rechaza un renombrado con versión vieja (versionado optimista)', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
+    const service = new ScenariosService(prisma as never, audit, dispatch);
     const created = await service.create('u1', saveInput(), {});
 
     const renamed = await service.update('u1', created.id, { name: 'Despacho martes', version: 1 }, {});
@@ -285,7 +300,7 @@ describe('ScenariosService', () => {
 
   it('el borrador global es uno solo y no lleva foto', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
+    const service = new ScenariosService(prisma as never, audit, dispatch);
 
     const input = {
       recipe: { by: 'cliente', mode: 'disponible', sort: 'cobertura', filters: {} },
@@ -304,29 +319,47 @@ describe('ScenariosService', () => {
     expect(draft.scenario?.coverage).toBe(0);
   });
 
-  it('el lock del plan global impide que otro usuario autoguarde sin tomarlo', async () => {
+  it('el plan es compartido: el primero que marca reserva y nadie más lo quita sin permiso', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
-    const input = {
-      recipe: { by: 'cliente', mode: 'disponible', sort: 'cobertura', filters: {} },
-      selected: [{ orderNumber: '408251710', productCode: 'ABAPOR77' }],
+    const service = new ScenariosService(prisma as never, audit, dispatch);
+    const base = { by: 'cliente', mode: 'disponible', sort: 'cobertura', filters: {} } as const;
+    const inputA = {
+      recipe: base,
+      selected: [{ orderNumber: 'A', productCode: 'P' }],
+    } as never;
+    const inputB = {
+      recipe: base,
+      selected: [{ orderNumber: 'B', productCode: 'P' }],
     } as never;
 
-    const lock = await service.acquireLock({ id: 'u1', code: 'AAA' }, { id: 'u1', isAdmin: false });
-    expect(lock.token).toBeTruthy();
-    await expect(
-      service.acquireLock({ id: 'u2', code: 'BBB' }, { id: 'u2', isAdmin: false }),
-    ).rejects.toThrow(/editando/i);
-    await expect(service.saveDraft({ id: 'u2' }, input)).rejects.toThrow(/editando/i);
+    await service.saveDraft({ id: 'u1', code: 'AAA' }, inputA, { id: 'u1', isAdmin: false });
+    // u2 envía su selección SIN la línea de u1: el servidor la conserva.
+    const after = await service.saveDraft({ id: 'u2', code: 'BBB' }, inputB, { id: 'u2', isAdmin: false });
+    const keys = after.scenario?.payload.selected.map((ref) => `${ref.orderNumber}#${ref.productCode}`);
+    expect(keys).toEqual(['A#P', 'B#P']);
+    expect(after.scenario?.payload.selected[0]!.selectedById).toBe('u1');
+    expect(after.scenario?.payload.selected[1]!.selectedById).toBe('u2');
 
-    // Un ADMIN puede arrebatarlo y deja rastro.
-    const forced = await service.acquireLock({ id: 'u3', code: 'KZ' }, { id: 'u3', isAdmin: true }, { force: true });
-    expect(forced.isMine).toBe(true);
+    // Sin permiso, liberar la línea ajena no hace nada.
+    const withoutPermission = await service.releaseDraftLines(
+      { id: 'u2' },
+      { lines: [{ orderNumber: 'A', productCode: 'P' }] },
+      { id: 'u2', isAdmin: false },
+    );
+    expect(withoutPermission.scenario?.payload.selected).toHaveLength(2);
+
+    // Con «Quitar selecciones de otros» sí se libera.
+    const withPermission = await service.releaseDraftLines(
+      { id: 'u2' },
+      { lines: [{ orderNumber: 'A', productCode: 'P' }] },
+      { id: 'u2', isAdmin: false, canOverride: true },
+    );
+    expect(withPermission.scenario?.payload.selected.map((ref) => ref.orderNumber)).toEqual(['B']);
   });
 
   it('marca la simulación como desactualizada cuando cambió la sync', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
+    const service = new ScenariosService(prisma as never, audit, dispatch);
     prisma.state.runs = [{ domain: 'PEDIDOS', id: 'run-1' }];
 
     const created = await service.create('u1', saveInput(), {});
@@ -342,7 +375,7 @@ describe('ScenariosService', () => {
 
   it('deja traza al restaurar sin tocar la foto', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
+    const service = new ScenariosService(prisma as never, audit, dispatch);
     const created = await service.create('u1', saveInput(), {});
 
     const result = await service.markRestored('u1', created.id, restoreInput({ restored: 2, missing: 0 }), { id: 'u1', code: 'KZ' });
@@ -356,7 +389,7 @@ describe('ScenariosService', () => {
 
   it('guarda el historial visible de restauraciones con el diff completo', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
+    const service = new ScenariosService(prisma as never, audit, dispatch);
     prisma.state.users = [{ id: 'u1', displayName: 'KEIBER ZAMUDIA' }];
     const created = await service.create('u1', saveInput(), {});
 
@@ -412,7 +445,7 @@ describe('ScenariosService', () => {
 
   it('borrar el escenario se lleva su historial en cascada', async () => {
     const prisma = createFakePrisma();
-    const service = new ScenariosService(prisma as never, audit);
+    const service = new ScenariosService(prisma as never, audit, dispatch);
     const created = await service.create('u1', saveInput(), {});
     await service.markRestored('u1', created.id, restoreInput({ restored: 2 }), { id: 'u1' });
     expect(prisma.state.restores).toHaveLength(1);

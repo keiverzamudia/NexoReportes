@@ -1,15 +1,18 @@
 import type { HelpTerm } from './types';
 
 // ============================================================
-// Ayuda de «Control» (Reporte → Control) del módulo Forecast.
+// Ayuda de «Básico» (Reporte → Básico) del módulo Forecast.
 // Fórmulas en lenguaje llano; el detalle exacto vive en el componente.
 // ============================================================
 
-export const CONTROL_HELP_TITLE = 'Cómo leer el control';
+export const CONTROL_HELP_TITLE = 'Cómo leer el reporte básico';
 
 export const CONTROL_HELP_RULES = [
+  'Stock 03, 9999 y 68 = existencia del artículo en cada almacén, en su unidad de venta.',
+  'Existencia = Stock 03 + Stock 9999 + Stock 68 (sin convertir a kg).',
   'Diferencias con signo: positivo = excedente, negativo = falta por cubrir.',
-  'Forecast = meta de Profit (xart_fore); venta = notas de entrega del mes.',
+  'Forecast = meta de Profit (forecast); venta = notas de entrega del mes.',
+  'El forecast se lleva a kg: sacos × kg por saco; el granel se mantiene en kg.',
   'Solicitado = saldo pendiente de pedidos activos en la fecha de entrega.',
   'En «Semanal» se usa el bloque 1-7, 8-14, 15-21 y 22-fin del mes.',
   'El mes en curso se compara contra la venta a la fecha de corte.',
@@ -32,13 +35,46 @@ export const CONTROL_COLUMN_HELP = {
     formula: 'art.art_des · art.uni_venta',
     source: 'dbo.art',
   },
+  stock03: {
+    id: 'stock03',
+    title: 'Stock 03',
+    short: 'Existencia en almacén 03',
+    what: 'Existencia del artículo en el almacén Stock 03, en su unidad de venta (SAC o KG).',
+    formula: 'Σ st_almac.stock_act · co_alma = 03',
+    source: 'Sync de Profit · almacenes',
+  },
+  stock9999: {
+    id: 'stock9999',
+    title: 'Stock 9999',
+    short: 'Existencia en almacén 9999',
+    what: 'Existencia del artículo en el almacén Stock 9999, en su unidad de venta (SAC o KG).',
+    formula: 'Σ st_almac.stock_act · co_alma = 9999',
+    source: 'Sync de Profit · almacenes',
+  },
+  stock68: {
+    id: 'stock68',
+    title: 'Stock 68',
+    short: 'Existencia en almacén 68',
+    what: 'Existencia del artículo en el almacén Stock 68, en su unidad de venta (SAC o KG).',
+    formula: 'Σ st_almac.stock_act · co_alma = 6804',
+    source: 'Sync de Profit · almacenes',
+  },
+  existencia: {
+    id: 'existencia',
+    title: 'Existencia',
+    short: 'Stock total',
+    what: 'Suma de las existencias de los tres almacenes. No se convierte a kg: va en la unidad del artículo.',
+    formula: 'Stock 03 + Stock 9999 + Stock 68',
+    source: 'Nexo · inventario sincronizado',
+  },
   forecast: {
     id: 'forecast',
     title: 'Forecast',
     short: 'Meta del periodo',
-    what: 'Meta mensual o de la semana, según el periodo elegido.',
-    formula: 'mensual: xart_fore.kg_mes · semanal: kg_mes ÷ 4',
-    source: 'dbo.xart_fore',
+    what:
+      'Meta mensual o de la semana, en kilogramos. Si Profit la trae en sacos, se multiplica por los kg por saco del artículo; el granel se mantiene en kg.',
+    formula: 'mensual: kg_mensual × uni_relac (SAC) · semanal: kg ÷ 4',
+    source: 'dbo.forecast (fecha = mes de vigencia) · dbo.art',
   },
   solicitado: {
     id: 'solicitado',
