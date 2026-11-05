@@ -76,6 +76,38 @@ export function formatTime(iso: string | null | undefined): string {
   return new Intl.DateTimeFormat('es-VE', { hour: '2-digit', minute: '2-digit' }).format(date);
 }
 
+// ---------- Tiempos ----------
+
+/** Minutos entre dos instantes ISO; null si falta alguno. */
+export function minutesBetween(startIso: string | null | undefined, endIso: string | null | undefined): number | null {
+  if (!startIso || !endIso) return null;
+  const start = new Date(startIso).getTime();
+  const end = new Date(endIso).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, Math.round((end - start) / 60_000));
+}
+
+/** «42 min», «3 h 15 min», «1 d 4 h». */
+export function formatMinutes(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined || !Number.isFinite(minutes)) return '—';
+  if (minutes < 60) return `${Math.round(minutes)} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = Math.round(minutes % 60);
+  if (hours < 24) return rest > 0 ? `${hours} h ${rest} min` : `${hours} h`;
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours > 0 ? `${days} d ${restHours} h` : `${days} d`;
+}
+
+export function formatDurationBetween(startIso: string | null | undefined, endIso: string | null | undefined): string {
+  return formatMinutes(minutesBetween(startIso, endIso));
+}
+
+/** Clave del cliente: mismo criterio que el servidor. */
+export function customerKeyOf(line: Pick<DispatchSheetLine, 'customerCode' | 'customerName'>): string {
+  return line.customerCode?.trim() || line.customerName?.trim() || 'SIN_CLIENTE';
+}
+
 export function humanAge(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return 'nunca';
   if (seconds < 60) return 'ahora';
@@ -352,10 +384,16 @@ export const SHEET_EXPORT_HEADERS = [
   'Cargado',
   'Kg real',
   'Estado',
+  'Inicio carga',
+  'Cierre carga',
+  'Min carga',
+  'Factura entregada',
+  'Min factura',
+  'Factura N°',
   'Nota / motivo',
 ];
 
-const SHEET_EXPORT_WIDTHS = [7, 11, 14, 40, 34, 10, 11, 7, 12, 10, 11, 10, 12, 30];
+const SHEET_EXPORT_WIDTHS = [7, 11, 14, 40, 34, 10, 11, 7, 12, 10, 11, 10, 12, 12, 12, 10, 12, 10, 14, 30];
 
 export interface SheetExport {
   aoa: (string | number)[][];
@@ -384,14 +422,27 @@ export function sheetExport(detail: DispatchSheetDetail, generatedAt: Date = new
     )} kg`,
   ]);
   merges.push({ s: { r: 2, c: 0 }, e: { r: 2, c: lastColumn } });
+  aoa.push([
+    `Inicio de carga ${formatDateTime(detail.loadStartedAt)} · Carga cerrada ${formatDateTime(
+      detail.loadClosedAt,
+    )} · Factura entregada ${formatDateTime(detail.invoiceDeliveredAt)} · Pendientes de factura ${
+      detail.pendingInvoiceCustomers
+    } cliente(s)`,
+  ]);
+  merges.push({ s: { r: 3, c: 0 }, e: { r: 3, c: lastColumn } });
   if (detail.instructions) {
     aoa.push([`Instrucciones: ${detail.instructions}`]);
-    merges.push({ s: { r: 3, c: 0 }, e: { r: 3, c: lastColumn } });
+    merges.push({ s: { r: 4, c: 0 }, e: { r: 4, c: lastColumn } });
   }
   aoa.push([]);
   aoa.push(SHEET_EXPORT_HEADERS);
 
+  const progressByKey = new Map((detail.customerProgress ?? []).map((row) => [row.customerKey, row]));
   for (const line of detail.lines) {
+    const progress = progressByKey.get(customerKeyOf(line));
+    const startedAt = line.loadStartedAt ?? progress?.loadStartedAt ?? null;
+    const closedAt = line.loadClosedAt ?? line.checkedAt ?? null;
+    const invoiceAt = progress?.invoiceDeliveredAt ?? null;
     aoa.push([
       line.position,
       line.orderNumber,
@@ -406,6 +457,12 @@ export function sheetExport(detail: DispatchSheetDetail, generatedAt: Date = new
       line.loadedQty ?? '',
       line.loadedQty === null ? '' : Math.round(lineLoadedKg(line)),
       lineStatusMeta(line.status).label,
+      startedAt ? formatDateTime(startedAt) : '—',
+      closedAt ? formatDateTime(closedAt) : '—',
+      minutesBetween(startedAt, closedAt) ?? '—',
+      invoiceAt ? formatDateTime(invoiceAt) : '—',
+      minutesBetween(startedAt, invoiceAt) ?? '—',
+      progress?.invoiceRef ?? '—',
       line.note ?? '',
     ]);
   }

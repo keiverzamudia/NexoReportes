@@ -1,20 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import type { ForecastSalesResponse, ForecastSalesRow } from '@nexo/contracts';
+import type {
+  ForecastCustomerSalesResponse,
+  ForecastCustomerSalesRow,
+  ForecastSalesDayCustomer,
+  ForecastSalesResponse,
+  ForecastSalesRow,
+} from '@nexo/contracts';
 import {
+  CUSTOMER_SALES_CSV_HEADERS,
   META_MARKER_PCT,
   SALES_CSV_HEADERS,
   buildCumulativeSeries,
+  clientsForProduct,
+  buildCustomerSalesCsv,
   buildDayBars,
   buildNarrative,
   buildSalesCsv,
+  customerSalesCsvFileName,
   dailySalesScale,
   dayLabel,
+  filterCustomerSalesRows,
   filterSalesRows,
   fmtPct,
+  fmtSignedPct,
   fmtTonnes,
   monthLabel,
+  monthOverMonthPct,
   productsForDay,
   salesCsvFileName,
+  sharePct,
   salesDaysWithSales,
   salesDeviationGeometry,
   salesTone,
@@ -123,6 +137,34 @@ describe('formatos', () => {
     expect(monthLabel(2026, 10)).toBe('octubre 2026');
     expect(monthLabel(2026, 10, true)).toBe('oct 2026');
     expect(dayLabel('2026-10-28')).toContain('28');
+  });
+
+  it('porcentaje con signo explícito', () => {
+    expect(fmtSignedPct(314.28)).toMatch(/^\+314,3/);
+    expect(fmtSignedPct(-8)).toMatch(/^-8,0/);
+    expect(fmtSignedPct(0)).toMatch(/^0,0/);
+    expect(fmtSignedPct(null)).toBe('—');
+  });
+});
+
+describe('variación mes a mes - línea roja', () => {
+  it('compara cada mes contra el anterior e ignora el primero', () => {
+    expect(monthOverMonthPct([20_000, 100_000, 70_000, 290_000])).toEqual([null, 400, -30, 314.3]);
+  });
+
+  it('no inventa variación cuando el mes previo no vendió', () => {
+    // Un mes que cayó a 0 sí es -100 %: el que no tiene base es el siguiente.
+    expect(monthOverMonthPct([0, 50_000, 0, 10_000])).toEqual([null, null, -100, null]);
+  });
+
+  it('incluye el mes en curso con su venta parcial', () => {
+    // El último punto es el mes abierto: se compara igual, sin proyección.
+    expect(monthOverMonthPct([10_000, 8_000, 12_000])).toEqual([null, -20, 50]);
+  });
+
+  it('tolera huecos y valores no finitos', () => {
+    expect(monthOverMonthPct([10_000, null, 30_000, Number.NaN])).toEqual([null, null, null, null]);
+    expect(monthOverMonthPct([])).toEqual([]);
   });
 });
 
@@ -242,6 +284,51 @@ describe('ventas del día — panel bajo la gráfica', () => {
   it('un día sin desglose devuelve una lista vacía', () => {
     expect(productsForDay(data, '2026-10-28')).toEqual([]);
     expect(productsForDay(data, '2026-10-30')).toEqual([]);
+  });
+});
+
+describe('detalle del día — participación de clientes', () => {
+  const customers: ForecastSalesDayCustomer[] = [
+    {
+      customerCode: 'C1',
+      customerName: 'CLIENTE UNO',
+      kg: 6_000,
+      units: 150,
+      sharePct: 66.7,
+      products: [
+        { productCode: 'A', description: 'PRODUCTO A', uom: 'SAC', kgPerUom: 40, kg: 6_000, units: 150, sacks: 150 },
+      ],
+    },
+    {
+      customerCode: 'C2',
+      customerName: 'CLIENTE DOS',
+      kg: 3_000,
+      units: 75,
+      sharePct: 33.3,
+      products: [
+        { productCode: 'B', description: 'PRODUCTO B', uom: 'SAC', kgPerUom: 40, kg: 2_000, units: 50, sacks: 50 },
+        { productCode: 'A', description: 'PRODUCTO A', uom: 'SAC', kgPerUom: 40, kg: 1_000, units: 25, sacks: 25 },
+      ],
+    },
+  ];
+
+  it('calcula la participación y tolera la base cero', () => {
+    expect(sharePct(6_000, 9_000)).toBe(66.7);
+    expect(sharePct(0, 9_000)).toBe(0);
+    expect(sharePct(1, 0)).toBeNull();
+    expect(sharePct(Number.NaN, 10)).toBeNull();
+  });
+
+  it('devuelve los clientes de un producto con su participación', () => {
+    const clients = clientsForProduct(customers, 'A');
+
+    expect(clients.map((client) => client.customerCode)).toEqual(['C1', 'C2']);
+    expect(clients[0]).toMatchObject({ kg: 6_000, sharePct: 85.7 });
+    expect(clients[1]).toMatchObject({ kg: 1_000, sharePct: 14.3 });
+  });
+
+  it('un producto sin clientes devuelve una lista vacía', () => {
+    expect(clientsForProduct(customers, 'Z')).toEqual([]);
   });
 });
 
@@ -421,6 +508,113 @@ describe('CSV', () => {
 
   it('nombre de archivo estable por año y mes', () => {
     expect(salesCsvFileName(report())).toBe('ventas-vs-forecast-2026-10.csv');
+  });
+});
+
+// ============================================================
+// Participación por cliente.
+// ============================================================
+
+function customerRow(overrides: Partial<ForecastCustomerSalesRow> = {}): ForecastCustomerSalesRow {
+  return {
+    customerCode: 'C1',
+    customerName: 'CLIENTE UNO',
+    customerType: 'L1 EXCLUSIVOS',
+    vendor: 'VENDEDORA 1',
+    actualKg: 230_000,
+    actualUnits: 5_750,
+    sharePct: 46,
+    productCount: 2,
+    lastInvoiceDate: '2026-10-27',
+    products: [
+      {
+        productCode: 'ABAGP13',
+        description: 'GALLINA PONEDORA PLUS 18% - 40 KG',
+        uom: 'SAC',
+        kgPerUom: 40,
+        kg: 180_000,
+        units: 4_500,
+        sacks: 4_500,
+        shareOfCustomerPct: 78.3,
+        shareOfProductPct: 60,
+      },
+      {
+        productCode: 'ABABOV67',
+        description: 'MULTIESPECIE LINEA NARANJA SACO 35 KG',
+        uom: 'SAC',
+        kgPerUom: 35,
+        kg: 50_000,
+        units: 1_428.6,
+        sacks: 1_428.6,
+        shareOfCustomerPct: 21.7,
+        shareOfProductPct: 25,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function customerReport(overrides: Partial<ForecastCustomerSalesResponse> = {}): ForecastCustomerSalesResponse {
+  return {
+    year: 2026,
+    month: 10,
+    asOf: '2026-10-28',
+    status: 'OPEN',
+    salesAvailable: true,
+    days: {
+      inMonth: 31,
+      elapsed: 28,
+      remaining: 3,
+      workingInMonth: 27,
+      workingElapsed: 24,
+      workingRemaining: 3,
+      today: '2026-10-29',
+      cut: '2026-10-28',
+    },
+    totals: {
+      actualKg: 500_000,
+      actualUnits: 13_214,
+      customerCount: 2,
+      activeCustomerCount: 1,
+      productCount: 2,
+      lastInvoiceDate: '2026-10-28',
+    },
+    customers: [customerRow()],
+    truncated: false,
+    generatedAt: '2026-10-29T12:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('filtros de participación por cliente', () => {
+  it('busca por código o nombre', () => {
+    const rows = [customerRow(), customerRow({ customerCode: 'C2', customerName: 'AGRO INVERSIONES' })];
+    expect(filterCustomerSalesRows(rows, { search: 'agro', onlyWithSales: false })).toHaveLength(1);
+    expect(filterCustomerSalesRows(rows, { search: 'c1', onlyWithSales: false })).toHaveLength(1);
+  });
+
+  it('oculta clientes sin venta con el filtro Con venta', () => {
+    const sinVenta = customerRow({ customerCode: 'C0', actualKg: 0, sharePct: 0, productCount: 0, products: [] });
+    const rows = [customerRow(), sinVenta];
+    expect(filterCustomerSalesRows(rows, { search: '', onlyWithSales: true })).toEqual([customerRow()]);
+    expect(filterCustomerSalesRows(rows, { search: '', onlyWithSales: false })).toHaveLength(2);
+  });
+});
+
+describe('CSV de participación por cliente', () => {
+  it('exporta filas de cliente y de producto con BOM', () => {
+    const csv = buildCustomerSalesCsv(customerReport());
+    expect(csv.startsWith('\uFEFF')).toBe(true);
+    const lines = csv.replace('\uFEFF', '').trim().split('\r\n');
+    expect(lines[0]).toBe(CUSTOMER_SALES_CSV_HEADERS.join(','));
+    expect(lines[1]!.startsWith('CLIENTE,C1,')).toBe(true);
+    expect(lines[2]!.startsWith('PRODUCTO,C1,')).toBe(true);
+    expect(lines.some((line) => line.startsWith('TOTAL,'))).toBe(true);
+    expect(lines.some((line) => line.startsWith('SIN ASIGNAR,'))).toBe(false);
+  });
+
+  it('nombre de archivo estable por año y mes', () => {
+    expect(customerSalesCsvFileName(customerReport())).toBe('participacion-clientes-2026-10.csv');
   });
 });
 

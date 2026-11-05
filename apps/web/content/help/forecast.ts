@@ -16,7 +16,11 @@ export const SALES_HELP_RULES = [
   'Venta = nota de entrega no anulada, línea ABA y artículo activo.',
   'Sin devoluciones ABA: la venta neta es igual a la bruta.',
   'En las barras: real = venta acumulada; proyección = cierre estimado; la rayita = meta.',
-  'Ventas por día: una columna por día del mes; los días futuros quedan vacíos y el día en curso va marcado. El clic fija el día arriba y abajo.',
+  'En el detalle del producto: barras = venta de cada mes (la azul clara es el mes en curso) y el guion verde sobre cada barra es la meta de ese mes; el tramo teñido de verde es lo que la superó.',
+  'La línea roja del detalle es la variación % de cada mes contra el anterior (se lee en el eje derecho). El mes en curso entra con su venta parcial: el punto va subiendo a medida que se vende.',
+  'Ventas por día: una columna por día del mes; los días futuros quedan vacíos y el día en curso va marcado. El clic fija el día y abre su desglose.',
+  'El desglose del día trae dos vistas: productos (kg, sacos y % del día) y clientes (kg, sacos y % del día). Al expandir una fila se ven los clientes del producto o los productos del cliente, con su presentación en sacos cuando el artículo es SAC.',
+  'Los porcentajes del desglose se calculan sobre el total vendido del día; las notas sin cliente se agrupan como «Sin cliente» para que sumen 100 %.',
   'La línea punteada de la tira diaria es la meta por día (forecast ÷ días del mes).',
   'La meta se captura una vez al mes y se conserva para el histórico.',
   'El mes en curso muestra la meta viva de Profit; si allá la cambian, se avisa.',
@@ -152,3 +156,84 @@ export const SALES_COLUMN_HELP = {
 export type SalesHelpKey = keyof typeof SALES_COLUMN_HELP;
 
 export const SALES_HELP_TERMS: HelpTerm[] = Object.values(SALES_COLUMN_HELP);
+
+// ============================================================
+// Participación por cliente.
+//
+// No hay histórico ni meta: todo se mide contra la venta ABA real del mes
+// hasta el corte. La ayuda debe dejar claro qué significa el 100 %.
+// ============================================================
+
+export const SALES_CUSTOMER_HELP_TITLE = 'Cómo leer la participación por cliente';
+
+export const SALES_CUSTOMER_HELP_RULES = [
+  'El 100 % es la venta ABA del mes hasta el corte, no una meta ni un histórico.',
+  'Participación del cliente = kg vendidos al cliente ÷ kg vendidos de ABA × 100.',
+  'Los clientes del catálogo sin venta se muestran con 0 % al final de la tabla.',
+  'Dentro de cada cliente, «% del cliente» indica cuánto pesa ese producto en su compra.',
+  'Dentro de cada producto, «% del producto» indica cuánto pesa ese cliente en la venta total del artículo.',
+  'Venta = nota de entrega no anulada, línea ABA y artículo activo. Corte a ayer.',
+  'Si Profit no responde, el informe avisa y no inventa ceros.',
+];
+
+export const CUSTOMER_SALES_COLUMN_HELP = {
+  codigo: {
+    id: 'customer_codigo',
+    title: 'Código',
+    short: 'Cliente en Profit',
+    what: 'Código del cliente tal como está registrado en Profit.',
+    formula: 'clientes.co_cli',
+    source: 'dbo.clientes',
+  },
+  cliente: {
+    id: 'customer_cliente',
+    title: 'Cliente',
+    short: 'Nombre comercial',
+    what: 'Nombre comercial del cliente; si la BD local no lo tiene, se usa el de Profit.',
+    formula: 'clientes.cli_des',
+    source: 'dbo.clientes · Customer',
+  },
+  tipo: {
+    id: 'customer_tipo',
+    title: 'Tipo / Vendedor',
+    short: 'Segmento y vendedor',
+    what: 'Segmento comercial y vendedor asignado al cliente en la cartera local.',
+    formula: 'Customer.customerType · Customer.vendor',
+    source: 'Customer',
+  },
+  venta: {
+    id: 'customer_venta',
+    title: 'Venta kg',
+    short: 'Kg despachados al cliente',
+    what: 'Kilogramos despachados al cliente en el mes hasta el corte.',
+    formula: 'Σ (unidades × kg por unidad)',
+    source: 'not_ent · reng_nde · solo ABA',
+  },
+  participacion: {
+    id: 'customer_participacion',
+    title: 'Participación %',
+    short: 'Peso en la venta total',
+    what:
+      'Porcentaje que representa el cliente sobre toda la venta ABA del mes a la fecha. La suma de los clientes con venta es 100 %.',
+    formula: 'kg del cliente ÷ kg totales ABA × 100',
+    source: 'Cálculo del API',
+  },
+  productos: {
+    id: 'customer_productos',
+    title: 'Productos',
+    short: 'Artículos con venta',
+    what: 'Cantidad de productos que el cliente compró en el mes. Al expandir la fila se ve el detalle.',
+    formula: 'Conteo de productos con venta del cliente',
+    source: 'Cálculo del API',
+  },
+  ultimaFactura: {
+    id: 'customer_ultima',
+    title: 'Última entrega',
+    short: 'Fecha de la última nota',
+    what: 'Fecha de la última nota de entrega del cliente dentro del periodo consultado.',
+    formula: 'MAX(not_ent.fec_emis)',
+    source: 'not_ent',
+  },
+} satisfies Record<string, HelpTerm>;
+
+export const CUSTOMER_SALES_HELP_TERMS: HelpTerm[] = Object.values(CUSTOMER_SALES_COLUMN_HELP);

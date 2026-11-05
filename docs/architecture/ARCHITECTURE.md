@@ -126,8 +126,21 @@ controlador.
   se captura en un modal centrado y se guarda en la nota del renglón. Solo
   `PENDIENTE` bloquea el cierre: al cerrar se guardan los totales reales y la
   diferencia contra lo planificado. `NOVEDAD` queda como histórico de lectura.
+- **Tiempos por cliente** (`DispatchCustomerProgress`): «Iniciar carga» arranca
+  los relojes del cliente sin marcar productos; cada producto se cierra con
+  «Cerrar carga» y detiene su reloj; la factura se marca por cliente o con
+  «Facturar todo». La carga se mide del inicio al último producto cerrado y la
+  factura del inicio de carga a la entrega. `DispatchSheetLine.checkedAt` sigue
+  siendo la hora de cierre del producto. Las hojas históricas se backfillean
+  con `startedAt`/`completedAt`; el tiempo de factura solo existe desde que se
+  usa el hito.
 - **Bitácora solo ADMIN**: el detalle entrega `events` únicamente al rol ADMIN;
-  el resto sigue el avance por la cinta de acuses y el reporte de cierre.
+  el resto sigue el avance por la cinta de acuses y el reporte de cierre. El
+  drawer incluye filtros, búsqueda, detalle de carga por producto y CSV.
+- **Reporte «Tiempos»**: `GET /dispatch-sheets/metrics` agrega por cliente,
+  día o mes, con promedios, medianas, P90, facturas pendientes y cumplimiento
+  contra la fecha planificada. La pestaña «Tiempos» reutiliza ECharts y
+  exporta a Excel. Respeta la visibilidad de `despacho:read`/`view_all`.
 - **Notificaciones bidireccionales**: cada transición avisa a la contraparte
   (recibido/en proceso/cerrado/novedad al planificador; anulación y mensajes al
   almacén). El aislamiento es por dueño: un despacho ajeno responde 404.

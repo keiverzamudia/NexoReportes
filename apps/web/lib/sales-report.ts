@@ -1,4 +1,10 @@
-import type { ForecastSalesResponse, ForecastSalesRow } from '@nexo/contracts';
+import type {
+  ForecastCustomerSalesResponse,
+  ForecastCustomerSalesRow,
+  ForecastSalesDayCustomer,
+  ForecastSalesResponse,
+  ForecastSalesRow,
+} from '@nexo/contracts';
 
 // ============================================================
 // Utilidades puras de «Ventas vs Forecast» (probadas con vitest).
@@ -41,6 +47,39 @@ export function fmtKg(value: number | null | undefined, decimals = 0): string {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   }).format(value);
+}
+
+/** Porcentaje con signo explícito («+12,4 %» / «-3,0 %»). */
+export function fmtSignedPct(pct: number | null | undefined, decimals = 1): string {
+  if (pct === null || pct === undefined || !Number.isFinite(pct)) return '—';
+  const formatted = fmtPct(pct, decimals);
+  return pct > 0 ? `+${formatted}` : formatted;
+}
+
+/**
+ * Variación % de cada mes contra el anterior: (mes ÷ mes previo − 1) × 100.
+ * `null` en el primer mes y cuando el mes previo no vendió (no hay base de
+ * comparación). El mes en curso entra con su venta parcial, así el punto se
+ * mueve a medida que avanza el mes.
+ */
+export function monthOverMonthPct(values: Array<number | null | undefined>): Array<number | null> {
+  return values.map((value, index) => {
+    if (index === 0) return null;
+    const previous = values[index - 1];
+    if (
+      value === null ||
+      value === undefined ||
+      !Number.isFinite(value) ||
+      previous === null ||
+      previous === undefined ||
+      !Number.isFinite(previous) ||
+      previous <= 0
+    ) {
+      return null;
+    }
+    // Un decimal, como el resto de porcentajes del informe.
+    return Math.round((value / previous - 1) * 1000) / 10;
+  });
 }
 
 /** Toneladas con un decimal («1.777,5 t»). */
@@ -135,6 +174,28 @@ export function filterSalesRows(rows: ForecastSalesRow[], filters: SalesFilters)
       (!needle ||
         row.productCode.toLowerCase().includes(needle) ||
         row.description.toLowerCase().includes(needle)),
+  );
+}
+
+// ---------- Participación por cliente ----------
+
+export interface CustomerSalesFilters {
+  search: string;
+  /** Oculta los clientes del catálogo que no vendieron en el mes. */
+  onlyWithSales: boolean;
+}
+
+export function filterCustomerSalesRows(
+  rows: ForecastCustomerSalesRow[],
+  filters: CustomerSalesFilters,
+): ForecastCustomerSalesRow[] {
+  const needle = filters.search.trim().toLowerCase();
+  return rows.filter(
+    (row) =>
+      (!filters.onlyWithSales || row.actualKg > 0) &&
+      (!needle ||
+        row.customerCode.toLowerCase().includes(needle) ||
+        row.customerName.toLowerCase().includes(needle)),
   );
 }
 
@@ -308,6 +369,51 @@ export function productsForDay(report: ForecastSalesResponse, date: string): Sal
     .sort((a, b) => b.kg - a.kg || a.productCode.localeCompare(b.productCode));
 }
 
+// ---------- Detalle del día (modal «Desglose del día») ----------
+
+/**
+ * Participación de `part` sobre `total`, en % con un decimal. Devuelve null
+ * cuando no hay base (día sin venta), nunca Infinity.
+ */
+export function sharePct(part: number, total: number): number | null {
+  if (!Number.isFinite(part) || !Number.isFinite(total) || total <= 0) return null;
+  return Math.round((part / total) * 1000) / 10;
+}
+
+export interface DayProductClient {
+  customerCode: string;
+  customerName: string;
+  kg: number;
+  units: number;
+  /** Participación del cliente sobre el total del PRODUCTO (no del día). */
+  sharePct: number | null;
+}
+
+/**
+ * Clientes que compraron un producto del día, con su participación sobre el
+ * total del producto. Se usa al expandir una fila de la pestaña «Productos».
+ */
+export function clientsForProduct(
+  customers: ForecastSalesDayCustomer[],
+  productCode: string,
+): DayProductClient[] {
+  const rows: Array<Omit<DayProductClient, 'sharePct'>> = [];
+  for (const customer of customers) {
+    const line = customer.products.find((product) => product.productCode === productCode);
+    if (!line) continue;
+    rows.push({
+      customerCode: customer.customerCode,
+      customerName: customer.customerName,
+      kg: line.kg,
+      units: line.units,
+    });
+  }
+  const total = rows.reduce((acc, row) => acc + row.kg, 0);
+  return rows
+    .map((row) => ({ ...row, sharePct: sharePct(row.kg, total) }))
+    .sort((a, b) => b.kg - a.kg || a.customerName.localeCompare(b.customerName));
+}
+
 // ---------- Barras de desviación por producto ----------
 
 /**
@@ -475,4 +581,111 @@ export function buildSalesCsv(report: ForecastSalesResponse): string {
 
 export function salesCsvFileName(report: ForecastSalesResponse): string {
   return `ventas-vs-forecast-${report.year}-${String(report.month).padStart(2, '0')}.csv`;
+}
+
+// ============================================================
+// CSV de participación por cliente.
+//
+// Dos niveles: una fila CLIENTE con su venta y participación total, y debajo
+// una fila PRODUCTO con kg, sacos y sus dos porcentajes. No hay metas ni
+// histórico: todo sale de la venta real del mes a la fecha.
+// ============================================================
+
+export const CUSTOMER_SALES_CSV_HEADERS = [
+  'Nivel',
+  'Código cliente',
+  'Cliente',
+  'Tipo',
+  'Vendedor',
+  'Código producto',
+  'Producto',
+  'UOM',
+  'Venta kg',
+  'Unidades',
+  'Sacos',
+  'Participación cliente %',
+  '% del cliente',
+  '% del producto',
+  'Última entrega',
+] as const;
+
+export function buildCustomerSalesCsv(report: ForecastCustomerSalesResponse): string {
+  const lines: string[] = [CUSTOMER_SALES_CSV_HEADERS.map(csvCell).join(',')];
+
+  for (const customer of report.customers) {
+    lines.push(
+      [
+        'CLIENTE',
+        customer.customerCode,
+        customer.customerName,
+        customer.customerType ?? '',
+        customer.vendor ?? '',
+        '',
+        '',
+        '',
+        csvNumber(customer.actualKg),
+        csvNumber(customer.actualUnits),
+        '',
+        csvNumber(customer.sharePct),
+        '',
+        '',
+        customer.lastInvoiceDate ?? '',
+      ]
+        .map(csvCell)
+        .join(','),
+    );
+
+    for (const product of customer.products) {
+      lines.push(
+        [
+          'PRODUCTO',
+          customer.customerCode,
+          customer.customerName,
+          customer.customerType ?? '',
+          customer.vendor ?? '',
+          product.productCode,
+          product.description,
+          product.uom,
+          csvNumber(product.kg),
+          csvNumber(product.units),
+          csvNumber(product.sacks),
+          '',
+          csvNumber(product.shareOfCustomerPct),
+          csvNumber(product.shareOfProductPct),
+          '',
+        ]
+          .map(csvCell)
+          .join(','),
+      );
+    }
+  }
+
+  const totals = report.totals;
+  lines.push(
+    [
+      'TOTAL',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      csvNumber(totals.actualKg),
+      csvNumber(totals.actualUnits),
+      '',
+      '100',
+      '',
+      '',
+      totals.lastInvoiceDate ?? '',
+    ]
+      .map(csvCell)
+      .join(','),
+  );
+
+  return `\uFEFF${lines.join('\r\n')}\r\n`;
+}
+
+export function customerSalesCsvFileName(report: ForecastCustomerSalesResponse): string {
+  return `participacion-clientes-${report.year}-${String(report.month).padStart(2, '0')}.csv`;
 }

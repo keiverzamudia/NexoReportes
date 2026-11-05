@@ -2,9 +2,11 @@ import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@ne
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
   ForecastQuery,
+  ForecastSalesDayQuery,
   ForecastSalesQuery,
   ForecastSetWeeks,
   zForecastQuery,
+  zForecastSalesDayQuery,
   zForecastSalesQuery,
   zForecastSetWeeks,
 } from '@nexo/contracts';
@@ -13,6 +15,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RequirePermission } from '../permissions/permissions.decorator';
 import { PermissionsGuard } from '../permissions/permissions.guard';
 import { ForecastService } from './forecast.service';
+import { SellersService } from './sellers.service';
 
 // Forecast (pronóstico de producción): el mensual se lee de Profit (solo lectura)
 // y en Nexo solo se capturan las cantidades por semana. Nunca escribe en Profit.
@@ -21,12 +24,41 @@ import { ForecastService } from './forecast.service';
 @Controller('forecast')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class ForecastController {
-  constructor(private readonly forecast: ForecastService) {}
+  constructor(
+    private readonly forecast: ForecastService,
+    private readonly sellers: SellersService,
+  ) {}
+
+  // Vendedoras vs Forecast: misma venta (notas de entrega) y misma meta que
+  // «Ventas vs Forecast», repartida por participación histórica. El permiso es
+  // del módulo `vendedoras`, no del forecast de producción.
+  @Get('sellers')
+  @RequirePermission('vendedoras:read')
+  sellersReport(@Query(new ZodValidationPipe(zForecastSalesQuery)) query: ForecastSalesQuery) {
+    return this.sellers.sellersReport(query);
+  }
 
   @Get('plan')
   @RequirePermission('forecast:read')
   plan(@Query(new ZodValidationPipe(zForecastQuery)) query: ForecastQuery) {
     return this.forecast.plan(query.year, query.month);
+  }
+
+  // Desviación por cliente: reparte la meta de cada producto entre los
+  // clientes con historial de compra. Solo lectura.
+  @Get('sales/customers')
+  @RequirePermission('forecast:read')
+  customerSales(@Query(new ZodValidationPipe(zForecastSalesQuery)) query: ForecastSalesQuery) {
+    return this.forecast.customerSalesReport(query);
+  }
+
+  // Detalle de un día (modal «Desglose del día»): productos y clientes con
+  // cantidades y participación sobre el total del día. Se pide solo al abrir
+  // el modal, no en la carga del informe mensual.
+  @Get('sales/day')
+  @RequirePermission('forecast:read')
+  salesDay(@Query(new ZodValidationPipe(zForecastSalesDayQuery)) query: ForecastSalesDayQuery) {
+    return this.forecast.salesDayDetail(query.date);
   }
 
   // Ventas reales vs forecast: facturación de Profit (solo lectura) contra la

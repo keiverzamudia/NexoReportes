@@ -37,11 +37,15 @@ function adapterWith(options: {
   monthly?: Record<string, unknown>[];
   daily?: Record<string, unknown>[];
   dailyProducts?: Record<string, unknown>[];
+  dayCustomers?: Record<string, unknown>[];
+  customerProducts?: Record<string, unknown>[];
   weekly?: Record<string, unknown>[];
   forecast?: Record<string, unknown>[];
   fail?: boolean;
   failWeekly?: boolean;
   failDailyProducts?: boolean;
+  failDayCustomers?: boolean;
+  failCustomerProducts?: boolean;
 }) {
   const calls = { total: 0, monthly: 0, daily: 0, weekly: 0, forecast: 0 };
   const adapter: ProfitAdapter = {
@@ -60,6 +64,12 @@ function adapterWith(options: {
         return (options.forecast ?? []).map((row) => ({ fecha: '2026-10-01', ...row }));
       }
       if (lower.includes('reng_nde')) {
+        // Desviación por cliente: su marcador es propio y va antes que el
+        // resto de consultas sobre `reng_nde`.
+        if (lower.includes('nexo:customer_products')) {
+          if (options.fail || options.failCustomerProducts) throw new Error('Profit caído');
+          return options.customerProducts ?? [];
+        }
         // La consulta semanal (plan de producción) va PRIMERO: también toca
         // `not_ent`/`reng_nde` y no debe devolver filas mensuales ni diarias.
         if (lower.includes('as semana')) {
@@ -68,6 +78,11 @@ function adapterWith(options: {
           return options.weekly ?? [];
         }
         if (options.fail) throw new Error('Profit caído');
+        // Detalle del día (modal): cliente × artículo, marcador propio.
+        if (lower.includes('nexo:daily_customer_products')) {
+          if (options.failDayCustomers) throw new Error('Detalle caído');
+          return options.dayCustomers ?? [];
+        }
         // El desglose por artículo también agrupa por fecha: se detecta por el
         // marcador propio de la consulta.
         if (lower.includes('nexo:daily_products')) {
@@ -116,6 +131,12 @@ function createFakePrisma(
       kgPerUom: 35,
     },
   ],
+  customers: Array<{
+    externalCode: string;
+    name: string;
+    customerType: string | null;
+    vendor: string | null;
+  }> = [],
 ) {
   const capturedAt = new Date('2026-10-01T00:00:00Z');
   const targets: FakeTargetRow[] = seed.map((row) => ({
@@ -133,6 +154,12 @@ function createFakePrisma(
     targets,
     product: {
       findMany: async () => products.map((product) => ({ ...product, category: null })),
+    },
+    customer: {
+      findMany: async ({ where }: { where?: { externalCode?: { in?: string[] } } } = {}) => {
+        const wanted = new Set(where?.externalCode?.in ?? customers.map((customer) => customer.externalCode));
+        return customers.filter((customer) => wanted.has(customer.externalCode));
+      },
     },
     // El plan pasa por `list()` / `stockIndex()` / `demandBuckets()`: sin datos
     // locales (sin forecast asignado, sin inventario ni pedidos) para aislar la
@@ -611,6 +638,228 @@ describe('ForecastService.salesReport', () => {
     expect(result).toEqual({ ok: true, targetKg: 320_000 });
     expect(db.targets[0]!.targetKg).toBe(320_000);
     expect(db.targets[0]!.driftDetectedAt).toBeNull();
+  });
+});
+
+// ============================================================
+// Detalle de un día: modal «Desglose del día».
+// ============================================================
+describe('ForecastService.salesDayDetail', () => {
+  const DAY_ROWS = [
+    { fecha: '2026-10-27', co_cli: 'C1', cli_des: 'CLIENTE UNO', co_art: 'ABAGP13', art_des: 'GALLINA PONEDORA PLUS 18% - 40 KG', uni_venta: 'SAC', uni_relac: 40, unid: 150, kg: 6_000 },
+    { fecha: '2026-10-27', co_cli: 'C1', cli_des: 'CLIENTE UNO', co_art: 'ABABOV67', art_des: 'MULTIESPECIE LINEA NARANJA SACO 35 KG', uni_venta: 'SAC', uni_relac: 35, unid: 100, kg: 3_500 },
+    { fecha: '2026-10-27', co_cli: 'C2', cli_des: 'CLIENTE DOS', co_art: 'ABAGP13', art_des: 'GALLINA PONEDORA PLUS 18% - 40 KG', uni_venta: 'SAC', uni_relac: 40, unid: 100, kg: 4_000 },
+  ];
+
+  it('agrupa clientes y productos con su participación del día', async () => {
+    const { adapter } = adapterWith({ dayCustomers: DAY_ROWS });
+    const detail = await service(adapter).salesDayDetail('2026-10-27');
+
+    expect(detail.available).toBe(true);
+    expect(detail.kg).toBe(13_500);
+    expect(detail.customers.map((customer) => customer.customerCode)).toEqual(['C1', 'C2']);
+    expect(detail.customers[0]).toMatchObject({ customerName: 'CLIENTE UNO', kg: 9_500, sharePct: 70.4 });
+    expect(detail.customers[0]!.products.map((product) => product.productCode)).toEqual(['ABAGP13', 'ABABOV67']);
+    // La presentación viaja hasta la línea del cliente: 6.000 / 40 = 150 sacos.
+    expect(detail.customers[0]!.products[0]).toMatchObject({
+      productCode: 'ABAGP13',
+      kg: 6_000,
+      kgPerUom: 40,
+      sacks: 150,
+    });
+    expect(detail.customers[0]!.products[1]).toMatchObject({
+      productCode: 'ABABOV67',
+      kg: 3_500,
+      kgPerUom: 35,
+      sacks: 100,
+    });
+    expect(detail.products.map((product) => product.productCode)).toEqual(['ABAGP13', 'ABABOV67']);
+    expect(detail.products[0]).toMatchObject({ kg: 10_000, sharePct: 74.1, uom: 'SAC', sacks: 250 });
+    expect(detail.truncated).toBe(false);
+  });
+
+  it('el granel no tiene presentación en sacos', async () => {
+    const { adapter } = adapterWith({
+      dayCustomers: [
+        {
+          fecha: '2026-10-27',
+          co_cli: 'C1',
+          cli_des: 'CLIENTE UNO',
+          co_art: 'GRANEL01',
+          art_des: 'GRANEL ABA',
+          uni_venta: 'KG',
+          uni_relac: 1,
+          unid: 2_500,
+          kg: 2_500,
+        },
+      ],
+    });
+    const detail = await service(adapter).salesDayDetail('2026-10-27');
+
+    expect(detail.customers[0]!.products[0]).toMatchObject({ uom: 'KG', kgPerUom: null, sacks: null });
+    expect(detail.products[0]).toMatchObject({ uom: 'KG', kgPerUom: null, sacks: null });
+  });
+
+  it('agrupa las notas sin cliente para que el reparto sume 100 %', async () => {
+    const { adapter } = adapterWith({
+      dayCustomers: [
+        ...DAY_ROWS,
+        { fecha: '2026-10-27', co_cli: '', cli_des: '', co_art: 'ABAGP13', art_des: 'GALLINA', uni_venta: 'SAC', uni_relac: 40, unid: 25, kg: 1_000 },
+      ],
+    });
+    const detail = await service(adapter).salesDayDetail('2026-10-27');
+    const sinCliente = detail.customers.find((customer) => customer.customerCode === '__sin_cliente__');
+
+    expect(sinCliente).toMatchObject({ customerName: 'Sin cliente', kg: 1_000 });
+    expect(detail.customers.reduce((acc, customer) => acc + (customer.sharePct ?? 0), 0)).toBeCloseTo(100, 0);
+  });
+
+  it('un día sin despachos devuelve listas vacías (no es un error)', async () => {
+    const { adapter } = adapterWith({ dayCustomers: [] });
+    const detail = await service(adapter).salesDayDetail('2026-10-31');
+
+    expect(detail).toMatchObject({ available: true, kg: 0, products: [], customers: [], truncated: false });
+  });
+
+  it('si Profit falla, el detalle queda no disponible sin lanzar', async () => {
+    const { adapter } = adapterWith({ failDayCustomers: true });
+    const detail = await service(adapter).salesDayDetail('2026-10-27');
+
+    expect(detail.available).toBe(false);
+    expect(detail.products).toEqual([]);
+    expect(detail.customers).toEqual([]);
+  });
+
+  it('cachea el detalle por fecha', async () => {
+    const { adapter, calls } = adapterWith({ dayCustomers: DAY_ROWS });
+    const forecast = service(adapter);
+
+    await forecast.salesDayDetail('2026-10-27');
+    await forecast.salesDayDetail('2026-10-27');
+
+    expect(calls.total).toBe(1);
+  });
+});
+
+// ============================================================
+// Participación por cliente: venta real del mes a la fecha.
+// ============================================================
+describe('ForecastService.customerSalesReport', () => {
+  const CUSTOMER_ROWS = [
+    { anio: 2026, mes: 10, co_cli: 'C1', cli_des: 'CLIENTE UNO', co_art: 'ABAGP13', art_des: 'GALLINA', uni_venta: 'SAC', uni_relac: 40, unid: 4_500, kg: 180_000, ultima_factura: '2026-10-27' },
+    { anio: 2026, mes: 10, co_cli: 'C2', cli_des: 'CLIENTE DOS', co_art: 'ABAGP13', art_des: 'GALLINA', uni_venta: 'SAC', uni_relac: 40, unid: 3_000, kg: 120_000, ultima_factura: '2026-10-26' },
+    { anio: 2026, mes: 10, co_cli: 'C1', cli_des: 'CLIENTE UNO', co_art: 'ABABOV67', art_des: 'MULTIESPECIE', uni_venta: 'SAC', uni_relac: 35, unid: 1_428, kg: 50_000, ultima_factura: '2026-10-25' },
+    { anio: 2026, mes: 10, co_cli: 'C2', cli_des: 'CLIENTE DOS', co_art: 'ABABOV67', art_des: 'MULTIESPECIE', uni_venta: 'SAC', uni_relac: 35, unid: 4_285, kg: 150_000, ultima_factura: '2026-10-24' },
+  ];
+
+  const CUSTOMERS = [
+    { externalCode: 'C1', name: 'CLIENTE UNO', customerType: 'L1 EXCLUSIVOS', vendor: 'VENDEDORA 1' },
+    { externalCode: 'C2', name: 'CLIENTE DOS', customerType: 'L2 DISTRIBUIDORES', vendor: 'VENDEDORA 2' },
+  ];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-29T16:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('calcula la participación del cliente y de cada producto', async () => {
+    const { adapter } = adapterWith({ customerProducts: CUSTOMER_ROWS });
+    const db = createFakePrisma([], [], CUSTOMERS);
+
+    const report = await service(adapter, db).customerSalesReport({ ...QUERY, year: 2026, month: 10 });
+
+    expect(report.salesAvailable).toBe(true);
+    expect(report.asOf).toBe('2026-10-28');
+    expect(report.totals.actualKg).toBe(500_000);
+    expect(report.totals.customerCount).toBe(2);
+    expect(report.totals.activeCustomerCount).toBe(2);
+    expect(report.totals.productCount).toBe(2);
+
+    const uno = report.customers.find((customer) => customer.customerCode === 'C1')!;
+    const dos = report.customers.find((customer) => customer.customerCode === 'C2')!;
+    expect(uno.actualKg).toBe(230_000);
+    expect(dos.actualKg).toBe(270_000);
+    expect(uno.sharePct).toBe(46);
+    expect(dos.sharePct).toBe(54);
+    expect(uno.customerName).toBe('CLIENTE UNO');
+    expect(uno.customerType).toBe('L1 EXCLUSIVOS');
+    expect(uno.vendor).toBe('VENDEDORA 1');
+    expect(uno.productCount).toBe(2);
+
+    const gallina = uno.products.find((product) => product.productCode === 'ABAGP13')!;
+    const multi = uno.products.find((product) => product.productCode === 'ABABOV67')!;
+    // Dentro del cliente, 180.000 de 230.000 = 78,3 %.
+    expect(gallina.shareOfCustomerPct).toBe(78.3);
+    expect(multi.shareOfCustomerPct).toBe(21.7);
+    // Dentro del producto, C1 vendió 180.000 de 300.000 = 60 %.
+    expect(gallina.shareOfProductPct).toBe(60);
+    expect(gallina.sacks).toBe(4_500);
+  });
+
+  it('incluye clientes del catálogo sin venta con 0 %', async () => {
+    const { adapter } = adapterWith({ customerProducts: CUSTOMER_ROWS });
+    const db = createFakePrisma([], [], [
+      ...CUSTOMERS,
+      { externalCode: 'C0', name: 'CLIENTE SIN VENTA', customerType: null, vendor: null },
+    ]);
+
+    const report = await service(adapter, db).customerSalesReport({ ...QUERY, year: 2026, month: 10 });
+    const sinVenta = report.customers.find((customer) => customer.customerCode === 'C0')!;
+
+    expect(sinVenta.actualKg).toBe(0);
+    expect(sinVenta.sharePct).toBe(0);
+    expect(sinVenta.products).toEqual([]);
+    expect(report.totals.customerCount).toBe(3);
+    expect(report.totals.activeCustomerCount).toBe(2);
+  });
+
+  it('incluye un cliente con venta que no está en el catálogo local', async () => {
+    const { adapter } = adapterWith({
+      customerProducts: [
+        ...CUSTOMER_ROWS,
+        { anio: 2026, mes: 10, co_cli: 'NUEVO', cli_des: 'CLIENTE NUEVO', co_art: 'ABAGP13', art_des: 'GALLINA', uni_venta: 'SAC', uni_relac: 40, unid: 250, kg: 10_000, ultima_factura: '2026-10-28' },
+      ],
+    });
+
+    const report = await service(adapter, createFakePrisma([], [], CUSTOMERS)).customerSalesReport({
+      ...QUERY,
+      year: 2026,
+      month: 10,
+    });
+    const nuevo = report.customers.find((customer) => customer.customerCode === 'NUEVO')!;
+
+    expect(nuevo.customerName).toBe('CLIENTE NUEVO');
+    expect(nuevo.actualKg).toBe(10_000);
+    expect(nuevo.sharePct).toBe(2);
+  });
+
+  it('si la consulta por cliente falla, no inventa ceros', async () => {
+    const { adapter } = adapterWith({ failCustomerProducts: true });
+
+    const report = await service(adapter, createFakePrisma([], [], CUSTOMERS)).customerSalesReport({
+      ...QUERY,
+      year: 2026,
+      month: 10,
+    });
+
+    expect(report.salesAvailable).toBe(false);
+    expect(report.customers).toEqual([]);
+    expect(report.totals.actualKg).toBe(0);
+  });
+
+  it('cachea la respuesta y no vuelve a consultar Profit', async () => {
+    const { adapter, calls } = adapterWith({ customerProducts: CUSTOMER_ROWS });
+    const forecast = service(adapter, createFakePrisma([], [], CUSTOMERS));
+    const first = await forecast.customerSalesReport({ ...QUERY, year: 2026, month: 10 });
+    const afterFirst = calls.total;
+    const second = await forecast.customerSalesReport({ ...QUERY, year: 2026, month: 10 });
+
+    expect(calls.total).toBe(afterFirst);
+    expect(second.generatedAt).toBe(first.generatedAt);
   });
 });
 

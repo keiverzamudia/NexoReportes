@@ -8,17 +8,22 @@ import {
 } from '@nestjs/common';
 import {
   FORECAST_WEEK_INDEXES,
+  ForecastCustomerSalesResponse,
   ForecastPlanResponse,
   ForecastPlanRow,
   ForecastPlanWeek,
   ForecastResponse,
   ForecastRow,
   ForecastSalesDaily,
+  ForecastSalesDayCustomer,
+  ForecastSalesDayDetail,
+  ForecastSalesDayDetailProduct,
   ForecastSalesHistory,
   ForecastSalesQuery,
   ForecastSalesResponse,
   ForecastSalesRow,
   ForecastSalesSource,
+  ForecastSalesStatus,
   ForecastSetWeeks,
   ForecastWeekRange,
   ForecastWeekRow,
@@ -28,6 +33,12 @@ import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
 import { computeAvailability } from '../availability/availability.engine';
 import { ProfitAdapter, PROFIT_ADAPTER } from '../sync/profit.adapter';
+import { resolveForecastTargets } from './forecast-targets';
+import {
+  buildCustomerShare,
+  CustomerInfo,
+  CustomerProductSale,
+} from './customer-sales-share';
 import {
   MonthCalendar,
   basisElapsed,
@@ -67,6 +78,13 @@ function num(value: unknown): number {
   if (value === null || value === undefined) return 0;
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+// Sacos de una línea (día): SAC convierte kg ÷ kg por saco; si falta la
+// relación se usan las unidades. Granel no tiene presentación en sacos.
+function sacksOf(kg: number, units: number, uom: string, kgPerUom: number | null): number | null {
+  if (uom !== 'SAC') return null;
+  return roundTo(kgPerUom !== null && kgPerUom > 0 ? kg / kgPerUom : units, 1);
 }
 
 function isoDate(year: number, month: number, day: number): string {
@@ -182,6 +200,63 @@ WHERE f.anulada = 0
 GROUP BY CAST(f.fec_emis AS date), RTRIM(r.co_art)
 `;
 
+// Desglose de UN día por cliente y artículo (modal «Desglose del día»). Con
+// estas filas se arman las dos vistas del modal: productos (sumando clientes) y
+// clientes (anidando sus productos). Misma fuente y filtros que el informe, así
+// los kg cuadran con la barra del día. Solo se consulta al abrir el detalle.
+export const PROFIT_SALES_DAILY_CUSTOMER_PRODUCT_SQL = `
+SELECT /* nexo:daily_customer_products */
+  CAST(f.fec_emis AS date) AS fecha,
+  RTRIM(f.co_cli) AS co_cli,
+  RTRIM(ISNULL(c.cli_des, '')) AS cli_des,
+  RTRIM(r.co_art) AS co_art,
+  RTRIM(a.art_des) AS art_des,
+  RTRIM(ISNULL(a.uni_venta, '')) AS uni_venta,
+  a.uni_relac AS uni_relac,
+  SUM(r.total_art) AS unid,
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+LEFT JOIN dbo.clientes AS c ON c.co_cli = f.co_cli
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND a.co_lin = 'ABA'
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+GROUP BY CAST(f.fec_emis AS date), RTRIM(f.co_cli), RTRIM(ISNULL(c.cli_des, '')),
+         RTRIM(r.co_art), RTRIM(a.art_des), RTRIM(ISNULL(a.uni_venta, '')), a.uni_relac
+`;
+
+// Kg despachados por cliente y artículo en el mes del informe. Es la base de
+// la participación por cliente: no consulta meses históricos. Misma fuente y
+// filtros que el informe de ventas.
+export const PROFIT_SALES_CUSTOMER_PRODUCT_SQL = `
+SELECT /* nexo:customer_products */
+  YEAR(f.fec_emis) AS anio,
+  MONTH(f.fec_emis) AS mes,
+  RTRIM(f.co_cli) AS co_cli,
+  RTRIM(ISNULL(c.cli_des, '')) AS cli_des,
+  RTRIM(r.co_art) AS co_art,
+  RTRIM(a.art_des) AS art_des,
+  RTRIM(ISNULL(a.uni_venta, '')) AS uni_venta,
+  a.uni_relac AS uni_relac,
+  SUM(r.total_art) AS unid,
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg,
+  MAX(f.fec_emis) AS ultima_factura
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+LEFT JOIN dbo.clientes AS c ON c.co_cli = f.co_cli
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND a.co_lin = 'ABA'
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+GROUP BY YEAR(f.fec_emis), MONTH(f.fec_emis), RTRIM(f.co_cli), RTRIM(ISNULL(c.cli_des, '')),
+         RTRIM(r.co_art), RTRIM(a.art_des), RTRIM(ISNULL(a.uni_venta, '')), a.uni_relac
+`;
+
 // Kg despachados por artículo y BLOQUE DE SEMANA del mes (1: 1-7, 2: 8-14,
 // 3: 15-21, 4: 22-fin). Misma fuente y filtros que el informe de ventas (notas
 // de entrega no anuladas, artículo vigente y línea ABA), así el plan de
@@ -221,6 +296,18 @@ const BUSINESS_TIME_ZONE = 'America/Caracas';
 // tiene sentido golpear SQL Server en cada render. 5 minutos por combinación.
 const SALES_CACHE_TTL_MS = 5 * 60_000;
 const SALES_CACHE_MAX_ENTRIES = 40;
+
+// La consulta cliente × artículo del mes puede ser grande. El límite es
+// defensivo: si se alcanza, la respuesta marca `truncated` y la UI lo avisa.
+const CUSTOMER_PRODUCTS_QUERY_LIMIT = 200_000;
+
+// Un solo día no debería acercarse a este tope, pero la consulta es defensiva:
+// si se alcanza, el modal marca `truncated` y no presume de porcentajes.
+const DAY_DETAIL_QUERY_LIMIT = 20_000;
+
+// Las notas sin `co_cli` (poco frecuentes) se agrupan para que Σ clientes = día.
+const NO_CUSTOMER = '__sin_cliente__';
+const NO_CUSTOMER_LABEL = 'Sin cliente';
 
 // Ventana para corregir la captura inicial de la meta. `forecast` ya identifica
 // el mes con `fecha`, pero producción puede cargar o ajustar la meta durante
@@ -352,6 +439,10 @@ export class ForecastService {
   // Ventas vs forecast: la pestaña se refresca seguido y Profit es un recurso
   // único; 5 minutos por combinación evitan ráfagas de consultas.
   private readonly salesCache = new Map<string, { at: number; data: ForecastSalesResponse }>();
+  // Participación por cliente: misma política que el informe de ventas.
+  private readonly customerSalesCache = new Map<string, { at: number; data: ForecastCustomerSalesResponse }>();
+  // Detalle del día (modal): una entrada por fecha, misma política de 5 min.
+  private readonly dayDetailCache = new Map<string, { at: number; data: ForecastSalesDayDetail }>();
   // Despachos semanales del plan: misma política (5 min, tope 40) porque el
   // plan se refresca junto con el Asignador y Profit es un recurso único.
   private readonly weeklyCache = new Map<string, { at: number; data: WeeklySalesIndex }>();
@@ -561,6 +652,407 @@ export class ForecastService {
     }
   }
 
+  // ============================================================
+  // Detalle de un día (modal «Desglose del día»).
+  //
+  // Una sola consulta agrupada por cliente × artículo alimenta las dos vistas:
+  // se suman los clientes para los productos y se anidan los productos para
+  // cada cliente. `sharePct` se calcula sobre el kg total del día.
+  // ============================================================
+  async salesDayDetail(date: string): Promise<ForecastSalesDayDetail> {
+    const cached = this.dayDetailCache.get(date);
+    if (cached && Date.now() - cached.at < SALES_CACHE_TTL_MS) return cached.data;
+
+    // El pipe valida `yyyy-mm-dd`; el día completo va de 00:00 a 24:00 UTC y
+    // SQL Server aplica el rango semiabierto de la consulta.
+    const start = new Date(`${date}T00:00:00.000Z`);
+    const end = new Date(start.getTime() + 86_400_000);
+
+    try {
+      const rows = await this.profit.selectQuery(
+        PROFIT_SALES_DAILY_CUSTOMER_PRODUCT_SQL,
+        DAY_DETAIL_QUERY_LIMIT,
+        { desde: start, hasta: end },
+      );
+      const data = this.buildDayDetail(date, rows);
+      this.rememberDayDetail(date, data);
+      return data;
+    } catch (error) {
+      this.logger.warn(
+        `Detalle diario de ventas no disponible (${date}): ${
+          error instanceof Error ? error.message : 'error desconocido'
+        }`,
+      );
+      return {
+        date,
+        available: false,
+        kg: 0,
+        units: 0,
+        products: [],
+        customers: [],
+        truncated: false,
+        generatedAt: new Date().toISOString(),
+      };
+    }
+  }
+
+  private buildDayDetail(date: string, rows: Record<string, unknown>[]): ForecastSalesDayDetail {
+    interface Bucket {
+      kg: number;
+      units: number;
+    }
+    interface CustomerBucket {
+      customerCode: string;
+      customerName: string;
+      kg: number;
+      units: number;
+      products: Map<string, Bucket>;
+    }
+
+    const productMeta = new Map<string, { description: string; uom: string; kgPerUom: number | null }>();
+    const productTotals = new Map<string, Bucket>();
+    const customers = new Map<string, CustomerBucket>();
+    let totalKg = 0;
+    let totalUnits = 0;
+
+    for (const raw of rows) {
+      const productCode = String(raw.co_art ?? '').trim();
+      if (!productCode) continue;
+
+      const customerCode = String(raw.co_cli ?? '').trim() || NO_CUSTOMER;
+      const customerName =
+        String(raw.cli_des ?? '').trim() || (customerCode === NO_CUSTOMER ? NO_CUSTOMER_LABEL : customerCode);
+      const kg = num(raw.kg);
+      const units = num(raw.unid);
+      const uom = String(raw.uni_venta ?? '').trim() || 'KG';
+      const relation = raw.uni_relac === null || raw.uni_relac === undefined ? null : num(raw.uni_relac);
+
+      totalKg += kg;
+      totalUnits += units;
+
+      const meta = productMeta.get(productCode);
+      productMeta.set(productCode, {
+        description: String(raw.art_des ?? '').trim() || meta?.description || productCode,
+        uom,
+        kgPerUom: uom === 'SAC' && relation !== null && relation > 0 ? relation : (meta?.kgPerUom ?? null),
+      });
+
+      const product = productTotals.get(productCode) ?? { kg: 0, units: 0 };
+      product.kg += kg;
+      product.units += units;
+      productTotals.set(productCode, product);
+
+      const customer = customers.get(customerCode) ?? {
+        customerCode,
+        customerName,
+        kg: 0,
+        units: 0,
+        products: new Map<string, Bucket>(),
+      };
+      customer.kg += kg;
+      customer.units += units;
+      const line = customer.products.get(productCode) ?? { kg: 0, units: 0 };
+      line.kg += kg;
+      line.units += units;
+      customer.products.set(productCode, line);
+      customers.set(customerCode, customer);
+    }
+
+    // Porcentaje sobre el kg total del día; sin venta no hay base y queda null.
+    const share = (kg: number) => (totalKg > 0 ? roundTo((kg / totalKg) * 100, 1) : null);
+
+    const customerRows: ForecastSalesDayCustomer[] = [...customers.values()]
+      .map((customer) => ({
+        customerCode: customer.customerCode,
+        customerName: customer.customerName,
+        kg: roundTo(customer.kg),
+        units: roundTo(customer.units),
+        sharePct: share(customer.kg),
+        products: [...customer.products.entries()]
+          .map(([productCode, line]) => {
+            const meta = productMeta.get(productCode);
+            const uom = meta?.uom ?? 'KG';
+            const kgPerUom = meta?.kgPerUom ?? null;
+            return {
+              productCode,
+              description: meta?.description ?? productCode,
+              uom,
+              kgPerUom,
+              kg: roundTo(line.kg),
+              units: roundTo(line.units),
+              sacks: sacksOf(line.kg, line.units, uom, kgPerUom),
+            };
+          })
+          .sort((a, b) => b.kg - a.kg || a.productCode.localeCompare(b.productCode)),
+      }))
+      .sort((a, b) => b.kg - a.kg || a.customerName.localeCompare(b.customerName));
+
+    const productRows: ForecastSalesDayDetailProduct[] = [...productTotals.entries()]
+      .map(([productCode, bucket]) => {
+        const meta = productMeta.get(productCode);
+        const uom = meta?.uom ?? 'KG';
+        const kgPerUom = meta?.kgPerUom ?? null;
+        return {
+          productCode,
+          description: meta?.description ?? productCode,
+          uom,
+          kgPerUom,
+          kg: roundTo(bucket.kg),
+          units: roundTo(bucket.units),
+          // Misma regla que el informe: SAC en sacos, granel sin columna.
+          sacks: sacksOf(bucket.kg, bucket.units, uom, kgPerUom),
+          sharePct: share(bucket.kg),
+        };
+      })
+      .sort((a, b) => b.kg - a.kg || a.productCode.localeCompare(b.productCode));
+
+    return {
+      date,
+      available: true,
+      kg: roundTo(totalKg),
+      units: roundTo(totalUnits),
+      products: productRows,
+      customers: customerRows,
+      truncated: rows.length >= DAY_DETAIL_QUERY_LIMIT,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  private rememberDayDetail(key: string, data: ForecastSalesDayDetail) {
+    if (this.dayDetailCache.size >= SALES_CACHE_MAX_ENTRIES) {
+      const oldest = [...this.dayDetailCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (oldest) this.dayDetailCache.delete(oldest[0]);
+    }
+    this.dayDetailCache.set(key, { at: Date.now(), data });
+  }
+
+  /**
+   * Meta de la empresa del mes, en kg, con la MISMA resolución que el informe
+   * de ventas (viva de `forecast` o snapshot local). La usa el módulo de
+   * vendedoras para repartir la meta sin duplicar la regla de captura/drift.
+   */
+  async companyTarget(
+    year: number,
+    month: number,
+    status: ForecastSalesStatus,
+  ): Promise<{ totalKg: number; available: boolean; source: ForecastSalesSource }> {
+    const key = monthKey(year, month);
+    const [series, targets] = await Promise.all([
+      this.profitForecastSeries([{ year, month }]),
+      this.forecastTargetIndex([{ year, month }]),
+    ]);
+    const live = series.byMonth.get(key) ?? new Map<string, number>();
+    const captured = targets.get(key) ?? new Map<string, ForecastTargetMeta>();
+    const resolved = resolveForecastTargets(status, series.available, live, captured);
+    return { totalKg: resolved.totalKg, available: resolved.forecastAvailable, source: resolved.source };
+  }
+
+  // ============================================================
+  // Participación por cliente.
+  //
+  // Sin histórico ni meta: se lee la venta ABA del mes hasta el corte y se
+  // calcula qué porcentaje representa cada cliente sobre el total. Cada
+  // producto del cliente lleva su peso dentro del cliente y dentro de la venta
+  // total de ese producto. Los clientes del catálogo sin venta se incluyen con
+  // 0 % para que la tabla sea completa.
+  // ============================================================
+  async customerSalesReport(query: ForecastSalesQuery): Promise<ForecastCustomerSalesResponse> {
+    const today = todayInTimeZone(BUSINESS_TIME_ZONE);
+    const year = query.year ?? Number(today.slice(0, 4));
+    const month = query.month ?? Number(today.slice(5, 7));
+    const calendar = monthCalendar({
+      year,
+      month,
+      basis: query.basis,
+      includeToday: query.includeToday,
+      today,
+    });
+
+    const cacheKey = [year, month, query.includeToday ? 1 : 0, today].join('|');
+    const cached = this.customerSalesCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < SALES_CACHE_TTL_MS) return cached.data;
+
+    try {
+      const data = await this.buildCustomerSalesReport(calendar, query.includeToday);
+      this.rememberCustomerSales(cacheKey, data);
+      return data;
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo leer la participación por cliente (not_ent/reng_nde): ${
+          error instanceof Error ? error.message : 'error desconocido'
+        }`,
+      );
+      return this.emptyCustomerSalesReport(calendar);
+    }
+  }
+
+  private async buildCustomerSalesReport(
+    calendar: MonthCalendar,
+    includeToday: boolean,
+  ): Promise<ForecastCustomerSalesResponse> {
+    const { year, month } = calendar;
+    const reportStart = new Date(Date.UTC(year, month - 1, 1));
+    const monthEnd = new Date(Date.UTC(year, month, 1));
+    const [todayYear, todayMonth, todayDay] = calendar.today.split('-').map(Number) as [number, number, number];
+
+    let monthlyHasta = monthEnd;
+    if (calendar.status === 'OPEN') {
+      monthlyHasta = new Date(Date.UTC(todayYear, todayMonth - 1, todayDay + (includeToday ? 1 : 0)));
+    } else if (calendar.status === 'FUTURE') {
+      monthlyHasta = reportStart;
+    }
+
+    const rows = await this.profit.selectQuery(
+      PROFIT_SALES_CUSTOMER_PRODUCT_SQL,
+      CUSTOMER_PRODUCTS_QUERY_LIMIT,
+      { desde: reportStart, hasta: monthlyHasta },
+    );
+
+    const productMeta = new Map<string, { description: string; uom: string; kgPerUom: number | null }>();
+    const salesNames = new Map<string, string>();
+    const lastInvoiceByCustomer = new Map<string, string>();
+    const sales: CustomerProductSale[] = [];
+    let skipped = 0;
+
+    for (const raw of rows) {
+      const customerCode = String(raw.co_cli ?? '').trim();
+      const productCode = String(raw.co_art ?? '').trim();
+      if (!customerCode || !productCode) {
+        skipped += 1;
+        continue;
+      }
+
+      const kg = num(raw.kg);
+      const units = num(raw.unid);
+      const customerName = String(raw.cli_des ?? '').trim();
+      if (customerName) salesNames.set(customerCode, customerName);
+
+      const meta = productMeta.get(productCode);
+      const uom = String(raw.uni_venta ?? '').trim() || meta?.uom || 'KG';
+      const relation = raw.uni_relac === null || raw.uni_relac === undefined ? null : num(raw.uni_relac);
+      productMeta.set(productCode, {
+        description: String(raw.art_des ?? '').trim() || meta?.description || productCode,
+        uom,
+        kgPerUom: uom === 'SAC' && relation !== null && relation > 0 ? relation : (meta?.kgPerUom ?? null),
+      });
+
+      const lastInvoice = isoDayOf(raw.ultima_factura);
+      if (lastInvoice) {
+        const previous = lastInvoiceByCustomer.get(customerCode);
+        if (!previous || lastInvoice > previous) lastInvoiceByCustomer.set(customerCode, lastInvoice);
+      }
+
+      sales.push({ customerCode, productCode, kg, units });
+    }
+
+    if (skipped > 0) {
+      this.logger.warn(`Participación por cliente: ${skipped} filas sin cliente o artículo fueron ignoradas.`);
+    }
+
+    // El catálogo activo permite incluir clientes sin venta con 0 %.
+    const catalogByCode = new Map<string, CustomerInfo>();
+    try {
+      const catalog = await this.prisma.customer.findMany({
+        where: { isActive: true },
+        select: { externalCode: true, name: true, customerType: true, vendor: true },
+      });
+      for (const customer of catalog) {
+        catalogByCode.set(customer.externalCode, {
+          code: customer.externalCode,
+          name: customer.name,
+          customerType: customer.customerType,
+          vendor: customer.vendor,
+        });
+      }
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo leer el catálogo local de clientes: ${
+          error instanceof Error ? error.message : 'error desconocido'
+        }`,
+      );
+    }
+
+    // Un cliente con venta que no esté en la BD local se agrega con el nombre
+    // que trae Profit, para que la tabla y el total no pierdan esa venta.
+    for (const customerCode of new Set(sales.map((sale) => sale.customerCode))) {
+      if (catalogByCode.has(customerCode)) continue;
+      catalogByCode.set(customerCode, {
+        code: customerCode,
+        name: salesNames.get(customerCode) || customerCode,
+        customerType: null,
+        vendor: null,
+      });
+    }
+
+    const result = buildCustomerShare({
+      sales,
+      catalog: [...catalogByCode.values()],
+      products: productMeta,
+      lastInvoiceByCustomer,
+    });
+
+    return {
+      year,
+      month,
+      asOf: calendar.cut,
+      status: calendar.status,
+      salesAvailable: true,
+      days: {
+        inMonth: calendar.inMonth,
+        elapsed: calendar.elapsed,
+        remaining: calendar.remaining,
+        workingInMonth: calendar.workingInMonth,
+        workingElapsed: calendar.workingElapsed,
+        workingRemaining: calendar.workingRemaining,
+        today: calendar.today,
+        cut: calendar.cut,
+      },
+      totals: result.totals,
+      customers: result.customers,
+      truncated: rows.length >= CUSTOMER_PRODUCTS_QUERY_LIMIT,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  private emptyCustomerSalesReport(calendar: MonthCalendar): ForecastCustomerSalesResponse {
+    return {
+      year: calendar.year,
+      month: calendar.month,
+      asOf: calendar.cut,
+      status: calendar.status,
+      salesAvailable: false,
+      days: {
+        inMonth: calendar.inMonth,
+        elapsed: calendar.elapsed,
+        remaining: calendar.remaining,
+        workingInMonth: calendar.workingInMonth,
+        workingElapsed: calendar.workingElapsed,
+        workingRemaining: calendar.workingRemaining,
+        today: calendar.today,
+        cut: calendar.cut,
+      },
+      totals: {
+        actualKg: 0,
+        actualUnits: 0,
+        customerCount: 0,
+        activeCustomerCount: 0,
+        productCount: 0,
+        lastInvoiceDate: null,
+      },
+      customers: [],
+      truncated: false,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  private rememberCustomerSales(key: string, data: ForecastCustomerSalesResponse) {
+    if (this.customerSalesCache.size >= SALES_CACHE_MAX_ENTRIES) {
+      const oldest = [...this.customerSalesCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (oldest) this.customerSalesCache.delete(oldest[0]);
+    }
+    this.customerSalesCache.set(key, { at: Date.now(), data });
+  }
+
   private async buildSalesReport(query: ForecastSalesQuery, calendar: MonthCalendar): Promise<ForecastSalesResponse> {
     const { year, month } = calendar;
     const reportStart = new Date(Date.UTC(year, month - 1, 1));
@@ -681,16 +1173,18 @@ export class ForecastService {
     const reportTargets = targetsByMonth.get(reportKey) ?? new Map<string, ForecastTargetMeta>();
     const reportForecast = forecastSeries.byMonth.get(reportKey) ?? new Map<string, number>();
     const isLive = calendar.status === 'OPEN';
-    const hasSnapshot = reportTargets.size > 0;
-    // Un mes cerrado conserva su snapshot congelado como valor oficial. El mes
-    // en curso (y un mes futuro) usan la meta viva de `forecast`; si un mes
-    // cerrado no tiene snapshot, también se cae a la lectura viva por mes.
-    const useLive = forecastSeries.available && reportForecast.size > 0 && (isLive || !hasSnapshot);
-    // La lectura viva solo es imprescindible cuando no hay snapshot congelado.
-    const forecastAvailable = isLive || !hasSnapshot ? forecastSeries.available : true;
+    // Regla única de meta (compartida con Vendedoras vs Forecast).
+    const resolvedTargets = resolveForecastTargets(
+      calendar.status,
+      forecastSeries.available,
+      reportForecast,
+      reportTargets,
+    );
+    const useLive = resolvedTargets.useLive;
+    const forecastAvailable = resolvedTargets.forecastAvailable;
     // Incluye tanto la meta viva como la capturada: si un artículo desapareció
     // de `forecast`, debe seguir visible para que la UI muestre el drift.
-    const forecastCodes = new Set<string>([...reportForecast.keys(), ...reportTargets.keys()]);
+    const forecastCodes = new Set<string>(resolvedTargets.codes);
     const codes = new Set<string>([
       ...catalogMeta.keys(),
       ...currentSalesCodes,
@@ -712,7 +1206,7 @@ export class ForecastService {
       // Regla: el mes en curso usa la meta VIVA de Profit; un mes cerrado con
       // snapshot conserva la meta congelada. Si no hay snapshot, se usa la
       // lectura viva de `forecast` para ese mes.
-      const forecastKg = useLive ? (liveKg ?? 0) : (capturedKg ?? 0);
+      const forecastKg = resolvedTargets.byCode.get(code) ?? 0;
       const rowHistory = historyMonths.map((entry) => {
         const key = monthKey(entry.year, entry.month);
         const bucket = byCodeMonth.get(code)?.get(key);
@@ -813,13 +1307,7 @@ export class ForecastService {
     // Origen de la meta del mes del informe. `NONE` no es un error: un mes sin
     // meta en `forecast` ni snapshot simplemente no tiene meta.
     // `CAPTURED` = mes en curso sin lectura viva; se usa la captura local.
-    const forecastSource: ForecastSalesSource = useLive
-      ? 'LIVE'
-      : reportTargets.size > 0
-        ? isLive
-          ? 'CAPTURED'
-          : 'SNAPSHOT'
-        : 'NONE';
+    const forecastSource: ForecastSalesSource = resolvedTargets.source;
 
     return {
       year,

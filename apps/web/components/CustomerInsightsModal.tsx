@@ -99,102 +99,270 @@ const TONE_TEXT: Record<string, string> = {
 
 function compactNumber(value: number): string {
   const abs = Math.abs(value);
-  if (abs >= 1_000_000) return `${Math.round(value / 1_000_000)}M`;
-  if (abs >= 1000) return `${Math.round(value / 1000)}k`;
+  if (abs >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(1).replace('.', ',')}M`;
+  }
+  if (abs >= 1000) {
+    const thousands = value / 1000;
+    return `${Number.isInteger(thousands) ? thousands : thousands.toFixed(1).replace('.', ',')}k`;
+  }
   return String(Math.round(value));
 }
 
+/** Hay facturación real que dibujar (no basta con que la consulta haya respondido). */
+function monthlyHasBilling(data: CustomerInsightResponse): boolean {
+  return data.billingAvailable && data.monthly.some((item) => (item.billed ?? 0) !== 0);
+}
+
+/**
+ * Variación % contra el último mes con actividad.
+ *
+ * Con clientes esporádicos, comparar contra el mes calendario anterior llena
+ * la gráfica de −100 % y líneas que caen a cero. Contra la última compra el
+ * dato sí es legible y no inventa una caída que en realidad es «no compró».
+ */
+function monthOverMonth(values: Array<number | null>, index: number): number | null {
+  const current = values[index];
+  if (current === null || current === undefined || current <= 0) return null;
+  for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
+    const previous = values[previousIndex];
+    if (previous === null || previous === undefined || previous <= 0) continue;
+    return Math.round(((current - previous) / previous) * 1000) / 10;
+  }
+  return null;
+}
+
+/** Formato corto para que quepa dentro de la barra: +12%, -8,4% o 0,0%. */
+function compactSignedPct(value: number): string {
+  const decimals = Math.abs(value) < 10 ? 1 : 0;
+  const text = new Intl.NumberFormat('es-VE', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  }).format(value);
+  return `${value > 0 ? '+' : ''}${text}%`;
+}
+
+/**
+ * Dos paneles con el mismo eje X: arriba toneladas (barras) y abajo
+ * facturación (línea). Así cada serie tiene su propia escala y dejan de
+ * pisarse. Si no hay facturación, el gráfico se queda con un solo panel.
+ */
 function buildMonthlyOption(data: CustomerInsightResponse): Record<string, unknown> {
   const labels = data.monthly.map((item) => monthLabel(item.month));
+  const tonnageValues = data.monthly.map((item) => item.tonnes);
+  const billingValues = data.monthly.map((item) => item.billed);
+  const hasBilling = monthlyHasBilling(data);
+  const currencyLabel = data.currency === 'USD' ? 'USD' : 'Bs';
+  const maxTonnes = Math.max(0, ...tonnageValues);
+  // Con 24/36 meses las barras se estrechan y el % no cabe dentro; ahí queda
+  // solo en el tooltip.
+  const showInsidePct = data.monthly.length <= 18;
+
   const series: Record<string, unknown>[] = [
     {
       name: 'Toneladas',
       type: 'bar',
-      data: data.monthly.map((item) => item.tonnes),
+      xAxisIndex: 0,
+      yAxisIndex: 0,
+      data: tonnageValues,
       color: '#003366',
-      barMaxWidth: 16,
+      barMaxWidth: data.monthly.length <= 18 ? 28 : 16,
       itemStyle: { borderRadius: [4, 4, 0, 0] },
+      label: {
+        show: showInsidePct,
+        position: 'inside',
+        formatter: (params: { dataIndex?: number }) => {
+          const index = params.dataIndex ?? -1;
+          const tonnes = tonnageValues[index] ?? 0;
+          const pct = monthOverMonth(tonnageValues, index);
+          // Sin barra o con una barra muy baja no hay sitio legible para el %.
+          if (pct === null || tonnes <= 0) return '';
+          if (maxTonnes > 0 && tonnes < maxTonnes * 0.12) return '';
+          return compactSignedPct(pct);
+        },
+        color: '#ffffff',
+        fontSize: 9,
+        fontWeight: 600,
+        opacity: 0.92,
+        // Si la barra se estrecha en móvil, el texto sigue legible fuera de
+        // ella; dentro de la barra el borde se funde con el azul.
+        textBorderColor: '#003366',
+        textBorderWidth: 2,
+      },
+      labelLayout: { hideOverlap: true },
     },
   ];
-  const hasBilling = data.billingAvailable && data.monthly.some((item) => item.billed !== null);
   if (hasBilling) {
     series.push({
-      name: data.currency === 'USD' ? 'Facturado USD' : 'Facturado Bs',
+      name: `Facturación ${currencyLabel}`,
       type: 'line',
+      xAxisIndex: 1,
       yAxisIndex: 1,
-      data: data.monthly.map((item) => item.billed ?? 0),
+      // Los meses sin factura llegan como null: no se pintan como cero.
+      // Se conectan los puntos reales para que la línea no se parta en
+      // segmentos sueltos cuando hay pocos documentos.
+      data: billingValues,
       color: '#95c800',
-      smooth: true,
+      connectNulls: true,
+      smooth: 0.25,
+      smoothMonotone: 'x',
       symbol: 'circle',
       symbolSize: 5,
+      showSymbol: true,
       lineStyle: { width: 2 },
-      areaStyle: { opacity: 0.08 },
+      areaStyle: {
+        opacity: 1,
+        color: {
+          type: 'linear',
+          x: 0,
+          y: 0,
+          x2: 0,
+          y2: 1,
+          colorStops: [
+            { offset: 0, color: 'rgba(149,200,0,0.18)' },
+            { offset: 1, color: 'rgba(149,200,0,0)' },
+          ],
+        },
+      },
     });
   }
 
+  const grid = hasBilling
+    ? [
+        { left: 40, right: 50, top: 20, height: 124 },
+        { left: 40, right: 50, top: 178, height: 108 },
+      ]
+    : [{ left: 40, right: 16, top: 24, height: 188 }];
+
+  // Con 24/36 meses se muestra una etiqueta cada 3, pero la última siempre
+  // aparece para que se lea el corte real del gráfico.
+  const labelStep = data.monthly.length > 30 ? 4 : data.monthly.length > 18 ? 3 : 1;
+  const showMonthLabel = (index: number) => index % labelStep === 0 || index === data.monthly.length - 1;
+
+  const xAxis = hasBilling
+    ? [
+        {
+          type: 'category',
+          data: labels,
+          gridIndex: 0,
+          boundaryGap: true,
+          axisLabel: { show: false },
+          axisLine: { show: false },
+          axisTick: { show: false },
+        },
+        {
+          type: 'category',
+          data: labels,
+          gridIndex: 1,
+          boundaryGap: true,
+          axisLabel: {
+            color: '#737780',
+            fontSize: 10,
+            interval: showMonthLabel,
+            hideOverlap: true,
+          },
+          axisLine: { show: false },
+          axisTick: { show: false },
+        },
+      ]
+    : [
+        {
+          type: 'category',
+          data: labels,
+          gridIndex: 0,
+          boundaryGap: true,
+          axisLabel: {
+            color: '#737780',
+            fontSize: 10,
+            interval: showMonthLabel,
+            hideOverlap: true,
+          },
+          axisLine: { show: false },
+          axisTick: { show: false },
+        },
+      ];
+
+  const yAxis = [
+    {
+      type: 'value',
+      gridIndex: 0,
+      min: 0,
+      axisLabel: { color: '#737780', fontSize: 10 },
+      splitLine: { lineStyle: { color: '#e6eff9', type: 'dashed' } },
+      axisLine: { show: false },
+      axisTick: { show: false },
+    },
+    ...(hasBilling
+      ? [
+          {
+            type: 'value',
+            gridIndex: 1,
+            min: 0,
+            axisLabel: { color: '#737780', fontSize: 10, formatter: (value: number) => compactNumber(value) },
+            splitLine: { lineStyle: { color: '#e6eff9', type: 'dashed' } },
+            axisLine: { show: false },
+            axisTick: { show: false },
+          },
+        ]
+      : []),
+  ];
+
   return {
-    grid: { left: 4, right: hasBilling ? 58 : 16, top: 18, bottom: 38, containLabel: true },
+    grid,
+    title: [
+      {
+        text: 'Toneladas (t)',
+        left: 0,
+        top: 0,
+        textStyle: { color: '#737780', fontSize: 10, fontWeight: 600 },
+      },
+      ...(hasBilling
+        ? [
+            {
+              text: `Facturación ${currencyLabel}`,
+              left: 0,
+              top: 158,
+              textStyle: { color: '#737780', fontSize: 10, fontWeight: 600 },
+            },
+          ]
+        : []),
+    ],
     tooltip: {
       ...CHART_TOOLTIP,
       trigger: 'axis',
-      axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(0,51,102,0.06)' } },
+      confine: true,
+      axisPointer: { type: 'line', lineStyle: { color: 'rgba(0,51,102,0.25)', width: 1 } },
       formatter: (params: unknown) => {
-        const items = Array.isArray(params)
-          ? (params as Array<{ dataIndex?: number; seriesName?: string; value?: number }>)
-          : [];
-        const index = items[0]?.dataIndex ?? 0;
+        const items = Array.isArray(params) ? (params as Array<{ dataIndex?: number }>) : [];
+        const index = items[0]?.dataIndex;
+        if (index === undefined) return '';
         const item = data.monthly[index];
         if (!item) return '';
-        const lines = [`<strong>${item.month}</strong>`, `${formatTonnesValue(item.tonnes)} despachadas`];
+        const lines = [
+          `<strong>${monthLabel(item.month)}</strong>`,
+          `<span style="color:#a7c8ff;">Toneladas</span> ${formatTonnesValue(item.tonnes)}`,
+        ];
+        const tonnagePct = monthOverMonth(tonnageValues, index);
+        if (tonnagePct !== null) {
+          lines.push(`<span style="color:#a7c8ff;">Var. toneladas</span> ${formatSignedPct(tonnagePct)}`);
+        }
         if (item.billed !== null) {
-          lines.push(`${formatInsightMoney(item.billed, data.currency)} facturados`);
+          lines.push(
+            `<span style="color:#bef440;">Facturado</span> ${formatInsightMoney(item.billed, data.currency)}`,
+          );
+        }
+        const billingPct = monthOverMonth(billingValues, index);
+        if (billingPct !== null) {
+          lines.push(`<span style="color:#bef440;">Var. facturado</span> ${formatSignedPct(billingPct)}`);
         }
         lines.push(`${item.notes} nota${item.notes === 1 ? '' : 's'}`);
         return lines.join('<br/>');
       },
     },
-    legend: {
-      bottom: 0,
-      icon: 'roundRect',
-      itemWidth: 9,
-      itemHeight: 9,
-      textStyle: { color: '#737780', fontSize: 11 },
-    },
-    xAxis: {
-      type: 'category',
-      data: labels,
-      axisLabel: {
-        color: '#737780',
-        fontSize: 10,
-        interval: data.monthly.length > 18 ? 2 : 0,
-      },
-      axisLine: { show: false },
-      axisTick: { show: false },
-    },
-    yAxis: [
-      {
-        type: 'value',
-        name: 't',
-        nameTextStyle: { color: '#737780', fontSize: 10 },
-        axisLabel: { color: '#737780', fontSize: 10 },
-        splitLine: { lineStyle: { color: '#e6eff9', type: 'dashed' } },
-        axisLine: { show: false },
-        axisTick: { show: false },
-      },
-      ...(hasBilling
-        ? [
-            {
-              type: 'value',
-              name: data.currency === 'USD' ? '$' : 'Bs',
-              nameTextStyle: { color: '#737780', fontSize: 10 },
-              axisLabel: { color: '#737780', fontSize: 10, formatter: (value: number) => compactNumber(value) },
-              splitLine: { show: false },
-              axisLine: { show: false },
-              axisTick: { show: false },
-            },
-          ]
-        : []),
-    ],
+    axisPointer: { link: [{ xAxisIndex: 'all' }] },
+    xAxis,
+    yAxis,
     series,
   };
 }
@@ -363,6 +531,25 @@ function ResumenTab({
       ? data.account.limiteCredito - data.account.saldo
       : null;
 
+  // La gráfica usa la ventana seleccionada (12/24/36), no el periodo de 12
+  // meses de los KPIs. El subtítulo debe decir el rango real que se está
+  // pintando para que no parezca que todo el informe cambió de ventana.
+  const hasBilling = monthlyHasBilling(data);
+  const firstMonth = data.monthly[0]?.month;
+  const lastMonth = data.monthly[data.monthly.length - 1]?.month;
+  const chartPeriod =
+    firstMonth && lastMonth
+      ? periodLabel(`${firstMonth}-01`, `${lastMonth}-01`)
+      : periodLabel(data.currentPeriod.from, data.currentPeriod.to);
+  const windowTonnes = data.monthly.reduce((sum, item) => sum + item.tonnes, 0);
+  const windowNotes = data.monthly.reduce((sum, item) => sum + item.notes, 0);
+  const windowBilled = hasBilling
+    ? data.monthly.reduce((sum, item) => sum + (item.billed ?? 0), 0)
+    : null;
+  const activeMonths = data.monthly.filter(
+    (item) => item.tonnes > 0 || (item.billed ?? 0) > 0,
+  ).length;
+
   return (
     <div className="flex flex-col gap-space-md">
       <section className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-md shadow-soft">
@@ -370,14 +557,32 @@ function ResumenTab({
           <div>
             <p className="text-title-md font-semibold text-primary">Evolución mensual</p>
             <p className="text-label-sm text-on-surface-variant">
-              {periodLabel(data.currentPeriod.from, data.currentPeriod.to)} · toneladas despachadas y facturación
+              {chartPeriod} · {hasBilling ? 'toneladas despachadas y facturación' : 'toneladas despachadas'}
             </p>
           </div>
-          <Badge tone={data.billingAvailable ? 'success' : 'warning'} dot>
-            {data.billingAvailable ? 'Facturación neta' : 'Sin facturación'}
+          <Badge tone={hasBilling ? 'success' : 'warning'} dot>
+            {hasBilling ? 'Facturación neta' : 'Sin facturación'}
           </Badge>
         </div>
-        <EChart option={option} height={260} ariaLabel="Toneladas despachadas y facturación mensual" />
+        <EChart
+          option={option}
+          height={hasBilling ? 320 : 240}
+          ariaLabel={
+            hasBilling
+              ? 'Toneladas despachadas y facturación mensual'
+              : 'Toneladas despachadas mensual'
+          }
+        />
+        <p className="mt-space-xs text-label-sm normal-case text-on-surface-variant">
+          En la ventana: {activeMonths} {activeMonths === 1 ? 'mes' : 'meses'} con movimiento ·{' '}
+          {windowNotes} {windowNotes === 1 ? 'nota' : 'notas'} · {formatTonnesValue(windowTonnes)} despachadas
+          {windowBilled !== null && ` · ${formatInsightMoney(windowBilled, data.currency)} facturados`}
+        </p>
+        <p className="mt-space-2xs text-label-sm normal-case text-outline">
+          {hasBilling
+            ? 'Toneladas por fecha de nota de entrega; facturación por fecha de emisión de factura.'
+            : 'Toneladas por fecha de nota de entrega.'}
+        </p>
         {!data.available && (
           <p role="status" className="mt-space-sm flex items-center gap-space-xs text-label-md text-warning">
             <AlertTriangle aria-hidden className="size-4" /> No se pudo leer el volumen en Profit.
@@ -912,7 +1117,7 @@ export function CustomerInsightsModal({
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const [tab, setTab] = useState<InsightTab>('resumen');
-  const [months, setMonths] = useState<'12' | '24' | '36'>('24');
+  const [months, setMonths] = useState<'12' | '24' | '36'>('12');
   const [currency, setCurrency] = useState<CustomerStatementCurrency>('USD');
   const [productFilter, setProductFilter] = useState<ProductFilter>('todos');
 
@@ -921,7 +1126,7 @@ export function CustomerInsightsModal({
   useEffect(() => {
     if (!open) return;
     setTab('resumen');
-    setMonths('24');
+    setMonths('12');
     setCurrency('USD');
     setProductFilter('todos');
   }, [open, customer?.id]);
@@ -1167,7 +1372,11 @@ export function CustomerInsightsModal({
                   <MetricCard
                     label="Vs. 12m anteriores"
                     value={volumeValue(formatSignedPct(data.trend.volumePct))}
-                    hint="Variación de toneladas"
+                    hint={
+                      data.previousTotals === null
+                        ? 'Disponible al elegir 24 meses o más'
+                        : 'Variación de toneladas'
+                    }
                     tone={
                       data.trend.volumePct === null
                         ? 'muted'

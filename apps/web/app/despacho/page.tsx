@@ -8,7 +8,7 @@
 //   · Historial → despachos cerrados o anulados.
 //
 // La simulación se envía completa desde Pedidos. Aquí no hay acuse: el primer
-// operador que marca un renglón toma la hoja y la carga. Nada escribe en Profit.
+// operador que inicia la carga toma la hoja. Nada escribe en Profit.
 // ============================================================
 
 import type { DispatchSheetListResponse, DispatchSheetStatus, DispatchSheetSummary } from '@nexo/contracts';
@@ -16,6 +16,7 @@ import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, ClipboardList, RefreshCw, Search, ShoppingCart, Truck, Users } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
+import { DispatchTimesReport } from '../../components/DispatchTimesReport';
 import { SheetStatusBadge } from '../../components/DispatchSheetParts';
 import { AppNav, LoginScreen } from '../../components/shell';
 import { Badge, Card, DataTable, EmptyState, PageHeader, Select, Segmented, TextInput, type Column, cx, useGreeting } from '../../components/ui';
@@ -24,6 +25,7 @@ import { formatBusinessDate, formatNumber, relativeTime, sortSheets } from '../.
 import { hasPermission } from '../../lib/permissions';
 
 type Scope = 'pending' | 'created' | 'history';
+type Tab = Scope | 'tiempos';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'Estado: Todos' },
@@ -42,6 +44,7 @@ export default function DespachoPage() {
   const [tick, setTick] = useState(0);
   const greeting = useGreeting();
   const [scope, setScope] = useState<Scope>('pending');
+  const [tab, setTab] = useState<Tab>('pending');
   const [status, setStatus] = useState<DispatchSheetStatus | ''>('');
   const [q, setQ] = useState('');
 
@@ -65,6 +68,7 @@ export default function DespachoPage() {
   // La bandeja siempre arranca en lo que hay por cargar.
   useEffect(() => {
     setScope('pending');
+    setTab('pending');
   }, [sessionUser?.id]);
 
   const params = new URLSearchParams();
@@ -75,6 +79,7 @@ export default function DespachoPage() {
   const { data, isLoading, error, dataUpdatedAt, isFetching } = useQuery<DispatchSheetListResponse>({
     queryKey: ['dispatch-sheets', tick, scope, status, q],
     queryFn: () => apiFetch<DispatchSheetListResponse>(`/dispatch-sheets?${params.toString()}`),
+    enabled: tab !== 'tiempos',
     refetchInterval: 20_000,
     // El tablero del almacén no se congela cuando la pestaña no tiene foco.
     refetchIntervalInBackground: true,
@@ -185,13 +190,13 @@ export default function DespachoPage() {
         <Link
           href={`/despacho/${row.id}`}
           className={cx(
-            'inline-flex h-8 items-center gap-space-xs rounded-pill px-space-sm font-semibold text-label-md transition-all',
+            'inline-flex h-10 items-center gap-space-xs rounded-pill px-space-sm font-semibold text-label-md transition-all md:h-8',
             row.canOperate && row.status !== 'DESPACHADO' && row.status !== 'CANCELADO'
               ? 'bg-secondary-container text-on-secondary shadow-soft hover:-translate-y-0.5'
               : 'border border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low',
           )}
         >
-          {row.canOperate && row.status !== 'DESPACHADO' && row.status !== 'CANCELADO' ? 'Cargar' : 'Abrir'}
+          {row.canOperate && row.status !== 'DESPACHADO' && row.status !== 'CANCELADO' ? 'Operar' : 'Abrir'}
         </Link>
       ),
     },
@@ -201,16 +206,19 @@ export default function DespachoPage() {
     { value: 'pending' as const, label: SCOPE_LABELS.pending },
     ...(canSeeCreated ? [{ value: 'created' as const, label: SCOPE_LABELS.created }] : []),
     ...(canSeeHistory ? [{ value: 'history' as const, label: SCOPE_LABELS.history }] : []),
+    { value: 'tiempos' as const, label: 'Tiempos' },
   ];
 
   const subtitle =
-    scope === 'pending'
-      ? 'Todo lo que falta por cargar. El primer operador que marca un renglón toma el despacho.'
-      : scope === 'created'
-        ? 'Las simulaciones que enviaste al almacén y su avance.'
-        : canViewAll
-          ? 'Historial completo: despachos cerrados y anulados de todos los usuarios. Solo lectura.'
-          : 'Tus despachos cerrados y anulados. Solo lectura.';
+    tab === 'tiempos'
+      ? 'Tiempos de carga y facturación por cliente, día o mes. Incluye pendientes de facturar y cumplimiento contra la fecha plan.'
+      : scope === 'pending'
+        ? 'Todo lo que falta por cargar. El primer operador que inicia la carga toma el despacho.'
+        : scope === 'created'
+          ? 'Las simulaciones que enviaste al almacén y su avance.'
+          : canViewAll
+            ? 'Historial completo: despachos cerrados y anulados de todos los usuarios. Solo lectura.'
+            : 'Tus despachos cerrados y anulados. Solo lectura.';
 
   return (
     <>
@@ -239,24 +247,39 @@ export default function DespachoPage() {
             <div className="flex flex-wrap items-center gap-space-sm">
               <Segmented
                 ariaLabel="Bandeja de despacho"
-                value={scope}
-                onChange={(value) => setScope(value as Scope)}
+                value={tab}
+                onChange={(value) => {
+                  const next = value as Tab;
+                  setTab(next);
+                  if (next !== 'tiempos') setScope(next);
+                }}
                 options={scopeOptions}
               />
-              <Select className="w-44" value={status} onChange={(value) => setStatus(value as DispatchSheetStatus | '')} options={STATUS_OPTIONS} ariaLabel="Estado" />
-              <TextInput className="w-56" icon={Search} value={q} onChange={setQ} placeholder="Buscar N° o título…" ariaLabel="Buscar despacho" />
+              {tab !== 'tiempos' && (
+                <>
+                  <Select className="w-44" value={status} onChange={(value) => setStatus(value as DispatchSheetStatus | '')} options={STATUS_OPTIONS} ariaLabel="Estado" />
+                  <TextInput className="w-56" icon={Search} value={q} onChange={setQ} placeholder="Buscar N° o título…" ariaLabel="Buscar despacho" />
+                </>
+              )}
             </div>
-            <div className="flex items-center gap-space-sm">
-              {isFetching && <RefreshCw aria-hidden className="size-3.5 animate-spin text-outline" />}
-              <span className="text-label-sm normal-case text-on-surface-variant">
-                {dataUpdatedAt ? `actualizado ${relativeTime(new Date(dataUpdatedAt).toISOString())}` : 'sincronizando…'}
-              </span>
-              <Badge tone={hasFilters ? 'primary' : 'muted'} dot>
-                {sheets.length} despacho{sheets.length === 1 ? '' : 's'}
-              </Badge>
-            </div>
+            {tab !== 'tiempos' && (
+              <div className="flex items-center gap-space-sm">
+                {isFetching && <RefreshCw aria-hidden className="size-3.5 animate-spin text-outline" />}
+                <span className="text-label-sm normal-case text-on-surface-variant">
+                  {dataUpdatedAt ? `actualizado ${relativeTime(new Date(dataUpdatedAt).toISOString())}` : 'sincronizando…'}
+                </span>
+                <Badge tone={hasFilters ? 'primary' : 'muted'} dot>
+                  {sheets.length} despacho{sheets.length === 1 ? '' : 's'}
+                </Badge>
+              </div>
+            )}
           </div>
 
+          {tab === 'tiempos' ? (
+            <div className="p-space-md">
+              <DispatchTimesReport />
+            </div>
+          ) : (
           <DataTable
             columns={columns}
             rows={sheets}
@@ -299,9 +322,10 @@ export default function DespachoPage() {
               />
             }
           />
+          )}
         </Card>
 
-        {error && !(error instanceof AuthRequiredError) && (
+        {error && !(error instanceof AuthRequiredError) && tab !== 'tiempos' && (
           <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
             <AlertTriangle aria-hidden className="size-4" /> {error instanceof Error ? error.message : 'No se pudo consultar la bandeja'}
           </p>
@@ -310,7 +334,7 @@ export default function DespachoPage() {
         <p className="flex flex-wrap items-center gap-space-xs text-label-sm normal-case text-on-surface-variant">
           <Users aria-hidden className="size-3.5" />
           {isOperator
-            ? 'Los despachos abiertos los toma el primer operador que marca un renglón. Enviar o cargar nunca escribe en Profit.'
+            ? 'Los despachos abiertos los toma el primer operador que inicia la carga. Enviar o cargar nunca escribe en Profit.'
             : 'Ves todo lo pendiente del almacén. La carga la realizan los operadores con permiso «Operar».'}
         </p>
       </main>

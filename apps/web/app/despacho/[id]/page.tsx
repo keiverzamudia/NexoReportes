@@ -5,21 +5,31 @@
 // planificador sigue el avance.
 //
 //   · Guía de carga del camión y comentarios del planificador.
+//   · Tiempos por cliente: «Iniciar carga» arranca los relojes sin marcar
+//     productos; «Cerrar carga» detiene el reloj de cada producto y
+//     «Factura entregada» cierra el de facturación. El cliente se puede
+//     facturar individualmente o con «Facturar todo».
 //   · Carga por renglón: el input «Cargado» se edita en la fila. Si baja del
 //     plan se marca parcial y pide el motivo; si queda en 0, no cargado.
-//     «Cargar» completa el plan de un clic y «Cargar todo» hace lo mismo por
-//     cliente. Las diferencias dejan su motivo en el reporte.
-//   · Los clientes van plegados: el encabezado muestra el resumen y
-//     «Cargar todo» marca de una vez los renglones pendientes de ese cliente.
-//   · Reporte de cierre con todos los renglones, disponible antes y
-//     después de cerrar.
-//   · Bitácora solo para ADMIN (drawer).
+//     Las diferencias dejan su motivo en el reporte.
+//   · Los clientes van plegados: el encabezado muestra el resumen y el
+//     estado de sus relojes (sin iniciar / en carga / cerrada / facturada).
+//   · Reporte de cierre con todos los renglones y los tiempos, disponible
+//     antes y después de cerrar.
+//   · Bitácora solo para ADMIN (drawer con filtros y detalle por producto).
 //
-// Al marcar el primer renglón el operador toma la hoja: no hay acuse previo.
+// Al iniciar la carga o cerrar el primer producto el operador toma la hoja.
+// No hay acuse previo.
 // Nada de esto escribe en Profit.
 // ============================================================
 
-import type { DispatchLineMark, DispatchSheetDetail, DispatchSheetLine } from '@nexo/contracts';
+import type {
+  DispatchCustomerProgress,
+  DispatchInvoiceInput,
+  DispatchLineMark,
+  DispatchSheetDetail,
+  DispatchSheetLine,
+} from '@nexo/contracts';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
@@ -29,11 +39,14 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardCheck,
+  Clock,
   Download,
   Loader2,
   MessageSquare,
   PackageX,
   Pencil,
+  Play,
+  Receipt,
   RotateCcw,
   Truck,
   UserCheck,
@@ -42,9 +55,12 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { DispatchBitacoraDrawer } from '../../../components/DispatchBitacoraDrawer';
+import { DispatchInvoiceDialog } from '../../../components/DispatchInvoiceDialog';
 import { DispatchLineDialog } from '../../../components/DispatchLineDialog';
+import { DispatchMobileView } from '../../../components/DispatchMobileView';
 import { DispatchReportDialog } from '../../../components/DispatchReportDialog';
 import { LineStatusBadge, SheetStatusBadge } from '../../../components/DispatchSheetParts';
+import { Elapsed } from '../../../components/DispatchSheetParts';
 import { TruckLoadPlan } from '../../../components/TruckLoadPlan';
 import type { LoadPlanLine } from '../../../components/TruckLoadPlan';
 import { AppNav, LoginScreen } from '../../../components/shell';
@@ -52,14 +68,19 @@ import { Badge, Card, EmptyState, PageHeader, Skeleton, cx } from '../../../comp
 import { AuthRequiredError, apiFetch, currentUser } from '../../../lib/api';
 import {
   buildDispatchReport,
+  customerKeyOf,
   formatBusinessDate,
   formatDateTime,
+  formatDurationBetween,
+  formatMinutes,
   formatNumber,
   lineEffectiveQty,
+  minutesBetween,
   resolveTypedQuantity,
   sheetExport,
   type CustomerGroup,
 } from '../../../lib/dispatch-sheet';
+import { useIsMobile } from '../../../lib/use-is-mobile';
 
 // Guardado de un renglón: el input de cantidad decide la marca y este modal
 // solo agrega el motivo cuando hay diferencia.
@@ -85,8 +106,11 @@ export default function DispatchSheetPage() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [noteTarget, setNoteTarget] = useState<NoteTarget | null>(null);
   const [openGroup, setOpenGroup] = useState<string | null>(null);
-  const [bulkGroup, setBulkGroup] = useState<string | null>(null);
+  const [groupBusy, setGroupBusy] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [invoiceTarget, setInvoiceTarget] = useState<
+    { mode: 'customer'; customerKey: string; customerName: string } | { mode: 'all' } | null
+  >(null);
   const [message, setMessage] = useState('');
   const [toast, setToast] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -110,6 +134,7 @@ export default function DispatchSheetPage() {
   const closed = sheet ? sheet.status === 'DESPACHADO' || sheet.status === 'CANCELADO' : false;
   const editable = Boolean(sheet?.canOperate) && !closed;
   const isAdmin = sessionUser?.role === 'ADMIN';
+  const isMobile = useIsMobile();
   const isPlanner =
     ['PLANIFICADOR', 'GERENCIA', 'ADMIN'].includes(sessionUser?.baseRole ?? '') && !sheet?.canOperate;
 
@@ -122,12 +147,18 @@ export default function DispatchSheetPage() {
   // Cada despacho arranca plegado: primero se ve el resumen por cliente.
   useEffect(() => {
     setOpenGroup(null);
-    setBulkGroup(null);
+    setGroupBusy(null);
     setDrafts({});
     setNoteTarget(null);
+    setInvoiceTarget(null);
   }, [id]);
 
   const report = useMemo(() => (sheet ? buildDispatchReport(sheet.lines) : null), [sheet]);
+  const progressByKey = useMemo(() => {
+    const map = new Map<string, DispatchCustomerProgress>();
+    for (const row of sheet?.customerProgress ?? []) map.set(row.customerKey, row);
+    return map;
+  }, [sheet]);
   // Renglones del despacho en el formato de la guía de carga.
   const loadPlanLines: LoadPlanLine[] = useMemo(
     () =>
@@ -152,6 +183,10 @@ export default function DispatchSheetPage() {
     sheet?.lines.filter((line) => line.status === 'FALTANTE' || line.status === 'NOVEDAD').length ?? 0;
   const blockingLines = sheet ? sheet.lines.length - resolvedLines : 0;
   const progress = sheet && sheet.lines.length > 0 ? resolvedLines / sheet.lines.length : 0;
+  const pendingInvoices = sheet?.pendingInvoiceCustomers ?? 0;
+  const canInvoiceAll = Boolean(sheet?.canInvoice) && blockingLines === 0 && pendingInvoices > 0;
+  // El cliente ya no tiene pendientes cuando todos sus productos están resueltos.
+  const groupClosed = (group: CustomerGroup) => group.pendingLines === 0 && group.lines.length > 0;
 
   if (error instanceof AuthRequiredError) {
     return <LoginScreen onSuccess={() => queryClient.invalidateQueries()} />;
@@ -160,6 +195,7 @@ export default function DispatchSheetPage() {
   function applyDetail(updated: DispatchSheetDetail) {
     queryClient.setQueryData(['dispatch-sheet', updated.id], updated);
     queryClient.invalidateQueries({ queryKey: ['dispatch-sheets'] });
+    queryClient.invalidateQueries({ queryKey: ['dispatch-metrics'] });
     queryClient.invalidateQueries({ queryKey: ['notifications'] });
   }
 
@@ -191,7 +227,7 @@ export default function DispatchSheetPage() {
   }
 
   async function saveLine(line: DispatchSheetLine, resolution: LineResolution) {
-    if (!sheet || !editable || bulkGroup) return;
+    if (!sheet || !editable || groupBusy || savingLine !== null) return;
     setSavingLine(line.id);
     try {
       const updated = await apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${sheet.id}/lines/${line.id}`, {
@@ -230,7 +266,7 @@ export default function DispatchSheetPage() {
 
   /** Abre el motivo de «no cargado» y refleja 0 en el input de la fila. */
   function openMissing(line: DispatchSheetLine) {
-    if (!sheet || !editable || bulkGroup) return;
+    if (!sheet || !editable || groupBusy) return;
     setDraft(line.id, '0');
     openNote(line, 'FALTANTE', 0, existingReason(line));
   }
@@ -246,7 +282,7 @@ export default function DispatchSheetPage() {
 
   /** El input se confirma al salir o con Enter: completa, parcial o no cargado. */
   function commitQuantity(line: DispatchSheetLine) {
-    if (!sheet || !editable || bulkGroup || savingLine !== null) return;
+    if (!sheet || !editable || groupBusy || savingLine !== null) return;
     const raw = drafts[line.id];
     if (raw === undefined) return;
     const resolution = resolveTypedQuantity(line.plannedQty, raw);
@@ -283,39 +319,66 @@ export default function DispatchSheetPage() {
     if (target) setDraft(target.line.id, null);
   }
 
-  /** «Cargar todo»: marca de una vez los renglones pendientes de un cliente. */
-  async function cargarGrupo(group: CustomerGroup) {
-    if (!sheet || !editable || bulkGroup) return;
-    const pending = group.lines.filter((line) => line.status === 'PENDIENTE');
-    if (pending.length === 0) return;
-    setBulkGroup(group.key);
+  /** «Iniciar carga»: arranca los relojes del cliente sin marcar productos. */
+  async function iniciarGrupo(group: CustomerGroup) {
+    if (!sheet || !editable || groupBusy) return;
+    setGroupBusy(group.key);
     try {
-      let updated = sheet;
-      // Secuencial: cada PATCH reutiliza la regla del servidor (toma del
-      // despacho en el primer renglón y recalcula el estado de la hoja).
-      for (const line of pending) {
-        updated = await apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${sheet.id}/lines/${line.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ status: 'CARGADO' }),
-        });
-      }
-      applyDetail(updated);
-      setDrafts((current) => {
-        const next = { ...current };
-        for (const line of pending) delete next[line.id];
-        return next;
+      const updated = await apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${sheet.id}/customers/start`, {
+        method: 'POST',
+        body: JSON.stringify({ customerKey: group.key }),
       });
-      setToast(
-        pending.length === 1
-          ? `Renglón de ${group.name} cargado.`
-          : `${pending.length} renglones de ${group.name} cargados.`,
-      );
+      applyDetail(updated);
+      setToast(`Carga iniciada para ${group.name}. Ahora cierra cada producto cuando esté cargado.`);
     } catch (err) {
-      setToast(err instanceof Error ? err.message : 'No se pudieron cargar los renglones del cliente');
+      setToast(err instanceof Error ? err.message : 'No se pudo iniciar la carga del cliente');
       void queryClient.invalidateQueries({ queryKey: ['dispatch-sheet', sheet.id] });
     } finally {
-      setBulkGroup(null);
+      setGroupBusy(null);
     }
+  }
+
+  function openInvoice(customerKey: string, customerName: string) {
+    setInvoiceTarget({ mode: 'customer', customerKey, customerName });
+  }
+
+  function openInvoiceAll() {
+    setInvoiceTarget({ mode: 'all' });
+  }
+
+  async function confirmInvoice(input: DispatchInvoiceInput) {
+    if (!sheet || !invoiceTarget) return;
+    const target = invoiceTarget;
+    setInvoiceTarget(null);
+    await runAction(
+      'invoice',
+      () =>
+        apiFetch<DispatchSheetDetail>(
+          target.mode === 'all'
+            ? `/dispatch-sheets/${sheet.id}/invoice`
+            : `/dispatch-sheets/${sheet.id}/customers/invoice`,
+          {
+            method: 'POST',
+            body: JSON.stringify(target.mode === 'all' ? input : { ...input, customerKey: target.customerKey }),
+          },
+        ),
+      target.mode === 'all' ? 'Facturación entregada a todos los clientes.' : 'Factura registrada como entregada.',
+    );
+  }
+
+  async function reopenInvoice(customerKey: string, customerName: string) {
+    if (!sheet) return;
+    const reason = window.prompt(`Motivo para reabrir la factura de ${customerName}:`);
+    if (!reason || reason.trim().length < 3) return;
+    await runAction(
+      'reopen-invoice',
+      () =>
+        apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${sheet.id}/customers/reopen-invoice`, {
+          method: 'POST',
+          body: JSON.stringify({ customerKey, reason: reason.trim() }),
+        }),
+      'Factura reabierta. Ya puedes corregir la carga.',
+    );
   }
 
   function sendMessage(event: React.FormEvent) {
@@ -409,6 +472,37 @@ export default function DispatchSheetPage() {
   return (
     <>
       <AppNav />
+      {isMobile ? (
+        <DispatchMobileView
+          sheet={sheet}
+          report={report!}
+          progressByKey={progressByKey}
+          editable={editable}
+          closed={closed}
+          isAdmin={isAdmin}
+          busy={busy}
+          savingLine={savingLine}
+          groupBusy={groupBusy}
+          drafts={drafts}
+          openGroup={openGroup}
+          canInvoiceAll={canInvoiceAll}
+          pendingInvoices={pendingInvoices}
+          onOpenGroup={setOpenGroup}
+          onStartGroup={(group) => void iniciarGrupo(group)}
+          onSetDraft={setDraft}
+          onCommitQuantity={commitQuantity}
+          onSaveLine={(line, resolution) => void saveLine(line, resolution)}
+          onOpenMissing={openMissing}
+          onEditNote={editNote}
+          onOpenInvoice={openInvoice}
+          onReopenInvoice={(key, name) => void reopenInvoice(key, name)}
+          onOpenInvoiceAll={openInvoiceAll}
+          onOpenReport={openReport}
+          onOpenBitacora={() => setBitacoraOpen(true)}
+          onOpenCancel={() => setCancelOpen(true)}
+          onExport={() => void exportSheet()}
+        />
+      ) : (
       <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg pb-space-2xl md:p-space-xl">
         <div className="flex flex-wrap items-center justify-between gap-space-sm">
           <Link
@@ -496,7 +590,7 @@ export default function DispatchSheetPage() {
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
                 {editable
-                  ? 'Digita la cantidad real en «Cargado»: si baja del plan se marca parcial y te pide el motivo; usa «No cargado» si no salió nada. «Cargar todo» completa el plan.'
+                  ? '«Iniciar carga» arranca el reloj del cliente. Digita la cantidad real y usa «Cerrar carga» en cada producto: si baja del plan se marca parcial con motivo; «No cargado» si no salió nada.'
                   : sheet.claimedByName && !closed
                     ? `Lo tomó ${sheet.claimedByName}: puedes verlo, pero solo esa persona lo carga.`
                     : 'Solo lectura.'}
@@ -558,67 +652,129 @@ export default function DispatchSheetPage() {
           </div>
 
           <div className="divide-y divide-outline-variant/25">
-            {report?.groups.map((group) => (
-              <section key={group.key}>
-                <div className="flex flex-wrap items-center justify-between gap-x-space-sm gap-y-2 bg-surface-container-low/60 px-space-md py-space-sm">
-                  <button
-                    type="button"
-                    onClick={() => setOpenGroup(openGroup === group.key ? null : group.key)}
-                    aria-expanded={openGroup === group.key}
-                    className="flex min-w-0 flex-1 items-start gap-space-sm text-left"
-                  >
-                    {openGroup === group.key ? (
-                      <ChevronDown aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />
-                    ) : (
-                      <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-outline" />
-                    )}
-                    <span className="min-w-0">
-                      <span className="block truncate font-semibold text-on-surface">{group.name}</span>
-                      <span className="block text-label-sm tabular-nums text-on-surface-variant">
-                        {group.lines.length} pedido(s) · {formatNumber(group.plannedKg)} kg plan ·{' '}
-                        {group.completedLines} cargado(s)
-                        {group.partialLines > 0 ? ` · ${group.partialLines} parcial(es)` : ''}
-                        {group.missingLines > 0 ? ` · ${group.missingLines} no cargado(s)` : ''}
-                        {group.pendingLines > 0 ? ` · ${group.pendingLines} pendiente(s)` : ''}
-                      </span>
-                    </span>
-                  </button>
-
-                  <div className="flex shrink-0 flex-wrap items-center gap-space-xs">
-                    {group.pendingLines > 0 ? (
-                      <Badge tone="warning" dot>
-                        {group.pendingLines} por resolver
-                      </Badge>
-                    ) : group.partialLines + group.missingLines > 0 ? (
-                      <Badge tone="danger" dot>
-                        con diferencia
-                      </Badge>
-                    ) : (
-                      <Badge tone="success" dot>
-                        cargado
-                      </Badge>
-                    )}
-                    {editable && group.pendingLines > 0 && (
-                      <button
-                        type="button"
-                        disabled={bulkGroup !== null || savingLine !== null}
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => void cargarGrupo(group)}
-                        title={`Cargar los ${group.pendingLines} renglón(es) pendientes de ${group.name}`}
-                        className="inline-flex h-8 items-center gap-space-xs rounded-pill bg-secondary-container px-space-sm font-semibold text-label-md text-on-secondary transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
-                      >
-                        {bulkGroup === group.key ? (
-                          <Loader2 aria-hidden className="size-3.5 animate-spin" />
-                        ) : (
-                          <CheckCheck aria-hidden className="size-3.5" />
+            {report?.groups.map((group) => {
+              const customerProgress = progressByKey.get(group.key);
+              const started = Boolean(customerProgress?.loadStartedAt);
+              const loadClosed = Boolean(customerProgress?.loadClosedAt);
+              const invoiced = Boolean(customerProgress?.invoiceDeliveredAt);
+              const closedGroup = groupClosed(group);
+              return (
+                <section key={group.key}>
+                  <div className="flex flex-wrap items-center justify-between gap-x-space-sm gap-y-2 bg-surface-container-low/60 px-space-md py-space-sm">
+                    <button
+                      type="button"
+                      onClick={() => setOpenGroup(openGroup === group.key ? null : group.key)}
+                      aria-expanded={openGroup === group.key}
+                      className="flex min-w-0 flex-1 items-start gap-space-sm text-left"
+                    >
+                      {openGroup === group.key ? (
+                        <ChevronDown aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />
+                      ) : (
+                        <ChevronRight aria-hidden className="mt-0.5 size-4 shrink-0 text-outline" />
+                      )}
+                      <span className="min-w-0">
+                        <span className="block truncate font-semibold text-on-surface">{group.name}</span>
+                        <span className="block text-label-sm tabular-nums text-on-surface-variant">
+                          {group.lines.length} pedido(s) · {formatNumber(group.plannedKg)} kg plan ·{' '}
+                          {group.completedLines} cargado(s)
+                          {group.partialLines > 0 ? ` · ${group.partialLines} parcial(es)` : ''}
+                          {group.missingLines > 0 ? ` · ${group.missingLines} no cargado(s)` : ''}
+                          {group.pendingLines > 0 ? ` · ${group.pendingLines} pendiente(s)` : ''}
+                        </span>
+                        {(started || loadClosed || invoiced) && (
+                          <span className="mt-0.5 flex flex-wrap items-center gap-x-space-sm gap-y-0.5 text-label-sm text-outline">
+                            {started && customerProgress?.loadStartedAt && (
+                              <span className="inline-flex items-center gap-1">
+                                <Clock aria-hidden className="size-3" />
+                                {loadClosed ? (
+                                  <>Carga: {formatDurationBetween(customerProgress.loadStartedAt, customerProgress.loadClosedAt)}</>
+                                ) : (
+                                  <>
+                                    En carga: <Elapsed since={customerProgress.loadStartedAt} />
+                                  </>
+                                )}
+                              </span>
+                            )}
+                            {invoiced && customerProgress?.invoiceDeliveredAt && (
+                              <span className="inline-flex items-center gap-1 text-secondary">
+                                <Receipt aria-hidden className="size-3" />
+                                Factura: {formatDurationBetween(customerProgress.loadStartedAt, customerProgress.invoiceDeliveredAt)}
+                                {customerProgress.invoiceRef ? ` · N° ${customerProgress.invoiceRef}` : ''}
+                              </span>
+                            )}
+                          </span>
                         )}
-                        {bulkGroup === group.key ? 'Cargando…' : 'Cargar todo'}
-                      </button>
-                    )}
-                  </div>
-                </div>
+                      </span>
+                    </button>
 
-                <div hidden={openGroup !== group.key}>
+                    <div className="flex shrink-0 flex-wrap items-center gap-space-xs">
+                      {!started ? (
+                        <Badge tone="muted" dot>
+                          sin iniciar
+                        </Badge>
+                      ) : invoiced ? (
+                        <Badge tone="success" dot>
+                          facturada
+                        </Badge>
+                      ) : loadClosed ? (
+                        <Badge tone="success" dot>
+                          carga cerrada
+                        </Badge>
+                      ) : group.pendingLines > 0 ? (
+                        <Badge tone="primary" dot>
+                          en carga
+                        </Badge>
+                      ) : (
+                        <Badge tone="success" dot>
+                          carga cerrada
+                        </Badge>
+                      )}
+                      {editable && !started && (
+                        <button
+                          type="button"
+                          disabled={groupBusy !== null || savingLine !== null}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => void iniciarGrupo(group)}
+                          title={`Iniciar la carga de ${group.name} y arrancar sus relojes`}
+                          className="inline-flex h-8 items-center gap-space-xs rounded-pill bg-secondary-container px-space-sm font-semibold text-label-md text-on-secondary transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
+                        >
+                          {groupBusy === group.key ? (
+                            <Loader2 aria-hidden className="size-3.5 animate-spin" />
+                          ) : (
+                            <Play aria-hidden className="size-3.5" />
+                          )}
+                          {groupBusy === group.key ? 'Iniciando…' : 'Iniciar carga'}
+                        </button>
+                      )}
+                      {sheet.canInvoice && started && closedGroup && !invoiced && (
+                        <button
+                          type="button"
+                          disabled={busy !== null}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => openInvoice(group.key, group.name)}
+                          title={`Marcar la factura de ${group.name} como entregada`}
+                          className="inline-flex h-8 items-center gap-space-xs rounded-pill bg-primary-container px-space-sm font-semibold text-label-md text-on-primary transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
+                        >
+                          <Receipt aria-hidden className="size-3.5" />
+                          Factura entregada
+                        </button>
+                      )}
+                      {invoiced && isAdmin && (
+                        <button
+                          type="button"
+                          disabled={busy !== null}
+                          onClick={() => void reopenInvoice(group.key, group.name)}
+                          title="Reabrir la factura (solo administración)"
+                          className="inline-flex h-8 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-sm font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                        >
+                          <RotateCcw aria-hidden className="size-3.5" />
+                          Reabrir factura
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div hidden={openGroup !== group.key}>
                   <div className="hidden gap-space-sm border-b border-outline-variant/20 px-space-md py-1 font-semibold uppercase tracking-wider text-label-sm text-outline lg:grid lg:grid-cols-[minmax(0,1fr)_6.5rem_8rem_8rem_12.5rem]">
                     <span>Pedido / artículo</span>
                     <span className="text-right">Entrega</span>
@@ -701,7 +857,7 @@ export default function DispatchSheetPage() {
                             </Cell>
 
                             <Cell label="Cargado" align="right">
-                              {editable ? (
+                              {editable && !invoiced ? (
                                 <div className="flex w-full flex-col items-end gap-0.5">
                                   <div className="flex items-center gap-1">
                                     <input
@@ -711,7 +867,7 @@ export default function DispatchSheetPage() {
                                       max={line.plannedQty}
                                       step={line.uom === 'SAC' ? 1 : 0.01}
                                       value={draftValue}
-                                      disabled={saving || bulkGroup !== null}
+                                      disabled={saving || groupBusy !== null}
                                       onFocus={(event) => event.target.select()}
                                       onChange={(event) => setDraft(line.id, event.target.value)}
                                       onBlur={() => commitQuantity(line)}
@@ -773,18 +929,19 @@ export default function DispatchSheetPage() {
                             </Cell>
 
                             <Cell label="Acción" align="right">
-                              {editable ? (
+                              {editable && !invoiced ? (
                                 <div className="flex flex-wrap items-center justify-end gap-space-xs">
                                   {line.status === 'PENDIENTE' ? (
                                     <>
                                       <button
                                         type="button"
-                                        disabled={saving || bulkGroup !== null}
+                                        disabled={saving || groupBusy !== null}
                                         onMouseDown={(event) => event.preventDefault()}
                                         onClick={() => {
                                           setDraft(line.id, null);
                                           void saveLine(line, { status: 'CARGADO' });
                                         }}
+                                        title="Cerrar la carga de este producto: detiene su reloj de carga"
                                         className="inline-flex h-8 items-center justify-center gap-space-xs rounded-pill bg-secondary-container px-space-sm font-semibold text-label-md text-on-secondary transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
                                       >
                                         {saving ? (
@@ -792,11 +949,11 @@ export default function DispatchSheetPage() {
                                         ) : (
                                           <CheckCheck aria-hidden className="size-3.5" />
                                         )}
-                                        Cargar
+                                        Cerrar carga
                                       </button>
                                       <button
                                         type="button"
-                                        disabled={saving || bulkGroup !== null}
+                                        disabled={saving || groupBusy !== null}
                                         onMouseDown={(event) => event.preventDefault()}
                                         onClick={() => {
                                           setDraft(line.id, null);
@@ -812,12 +969,17 @@ export default function DispatchSheetPage() {
                                   ) : (
                                     <>
                                       <LineStatusBadge status={line.status} />
+                                      {line.loadClosedAt && (
+                                        <span className="text-label-sm tabular-nums text-outline">
+                                          {formatMinutes(minutesBetween(line.loadStartedAt, line.loadClosedAt))}
+                                        </span>
+                                      )}
                                       {saving ? (
                                         <Loader2 aria-hidden className="size-3.5 animate-spin text-secondary" />
                                       ) : (
                                         <button
                                           type="button"
-                                          disabled={bulkGroup !== null}
+                                          disabled={groupBusy !== null}
                                           onMouseDown={(event) => event.preventDefault()}
                                           onClick={() => {
                                             setDraft(line.id, null);
@@ -834,7 +996,14 @@ export default function DispatchSheetPage() {
                                   )}
                                 </div>
                               ) : (
-                                <LineStatusBadge status={line.status} />
+                                <span className="flex flex-wrap items-center justify-end gap-space-xs">
+                                  <LineStatusBadge status={line.status} />
+                                  {line.loadClosedAt && (
+                                    <span className="text-label-sm tabular-nums text-outline">
+                                      {formatMinutes(minutesBetween(line.loadStartedAt, line.loadClosedAt))}
+                                    </span>
+                                  )}
+                                </span>
                               )}
                             </Cell>
                           </div>
@@ -843,8 +1012,9 @@ export default function DispatchSheetPage() {
                     })}
                   </ul>
                 </div>
-              </section>
-            ))}
+                </section>
+              );
+            })}
           </div>
         </Card>
 
@@ -859,11 +1029,23 @@ export default function DispatchSheetPage() {
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
                 {sheet.status === 'ENVIADO' && resolvedLines === 0
-                  ? 'Carga el primer renglón para tomar el despacho. No hay paso de recibo.'
-                  : 'Cada renglón debe quedar cargado, parcial o no cargado (con motivo) antes de cerrar.'}
+                  ? 'Inicia la carga de un cliente para tomar el despacho. No hay paso de recibo.'
+                  : pendingInvoices > 0
+                    ? `Carga cerrada. Quedan ${pendingInvoices} cliente(s) por marcar factura entregada.`
+                    : 'Cada producto debe quedar cargado, parcial o no cargado (con motivo) antes de cerrar.'}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-space-sm">
+              {canInvoiceAll && (
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={openInvoiceAll}
+                  className="flex h-10 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-body-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                >
+                  <Receipt aria-hidden className="size-4" /> Facturar todo ({pendingInvoices})
+                </button>
+              )}
               <button
                 type="button"
                 disabled={blockingLines > 0 || busy !== null}
@@ -879,19 +1061,36 @@ export default function DispatchSheetPage() {
 
         {closed && (
           <Card className="flex flex-wrap items-center justify-between gap-space-sm p-space-sm">
-            <span className="flex items-center gap-space-sm text-body-md text-on-surface-variant">
-              {sheet.status === 'DESPACHADO' ? (
-                <CheckCheck aria-hidden className="size-4 text-secondary" />
-              ) : (
-                <Ban aria-hidden className="size-4 text-error" />
+            <span className="flex flex-col gap-0.5 text-body-md text-on-surface-variant">
+              <span className="flex items-center gap-space-sm">
+                {sheet.status === 'DESPACHADO' ? (
+                  <CheckCheck aria-hidden className="size-4 text-secondary" />
+                ) : (
+                  <Ban aria-hidden className="size-4 text-error" />
+                )}
+                {sheet.status === 'DESPACHADO'
+                  ? `Cerrado ${formatDateTime(sheet.completedAt)} por ${sheet.completedByName ?? 'almacén'} · ${formatNumber(
+                      sheet.loadedSacks,
+                    )} sacos · ${formatNumber(sheet.loadedKg)} kg`
+                  : `Anulado ${formatDateTime(sheet.canceledAt)} por ${sheet.canceledByName ?? '—'}`}
+              </span>
+              {sheet.status === 'DESPACHADO' && pendingInvoices > 0 && (
+                <span className="text-label-sm font-semibold text-warning">
+                  {pendingInvoices} cliente(s) con factura pendiente.
+                </span>
               )}
-              {sheet.status === 'DESPACHADO'
-                ? `Cerrado ${formatDateTime(sheet.completedAt)} por ${sheet.completedByName ?? 'almacén'} · ${formatNumber(
-                    sheet.loadedSacks,
-                  )} sacos · ${formatNumber(sheet.loadedKg)} kg`
-                : `Anulado ${formatDateTime(sheet.canceledAt)} por ${sheet.canceledByName ?? '—'}`}
             </span>
             <div className="flex flex-wrap items-center gap-space-xs">
+              {canInvoiceAll && (
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={openInvoiceAll}
+                  className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-body-md text-on-primary transition-colors hover:bg-primary disabled:opacity-40"
+                >
+                  <Receipt aria-hidden className="size-4" /> Facturar pendientes ({pendingInvoices})
+                </button>
+              )}
               {sheet.status === 'DESPACHADO' && (
                 <button
                   type="button"
@@ -914,9 +1113,10 @@ export default function DispatchSheetPage() {
 
         <p className="flex flex-wrap items-center gap-space-xs text-label-sm normal-case text-on-surface-variant">
           <UserCheck aria-hidden className="size-3.5" />
-          Quien marca el primer renglón queda como responsable de la carga. Este despacho no genera movimientos en Profit.
+          Quien inicia la carga o cierra el primer producto queda como responsable. Este despacho no genera movimientos en Profit.
         </p>
       </main>
+      )}
 
       {report && (
         <DispatchReportDialog
@@ -932,6 +1132,16 @@ export default function DispatchSheetPage() {
           busy={busy === 'complete'}
         />
       )}
+
+      <DispatchInvoiceDialog
+        open={invoiceTarget !== null}
+        mode={invoiceTarget?.mode ?? 'customer'}
+        customerName={invoiceTarget?.mode === 'customer' ? invoiceTarget.customerName : undefined}
+        pendingCount={pendingInvoices}
+        busy={busy === 'invoice'}
+        onClose={() => setInvoiceTarget(null)}
+        onConfirm={(input) => void confirmInvoice(input)}
+      />
 
       {isAdmin && (
         <DispatchBitacoraDrawer

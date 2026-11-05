@@ -3,9 +3,12 @@ import type { DispatchSheetDetail, DispatchSheetLine, DispatchSheetSummary } fro
 import {
   buildDispatchReport,
   computeTotals,
+  formatDurationBetween,
+  formatMinutes,
   groupByCustomer,
   humanAge,
   lineEffectiveQty,
+  minutesBetween,
   lineLoadedKg,
   lineStatusMeta,
   relativeTime,
@@ -39,6 +42,9 @@ function line(overrides: Partial<DispatchSheetLine> = {}): DispatchSheetLine {
     note: null,
     checkedAt: null,
     checkedByName: null,
+    loadStartedAt: null,
+    loadClosedAt: null,
+    loadClosedByName: null,
     ...overrides,
   };
 }
@@ -78,8 +84,13 @@ function summary(overrides: Partial<DispatchSheetSummary> = {}): DispatchSheetSu
     customers: ['AGRICOLA LA CAÑADA'],
     nextDeliveryDate: '2026-10-21',
     updatedAt: '2026-10-21T15:00:00.000Z',
+    loadStartedAt: null,
+    loadClosedAt: null,
+    invoiceDeliveredAt: null,
+    pendingInvoiceCustomers: 0,
     canOperate: true,
     canCancel: true,
+    canInvoice: true,
     ...overrides,
   };
 }
@@ -115,6 +126,16 @@ describe('estados y lenguaje de planta', () => {
     expect(humanAge(3600)).toBe('hace 1 h');
     expect(humanAge(86_400)).toBe('hace 1 día');
     expect(humanAge(259_200)).toBe('hace 3 días');
+  });
+
+  it('formatea los tiempos de carga y factura', () => {
+    expect(minutesBetween('2026-10-21T15:00:00.000Z', '2026-10-21T15:42:00.000Z')).toBe(42);
+    expect(minutesBetween(null, '2026-10-21T15:42:00.000Z')).toBeNull();
+    expect(formatMinutes(null)).toBe('—');
+    expect(formatMinutes(42)).toBe('42 min');
+    expect(formatMinutes(195)).toBe('3 h 15 min');
+    expect(formatMinutes(1500)).toBe('1 d 1 h');
+    expect(formatDurationBetween('2026-10-21T15:00:00.000Z', '2026-10-21T17:30:00.000Z')).toBe('2 h 30 min');
   });
 });
 
@@ -278,6 +299,7 @@ describe('hoja exportable', () => {
         }),
       ],
       events: [],
+      customerProgress: [],
     };
     const exported = sheetExport(detail, new Date('2026-10-21T18:00:00.000Z'));
 
@@ -297,6 +319,6 @@ describe('hoja exportable', () => {
     // Cargado 2.800 kg contra 2.800 kg completados → sin diferencia.
     expect(totalLine).toContain('diferencia 0 kg');
     expect(exported.merges.length).toBeGreaterThanOrEqual(4);
-    expect(exported.widths).toHaveLength(14);
+    expect(exported.widths).toHaveLength(20);
   });
 });

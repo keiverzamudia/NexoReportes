@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { SALES_COLUMN_HELP, SALES_HELP_RULES, SALES_HELP_TERMS } from './forecast';
+import {
+  CUSTOMER_SALES_COLUMN_HELP,
+  CUSTOMER_SALES_HELP_TERMS,
+  SALES_COLUMN_HELP,
+  SALES_CUSTOMER_HELP_RULES,
+  SALES_HELP_RULES,
+  SALES_HELP_TERMS,
+} from './forecast';
 
 // Columnas de la tabla «Ventas vs Forecast» (mismo orden que `SalesReport`).
 const EXPECTED_KEYS = [
@@ -56,5 +63,30 @@ describe('ayuda de Ventas vs Forecast', () => {
     const rules = SALES_HELP_RULES.join(' ').toLowerCase();
     expect(rules).toContain('nota de entrega');
     expect(rules).toContain('aba');
+  });
+
+  it('cubre las columnas de la desviación por cliente', () => {
+    const expected = [
+      'codigo',
+      'cliente',
+      'tipo',
+      'venta',
+      'participacion',
+      'productos',
+      'ultimaFactura',
+    ];
+    expect(Object.keys(CUSTOMER_SALES_COLUMN_HELP).sort()).toEqual([...expected].sort());
+    for (const term of CUSTOMER_SALES_HELP_TERMS) {
+      expect(term.id.trim().length).toBeGreaterThan(0);
+      expect(term.short.length).toBeLessThanOrEqual(40);
+      expect(term.what.trim().length).toBeGreaterThan(15);
+    }
+  });
+
+  it('explica que la participación se mide contra la venta real, no contra una meta', () => {
+    const rules = SALES_CUSTOMER_HELP_RULES.join(' ').toLowerCase();
+    expect(rules).toContain('venta aba del mes');
+    expect(rules).toContain('no una meta ni un histórico');
+    expect(rules).toContain('participación del cliente');
   });
 });

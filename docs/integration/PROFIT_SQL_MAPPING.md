@@ -364,6 +364,51 @@ WHERE f.anulada = 0
 GROUP BY CAST(f.fec_emis AS date)
 ```
 
+### Detalle de un día (`GET /api/forecast/sales/day?date=YYYY-MM-DD`)
+
+El modal «Desglose del día» se abre al hacer clic en una barra y pide solo la
+fecha elegida, para no cargar todas las combinaciones cliente × artículo del
+mes en el informe. Consulta `PROFIT_SALES_DAILY_CUSTOMER_PRODUCT_SQL` (marcador
+`nexo:daily_customer_products`), con el mismo filtro que la serie diaria y
+`@desde` = día, `@hasta` = día siguiente:
+
+```sql
+SELECT /* nexo:daily_customer_products */
+  CAST(f.fec_emis AS date) AS fecha,
+  RTRIM(f.co_cli) AS co_cli,
+  RTRIM(ISNULL(c.cli_des, '')) AS cli_des,
+  RTRIM(r.co_art) AS co_art,
+  RTRIM(a.art_des) AS art_des,
+  RTRIM(ISNULL(a.uni_venta, '')) AS uni_venta,
+  a.uni_relac AS uni_relac,
+  SUM(r.total_art) AS unid,
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+LEFT JOIN dbo.clientes AS c ON c.co_cli = f.co_cli
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND a.co_lin = 'ABA'
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+GROUP BY CAST(f.fec_emis AS date), RTRIM(f.co_cli), RTRIM(ISNULL(c.cli_des, '')),
+         RTRIM(r.co_art), RTRIM(a.art_des), RTRIM(ISNULL(a.uni_venta, '')), a.uni_relac
+```
+
+Con esas filas el servicio arma las dos vistas del modal:
+
+- **Productos**: suma de los clientes por artículo, con `sacks` (solo SAC).
+- **Clientes**: sus productos anidados.
+- `sharePct` = kg del cliente (o del producto) ÷ kg total del día × 100. Las
+  notas sin `co_cli` se agrupan como `__sin_cliente__` («Sin cliente») para que
+  el reparto sume 100 %.
+
+Contrato: `ForecastSalesDayDetail` (`zForecastSalesDayDetail`,
+`zForecastSalesDayCustomer`, `zForecastSalesDayDetailProduct`). Requiere
+`forecast:read`. Si Profit falla, responde `available:false` sin lanzar; el
+modal avisa y conserva la pestaña de productos del informe mensual.
+
 ### Fórmulas del run-rate
 
 ```text
@@ -430,6 +475,61 @@ oficial mientras el mes está vigente en la tabla local `ForecastTarget`
 - El catálogo de la tabla es **todo** `Product` con `isProduction=true` e
   `isActive=true`, aunque no tenga meta ni venta; la UI ofrece el filtro «Solo
   con datos».
+
+---
+
+## Participación por cliente (`GET /api/forecast/sales/customers`)
+
+Vista de venta real del mes a la fecha. **No usa histórico ni meta por cliente**:
+el 100 % es la venta ABA acumulada hasta el corte. Sirve para responder qué
+porcentaje representa cada cliente y qué productos compra.
+
+### Fuentes
+
+| Tabla | Columnas usadas | Uso |
+|---|---|---|
+| `dbo.not_ent` | `fact_num`, `fec_emis`, `co_cli`, `anulada` | Encabezado de la nota de entrega. |
+| `dbo.reng_nde` | `fact_num`, `co_art`, `total_art` | Renglones (unidades y kg). |
+| `dbo.art` | `co_art`, `art_des`, `uni_venta`, `uni_relac`, `anulado`, `co_lin` | Descripción, unidad y kg por unidad. |
+| `dbo.clientes` | `co_cli`, `cli_des` | Nombre del cliente en Profit. |
+| `Customer` (local) | `externalCode`, `name`, `customerType`, `vendor`, `isActive` | Catálogo activo para incluir clientes sin venta con 0 %. |
+
+Consulta `PROFIT_SALES_CUSTOMER_PRODUCT_SQL` (marcador `nexo:customer_products`):
+agrupa por mes, cliente y artículo **solo del mes del informe**, con los mismos
+filtros que el informe de ventas (nota no anulada, artículo vigente y línea
+`ABA`). No consulta meses anteriores.
+
+### Cálculo
+
+```text
+participación(cliente) = kg del cliente ÷ kg totales ABA del mes × 100
+% del cliente(producto) = kg del producto ÷ kg del cliente × 100
+% del producto(cliente) = kg del cliente en el producto ÷ kg totales del producto × 100
+```
+
+- Los clientes activos del catálogo sin venta se incluyen con 0 % y quedan al
+  final de la tabla.
+- Un cliente con venta que no esté en la BD local se agrega con el nombre de
+  Profit para no perder su venta.
+- Si hay filas sin `co_cli` o `co_art`, se ignoran y se registra un aviso en el
+  log; no se inventa un cliente.
+- La suma de participantes con venta es 100 %.
+
+### Contrato y degradación
+
+`zForecastCustomerSalesResponse` en `@nexo/contracts`; permiso
+`forecast:read`. Cada cliente trae `actualKg`, `sharePct`, `productCount` y sus
+productos con `kg`, `units`, `sacks`, `shareOfCustomerPct` y
+`shareOfProductPct`. La consulta se cachea 5 minutos por
+`año|mes|includeToday|hoy`; si Profit falla se devuelve `salesAvailable=false`
+y no se cachea el error. Si se alcanza el límite de filas, `truncated=true` y la
+UI avisa.
+
+### Fixtures
+
+`nexo:customer_products` reutiliza `SALES_DAILY` y la asignación determinista
+`fixtureSellerOf` para atribuir cada venta a un cliente, sin alterar los totales
+del informe de productos.
 
 ---
 
@@ -547,3 +647,72 @@ productos, perdidos, surtido comparable, cadencia, cartera, pedidos y alertas.
 `nexo:customer_insights_similar` generan datos deterministas a partir de
 `CUSTOMER_SALES_PROFILES` (producto principal, producto perdido, producto en
 caída y producto nuevo).
+
+---
+
+## Vendedoras vs Forecast (`GET /api/forecast/sellers`) — 04/11/2026
+
+Informe propio (`/vendedoras`) que evalúa a cada vendedora con los clientes que
+realmente le compraron, su representación en la venta del mes y la cuota de la
+meta de la empresa que le toca cumplir. Es **solo lectura**.
+
+### Atribución
+
+La venta se acredita al **vendedor de la nota de entrega** (`not_ent.co_ven`),
+no al vendedor asignado al cliente (`clientes.co_ven`). En `COR_A3` el 39 % del
+volumen de may–oct 2026 sale con un vendedor distinto al de la cartera, por eso
+la evaluación mide quién ejecutó la venta.
+
+### Fuentes
+
+| Tabla | Columnas usadas | Uso |
+|---|---|---|
+| `dbo.not_ent` | `fact_num`, `fec_emis`, `co_cli`, `co_ven`, `anulada` | Encabezado de la nota. |
+| `dbo.reng_nde` | `fact_num`, `co_art`, `total_art` | Renglones (unidades/kg). |
+| `dbo.art` | `co_art`, `uni_relac`, `anulado`, `co_lin` | Kg por unidad y filtros ABA. |
+| `dbo.clientes` | `co_cli`, `cli_des`, `tipo` | Nombre y segmento del cliente. |
+| `dbo.tipo_cli` | `tip_cli`, `des_tipo` | Descripción del segmento. |
+| `dbo.vendedor` | `co_ven`, `ven_des` | Nombre de la vendedora. |
+| `dbo.forecast` + `ForecastTarget` | — | Meta de la empresa (viva/snapshot). |
+
+### Consultas (marcadores)
+
+- `nexo:seller_sales_monthly`: agrupa por año, mes, vendedor de la nota y
+  cliente; devuelve kg, unidades, notas distintas y última nota. Cubre la
+  ventana histórica + el mes del informe en una sola consulta.
+- `nexo:seller_sales_daily`: agrupa por fecha y vendedor para la serie y la
+  proyección individual.
+
+### Reglas de negocio
+
+```text
+F  = meta de la empresa (la misma de Ventas vs Forecast)
+Hi = kg de la vendedora en los últimos N meses cerrados (3/6/12/24, default 6)
+qi = Hi / ΣH                                → cuota (% del forecast)
+Mi = F × qi                                 → meta de la vendedora
+Mij = Mi × (Hij / Hi)                       → meta del cliente
+```
+
+- **Σ cuotas = 100 %** y **Σ metas = F** (redondeo por mayor residuo, 1 decimal).
+- **Σ metas de clientes = Mi**. Un cliente sin histórico en la ventana queda con
+  meta 0 y se marca «sin base»; si compró en el mes, se marca «nuevo».
+- Sin histórico (`ΣH = 0`) se reparte en partes iguales y se marca
+  `allocationBasis = EQUAL_FALLBACK`; sin meta todo queda en 0/`null`.
+- Corte a ayer y días hábiles lun–sáb, igual que el informe de ventas.
+- **Reparto del mes** = venta de la vendedora ÷ venta de la red: responde «qué
+  representación tiene cada una».
+- Las cuentas internas (`001 LA EMPRESA`, `004 EQUIPO DE VENTAS`) participan
+  como una vendedora más.
+- **Caché** de 5 minutos por `año|mes|meses|base|includeToday|hoy`.
+- Si Profit falla, `salesAvailable=false` y la UI avisa; no se pintan ceros.
+
+### Contrato
+
+`zForecastSellersResponse` en `@nexo/contracts` (reutiliza `zForecastSalesQuery`
+para año, mes, `months`, `basis` e `includeToday`). Permiso `vendedoras:read`.
+
+### Fixtures
+
+`nexo:seller_sales_monthly` y `nexo:seller_sales_daily` reparten de forma
+determinista las ventas de `SALES_DAILY` entre cinco vendedoras y siete
+clientes de desarrollo.

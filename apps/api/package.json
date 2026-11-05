@@ -19,6 +19,7 @@
     "db:migrate": "prisma migrate dev",
     "db:migrate:prod": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
+    "db:backfill:dispatch": "tsx prisma/backfill-dispatch-timings.ts",
     "db:studio": "prisma studio",
     "clean": "rimraf dist"
   },

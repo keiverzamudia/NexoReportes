@@ -4,8 +4,16 @@ import {
   DispatchAssigneesResponse,
   DispatchCancelInput,
   DispatchCompleteInput,
+  DispatchCustomerInvoiceInput,
+  DispatchCustomerKeyInput,
+  DispatchCustomerProgress,
+  DispatchCustomerReopenInput,
+  DispatchInvoiceInput,
   DispatchLineInput,
   DispatchMessageInput,
+  DispatchMetricsQuery,
+  DispatchMetricsResponse,
+  DispatchReopenInvoiceInput,
   DispatchSheetCreateInput,
   DispatchSheetDetail,
   DispatchSheetEvent,
@@ -23,7 +31,14 @@ import {
   zLoadPlan,
   zScenarioPayload,
 } from '@nexo/contracts';
-import { DispatchSheet, DispatchSheetEvent as EventRow, DispatchSheetLine as LineRow, Prisma } from '@prisma/client';
+import {
+  DispatchCustomerProgress as ProgressRow,
+  DispatchSheet,
+  DispatchSheetEvent as EventRow,
+  DispatchSheetLine as LineRow,
+  Prisma,
+} from '@prisma/client';
+import { buildDispatchMetrics } from './dispatch-metrics';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
 import { ArrivalsService, ArrivalSourceLine } from '../arrivals/arrivals.service';
@@ -52,6 +67,9 @@ export interface DispatchViewer {
   canPublish?: boolean;
   // Permiso individual `despacho:view_all`: ve toda la bandeja e historial.
   canViewAll?: boolean;
+  // Permisos de la matriz (independientes del rol histórico).
+  canUpdate?: boolean;
+  canDelete?: boolean;
   code?: string | null;
   name?: string | null;
 }
@@ -64,10 +82,40 @@ interface ViewerInfo {
 
 type LineRowLite = Pick<
   LineRow,
-  'status' | 'effectiveDate' | 'customerName' | 'plannedQty' | 'plannedKg' | 'loadedQty' | 'loadedKg' | 'uom'
+  | 'id'
+  | 'position'
+  | 'orderNumber'
+  | 'productCode'
+  | 'description'
+  | 'status'
+  | 'effectiveDate'
+  | 'customerCode'
+  | 'customerName'
+  | 'plannedQty'
+  | 'plannedKg'
+  | 'loadedQty'
+  | 'loadedKg'
+  | 'uom'
+  | 'note'
+  | 'checkedAt'
+  | 'checkedById'
+  | 'checkedByName'
 >;
 
-type SheetWithLines = DispatchSheet & { lines: LineRowLite[]; assignedTo?: { displayName: string } | null };
+type SheetWithLines = DispatchSheet & {
+  lines: LineRowLite[];
+  assignedTo?: { displayName: string } | null;
+  customerProgress?: ProgressRow[];
+};
+
+interface CustomerGroupBucket {
+  key: string;
+  code: string | null;
+  name: string;
+  lines: LineRowLite[];
+}
+
+const SIN_CLIENTE = 'SIN_CLIENTE';
 
 const OPEN_STATUSES = ['ENVIADO', 'RECIBIDO', 'EN_PROCESO', 'CON_NOVEDAD'];
 const OPERATOR_ROLES = ['ALMACEN', 'ADMIN'];
@@ -94,6 +142,43 @@ function todayStart(): Date {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
 }
 
+/** Clave estable del cliente dentro de una hoja. */
+function customerKey(line: { customerCode: string | null; customerName: string | null }): string {
+  const code = line.customerCode?.trim();
+  if (code) return code;
+  const name = line.customerName?.trim();
+  if (name) return name;
+  return SIN_CLIENTE;
+}
+
+/** Fecha de negocio (America/Caracas) de un instante. */
+function businessDateKey(value: Date): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Caracas',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(value);
+  const read = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+  return `${read('year')}-${read('month')}-${read('day')}`;
+}
+
+function minutesBetween(from: Date | null | undefined, to: Date | null | undefined): number | null {
+  if (!from || !to) return null;
+  return Math.max(0, Math.round((to.getTime() - from.getTime()) / 60_000));
+}
+
+function durationLabel(minutes: number | null): string {
+  if (minutes === null || !Number.isFinite(minutes)) return '—';
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours < 24) return rest > 0 ? `${hours} h ${rest} min` : `${hours} h`;
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours > 0 ? `${days} d ${restHours} h` : `${days} d`;
+}
+
 @Injectable()
 export class DispatchService {
   constructor(
@@ -109,7 +194,11 @@ export class DispatchService {
     const where = this.visibilityWhere(viewer, query);
     const rows = await this.prisma.dispatchSheet.findMany({
       where,
-      include: { lines: { select: LINE_LITE }, assignedTo: { select: { displayName: true } } },
+      include: {
+        lines: { select: LINE_LITE },
+        assignedTo: { select: { displayName: true } },
+        customerProgress: true,
+      },
       orderBy: [{ sentAt: 'asc' }],
       take: 300,
     });
@@ -145,6 +234,7 @@ export class DispatchService {
         lines: { orderBy: { position: 'asc' } },
         events: { orderBy: { createdAt: 'asc' } },
         assignedTo: { select: { displayName: true } },
+        customerProgress: true,
       },
     });
     // Un despacho ajeno responde 404: no se filtra su existencia.
@@ -152,9 +242,10 @@ export class DispatchService {
 
     return {
       ...this.toSummary(sheet, viewer),
-      lines: sheet.lines.map((line) => this.toLine(line)),
+      lines: sheet.lines.map((line) => this.toLine(line, sheet)),
       events: this.eventsFor(sheet, viewer),
       loadPlan: this.parseLoadPlan(sheet.loadPlanJson),
+      customerProgress: this.toProgressList(sheet),
     };
   }
 
@@ -345,11 +436,13 @@ export class DispatchService {
             },
           },
           arrivals: { create: arrivalRows },
+          customerProgress: { create: this.progressSeed(lines) },
         },
         include: {
           lines: { orderBy: { position: 'asc' } },
           events: { orderBy: { createdAt: 'asc' } },
           assignedTo: { select: { displayName: true } },
+          customerProgress: true,
         },
       });
     });
@@ -378,9 +471,10 @@ export class DispatchService {
 
     return {
       ...this.toSummary(sheet, viewer),
-      lines: sheet.lines.map((line) => this.toLine(line)),
+      lines: sheet.lines.map((line) => this.toLine(line, sheet)),
       events: this.eventsFor(sheet, viewer),
       loadPlan: this.parseLoadPlan(sheet.loadPlanJson),
+      customerProgress: this.toProgressList(sheet),
     };
   }
 
@@ -490,11 +584,13 @@ export class DispatchService {
             },
           },
           arrivals: { create: arrivalRows },
+          customerProgress: { create: this.progressSeed(lines) },
         },
         include: {
           lines: { orderBy: { position: 'asc' } },
           events: { orderBy: { createdAt: 'asc' } },
           assignedTo: { select: { displayName: true } },
+          customerProgress: true,
         },
       });
     });
@@ -520,9 +616,10 @@ export class DispatchService {
 
     return {
       ...this.toSummary(sheet, viewer),
-      lines: sheet.lines.map((line) => this.toLine(line)),
+      lines: sheet.lines.map((line) => this.toLine(line, sheet)),
       events: this.eventsFor(sheet, viewer),
       loadPlan: this.parseLoadPlan(sheet.loadPlanJson),
+      customerProgress: this.toProgressList(sheet),
     };
   }
 
@@ -531,7 +628,7 @@ export class DispatchService {
   async syncFromDraft(draftId = 'GLOBAL'): Promise<void> {
     const sheets = await this.prisma.dispatchSheet.findMany({
       where: { draftId, status: { notIn: ['DESPACHADO', 'CANCELADO'] } },
-      include: { lines: { orderBy: { position: 'asc' } } },
+      include: { lines: { orderBy: { position: 'asc' } }, customerProgress: true },
     });
     if (sheets.length === 0) return;
 
@@ -560,7 +657,7 @@ export class DispatchService {
   }
 
   private async syncSheet(
-    sheet: DispatchSheet & { lines: LineRow[] },
+    sheet: DispatchSheet & { lines: LineRow[]; customerProgress?: ProgressRow[] },
     planLines: Array<{
       line: OrderGroupLine;
       assignment: DraftAssignment;
@@ -570,6 +667,10 @@ export class DispatchService {
     payload: ScenarioPayload,
     draftRevision: number,
   ): Promise<void> {
+    // Una vez entregada una factura, el plan vivo ya no debe mover esa hoja:
+    // la corrección exige reabrir la factura primero.
+    if ((sheet.customerProgress ?? []).some((row) => row.invoiceDeliveredAt !== null)) return;
+
     // Los renglones ya resueltos (cargado, parcial o no cargado) son
     // intocables: la simulación viva solo agrega, actualiza o quita pendientes.
     const lockedRows = sheet.lines.filter((row) => row.status !== 'PENDIENTE');
@@ -697,8 +798,51 @@ export class DispatchService {
       lines: snapshotLines,
     };
 
+    // Filas de relojes: crear las de clientes nuevos y quitar huérfanas sin
+    // actividad. Si un cliente ya cerrado recibe un renglón nuevo, se reabre
+    // su carga (sin factura: arriba se descartó la hoja facturada).
+    const deletedIds = new Set(toDelete);
+    const finalCustomers = new Map<string, { customerCode: string | null; customerName: string | null }>();
+    for (const row of sheet.lines) {
+      if (deletedIds.has(row.id)) continue;
+      finalCustomers.set(customerKey(row), { customerCode: row.customerCode, customerName: row.customerName });
+    }
+    for (const item of toCreate) {
+      finalCustomers.set(customerKey(item.line), {
+        customerCode: item.line.customerCode ?? null,
+        customerName: item.line.customerName ?? null,
+      });
+    }
+    const existingProgressKeys = new Set((sheet.customerProgress ?? []).map((row) => row.customerKey));
+    const progressToCreate = [...finalCustomers.entries()].filter(([key]) => !existingProgressKeys.has(key));
+    const progressToDelete = (sheet.customerProgress ?? []).filter(
+      (row) => !finalCustomers.has(row.customerKey) && !row.loadStartedAt && !row.invoiceDeliveredAt,
+    );
+    const progressToReopen = [...new Set(toCreate.map((item) => customerKey(item.line)))].filter((key) =>
+      existingProgressKeys.has(key),
+    );
+
     await this.prisma.$transaction([
       ...toDelete.map((id) => this.prisma.dispatchSheetLine.delete({ where: { id } })),
+      ...progressToDelete.map((row) =>
+        this.prisma.dispatchCustomerProgress.delete({ where: { id: row.id } }),
+      ),
+      ...progressToCreate.map(([key, customer]) =>
+        this.prisma.dispatchCustomerProgress.create({
+          data: {
+            sheetId: sheet.id,
+            customerKey: key,
+            customerCode: customer.customerCode,
+            customerName: customer.customerName,
+          },
+        }),
+      ),
+      ...progressToReopen.map((key) =>
+        this.prisma.dispatchCustomerProgress.updateMany({
+          where: { sheetId: sheet.id, customerKey: key },
+          data: { loadClosedAt: null },
+        }),
+      ),
       ...toUpdate.map(({ row, plan }) =>
         this.prisma.dispatchSheetLine.update({
           where: { id: row.id },
@@ -766,6 +910,12 @@ export class DispatchService {
     if (!line) throw new NotFoundException('Renglón no encontrado.');
 
     const actor = await this.viewerInfo(viewer);
+    const progress = this.progressFor(sheet, customerKey(line));
+    if (progress?.invoiceDeliveredAt) {
+      throw new ConflictException(
+        'La factura de este cliente ya fue entregada. Un administrador debe reabrirla antes de cambiar la carga.',
+      );
+    }
     const plannedQty = toNumber(line.plannedQty);
     const plannedKg = toNumber(line.plannedKg);
     const previousStatus = line.status;
@@ -838,7 +988,9 @@ export class DispatchService {
 
     // El estado de la hoja refleja si hay novedades entre los renglones.
     // Al marcar el primer renglón la hoja arranca sola: ya no hay acuse previo.
-    const refreshed = await this.findSheet(id);
+    // `recomputeProgress` cierra el grupo cuando ya no queda PENDIENTE y
+    // registra los hitos de carga en la bitácora.
+    const { sheet: refreshed } = await this.recomputeProgress(sheet.id, actor, { notify: true });
     const starting = refreshed.status === 'ENVIADO' || refreshed.status === 'RECIBIDO';
     const hasNovedad = refreshed.lines.some((item) => NOVEDAD_LINE_STATUSES.includes(item.status));
     const nextStatus = hasNovedad
@@ -906,6 +1058,358 @@ export class DispatchService {
     return this.detail(viewer, id);
   }
 
+  // ---------- Tiempos: iniciar carga y facturar ----------
+
+  /** «Iniciar carga» del cliente: arranca los dos relojes, no marca productos. */
+  async startLoad(viewer: DispatchViewer, id: string, input: DispatchCustomerKeyInput): Promise<DispatchSheetDetail> {
+    const sheet = await this.findSheet(id);
+    this.assertOperable(sheet, viewer);
+    if (['DESPACHADO', 'CANCELADO'].includes(sheet.status)) {
+      throw new ConflictException('El despacho ya está cerrado.');
+    }
+    const bucket = this.customerBuckets(sheet.lines).find((item) => item.key === input.customerKey);
+    if (!bucket) throw new NotFoundException('Ese cliente no pertenece al despacho.');
+
+    const progress = this.progressFor(sheet, bucket.key);
+    if (progress?.invoiceDeliveredAt) {
+      throw new ConflictException('La factura de este cliente ya fue entregada. Reábrela antes de iniciar la carga.');
+    }
+    if (progress?.loadStartedAt) return this.detail(viewer, id);
+
+    const actor = await this.viewerInfo(viewer);
+    const now = new Date();
+    if (progress) {
+      await this.prisma.dispatchCustomerProgress.update({
+        where: { id: progress.id },
+        data: { loadStartedAt: now, loadStartedById: actor.id, loadStartedByName: actor.name },
+      });
+    } else {
+      await this.prisma.dispatchCustomerProgress.create({
+        data: {
+          sheetId: sheet.id,
+          customerKey: bucket.key,
+          customerCode: bucket.code,
+          customerName: bucket.name,
+          loadStartedAt: now,
+          loadStartedById: actor.id,
+          loadStartedByName: actor.name,
+        },
+      });
+    }
+
+    // El primer operador que inicia una carga toma la hoja, igual que antes
+    // ocurría al marcar el primer renglón.
+    const starting = sheet.status === 'ENVIADO' || sheet.status === 'RECIBIDO';
+    if (starting || !sheet.claimedById || !sheet.startedAt) {
+      await this.prisma.dispatchSheet.update({
+        where: { id: sheet.id },
+        data: {
+          ...(starting ? { status: 'EN_PROCESO' } : {}),
+          startedAt: sheet.startedAt ?? now,
+          ...this.claimPatch(sheet, actor),
+        },
+      });
+    }
+
+    await this.prisma.dispatchSheetEvent.create({
+      data: {
+        sheetId: sheet.id,
+        kind: 'SYSTEM',
+        type: 'CARGA_INICIADA',
+        body: `${actor.name ?? 'Almacén'} inició la carga de ${bucket.name} (${bucket.lines.length} producto(s)).`,
+        authorId: actor.id,
+        authorCode: actor.code,
+        authorName: actor.name,
+      },
+    });
+    await this.audit.record({
+      actorId: actor.id,
+      actorEmail: actor.code,
+      action: 'DISPATCH_LOAD_START',
+      entityType: 'DispatchSheet',
+      entityId: sheet.id,
+      context: { number: sheet.number, customer: bucket.name, products: bucket.lines.length },
+    });
+
+    return this.detail(viewer, id);
+  }
+
+  /** «Factura entregada» de un cliente. */
+  async deliverInvoice(
+    viewer: DispatchViewer,
+    id: string,
+    input: DispatchCustomerInvoiceInput,
+  ): Promise<DispatchSheetDetail> {
+    const sheet = await this.findSheet(id);
+    if (!this.canSee(sheet, viewer)) throw new NotFoundException('Despacho no encontrado.');
+    if (!this.canInvoice(sheet, viewer)) {
+      throw new ForbiddenException('No tienes permiso para registrar la factura de este despacho.');
+    }
+    if (sheet.status === 'CANCELADO') throw new ConflictException('El despacho está anulado.');
+    const bucket = this.customerBuckets(sheet.lines).find((item) => item.key === input.customerKey);
+    if (!bucket) throw new NotFoundException('Ese cliente no pertenece al despacho.');
+
+    const actor = await this.viewerInfo(viewer);
+    // Recalcula relojes y crea la fila si es histórica antes de facturar.
+    await this.recomputeProgress(sheet.id, actor, { notify: false });
+    const refreshed = await this.findSheet(id);
+    const progress = this.progressFor(refreshed, bucket.key);
+    if (!progress) throw new NotFoundException('No encontramos el registro de tiempos de ese cliente.');
+    if (progress.invoiceDeliveredAt) return this.detail(viewer, id);
+
+    const pending = bucket.lines.filter((line) => line.status === 'PENDIENTE');
+    if (pending.length > 0) {
+      throw new BadRequestException(
+        `Faltan ${pending.length} producto(s) de ${bucket.name} por cerrar antes de entregar la factura.`,
+      );
+    }
+    if (!progress.loadClosedAt) {
+      throw new BadRequestException('Cierra la carga completa del cliente antes de entregar la factura.');
+    }
+
+    const beforeInvoiced = this.toProgressList(refreshed).every((row) => row.invoiceDeliveredAt !== null);
+    const now = new Date();
+    await this.prisma.dispatchCustomerProgress.update({
+      where: { id: progress.id },
+      data: {
+        invoiceDeliveredAt: now,
+        invoiceDeliveredById: actor.id,
+        invoiceDeliveredByName: actor.name,
+        invoiceRef: input.invoiceRef ?? null,
+        note: input.note ?? progress.note ?? null,
+      },
+    });
+    await this.prisma.dispatchSheetEvent.create({
+      data: {
+        sheetId: sheet.id,
+        kind: 'SYSTEM',
+        type: 'FACTURA_ENTREGADA',
+        body: `Factura${input.invoiceRef ? ` N° ${input.invoiceRef}` : ''} entregada a ${bucket.name} en ${durationLabel(
+          minutesBetween(progress.loadStartedAt, now),
+        )} desde el inicio de carga.`,
+        authorId: actor.id,
+        authorCode: actor.code,
+        authorName: actor.name,
+      },
+    });
+    await this.audit.record({
+      actorId: actor.id,
+      actorEmail: actor.code,
+      action: 'DISPATCH_INVOICE',
+      entityType: 'DispatchSheet',
+      entityId: sheet.id,
+      context: {
+        number: sheet.number,
+        customer: bucket.name,
+        invoiceRef: input.invoiceRef ?? null,
+        minutes: minutesBetween(progress.loadStartedAt, now),
+      },
+    });
+
+    if (!beforeInvoiced) {
+      const after = await this.findSheet(id);
+      const allInvoiced = this.toProgressList(after).every((row) => row.invoiceDeliveredAt !== null);
+      if (allInvoiced) {
+        await this.notify([refreshed.createdById], {
+          type: 'DESPACHO_FACTURADO',
+          title: `${refreshed.number}: facturación entregada`,
+          body: `Todos los clientes del despacho tienen la factura marcada como entregada.`,
+          entityId: refreshed.id,
+          actorId: actor.id,
+          actorName: actor.name,
+          linkPath: `/despacho/${refreshed.id}`,
+        });
+      }
+    }
+
+    return this.detail(viewer, id);
+  }
+
+  /** «Facturar todo»: marca la factura de todos los clientes pendientes. */
+  async deliverAllInvoices(viewer: DispatchViewer, id: string, input: DispatchInvoiceInput): Promise<DispatchSheetDetail> {
+    const sheet = await this.findSheet(id);
+    if (!this.canSee(sheet, viewer)) throw new NotFoundException('Despacho no encontrado.');
+    if (!this.canInvoice(sheet, viewer)) {
+      throw new ForbiddenException('No tienes permiso para registrar la factura de este despacho.');
+    }
+    if (sheet.status === 'CANCELADO') throw new ConflictException('El despacho está anulado.');
+
+    const actor = await this.viewerInfo(viewer);
+    await this.recomputeProgress(sheet.id, actor, { notify: false });
+    const refreshed = await this.findSheet(id);
+    const progress = this.toProgressList(refreshed);
+    const pendingLines = refreshed.lines.filter((line) => line.status === 'PENDIENTE');
+    if (pendingLines.length > 0) {
+      throw new BadRequestException(
+        `Faltan ${pendingLines.length} producto(s) por cerrar. No se puede facturar todo el despacho.`,
+      );
+    }
+    if (progress.some((row) => !row.loadClosedAt)) {
+      throw new BadRequestException('Cierra la carga de todos los clientes antes de facturar.');
+    }
+    if (progress.every((row) => row.invoiceDeliveredAt)) return this.detail(viewer, id);
+
+    const now = new Date();
+    await this.prisma.dispatchCustomerProgress.updateMany({
+      where: { sheetId: sheet.id, invoiceDeliveredAt: null },
+      data: {
+        invoiceDeliveredAt: now,
+        invoiceDeliveredById: actor.id,
+        invoiceDeliveredByName: actor.name,
+        invoiceRef: input.invoiceRef ?? null,
+        note: input.note ?? null,
+      },
+    });
+    await this.prisma.dispatchSheetEvent.create({
+      data: {
+        sheetId: sheet.id,
+        kind: 'SYSTEM',
+        type: 'FACTURADO',
+        body: `Facturación entregada a ${progress.length} cliente(s)${
+          input.invoiceRef ? ` (N° ${input.invoiceRef})` : ''
+        }.`,
+        authorId: actor.id,
+        authorCode: actor.code,
+        authorName: actor.name,
+      },
+    });
+    await this.audit.record({
+      actorId: actor.id,
+      actorEmail: actor.code,
+      action: 'DISPATCH_INVOICE',
+      entityType: 'DispatchSheet',
+      entityId: sheet.id,
+      context: { number: sheet.number, customers: progress.length, invoiceRef: input.invoiceRef ?? null, scope: 'ALL' },
+    });
+    await this.notify([refreshed.createdById], {
+      type: 'DESPACHO_FACTURADO',
+      title: `${refreshed.number}: facturación entregada`,
+      body: `Todos los clientes del despacho tienen la factura marcada como entregada.`,
+      entityId: refreshed.id,
+      actorId: actor.id,
+      actorName: actor.name,
+      linkPath: `/despacho/${refreshed.id}`,
+    });
+
+    return this.detail(viewer, id);
+  }
+
+  /** Corrección de una factura ya entregada: solo ADMIN o «Anular». */
+  async reopenInvoice(
+    viewer: DispatchViewer,
+    id: string,
+    input: DispatchCustomerReopenInput,
+  ): Promise<DispatchSheetDetail> {
+    const sheet = await this.findSheet(id);
+    if (!this.canSee(sheet, viewer)) throw new NotFoundException('Despacho no encontrado.');
+    if (!viewer.isAdmin && !viewer.canDelete && viewer.role !== 'ADMIN') {
+      throw new ForbiddenException('Solo un administrador puede reabrir una factura.');
+    }
+    if (sheet.status === 'CANCELADO') throw new ConflictException('El despacho está anulado.');
+    const progress = this.progressFor(sheet, input.customerKey);
+    if (!progress) throw new NotFoundException('No encontramos el registro de tiempos de ese cliente.');
+    if (!progress.invoiceDeliveredAt) throw new BadRequestException('Ese cliente no tiene factura entregada.');
+
+    const actor = await this.viewerInfo(viewer);
+    await this.prisma.dispatchCustomerProgress.update({
+      where: { id: progress.id },
+      data: {
+        invoiceDeliveredAt: null,
+        invoiceDeliveredById: null,
+        invoiceDeliveredByName: null,
+        invoiceRef: null,
+        note: input.reason,
+      },
+    });
+    await this.prisma.dispatchSheetEvent.create({
+      data: {
+        sheetId: sheet.id,
+        kind: 'SYSTEM',
+        type: 'FACTURA_REABIERTA',
+        body: `Reabrió la factura de ${progress.customerName ?? input.customerKey}. Motivo: ${input.reason}`,
+        authorId: actor.id,
+        authorCode: actor.code,
+        authorName: actor.name,
+      },
+    });
+    await this.audit.record({
+      actorId: actor.id,
+      actorEmail: actor.code,
+      action: 'DISPATCH_REOPEN',
+      entityType: 'DispatchSheet',
+      entityId: sheet.id,
+      context: { number: sheet.number, customer: progress.customerName, scope: 'INVOICE', reason: input.reason },
+    });
+
+    return this.detail(viewer, id);
+  }
+
+  // ---------- Reporte de tiempos ----------
+
+  async metrics(viewer: DispatchViewer, query: DispatchMetricsQuery): Promise<DispatchMetricsResponse> {
+    const from = new Date(`${query.from}T00:00:00.000-04:00`);
+    const to = new Date(`${query.to}T23:59:59.999-04:00`);
+    if (to.getTime() < from.getTime()) {
+      throw new BadRequestException('La fecha final debe ser mayor o igual a la inicial.');
+    }
+    if (to.getTime() - from.getTime() > 400 * 24 * 60 * 60 * 1000) {
+      throw new BadRequestException('El reporte de tiempos admite como máximo 400 días.');
+    }
+
+    const sheets = await this.prisma.dispatchSheet.findMany({
+      where: {
+        AND: [
+          this.baseVisibility(viewer),
+          { status: { not: 'CANCELADO' } },
+          {
+            OR: [
+              { customerProgress: { some: { loadClosedAt: { gte: from, lte: to } } } },
+              { customerProgress: { some: { invoiceDeliveredAt: { gte: from, lte: to } } } },
+              // Hojas históricas sin filas de relojes: se usa completedAt.
+              { customerProgress: { none: {} }, completedAt: { gte: from, lte: to } },
+            ],
+          },
+        ],
+      },
+      include: { lines: { orderBy: { position: 'asc' } }, customerProgress: true },
+      orderBy: { sentAt: 'desc' },
+      take: 2500,
+    });
+
+    return buildDispatchMetrics(
+      sheets.map((sheet) => ({
+        id: sheet.id,
+        number: sheet.number,
+        status: sheet.status,
+        startedAt: sheet.startedAt,
+        completedAt: sheet.completedAt,
+        lines: sheet.lines.map((line) => ({
+          orderNumber: line.orderNumber,
+          productCode: line.productCode,
+          description: line.description,
+          status: line.status,
+          effectiveDate: line.effectiveDate,
+          plannedKg: toNumber(line.plannedKg),
+          customerCode: line.customerCode,
+          customerName: line.customerName,
+          checkedAt: line.checkedAt,
+          checkedByName: line.checkedByName,
+        })),
+        customerProgress: (sheet.customerProgress ?? []).map((row) => ({
+          customerKey: row.customerKey,
+          customerCode: row.customerCode,
+          customerName: row.customerName,
+          loadStartedAt: row.loadStartedAt,
+          loadClosedAt: row.loadClosedAt,
+          invoiceDeliveredAt: row.invoiceDeliveredAt,
+          invoiceDeliveredByName: row.invoiceDeliveredByName,
+          invoiceRef: row.invoiceRef,
+        })),
+      })),
+      query,
+    );
+  }
+
   // ---------- Cerrar ----------
 
   async complete(viewer: DispatchViewer, id: string, input: DispatchCompleteInput): Promise<DispatchSheetDetail> {
@@ -933,10 +1437,13 @@ export class DispatchService {
     }
 
     const actor = await this.viewerInfo(viewer);
-    const totals = this.liveTotals(sheet.lines);
+    // Cierra los relojes de los grupos que aún no tengan hora (hojas viejas o
+    // cargas hechas por API sin «Iniciar carga»).
+    const { sheet: refreshed } = await this.recomputeProgress(sheet.id, actor, { notify: false });
+    const totals = this.liveTotals(refreshed.lines);
     await this.prisma.$transaction([
       this.prisma.dispatchSheet.update({
-        where: { id: sheet.id },
+        where: { id: refreshed.id },
         data: {
           status: 'DESPACHADO',
           completedAt: new Date(),
@@ -991,6 +1498,12 @@ export class DispatchService {
     }
     if (['DESPACHADO', 'CANCELADO'].includes(sheet.status)) {
       throw new ConflictException('El despacho ya está cerrado.');
+    }
+    const invoiced = (sheet.customerProgress ?? []).filter((row) => row.invoiceDeliveredAt !== null);
+    if (invoiced.length > 0) {
+      throw new ConflictException(
+        `Hay ${invoiced.length} factura(s) entregada(s). Reábrelas antes de anular el despacho.`,
+      );
     }
     const actor = await this.viewerInfo(viewer);
     await this.prisma.$transaction([
@@ -1113,7 +1626,11 @@ export class DispatchService {
   private async findSheet(id: string) {
     const sheet = await this.prisma.dispatchSheet.findUnique({
       where: { id },
-      include: { lines: { orderBy: { position: 'asc' } }, assignedTo: { select: { displayName: true } } },
+      include: {
+        lines: { orderBy: { position: 'asc' } },
+        assignedTo: { select: { displayName: true } },
+        customerProgress: true,
+      },
     });
     if (!sheet) throw new NotFoundException('Despacho no encontrado.');
     return sheet;
@@ -1129,6 +1646,247 @@ export class DispatchService {
       code: user?.profitCode ?? viewer.code ?? null,
       name: user?.displayName ?? viewer.name ?? null,
     };
+  }
+
+  // ---------- Tiempos por cliente ----------
+
+  /** Filas iniciales de relojes: una por cliente del plan, sin horas todavía. */
+  private progressSeed(lines: Array<{ customerCode: string | null; customerName: string | null }>) {
+    const map = new Map<string, { customerKey: string; customerCode: string | null; customerName: string | null }>();
+    for (const line of lines) {
+      const key = customerKey(line);
+      if (map.has(key)) continue;
+      map.set(key, {
+        customerKey: key,
+        customerCode: line.customerCode ?? null,
+        customerName: line.customerName ?? null,
+      });
+    }
+    return [...map.values()];
+  }
+
+  private customerBuckets(lines: LineRowLite[]): CustomerGroupBucket[] {
+    const map = new Map<string, CustomerGroupBucket>();
+    for (const line of lines) {
+      const key = customerKey(line);
+      let bucket = map.get(key);
+      if (!bucket) {
+        bucket = {
+          key,
+          code: line.customerCode ?? null,
+          name: line.customerName ?? 'Sin cliente',
+          lines: [],
+        };
+        map.set(key, bucket);
+      }
+      bucket.lines.push(line);
+    }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  }
+
+  private progressFor(sheet: SheetWithLines, key: string): ProgressRow | undefined {
+    return (sheet.customerProgress ?? []).find((row) => row.customerKey === key);
+  }
+
+  private toProgressList(sheet: SheetWithLines): DispatchCustomerProgress[] {
+    const buckets = this.customerBuckets(sheet.lines);
+    const rows = new Map((sheet.customerProgress ?? []).map((row) => [row.customerKey, row]));
+    return buckets.map((bucket) => {
+      const row = rows.get(bucket.key);
+      const checked = bucket.lines
+        .map((line) => line.checkedAt)
+        .filter((value): value is Date => value instanceof Date)
+        .sort((a, b) => a.getTime() - b.getTime());
+      const pending = bucket.lines.filter((line) => line.status === 'PENDIENTE').length;
+      // Fallback para hojas históricas sin fila: los sellos globales y las
+      // horas de los renglones alcanzan para mostrar el tiempo de carga.
+      const startedAt = row?.loadStartedAt ?? sheet.startedAt ?? checked[0] ?? null;
+      const closedAt =
+        row?.loadClosedAt ?? (pending === 0 ? checked[checked.length - 1] ?? sheet.completedAt : null);
+      return {
+        customerKey: bucket.key,
+        customerCode: bucket.code,
+        customerName: bucket.name,
+        loadStartedAt: iso(startedAt),
+        loadStartedByName: row?.loadStartedByName ?? null,
+        loadClosedAt: iso(closedAt),
+        invoiceDeliveredAt: iso(row?.invoiceDeliveredAt),
+        invoiceDeliveredByName: row?.invoiceDeliveredByName ?? null,
+        invoiceRef: row?.invoiceRef ?? null,
+        note: row?.note ?? null,
+        products: bucket.lines.length,
+        pendingProducts: pending,
+        loadedProducts: bucket.lines.filter((line) => line.status === 'CARGADO').length,
+        partialProducts: bucket.lines.filter((line) => line.status === 'PARCIAL').length,
+        missingProducts: bucket.lines.filter((line) => line.status === 'FALTANTE' || line.status === 'NOVEDAD').length,
+      };
+    });
+  }
+
+  /**
+   * Recalcula los relojes de todos los clientes de una hoja. Se llama después
+   * de cerrar/reabrir un producto. Cierra el grupo cuando ya no queda ningún
+   * renglón PENDIENTE y deja el evento en la bitácora una sola vez.
+   */
+  private async recomputeProgress(
+    sheetId: string,
+    actor: ViewerInfo,
+    options: { notify?: boolean } = {},
+  ): Promise<{ sheet: SheetWithLines; allClosed: boolean; allInvoiced: boolean }> {
+    const before = await this.prisma.dispatchSheet.findUnique({
+      where: { id: sheetId },
+      include: {
+        lines: { orderBy: { position: 'asc' } },
+        customerProgress: true,
+        assignedTo: { select: { displayName: true } },
+      },
+    });
+    if (!before) throw new NotFoundException('Despacho no encontrado.');
+
+    const buckets = this.customerBuckets(before.lines);
+    const activeKeys = new Set(buckets.map((bucket) => bucket.key));
+    const previousRows = new Map((before.customerProgress ?? []).map((row) => [row.customerKey, row]));
+    const activeBefore = (before.customerProgress ?? []).filter((row) => activeKeys.has(row.customerKey));
+    const oldAllClosed = buckets.length > 0 && activeBefore.every((row) => row.loadClosedAt !== null);
+    const oldAllInvoiced = buckets.length > 0 && activeBefore.every((row) => row.invoiceDeliveredAt !== null);
+    const events: Array<{ type: string; body: string }> = [];
+
+    for (const bucket of buckets) {
+      const previous = previousRows.get(bucket.key);
+      const resolved = bucket.lines.filter((line) => line.status !== 'PENDIENTE');
+      const pending = bucket.lines.length - resolved.length;
+      const checked = resolved
+        .map((line) => line.checkedAt)
+        .filter((value): value is Date => value instanceof Date)
+        .sort((a, b) => a.getTime() - b.getTime());
+      const firstChecked = checked[0] ?? null;
+      const lastChecked = checked.length > 0 ? checked[checked.length - 1] : null;
+      const startedAt = previous?.loadStartedAt ?? firstChecked ?? null;
+      const closedAt = pending === 0 && startedAt ? lastChecked ?? new Date() : null;
+
+      const data = {
+        customerCode: bucket.code,
+        customerName: bucket.name,
+        loadStartedAt: startedAt,
+        loadStartedById: previous?.loadStartedById ?? (startedAt ? actor.id : null),
+        loadStartedByName: previous?.loadStartedByName ?? (startedAt ? actor.name : null),
+        loadClosedAt: closedAt,
+      };
+
+      if (!previous) {
+        await this.prisma.dispatchCustomerProgress.create({
+          data: { sheetId: before.id, customerKey: bucket.key, ...data },
+        });
+      } else if (
+        previous.loadStartedAt?.getTime() !== startedAt?.getTime() ||
+        previous.loadClosedAt?.getTime() !== closedAt?.getTime()
+      ) {
+        await this.prisma.dispatchCustomerProgress.update({ where: { id: previous.id }, data });
+      }
+
+      if (!previous?.loadClosedAt && closedAt) {
+        events.push({
+          type: 'CARGA_CERRADA',
+          body: `Cerró la carga de ${bucket.name}: ${bucket.lines.length} producto(s) en ${durationLabel(
+            minutesBetween(startedAt, closedAt),
+          )}.`,
+        });
+        await this.audit.record({
+          actorId: actor.id,
+          actorEmail: actor.code ?? undefined,
+          action: 'DISPATCH_LOAD_CLOSE',
+          entityType: 'DispatchSheet',
+          entityId: before.id,
+          context: {
+            number: before.number,
+            customer: bucket.name,
+            products: bucket.lines.length,
+            minutes: minutesBetween(startedAt, closedAt),
+          },
+        });
+      } else if (previous?.loadClosedAt && !closedAt) {
+        events.push({
+          type: 'CARGA_REABIERTA',
+          body: `Reabrió la carga de ${bucket.name}.`,
+        });
+        await this.audit.record({
+          actorId: actor.id,
+          actorEmail: actor.code ?? undefined,
+          action: 'DISPATCH_REOPEN',
+          entityType: 'DispatchSheet',
+          entityId: before.id,
+          context: { number: before.number, customer: bucket.name, scope: 'CARGA' },
+        });
+      }
+    }
+
+    for (const event of events) {
+      await this.prisma.dispatchSheetEvent.create({
+        data: {
+          sheetId: before.id,
+          kind: 'SYSTEM',
+          type: event.type,
+          body: event.body,
+          authorId: actor.id,
+          authorCode: actor.code,
+          authorName: actor.name,
+        },
+      });
+    }
+
+    const refreshed = await this.prisma.dispatchSheet.findUnique({
+      where: { id: sheetId },
+      include: {
+        lines: { orderBy: { position: 'asc' } },
+        customerProgress: true,
+        assignedTo: { select: { displayName: true } },
+      },
+    });
+    if (!refreshed) throw new NotFoundException('Despacho no encontrado.');
+
+    const activeAfter = (refreshed.customerProgress ?? []).filter((row) => activeKeys.has(row.customerKey));
+    const allClosed = buckets.length > 0 && activeAfter.every((row) => row.loadClosedAt !== null);
+    const allInvoiced = buckets.length > 0 && activeAfter.every((row) => row.invoiceDeliveredAt !== null);
+
+    if (options.notify && allClosed && !oldAllClosed) {
+      await this.notify([refreshed.createdById], {
+        type: 'DESPACHO_CARGA_CERRADA',
+        title: `${refreshed.number}: carga cerrada`,
+        body: `El almacén cerró la carga de todos los clientes. Ya se puede registrar la facturación.`,
+        entityId: refreshed.id,
+        actorId: actor.id,
+        actorName: actor.name,
+        linkPath: `/despacho/${refreshed.id}`,
+      });
+    }
+    if (options.notify && allInvoiced && !oldAllInvoiced) {
+      await this.notify([refreshed.createdById], {
+        type: 'DESPACHO_FACTURADO',
+        title: `${refreshed.number}: facturación entregada`,
+        body: `Todos los clientes del despacho tienen la factura marcada como entregada.`,
+        entityId: refreshed.id,
+        actorId: actor.id,
+        actorName: actor.name,
+        linkPath: `/despacho/${refreshed.id}`,
+      });
+    }
+
+    return { sheet: refreshed, allClosed, allInvoiced };
+  }
+
+  private canInvoice(sheet: DispatchSheet, viewer: DispatchViewer): boolean {
+    if (sheet.status === 'CANCELADO') return false;
+    const allowed =
+      viewer.isAdmin === true ||
+      viewer.canUpdate === true ||
+      viewer.canDelete === true ||
+      ['ADMIN', 'GERENCIA', 'ALMACEN'].includes(viewer.role);
+    if (!allowed) return false;
+    if (!['ADMIN', 'GERENCIA'].includes(viewer.role)) {
+      if (sheet.assignedToId && sheet.assignedToId !== viewer.id) return false;
+      if (sheet.claimedById && sheet.claimedById !== viewer.id) return false;
+    }
+    return true;
   }
 
   // Correlativo legible DSP-AAAA-NNNN con reintento ante colisión.
@@ -1223,7 +1981,7 @@ export class DispatchService {
 
   private canOperate(sheet: DispatchSheet, viewer: DispatchViewer): boolean {
     if (['DESPACHADO', 'CANCELADO'].includes(sheet.status)) return false;
-    if (!OPERATOR_ROLES.includes(viewer.role)) return false;
+    if (!viewer.canUpdate && !OPERATOR_ROLES.includes(viewer.role)) return false;
     if (sheet.assignedToId && sheet.assignedToId !== viewer.id && viewer.role !== 'ADMIN') return false;
     if (sheet.claimedById && sheet.claimedById !== viewer.id && viewer.role !== 'ADMIN') return false;
     return true;
@@ -1240,7 +1998,7 @@ export class DispatchService {
     if (['DESPACHADO', 'CANCELADO'].includes(sheet.status)) {
       throw new ConflictException('El despacho ya está cerrado.');
     }
-    if (!OPERATOR_ROLES.includes(viewer.role)) {
+    if (!viewer.canUpdate && !OPERATOR_ROLES.includes(viewer.role)) {
       throw new ForbiddenException('Solo el personal de almacén opera los despachos.');
     }
     if (sheet.assignedToId && sheet.assignedToId !== viewer.id && viewer.role !== 'ADMIN') {
@@ -1298,6 +2056,33 @@ export class DispatchService {
       .sort();
     const allDates = lines.map((line) => line.effectiveDate).filter((date): date is string => Boolean(date)).sort();
 
+    // Relojes por cliente. `toProgressList` ya sintetiza los sellos globales
+    // de una hoja histórica sin filas, así el resumen y el detalle coinciden.
+    const progress = this.toProgressList(sheet);
+    const starts = progress
+      .map((row) => (row.loadStartedAt ? new Date(row.loadStartedAt) : null))
+      .filter((value): value is Date => value instanceof Date)
+      .sort((a, b) => a.getTime() - b.getTime());
+    const closes = progress
+      .map((row) => (row.loadClosedAt ? new Date(row.loadClosedAt) : null))
+      .filter((value): value is Date => value instanceof Date)
+      .sort((a, b) => a.getTime() - b.getTime());
+    const invoices = progress
+      .map((row) => (row.invoiceDeliveredAt ? new Date(row.invoiceDeliveredAt) : null))
+      .filter((value): value is Date => value instanceof Date)
+      .sort((a, b) => a.getTime() - b.getTime());
+    const loadClosedAt =
+      progress.length > 0 && progress.every((row) => row.loadClosedAt)
+        ? closes[closes.length - 1] ?? sheet.completedAt
+        : null;
+    const invoiceDeliveredAt =
+      progress.length > 0 && progress.every((row) => row.invoiceDeliveredAt)
+        ? invoices[invoices.length - 1] ?? null
+        : null;
+    const pendingInvoiceCustomers = progress.filter(
+      (row) => row.loadClosedAt !== null && row.invoiceDeliveredAt === null,
+    ).length;
+
     return {
       id: sheet.id,
       number: sheet.number,
@@ -1334,12 +2119,19 @@ export class DispatchService {
       customers: customers.slice(0, 3),
       nextDeliveryDate: (pendingDates[0] ?? allDates[0]) || null,
       updatedAt: sheet.updatedAt.toISOString(),
+      loadStartedAt: iso(starts[0] ?? sheet.startedAt),
+      loadClosedAt: iso(loadClosedAt),
+      invoiceDeliveredAt: iso(invoiceDeliveredAt),
+      pendingInvoiceCustomers,
       canOperate: this.canOperate(sheet, viewer),
       canCancel: this.canCancel(sheet, viewer),
+      canInvoice: this.canInvoice(sheet, viewer),
     };
   }
 
-  private toLine(line: LineRow): DispatchSheetLine {
+  private toLine(line: LineRow, sheet?: SheetWithLines): DispatchSheetLine {
+    const progress = sheet?.customerProgress?.find((row) => row.customerKey === customerKey(line));
+    const startedAt = progress?.loadStartedAt ?? sheet?.startedAt ?? line.checkedAt ?? null;
     return {
       id: line.id,
       position: line.position,
@@ -1359,6 +2151,9 @@ export class DispatchService {
       note: line.note,
       checkedAt: iso(line.checkedAt),
       checkedByName: line.checkedByName,
+      loadStartedAt: iso(startedAt),
+      loadClosedAt: iso(line.checkedAt),
+      loadClosedByName: line.checkedByName,
     };
   }
 
@@ -1455,12 +2250,22 @@ export class DispatchService {
 
 // Campos de renglón que bastan para resumir la bandeja (no se traen notas ni quién marcó).
 const LINE_LITE = {
+  id: true,
+  position: true,
+  orderNumber: true,
+  productCode: true,
+  description: true,
   status: true,
   effectiveDate: true,
+  customerCode: true,
   customerName: true,
   plannedQty: true,
   plannedKg: true,
   loadedQty: true,
   loadedKg: true,
   uom: true,
+  note: true,
+  checkedAt: true,
+  checkedById: true,
+  checkedByName: true,
 } as const;

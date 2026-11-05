@@ -3,16 +3,28 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   DispatchCancelInput,
   DispatchCompleteInput,
+  DispatchCustomerInvoiceInput,
+  DispatchCustomerKeyInput,
+  DispatchCustomerReopenInput,
+  DispatchInvoiceInput,
   DispatchLineInput,
   DispatchMessageInput,
+  DispatchMetricsQuery,
+  DispatchReopenInvoiceInput,
   DispatchSheetCreateInput,
   DispatchSheetQuery,
   NotificationQuery,
   NotificationReadInput,
   zDispatchCancelInput,
   zDispatchCompleteInput,
+  zDispatchCustomerInvoiceInput,
+  zDispatchCustomerKeyInput,
+  zDispatchCustomerReopenInput,
+  zDispatchInvoiceInput,
   zDispatchLineInput,
   zDispatchMessageInput,
+  zDispatchMetricsQuery,
+  zDispatchReopenInvoiceInput,
   zDispatchSheetCreateInput,
   zDispatchSheetQuery,
   zNotificationQuery,
@@ -66,6 +78,17 @@ export class DispatchController {
     return this.dispatch.create(this.viewer(request), body);
   }
 
+  // Antes de ':id' para que no lo capture el parámetro.
+  @Get('metrics')
+  @RequirePermission('despacho:read')
+  @ApiOperation({ summary: 'Tiempos de carga y facturación por día/mes/cliente' })
+  metrics(
+    @Query(new ZodValidationPipe(zDispatchMetricsQuery)) query: DispatchMetricsQuery,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.dispatch.metrics(this.viewer(request), query);
+  }
+
   @Get(':id')
   @RequirePermission('despacho:read')
   @ApiOperation({ summary: 'Detalle con renglones y bitácora' })
@@ -83,6 +106,50 @@ export class DispatchController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.dispatch.updateLine(this.viewer(request), id, lineId, body);
+  }
+
+  @Post(':id/customers/start')
+  @RequirePermission('despacho:update')
+  @ApiOperation({ summary: 'Inicia la carga de un cliente y arranca sus relojes' })
+  startLoad(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(zDispatchCustomerKeyInput)) body: DispatchCustomerKeyInput,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.dispatch.startLoad(this.viewer(request), id, body);
+  }
+
+  @Post(':id/customers/invoice')
+  @RequirePermission('despacho:update')
+  @ApiOperation({ summary: 'Marca la factura entregada de un cliente' })
+  deliverInvoice(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(zDispatchCustomerInvoiceInput)) body: DispatchCustomerInvoiceInput,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.dispatch.deliverInvoice(this.viewer(request), id, body);
+  }
+
+  @Post(':id/customers/reopen-invoice')
+  @RequirePermission('despacho:update')
+  @ApiOperation({ summary: 'Reabre una factura entregada (solo administración)' })
+  reopenInvoice(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(zDispatchCustomerReopenInput)) body: DispatchCustomerReopenInput,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.dispatch.reopenInvoice(this.viewer(request), id, body);
+  }
+
+  @Post(':id/invoice')
+  @RequirePermission('despacho:update')
+  @ApiOperation({ summary: 'Marca la factura entregada de todos los clientes pendientes' })
+  deliverAllInvoices(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(zDispatchInvoiceInput)) body: DispatchInvoiceInput,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.dispatch.deliverAllInvoices(this.viewer(request), id, body);
   }
 
   @Post(':id/complete')
@@ -129,6 +196,8 @@ export class DispatchController {
       isAdmin: request.access?.isAdmin ?? false,
       canPublish: request.access?.permissions.includes('despacho:create') ?? false,
       canViewAll: request.access?.permissions.includes('despacho:view_all') ?? false,
+      canUpdate: request.access?.permissions.includes('despacho:update') ?? false,
+      canDelete: request.access?.permissions.includes('despacho:delete') ?? false,
       code: request.user?.code ?? null,
     };
   }
@@ -170,6 +239,8 @@ export class NotificationsController {
       isAdmin: request.access?.isAdmin ?? false,
       canPublish: request.access?.permissions.includes('despacho:create') ?? false,
       canViewAll: request.access?.permissions.includes('despacho:view_all') ?? false,
+      canUpdate: request.access?.permissions.includes('despacho:update') ?? false,
+      canDelete: request.access?.permissions.includes('despacho:delete') ?? false,
       code: request.user?.code ?? null,
     };
   }

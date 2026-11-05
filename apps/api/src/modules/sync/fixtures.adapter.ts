@@ -217,6 +217,201 @@ function buildDailySales(): Record<string, unknown>[] {
 
 const SALES_DAILY = buildDailySales();
 
+// ============================================================
+// Vendedoras de desarrollo: asignación determinista de cada venta a una
+// vendedora y a un cliente. El reparto se mantiene estable entre renders y
+// permite probar cuotas, clientes y la franja de participación sin Profit.
+// ============================================================
+const FIXTURE_SELLERS = [
+  { code: '012', name: 'LIZ ANTONELLA PEREZ BAEZ' },
+  { code: '025', name: 'MEIDY CRISTINA ARIAS VIDAL' },
+  { code: '031', name: 'JUILIARD ANGULO' },
+  { code: '026', name: 'YARITZA DEL CARMEN PARRA' },
+  { code: '022', name: 'JAIME FRANCISCO QUINTERO PIÑERO' },
+];
+
+const FIXTURE_SELLER_CLIENTS = [
+  { code: '153064128', name: 'JOSEF HENDRIX HERNANDEZ REYES', tipo: 'L1 EXCLUSIVOS' },
+  { code: '505835220', name: 'AGRO INVERSIONES MP, C.A', tipo: 'L2 DISTRIBUIDORES' },
+  { code: '900000001', name: 'AVICOLA LOS LLANOS, C.A', tipo: 'L2 DISTRIBUIDORES' },
+  { code: '900000002', name: 'GRANJA SAN JOSE, C.A', tipo: 'L3 MINORISTA' },
+  { code: '900000003', name: 'INACTIVO DESDE 2025, C.A', tipo: 'L3 MINORISTA' },
+  { code: '900000004', name: 'AGROPECUARIA EL SOL, C.A', tipo: 'L2 DISTRIBUIDORES' },
+  { code: '900000005', name: 'GRANJA LA ESPERANZA, C.A', tipo: 'L3 MINORISTA' },
+];
+
+function fixtureSellerOf(fecha: string, coArt: string) {
+  const day = Number(fecha.slice(8, 10)) || 1;
+  const productIndex = Math.max(0, SALES_PRODUCTS.findIndex((product) => product.co_art === coArt));
+  const clientIndex = (day * 13 + productIndex * 5) % FIXTURE_SELLER_CLIENTS.length;
+  return {
+    seller: FIXTURE_SELLERS[clientIndex % FIXTURE_SELLERS.length]!,
+    client: FIXTURE_SELLER_CLIENTS[clientIndex]!,
+  };
+}
+
+function sellerSalesMonthly(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const buckets = new Map<
+    string,
+    {
+      anio: number;
+      mes: number;
+      co_ven: string;
+      ven_des: string;
+      co_cli: string;
+      cli_des: string;
+      tipo: string;
+      unid: number;
+      kg: number;
+      dias: Set<string>;
+      ultima: string;
+    }
+  >();
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const { seller, client } = fixtureSellerOf(day, String(row.co_art));
+    const [year, month] = day.split('-');
+    const key = `${year}-${month}-${seller.code}-${client.code}`;
+    const bucket = buckets.get(key) ?? {
+      anio: Number(year),
+      mes: Number(month),
+      co_ven: seller.code,
+      ven_des: seller.name,
+      co_cli: client.code,
+      cli_des: client.name,
+      tipo: client.tipo,
+      unid: 0,
+      kg: 0,
+      dias: new Set<string>(),
+      ultima: day,
+    };
+    bucket.unid += Number(row.unid);
+    bucket.kg += Number(row.kg);
+    bucket.dias.add(day);
+    if (day > bucket.ultima) bucket.ultima = day;
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()].map((bucket) => ({
+    anio: bucket.anio,
+    mes: bucket.mes,
+    co_ven: bucket.co_ven,
+    ven_des: bucket.ven_des,
+    co_cli: bucket.co_cli,
+    cli_des: bucket.cli_des,
+    tipo: bucket.tipo,
+    unid: bucket.unid,
+    kg: bucket.kg,
+    // En fixtures no hay número de nota por línea: se usa el día como unidad
+    // de documento (suficiente para la UI de desarrollo).
+    notas: bucket.dias.size,
+    ultima: bucket.ultima,
+  })).slice(0, limit);
+}
+
+// Ventas por cliente y artículo (desviación por cliente). Reutiliza la misma
+// asignación determinista de vendedora/cliente que las ventas por vendedora,
+// pero agrupa por mes, cliente y artículo. No altera los totales del informe
+// de productos: cada fila de SALES_DAILY se atribuye a un solo cliente.
+function customerProductSales(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const buckets = new Map<
+    string,
+    {
+      anio: number;
+      mes: number;
+      co_cli: string;
+      cli_des: string;
+      co_art: string;
+      art_des: string;
+      uni_venta: string;
+      uni_relac: number;
+      unid: number;
+      kg: number;
+      ultima: string;
+    }
+  >();
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const productCode = String(row.co_art);
+    const { client } = fixtureSellerOf(day, productCode);
+    const [year, month] = day.split('-');
+    const key = `${year}-${month}-${client.code}-${productCode}`;
+    const bucket = buckets.get(key) ?? {
+      anio: Number(year),
+      mes: Number(month),
+      co_cli: client.code,
+      cli_des: client.name,
+      co_art: productCode,
+      art_des: String(row.art_des),
+      uni_venta: String(row.uni_venta),
+      uni_relac: Number(row.uni_relac),
+      unid: 0,
+      kg: 0,
+      ultima: day,
+    };
+    bucket.unid += Number(row.unid);
+    bucket.kg += Number(row.kg);
+    if (day > bucket.ultima) bucket.ultima = day;
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => ({
+      anio: bucket.anio,
+      mes: bucket.mes,
+      co_cli: bucket.co_cli,
+      cli_des: bucket.cli_des,
+      co_art: bucket.co_art,
+      art_des: bucket.art_des,
+      uni_venta: bucket.uni_venta,
+      uni_relac: bucket.uni_relac,
+      unid: bucket.unid,
+      kg: bucket.kg,
+      ultima_factura: bucket.ultima,
+    }))
+    .slice(0, limit);
+}
+
+function sellerSalesDaily(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const buckets = new Map<string, { fecha: string; co_ven: string; kg: number; unid: number }>();
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const { seller } = fixtureSellerOf(day, String(row.co_art));
+    const key = `${day}-${seller.code}`;
+    const bucket = buckets.get(key) ?? { fecha: day, co_ven: seller.code, kg: 0, unid: 0 };
+    bucket.kg += Number(row.kg);
+    bucket.unid += Number(row.unid);
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => {
+      const sellerIndex = Math.max(0, FIXTURE_SELLERS.findIndex((seller) => seller.code === bucket.co_ven));
+      return {
+        ...bucket,
+        notas: 1 + ((Number(bucket.fecha.slice(8, 10)) + sellerIndex) % 3),
+      };
+    })
+    .sort((a, b) => a.fecha.localeCompare(b.fecha) || a.co_ven.localeCompare(b.co_ven))
+    .slice(0, limit);
+}
+
+
 function paramDay(value: unknown): string {
   if (value instanceof Date) return isoUtc(value);
   return String(value ?? '').slice(0, 10);
@@ -653,6 +848,55 @@ function salesDailyProducts(params: Record<string, unknown>, limit: number): Rec
     .slice(0, limit);
 }
 
+// Desglose por cliente y artículo de un día (modal «Desglose del día»). Usa la
+// misma asignación determinista que las ventas por vendedora, así cada cliente
+// recibe una parte estable y los kg cuadran con la serie diaria.
+function dailyCustomerProducts(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const buckets = new Map<
+    string,
+    {
+      fecha: string;
+      co_cli: string;
+      cli_des: string;
+      co_art: string;
+      art_des: string;
+      uni_venta: string;
+      uni_relac: number;
+      unid: number;
+      kg: number;
+    }
+  >();
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const productCode = String(row.co_art);
+    const { client } = fixtureSellerOf(day, productCode);
+    const key = `${day}|${client.code}|${productCode}`;
+    const bucket = buckets.get(key) ?? {
+      fecha: day,
+      co_cli: client.code,
+      cli_des: client.name,
+      co_art: productCode,
+      art_des: String(row.art_des),
+      uni_venta: String(row.uni_venta),
+      uni_relac: Number(row.uni_relac),
+      unid: 0,
+      kg: 0,
+    };
+    bucket.unid += Number(row.unid);
+    bucket.kg += Number(row.kg);
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .sort((a, b) => a.fecha.localeCompare(b.fecha) || b.kg - a.kg)
+    .slice(0, limit);
+}
+
 function datasetFor(viewName: string): Record<string, unknown>[] {
   const lower = viewName.toLowerCase();
   if (lower.includes('solicitud') || lower.includes('pendiente')) return SOLICITUDES;
@@ -775,10 +1019,18 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     // Van antes de `reng_nde` porque la consulta de ventas usa esa tabla.
     if (lower.includes('nexo:customer_catalog')) return customerCatalog(limit);
     if (lower.includes('nexo:customer_sales')) return customerSales(params, limit);
+    // Desviación por cliente: producto × cliente × mes.
+    if (lower.includes('nexo:customer_products')) return customerProductSales(params, limit);
+    // Vendedoras vs Forecast: se detecta por el marcador del SELECT y va antes
+    // del bloque genérico de `reng_nde`.
+    if (lower.includes('nexo:seller_sales_monthly')) return sellerSalesMonthly(params, limit);
+    if (lower.includes('nexo:seller_sales_daily')) return sellerSalesDaily(params, limit);
     // Reconciliación de pedidos: se detecta por el marcador del SELECT.
     if (lower.includes('order_lifecycle_header')) return lifecycleHeaders(params, limit);
     if (lower.includes('order_lifecycle_pending')) return lifecyclePending(params, limit);
     if (lower.includes('reng_nde')) {
+      // Desglose por cliente × artículo de un día (modal «Desglose del día»).
+      if (lower.includes('nexo:daily_customer_products')) return dailyCustomerProducts(params, limit);
       // Desglose por artículo del día (panel «Ventas del día»).
       if (lower.includes('nexo:daily_products')) return salesDailyProducts(params, limit);
       // Serie diaria (la consulta agrupa por `CAST(f.fec_emis AS date)`) vs

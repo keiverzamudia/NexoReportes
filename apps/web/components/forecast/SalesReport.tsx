@@ -13,7 +13,12 @@
 // Las cifras las calcula el API (`/forecast/sales`); aquí solo se da formato.
 // ============================================================
 
-import type { ForecastSalesResponse, ForecastSalesRow } from '@nexo/contracts';
+import type {
+  ForecastCustomerSalesResponse,
+  ForecastCustomerSalesRow,
+  ForecastSalesResponse,
+  ForecastSalesRow,
+} from '@nexo/contracts';
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -28,14 +33,26 @@ import {
   ListFilter,
   PackageSearch,
   RotateCw,
+  Users,
   X,
 } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { EChart } from '../EChart';
 import { ModuleHelp } from '../help/ColumnHelp';
+import { CustomerPicker } from '../CustomerPicker';
 import { ProductPicker } from '../ProductPicker';
-import { SALES_COLUMN_HELP, SALES_HELP_RULES, SALES_HELP_TERMS, SALES_HELP_TITLE } from '../../content/help/forecast';
+import { DaySalesModal } from './DaySalesModal';
+import {
+  CUSTOMER_SALES_COLUMN_HELP,
+  CUSTOMER_SALES_HELP_TERMS,
+  SALES_COLUMN_HELP,
+  SALES_CUSTOMER_HELP_RULES,
+  SALES_CUSTOMER_HELP_TITLE,
+  SALES_HELP_RULES,
+  SALES_HELP_TERMS,
+  SALES_HELP_TITLE,
+} from '../../content/help/forecast';
 import { apiFetch } from '../../lib/api';
 import {
   Badge,
@@ -43,6 +60,7 @@ import {
   Column,
   DataTable,
   EmptyState,
+  Segmented,
   Skeleton,
   TextInput,
   cx,
@@ -51,17 +69,21 @@ import {
 import {
   META_MARKER_PCT,
   buildCumulativeSeries,
+  buildCustomerSalesCsv,
   buildDayBars,
   buildNarrative,
   buildSalesCsv,
+  customerSalesCsvFileName,
   dailySalesScale,
   dayLabel,
+  filterCustomerSalesRows,
   filterSalesRows,
   fmtKg,
   fmtPct,
+  fmtSignedPct,
   fmtTonnes,
   monthLabel,
-  productsForDay,
+  monthOverMonthPct,
   salesCsvFileName,
   salesDaysWithSales,
   salesDeviationGeometry,
@@ -239,6 +261,12 @@ export function SalesReport({
   unit,
   canEdit = false,
   onRetry,
+  mode = 'product',
+  onModeChange,
+  customerReport,
+  customerLoading = false,
+  customerError = null,
+  onCustomerRetry,
 }: {
   report?: ForecastSalesResponse;
   isLoading: boolean;
@@ -247,19 +275,30 @@ export function SalesReport({
   /** Permite aceptar un cambio de meta detectado en Profit. */
   canEdit?: boolean;
   onRetry: () => void;
+  /** Producto (informe actual) o cliente (reparto de la meta). */
+  mode?: 'product' | 'customer';
+  onModeChange?: (mode: 'product' | 'customer') => void;
+  customerReport?: ForecastCustomerSalesResponse;
+  customerLoading?: boolean;
+  customerError?: Error | null;
+  onCustomerRetry?: () => void;
 }) {
   const [search, setSearch] = useState('');
   const [onlyWithSales, setOnlyWithSales] = useState(false);
   const [onlyWithForecast, setOnlyWithForecast] = useState(false);
   const [onlyWithData, setOnlyWithData] = useState(false);
   const [focusCode, setFocusCode] = useState<string | null>(null);
+  const [expandedCustomer, setExpandedCustomer] = useState<string | null>(null);
   const [pinnedDay, setPinnedDay] = useState<string | null>(null);
   const [hoverDay, setHoverDay] = useState<string | null>(null);
+  // Día abierto en el modal de desglose (independiente del pin de la tira).
+  const [detailDay, setDetailDay] = useState<string | null>(null);
   const [helpRow, setHelpRow] = useHelpRow();
   // Listas largas: el informe no debe pintar cientos de filas de golpe.
   const [deviationExpanded, setDeviationExpanded] = useState(false);
   const detailRef = useRef<HTMLElement | null>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
+  const customerTableRef = useRef<HTMLDivElement | null>(null);
 
   // El input responde al instante; la lista se filtra cuando hay hueco.
   const deferredSearch = useDeferredValue(search);
@@ -283,6 +322,39 @@ export function SalesReport({
     [filtered, deviationExpanded],
   );
 
+  const filteredCustomers = useMemo(
+    () =>
+      customerReport
+        ? filterCustomerSalesRows(customerReport.customers, {
+            search: deferredSearch,
+            onlyWithSales,
+          })
+        : [],
+    [customerReport, deferredSearch, onlyWithSales],
+  );
+
+  const customerDeviationPreview = useMemo(
+    () => (deviationExpanded ? filteredCustomers : filteredCustomers.slice(0, DEVIATION_PREVIEW)),
+    [filteredCustomers, deviationExpanded],
+  );
+
+  const customerPickerOptions = useMemo(
+    () =>
+      (customerReport?.customers ?? []).map((customer) => ({
+        value: customer.customerCode,
+        description: customer.customerName,
+        customerType: customer.customerType,
+      })),
+    [customerReport],
+  );
+
+  const openCustomer = useCallback((code: string) => {
+    setExpandedCustomer((current) => (current === code ? null : code));
+    requestAnimationFrame(() => {
+      customerTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, []);
+
   const openProduct = useCallback((code: string) => {
     previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setFocusCode((current) => (current === code ? null : code));
@@ -302,15 +374,10 @@ export function SalesReport({
     () => (activeDay ? dayBars.find((bar) => bar.date === activeDay) ?? null : null),
     [activeDay, dayBars],
   );
-  const pinnedBar = useMemo(
-    () => (pinnedDay ? dayBars.find((bar) => bar.date === pinnedDay) ?? null : null),
-    [pinnedDay, dayBars],
-  );
-  // El desglose se ancla al clic, no al hover: la tabla debe quedarse quieta
-  // mientras el puntero viaja de la barra a la tabla.
-  const pinnedDayProducts = useMemo(
-    () => (report && pinnedDay ? productsForDay(report, pinnedDay) : []),
-    [report, pinnedDay],
+  // Día del modal: sale de `dayBars` para tener kg/notas y el estado del día.
+  const detailBar = useMemo(
+    () => (detailDay ? dayBars.find((bar) => bar.date === detailDay) ?? null : null),
+    [dayBars, detailDay],
   );
   // Arranque del scroll: hoy si está en el mes, si no el último día con venta.
   const initialBarDate = useMemo(() => {
@@ -319,9 +386,22 @@ export function SalesReport({
     const lastSale = [...dayBars].reverse().find((bar) => bar.kg > 0);
     return lastSale?.date ?? dayBars[0]?.date ?? null;
   }, [dayBars, report]);
-  const togglePinnedDay = useCallback((date: string) => {
-    setPinnedDay((current) => (current === date ? null : date));
+  // El clic fija el día y abre el modal; los días futuros solo se marcan.
+  const openDay = useCallback(
+    (date: string) => {
+      setPinnedDay(date);
+      const bar = dayBars.find((entry) => entry.date === date);
+      if (bar?.future) return;
+      setDetailDay(date);
+    },
+    [dayBars],
+  );
+  const clearPinnedDay = useCallback(() => {
+    setPinnedDay(null);
+    setHoverDay(null);
+    setDetailDay(null);
   }, []);
+  const closeDayDetail = useCallback(() => setDetailDay(null), []);
 
   // La gráfica informa el índice del eje X; el panel lo traduce a fecha.
   const handleIndexHover = useCallback(
@@ -334,16 +414,25 @@ export function SalesReport({
     (index: number) => {
       const date = report?.daily[index]?.date;
       if (!date) return;
-      setPinnedDay((current) => (current === date ? null : date));
+      openDay(date);
     },
-    [report],
+    [openDay, report],
   );
 
   // Al cambiar de mes se limpia la selección (las fechas ya no aplican).
   useEffect(() => {
     setPinnedDay(null);
     setHoverDay(null);
+    setDetailDay(null);
+    setExpandedCustomer(null);
   }, [report?.year, report?.month]);
+
+  // Al cambiar de producto a cliente (o al revés) no se arrastra el foco de la
+  // vista anterior.
+  useEffect(() => {
+    setFocusCode(null);
+    setExpandedCustomer(null);
+  }, [mode]);
 
   // El detalle del producto es un diálogo: Esc cierra, el fondo no scrollea
   // y el foco entra al panel para que el clic tenga respuesta inmediata.
@@ -387,6 +476,7 @@ export function SalesReport({
 
   const hasDeviationFilters =
     Boolean(search.trim()) || onlyWithSales || onlyWithForecast || onlyWithData;
+  const customerHasFilters = Boolean(search.trim()) || onlyWithSales;
   const clearDeviationFilters = useCallback(() => {
     setSearch('');
     setOnlyWithSales(false);
@@ -467,6 +557,19 @@ export function SalesReport({
     const link = document.createElement('a');
     link.href = url;
     link.download = salesCsvFileName(report);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadCustomers = () => {
+    if (!customerReport) return;
+    const blob = new Blob([buildCustomerSalesCsv(customerReport)], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = customerSalesCsvFileName(customerReport);
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -649,6 +752,143 @@ export function SalesReport({
     },
   ];
 
+  const customerColumns: Column<ForecastCustomerSalesRow>[] = [
+    {
+      key: 'codigo',
+      header: 'Código',
+      help: CUSTOMER_SALES_COLUMN_HELP.codigo,
+      kind: 'id',
+      sortValue: (row) => row.customerCode,
+      render: (row) => <span className="font-bold tabular-nums text-primary">{row.customerCode}</span>,
+    },
+    {
+      key: 'cliente',
+      header: 'Cliente',
+      help: CUSTOMER_SALES_COLUMN_HELP.cliente,
+      title: (row) => row.customerName,
+      render: (row) => (
+        <span className="block max-w-[16rem] truncate font-semibold text-on-surface" title={row.customerName}>
+          {row.customerName}
+        </span>
+      ),
+    },
+    {
+      key: 'tipo',
+      header: 'Tipo / Vendedor',
+      help: CUSTOMER_SALES_COLUMN_HELP.tipo,
+      kind: 'field',
+      render: (row) => (
+        <span className="flex max-w-[13rem] flex-col">
+          <span className="truncate text-label-sm font-semibold text-on-surface-variant">{row.customerType ?? 'Sin tipo'}</span>
+          <span className="truncate text-label-sm text-outline">{row.vendor ?? 'Sin vendedor'}</span>
+        </span>
+      ),
+    },
+    {
+      key: 'venta',
+      header: 'Venta kg',
+      help: CUSTOMER_SALES_COLUMN_HELP.venta,
+      align: 'right',
+      kind: 'metric',
+      sortValue: (row) => row.actualKg,
+      render: (row) => (
+        <span className={cx('tabular-nums font-bold', row.actualKg > 0 ? 'text-primary' : 'text-outline')}>
+          {fmtKg(row.actualKg)}
+        </span>
+      ),
+    },
+    {
+      key: 'participacion',
+      header: 'Participación %',
+      help: CUSTOMER_SALES_COLUMN_HELP.participacion,
+      align: 'right',
+      kind: 'metric',
+      sortValue: (row) => row.sharePct,
+      render: (row) => (
+        <span className={cx('tabular-nums font-bold', row.sharePct > 0 ? 'text-secondary' : 'text-outline')}>
+          {fmtPct(row.sharePct)}
+        </span>
+      ),
+    },
+    {
+      key: 'productos',
+      header: 'Productos',
+      help: CUSTOMER_SALES_COLUMN_HELP.productos,
+      align: 'center',
+      kind: 'metric',
+      sortValue: (row) => row.productCount,
+      render: (row) => <Badge tone="muted">{fmtKg(row.productCount, 0)}</Badge>,
+    },
+    {
+      key: 'ultimaFactura',
+      header: 'Última entrega',
+      help: CUSTOMER_SALES_COLUMN_HELP.ultimaFactura,
+      align: 'right',
+      kind: 'detail',
+      render: (row) => (
+        <span className="whitespace-nowrap text-label-sm text-on-surface-variant">{fmtDate(row.lastInvoiceDate)}</span>
+      ),
+    },
+    {
+      key: 'acciones',
+      header: '',
+      align: 'right',
+      kind: 'action',
+      render: (row) => (
+        <button
+          type="button"
+          onClick={() => setExpandedCustomer((current) => (current === row.customerCode ? null : row.customerCode))}
+          aria-expanded={expandedCustomer === row.customerCode}
+          aria-label={`${expandedCustomer === row.customerCode ? 'Ocultar' : 'Ver'} productos de ${row.customerName}`}
+          title={expandedCustomer === row.customerCode ? 'Ocultar productos' : 'Ver productos'}
+          className="grid size-8 place-items-center rounded-lg text-outline transition-colors hover:bg-surface-container hover:text-primary"
+        >
+          <ChevronRight
+            aria-hidden
+            className={cx('size-4 transition-transform', expandedCustomer === row.customerCode && 'rotate-90')}
+          />
+        </button>
+      ),
+    },
+  ];
+
+  const customerTotals = customerReport?.totals;
+  const filteredActiveCustomers = filteredCustomers.filter((customer) => customer.actualKg > 0).length;
+  const customerProductCount = filteredCustomers.reduce((acc, customer) => acc + customer.productCount, 0);
+  const filteredShare = filteredCustomers.reduce((acc, customer) => acc + customer.sharePct, 0);
+  const customerFooter = (
+    <tr className="border-t-2 border-surface-container bg-surface-container-low font-bold">
+      <td colSpan={3} className="px-space-sm py-space-xs">
+        <span className="flex flex-wrap items-center gap-space-sm uppercase text-label-sm text-outline">
+          Totales {filteredCustomers.length !== (customerReport?.customers.length ?? 0) ? `(${filteredCustomers.length} filtrados)` : 'globales'}
+          <Badge tone="primary" dot>
+            {fmtKg(filteredActiveCustomers, 0)} con venta
+          </Badge>
+        </span>
+      </td>
+      <td className="px-space-sm py-space-xs text-right tabular-nums text-primary">{fmtKg(customerTotals?.actualKg)}</td>
+      <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtPct(filteredShare)}</td>
+      <td className="px-space-sm py-space-xs text-center">{fmtKg(customerProductCount, 0)}</td>
+      <td className="px-space-sm py-space-xs text-right text-label-sm text-on-surface-variant">
+        {customerTotals?.lastInvoiceDate ? fmtDate(customerTotals.lastInvoiceDate) : '—'}
+      </td>
+      <td />
+    </tr>
+  );
+
+  const customerMobileSummary = (
+    <div className="grid grid-cols-2 gap-space-sm border-t border-surface-container px-space-lg py-space-md text-body-md">
+      <span className="text-outline">Venta kg</span>
+      <span className="text-right font-bold tabular-nums">{fmtKg(customerTotals?.actualKg)}</span>
+      <span className="text-outline">Participación visible</span>
+      <span className="text-right font-bold tabular-nums">{fmtPct(filteredShare)}</span>
+      <span className="text-outline">Clientes con venta</span>
+      <span className="text-right font-bold tabular-nums">{fmtKg(filteredActiveCustomers, 0)}</span>
+      <span className="text-outline">Productos</span>
+      <span className="text-right font-bold tabular-nums">{fmtKg(customerProductCount, 0)}</span>
+    </div>
+  );
+
   const footer = (
     <tr className="border-t-2 border-surface-container bg-surface-container-low font-bold">
       <td colSpan={3} className="px-space-sm py-space-xs">
@@ -722,6 +962,14 @@ export function SalesReport({
         <p role="status" className="flex items-start gap-space-sm rounded-xl bg-surface-container-low px-space-md py-space-sm text-body-md text-on-surface-variant">
           <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
           forecast no tiene metas para este mes: la venta real se muestra sin porcentajes de cumplimiento.
+        </p>
+      )}
+
+      {mode === 'customer' && (
+        <p role="status" className="flex items-start gap-space-sm rounded-xl bg-primary-fixed/30 px-space-md py-space-sm text-body-md text-primary">
+          <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
+          El acumulado y los KPIs superiores son de la empresa. La desviación y la tabla de abajo son por cliente, con la
+          meta de cada producto repartida según su histórico de compra.
         </p>
       )}
 
@@ -875,73 +1123,9 @@ export function SalesReport({
                   initialDate={initialBarDate}
                   fallbackSummary={`${daysWithSales.length} días con venta · ${fmtKg(totals.actualKg)} kg · ${fmtKg(totals.invoiceCount)} notas`}
                   onHover={setHoverDay}
-                  onPin={togglePinnedDay}
+                  onPin={openDay}
+                  onClear={clearPinnedDay}
                 />
-
-                {/* Desglose del día fijado con clic (el hover solo previsualiza). */}
-                <section
-                  aria-label="Desglose por producto del día"
-                  className="mt-space-sm border-t border-surface-container pt-space-sm"
-                >
-                  <header className="mb-space-xs flex flex-wrap items-center justify-between gap-space-sm px-space-xs">
-                    <div className="min-w-0">
-                      <h3 className="text-label-sm font-bold uppercase tracking-[0.14em] text-outline">
-                        Desglose por producto
-                      </h3>
-                      <p className="text-label-md text-on-surface-variant">
-                        {pinnedBar
-                          ? `${dayLabel(pinnedBar.date)}${pinnedBar.partial ? ' · en curso' : ''} · ${fmtKg(pinnedBar.kg)} kg · ${fmtKg(pinnedBar.invoices)} notas`
-                          : 'Haz clic en un día del acumulado o en una barra para fijar su desglose.'}
-                      </p>
-                    </div>
-                  </header>
-
-                  {pinnedBar && (
-                    <div className="max-h-[200px] overflow-y-auto pr-1">
-                      {pinnedDayProducts.length > 0 ? (
-                        <table className="w-full border-collapse text-label-md">
-                          <caption className="sr-only">
-                            Productos despachados el {dayLabel(pinnedBar.date)}
-                          </caption>
-                          <thead>
-                            <tr className="text-label-sm uppercase tracking-[0.1em] text-outline">
-                              <th scope="col" className="py-1 text-left font-semibold">
-                                Producto
-                              </th>
-                              <th scope="col" className="py-1 text-right font-semibold">
-                                Kg
-                              </th>
-                              <th scope="col" className="py-1 text-right font-semibold">
-                                Sacos
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {pinnedDayProducts.map((line) => (
-                              <tr key={line.productCode} className="border-t border-surface-container/70">
-                                <td className="py-1 pr-2">
-                                  <span className="block truncate text-on-surface">{line.description}</span>
-                                  <span className="text-label-sm text-outline">
-                                    {line.productCode}
-                                    {line.uom ? ` · ${line.uom}` : ''}
-                                  </span>
-                                </td>
-                                <td className="py-1 text-right tabular-nums text-on-surface">{fmtKg(line.kg)}</td>
-                                <td className="py-1 text-right tabular-nums text-on-surface-variant">
-                                  {line.sacks === null ? '—' : fmtKg(line.sacks, 1)}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      ) : (
-                        <p className="px-space-xs py-3 text-label-md text-outline">
-                          Este día no tiene desglose por producto (sin despachos).
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </section>
               </>
             ) : (
               <EmptyState
@@ -961,41 +1145,73 @@ export function SalesReport({
           <header className="px-space-md pt-space-md">
             <div className="flex items-start justify-between gap-space-sm">
               <div className="min-w-0">
-                <h2 className="flex items-center gap-1.5 text-title-md font-bold text-on-surface">
-                  <ListFilter aria-hidden className="size-4 shrink-0 text-primary" />
-                  Desviación por producto
-                </h2>
+                <div className="flex flex-wrap items-center gap-space-sm">
+                  <h2 className="flex items-center gap-1.5 text-title-md font-bold text-on-surface">
+                    <ListFilter aria-hidden className="size-4 shrink-0 text-primary" />
+                    {mode === 'customer' ? 'Participación por cliente' : 'Desviación por producto'}
+                  </h2>
+                  <Segmented
+                    ariaLabel="Ver el informe por"
+                    value={mode}
+                    onChange={(value) => onModeChange?.(value)}
+                    options={[
+                      { value: 'product', label: 'Por producto' },
+                      { value: 'customer', label: 'Por cliente' },
+                    ]}
+                  />
+                </div>
                 <p className="text-label-md text-on-surface-variant">
-                  {hasDeviationFilters
-                    ? `${fmtKg(filtered.length, 0)} de ${fmtKg(report.rows.length, 0)} artículos · cada barra se mide contra su meta`
-                    : `${fmtKg(report.rows.length, 0)} artículos · cada barra se mide contra su meta`}
-                  <span className="block text-outline">Haz clic en un artículo para abrir su detalle.</span>
+                  {mode === 'customer' ? (
+                    <>
+                      {customerHasFilters
+                        ? `${fmtKg(filteredCustomers.length, 0)} de ${fmtKg(customerReport?.customers.length ?? 0, 0)} clientes · % de la venta ABA del mes a la fecha`
+                        : `${fmtKg(customerReport?.customers.length ?? 0, 0)} clientes · % de la venta ABA del mes a la fecha`}
+                      <span className="block text-outline">Haz clic en un cliente para resaltarlo y expandir sus productos.</span>
+                    </>
+                  ) : (
+                    <>
+                      {hasDeviationFilters
+                        ? `${fmtKg(filtered.length, 0)} de ${fmtKg(report.rows.length, 0)} artículos · cada barra se mide contra su meta`
+                        : `${fmtKg(report.rows.length, 0)} artículos · cada barra se mide contra su meta`}
+                      <span className="block text-outline">Haz clic en un artículo para abrir su detalle.</span>
+                    </>
+                  )}
                 </p>
               </div>
-              <Badge tone="primary">{fmtKg(filtered.length, 0)} art.</Badge>
+              <Badge tone="primary">
+                {mode === 'customer'
+                  ? `${fmtKg(filteredActiveCustomers, 0)} con venta`
+                  : `${fmtKg(filtered.length, 0)} art.`}
+              </Badge>
             </div>
 
             <div
               className="mt-space-sm flex flex-wrap items-center gap-space-2xs"
               role="group"
-              aria-label="Filtros de la desviación por producto"
+              aria-label={mode === 'customer' ? 'Filtros de participación por cliente' : 'Filtros de la desviación por producto'}
             >
               <TextInput
                 icon={PackageSearch}
                 value={search}
                 onChange={setSearch}
-                placeholder="Buscar código o descripción…"
-                ariaLabel="Buscar producto en la desviación"
+                placeholder={mode === 'customer' ? 'Buscar código o cliente…' : 'Buscar código o descripción…'}
+                ariaLabel={mode === 'customer' ? 'Buscar cliente' : 'Buscar producto en la desviación'}
                 className="min-w-[12rem] flex-1"
               />
-              <FilterChip active={onlyWithData} onClick={() => setOnlyWithData((value) => !value)} label="Con datos" />
-              <FilterChip
-                active={onlyWithForecast}
-                onClick={() => setOnlyWithForecast((value) => !value)}
-                label="Con forecast"
-              />
-              <FilterChip active={onlyWithSales} onClick={() => setOnlyWithSales((value) => !value)} label="Con venta" />
-              {hasDeviationFilters && (
+              {mode === 'customer' ? (
+                <FilterChip active={onlyWithSales} onClick={() => setOnlyWithSales((value) => !value)} label="Con venta" />
+              ) : (
+                <>
+                  <FilterChip active={onlyWithData} onClick={() => setOnlyWithData((value) => !value)} label="Con datos" />
+                  <FilterChip
+                    active={onlyWithForecast}
+                    onClick={() => setOnlyWithForecast((value) => !value)}
+                    label="Con forecast"
+                  />
+                  <FilterChip active={onlyWithSales} onClick={() => setOnlyWithSales((value) => !value)} label="Con venta" />
+                </>
+              )}
+              {(mode === 'customer' ? customerHasFilters : hasDeviationFilters) && (
                 <button
                   type="button"
                   onClick={clearDeviationFilters}
@@ -1007,33 +1223,111 @@ export function SalesReport({
             </div>
           </header>
           <div className="px-space-md pb-space-md pt-space-sm">
-            <DeviationBars
-              rows={deviationPreview}
-              focus={focusCode}
-              showProjection={isOpen}
-              onFocus={openProduct}
-            />
-            {filtered.length > DEVIATION_PREVIEW && (
-              <button
-                type="button"
-                onClick={() => setDeviationExpanded((value) => !value)}
-                aria-expanded={deviationExpanded}
-                className="mt-space-xs inline-flex h-9 w-full items-center justify-center gap-1 rounded-xl border border-outline-variant/40 text-label-md font-semibold text-on-surface-variant transition-colors hover:border-primary-container/40 hover:text-primary"
-              >
-                <ChevronDown
-                  aria-hidden
-                  className={cx('size-4 transition-transform', deviationExpanded && 'rotate-180')}
+            {mode === 'customer' ? (
+              <>
+                {customerLoading && !customerReport && <CustomerDeviationSkeleton />}
+                {customerError && !customerReport && (
+                  <div className="flex flex-col items-start gap-space-sm rounded-xl bg-critical-container/50 p-space-sm">
+                    <p role="alert" className="flex items-center gap-space-sm text-body-md text-on-critical-container">
+                      <AlertTriangle aria-hidden className="size-4" />
+                      No se pudo cargar la participación por cliente: {customerError.message}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={onCustomerRetry}
+                      className="inline-flex h-8 items-center gap-space-2xs rounded-lg bg-primary-container px-space-sm text-label-sm font-semibold text-on-primary"
+                    >
+                      <RotateCw aria-hidden className="size-3.5" /> Reintentar
+                    </button>
+                  </div>
+                )}
+                {customerReport && !customerReport.salesAvailable && (
+                  <div className="flex flex-col items-start gap-space-sm rounded-xl bg-warning-container/50 p-space-sm">
+                    <p role="status" className="flex items-start gap-space-sm text-body-md text-on-warning-container">
+                      <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+                      No se pudieron leer los despachos por cliente. No se muestran cifras parciales.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={onCustomerRetry}
+                      className="inline-flex h-8 items-center gap-space-2xs rounded-lg bg-primary-container px-space-sm text-label-sm font-semibold text-on-primary"
+                    >
+                      <RotateCw aria-hidden className="size-3.5" /> Reintentar
+                    </button>
+                  </div>
+                )}
+                {customerReport?.salesAvailable && (
+                  <>
+                    <CustomerShareBars
+                      rows={customerDeviationPreview}
+                      focus={expandedCustomer}
+                      onFocus={openCustomer}
+                    />
+                    {customerReport.truncated && (
+                      <p role="status" className="mt-space-xs rounded-lg bg-warning-container/50 px-space-sm py-space-2xs text-label-sm text-on-warning-container">
+                        La consulta alcanzó el límite de filas: el detalle puede estar incompleto.
+                      </p>
+                    )}
+                    {filteredCustomers.length > DEVIATION_PREVIEW && (
+                      <button
+                        type="button"
+                        onClick={() => setDeviationExpanded((value) => !value)}
+                        aria-expanded={deviationExpanded}
+                        className="mt-space-xs inline-flex h-9 w-full items-center justify-center gap-1 rounded-xl border border-outline-variant/40 text-label-md font-semibold text-on-surface-variant transition-colors hover:border-primary-container/40 hover:text-primary"
+                      >
+                        <ChevronDown
+                          aria-hidden
+                          className={cx('size-4 transition-transform', deviationExpanded && 'rotate-180')}
+                        />
+                        {deviationExpanded
+                          ? 'Ver solo los principales'
+                          : `Ver los ${fmtKg(filteredCustomers.length, 0)} clientes`}
+                      </button>
+                    )}
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                <DeviationBars
+                  rows={deviationPreview}
+                  focus={focusCode}
+                  showProjection={isOpen}
+                  onFocus={openProduct}
                 />
-                {deviationExpanded
-                  ? 'Ver solo los principales'
-                  : `Ver los ${fmtKg(filtered.length, 0)} artículos`}
-              </button>
+                {filtered.length > DEVIATION_PREVIEW && (
+                  <button
+                    type="button"
+                    onClick={() => setDeviationExpanded((value) => !value)}
+                    aria-expanded={deviationExpanded}
+                    className="mt-space-xs inline-flex h-9 w-full items-center justify-center gap-1 rounded-xl border border-outline-variant/40 text-label-md font-semibold text-on-surface-variant transition-colors hover:border-primary-container/40 hover:text-primary"
+                  >
+                    <ChevronDown
+                      aria-hidden
+                      className={cx('size-4 transition-transform', deviationExpanded && 'rotate-180')}
+                    />
+                    {deviationExpanded
+                      ? 'Ver solo los principales'
+                      : `Ver los ${fmtKg(filtered.length, 0)} artículos`}
+                  </button>
+                )}
+              </>
             )}
           </div>
         </Card>
       </div>
 
-      {focusRow && (
+      {detailDay && detailBar && (
+        <DaySalesModal
+          date={detailDay}
+          bar={detailBar}
+          report={report}
+          goalKg={dayScale.goalKg}
+          onClose={closeDayDetail}
+        />
+      )}
+
+      {mode === 'product' && focusRow && (
         <>
           <div
             aria-hidden
@@ -1117,10 +1411,19 @@ export function SalesReport({
                     <span aria-hidden className="size-2 rounded-full bg-[#1d5a96]" /> Mes en curso
                   </span>
                   <span className="inline-flex items-center gap-1">
-                    <span aria-hidden className="h-2 w-0.5 rounded-pill bg-secondary" /> Meta capturada por mes
+                    <span aria-hidden className="h-0 w-3 border-t-2 border-dashed border-[#95C800]" /> Meta de cada mes
                   </span>
+                  {focusRow.history.length > 0 && (
+                    <span className="inline-flex items-center gap-1">
+                      <span aria-hidden className="h-0.5 w-3 rounded-pill bg-[#dc2626]" /> Crecimiento % vs mes anterior
+                    </span>
+                  )}
                 </div>
-                <EChart option={focusOption} height={230} ariaLabel={`Histórico de ventas de ${focusRow.productCode}`} />
+                <EChart option={focusOption} height={250} ariaLabel={`Histórico de ventas de ${focusRow.productCode}`} />
+                <p className="mt-space-2xs text-label-sm text-outline">
+                  El guion verde es la meta de ese mes y el tramo verde de la barra, lo que la superó; la línea roja es la
+                  variación % contra el mes anterior.
+                </p>
               </div>
 
               <div className="grid grid-cols-1 gap-space-sm sm:grid-cols-2">
@@ -1180,10 +1483,24 @@ export function SalesReport({
 
       {/* ---------- Tabla ---------- */}
       <Card className="overflow-hidden">
-        <div className="flex flex-wrap items-center justify-between gap-space-md border-b border-surface-container px-space-md py-space-sm">
+        <div
+          ref={customerTableRef}
+          className="flex flex-wrap items-center justify-between gap-space-md border-b border-surface-container px-space-md py-space-sm"
+        >
           <div className="flex flex-wrap items-center gap-space-sm text-label-md text-on-surface-variant">
             <span>
-              {hasDeviationFilters ? (
+              {mode === 'customer' ? (
+                customerHasFilters ? (
+                  <>
+                    <strong className="tabular-nums text-on-surface">{fmtKg(filteredCustomers.length, 0)}</strong> de{' '}
+                    <strong className="tabular-nums text-on-surface">{fmtKg(customerReport?.customers.length ?? 0, 0)}</strong> clientes
+                  </>
+                ) : (
+                  <>
+                    <strong className="tabular-nums text-on-surface">{fmtKg(customerReport?.customers.length ?? 0, 0)}</strong> clientes
+                  </>
+                )
+              ) : hasDeviationFilters ? (
                 <>
                   <strong className="tabular-nums text-on-surface">{fmtKg(filtered.length, 0)}</strong> de{' '}
                   <strong className="tabular-nums text-on-surface">{fmtKg(report.rows.length, 0)}</strong> artículos
@@ -1194,7 +1511,7 @@ export function SalesReport({
                 </>
               )}
             </span>
-            {hasDeviationFilters && (
+            {(mode === 'customer' ? customerHasFilters : hasDeviationFilters) && (
               <button
                 type="button"
                 onClick={clearDeviationFilters}
@@ -1203,16 +1520,27 @@ export function SalesReport({
                 <X aria-hidden className="size-3.5" /> Limpiar filtros
               </button>
             )}
-            <span className="hidden text-outline md:inline">Los filtros se aplican desde «Desviación por producto».</span>
+            <span className="hidden text-outline md:inline">
+              Los filtros se aplican desde «{mode === 'customer' ? 'Participación por cliente' : 'Desviación por producto'}».
+            </span>
           </div>
           <div className="flex flex-wrap items-center gap-space-sm">
             <div className="w-full sm:w-64">
-              <ProductPicker
-                value={focusCode}
-                onChange={(code) => (code ? openProduct(code) : closeProduct())}
-                options={pickerOptions}
-                allLabel="Todos los productos"
-              />
+              {mode === 'customer' ? (
+                <CustomerPicker
+                  value={expandedCustomer}
+                  onChange={(code) => (code ? openCustomer(code) : setExpandedCustomer(null))}
+                  options={customerPickerOptions}
+                  allLabel={`Todos los clientes (${customerReport?.customers.length ?? 0})`}
+                />
+              ) : (
+                <ProductPicker
+                  value={focusCode}
+                  onChange={(code) => (code ? openProduct(code) : closeProduct())}
+                  options={pickerOptions}
+                  allLabel="Todos los productos"
+                />
+              )}
             </div>
             <button
               type="button"
@@ -1229,75 +1557,276 @@ export function SalesReport({
               <BookOpen aria-hidden className="size-4" /> Explicaciones
             </button>
             <ModuleHelp
-              title={SALES_HELP_TITLE}
-              narrative={narrative}
-              rules={SALES_HELP_RULES}
-              terms={SALES_HELP_TERMS}
+              title={mode === 'customer' ? SALES_CUSTOMER_HELP_TITLE : SALES_HELP_TITLE}
+              narrative={
+                mode === 'customer'
+                  ? customerReport
+                    ? `${fmtKg(customerReport.totals.actualKg)} kg vendidos en el mes a la fecha entre ${fmtKg(customerReport.totals.activeCustomerCount, 0)} clientes con venta. La participación se mide contra el total ABA.`
+                    : 'Cargando participación por cliente…'
+                  : narrative
+              }
+              rules={mode === 'customer' ? SALES_CUSTOMER_HELP_RULES : SALES_HELP_RULES}
+              terms={mode === 'customer' ? CUSTOMER_SALES_HELP_TERMS : SALES_HELP_TERMS}
             />
             <button
               type="button"
-              onClick={download}
-              className="inline-flex h-10 items-center gap-space-2xs rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-md text-label-md font-semibold text-on-surface-variant transition-colors hover:border-primary-container/40 hover:text-primary"
+              onClick={mode === 'customer' ? downloadCustomers : download}
+              disabled={mode === 'customer' && !customerReport}
+              className="inline-flex h-10 items-center gap-space-2xs rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-md text-label-md font-semibold text-on-surface-variant transition-colors hover:border-primary-container/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Download aria-hidden className="size-4" /> CSV
             </button>
           </div>
         </div>
 
-        <DataTable<ForecastSalesRow>
-          columns={columns}
-          rows={filtered}
-          rowKey={(row) => row.productCode}
-          empty={
-            <EmptyState
-              icon={PackageSearch}
-              title="Sin ventas registradas"
-              description={
-                search || onlyWithSales || onlyWithForecast || onlyWithData
-                  ? 'Ningún artículo coincide con los filtros. Prueba a limpiar la búsqueda.'
-                  : 'Profit no reporta entregas ABA para el rango consultado.'
-              }
-              action={
-                search || onlyWithSales || onlyWithForecast || onlyWithData ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSearch('');
-                      setOnlyWithSales(false);
-                      setOnlyWithForecast(false);
-                      setOnlyWithData(false);
-                    }}
-                    className="text-label-md font-semibold text-primary underline-offset-2 hover:underline"
-                  >
-                    Limpiar filtros
-                  </button>
-                ) : undefined
-              }
-            />
-          }
-          footer={footer}
-          mobileSummary={mobileSummary}
-          showHelpRow={helpRow}
-        />
+        {mode === 'customer' ? (
+          <DataTable<ForecastCustomerSalesRow>
+            columns={customerColumns}
+            rows={filteredCustomers}
+            rowKey={(row) => row.customerCode}
+            expandedKey={expandedCustomer}
+            renderExpanded={(row) => <CustomerProductsTable row={row} />}
+            empty={
+              <EmptyState
+                icon={Users}
+                title={customerError ? 'No se pudo cargar la participación por cliente' : 'Sin clientes registrados'}
+                description={
+                  customerLoading
+                    ? 'Consultando ventas por cliente en Profit…'
+                    : customerError
+                      ? customerError.message
+                      : customerHasFilters
+                        ? 'Ningún cliente coincide con los filtros. Prueba a limpiar la búsqueda.'
+                        : 'Profit no reporta entregas ABA por cliente para el rango consultado.'
+                }
+                action={
+                  customerError ? (
+                    <button
+                      type="button"
+                      onClick={onCustomerRetry}
+                      className="text-label-md font-semibold text-primary underline-offset-2 hover:underline"
+                    >
+                      Reintentar
+                    </button>
+                  ) : customerHasFilters ? (
+                    <button
+                      type="button"
+                      onClick={clearDeviationFilters}
+                      className="text-label-md font-semibold text-primary underline-offset-2 hover:underline"
+                    >
+                      Limpiar filtros
+                    </button>
+                  ) : undefined
+                }
+              />
+            }
+            footer={customerFooter}
+            mobileSummary={customerMobileSummary}
+            showHelpRow={helpRow}
+          />
+        ) : (
+          <DataTable<ForecastSalesRow>
+            columns={columns}
+            rows={filtered}
+            rowKey={(row) => row.productCode}
+            empty={
+              <EmptyState
+                icon={PackageSearch}
+                title="Sin ventas registradas"
+                description={
+                  search || onlyWithSales || onlyWithForecast || onlyWithData
+                    ? 'Ningún artículo coincide con los filtros. Prueba a limpiar la búsqueda.'
+                    : 'Profit no reporta entregas ABA para el rango consultado.'
+                }
+                action={
+                  search || onlyWithSales || onlyWithForecast || onlyWithData ? (
+                    <button
+                      type="button"
+                      onClick={clearDeviationFilters}
+                      className="text-label-md font-semibold text-primary underline-offset-2 hover:underline"
+                    >
+                      Limpiar filtros
+                    </button>
+                  ) : undefined
+                }
+              />
+            }
+            footer={footer}
+            mobileSummary={mobileSummary}
+            showHelpRow={helpRow}
+          />
+        )}
       </Card>
 
       <p className="flex flex-wrap items-center gap-space-sm px-space-2xs text-label-sm text-on-surface-variant">
-        <span className="inline-flex items-center gap-1">
-          <span aria-hidden className="size-2 rounded-full bg-success" /> ≥ 100 %
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span aria-hidden className="size-2 rounded-full bg-warning" /> 85–99 %
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span aria-hidden className="size-2 rounded-full bg-critical" /> &lt; 85 %
-        </span>
-        <span className="text-outline">·</span>
-        Corte a ayer; el domingo no entra al denominador. Venta = nota de entrega no anulada, línea ABA (sin
-        devoluciones). Los sacos no se suman con kg en los totales.
+        {mode === 'customer' ? (
+          <>
+            <span className="inline-flex items-center gap-1">
+              <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Venta real
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span aria-hidden className="size-2 rounded-full bg-secondary" /> Participación sobre la venta ABA
+            </span>
+            <span className="text-outline">·</span>
+            El 100 % es la venta ABA del mes hasta el corte. La barra se compara con el cliente de mayor participación;
+            la etiqueta muestra el porcentaje real. Los sacos no se suman con kg.
+          </>
+        ) : (
+          <>
+            <span className="inline-flex items-center gap-1">
+              <span aria-hidden className="size-2 rounded-full bg-success" /> ≥ 100 %
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span aria-hidden className="size-2 rounded-full bg-warning" /> 85–99 %
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span aria-hidden className="size-2 rounded-full bg-critical" /> &lt; 85 %
+            </span>
+            <span className="text-outline">·</span>
+            Corte a ayer; el domingo no entra al denominador. Venta = nota de entrega no anulada, línea ABA (sin
+            devoluciones). Los sacos no se suman con kg en los totales.
+          </>
+        )}
       </p>
     </div>
   );
 }
+
+function CustomerProductsTable({ row }: { row: ForecastCustomerSalesRow }) {
+  if (row.products.length === 0) {
+    return <p className="px-space-xs py-2 text-label-md text-outline">El cliente no tiene venta de productos en el mes a la fecha.</p>;
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-label-md">
+        <caption className="sr-only">Productos de {row.customerName}</caption>
+        <thead>
+          <tr className="text-label-sm uppercase tracking-[0.1em] text-outline">
+            <th scope="col" className="py-1 text-left font-semibold">Producto</th>
+            <th scope="col" className="py-1 text-center font-semibold">UOM</th>
+            <th scope="col" className="py-1 text-right font-semibold">Venta kg</th>
+            <th scope="col" className="py-1 text-right font-semibold">Unidades</th>
+            <th scope="col" className="py-1 text-right font-semibold">Sacos</th>
+            <th scope="col" className="py-1 text-right font-semibold">% del cliente</th>
+            <th scope="col" className="py-1 text-right font-semibold">% del producto</th>
+          </tr>
+        </thead>
+        <tbody>
+          {row.products.map((product) => (
+            <tr key={product.productCode} className="border-t border-surface-container/70">
+              <td className="py-1 pr-2">
+                <span className="block truncate text-on-surface">{product.description}</span>
+                <span className="text-label-sm text-outline">{product.productCode}</span>
+              </td>
+              <td className="py-1 text-center text-on-surface-variant">{product.uom}</td>
+              <td className="py-1 text-right tabular-nums font-semibold text-primary">{fmtKg(product.kg)}</td>
+              <td className="py-1 text-right tabular-nums text-on-surface-variant">{fmtKg(product.units)}</td>
+              <td className="py-1 text-right tabular-nums text-on-surface-variant">
+                {product.sacks === null ? '—' : fmtKg(product.sacks, 1)}
+              </td>
+              <td className="py-1 text-right tabular-nums">{fmtPct(product.shareOfCustomerPct)}</td>
+              <td className="py-1 text-right tabular-nums text-secondary">{fmtPct(product.shareOfProductPct)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CustomerDeviationSkeleton() {
+  return (
+    <div className="flex flex-col gap-space-2xs" aria-label="Cargando participación por cliente">
+      {Array.from({ length: 6 }).map((_, index) => (
+        <div key={index} className="flex flex-col gap-1.5 py-2">
+          <div className="flex items-center justify-between gap-space-sm">
+            <Skeleton className="h-4 w-48" />
+            <Skeleton className="h-4 w-12" />
+          </div>
+          <Skeleton className="h-2.5 w-full" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const CustomerShareBars = memo(function CustomerShareBars({
+  rows,
+  focus,
+  onFocus,
+}: {
+  rows: ForecastCustomerSalesRow[];
+  focus: string | null;
+  onFocus: (code: string) => void;
+}) {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  if (rows.length === 0) {
+    return <p className="py-space-lg text-center text-body-md text-on-surface-variant">Sin clientes para graficar.</p>;
+  }
+
+  const maxShare = Math.max(1, ...rows.map((row) => row.sharePct));
+
+  return (
+    <div className="flex flex-col gap-space-2xs">
+      <div className="max-h-[520px] overflow-y-auto pr-1">
+        <div className="sticky top-0 z-10 border-b border-surface-container bg-surface-container-lowest pb-space-2xs text-label-sm text-outline">
+          <div className="flex items-center justify-between gap-space-sm px-space-xs py-1">
+            <span>Barra relativa al cliente líder</span>
+            <span className="font-semibold text-secondary">100 % = venta ABA del mes</span>
+          </div>
+        </div>
+        <ul className="flex flex-col gap-space-2xs">
+          {rows.map((row) => (
+            <li key={row.customerCode}>
+              <button
+                type="button"
+                onClick={() => onFocus(row.customerCode)}
+                aria-pressed={focus === row.customerCode}
+                title={`Ver productos de ${row.customerName}`}
+                className={cx(
+                  'group w-full rounded-xl px-space-xs py-2 text-left transition-all duration-200 hover:bg-surface-container-low',
+                  focus === row.customerCode && 'bg-surface-container-low ring-1 ring-primary-container/25',
+                )}
+              >
+                <div className="flex items-start justify-between gap-space-sm">
+                  <span className="flex min-w-0 items-baseline gap-space-xs">
+                    <span className="shrink-0 tabular-nums text-label-md font-bold text-primary">{row.customerCode}</span>
+                    <span className="truncate text-label-sm text-on-surface-variant">{row.customerName}</span>
+                  </span>
+                  <span className="flex shrink-0 flex-col items-end leading-tight">
+                    <span className="tabular-nums text-label-md font-bold text-secondary">{fmtPct(row.sharePct)}</span>
+                    <span className="text-label-sm text-outline">{fmtKg(row.actualKg)} kg</span>
+                  </span>
+                </div>
+                <div className="mt-1.5 h-2.5 w-full rounded-pill bg-surface-container">
+                  <div
+                    className="h-full rounded-pill bg-secondary transition-[width] duration-700 ease-out"
+                    style={{ width: mounted ? `${(row.sharePct / maxShare) * 100}%` : '0%' }}
+                  />
+                </div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="mt-space-xs flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
+        <span className="inline-flex items-center gap-1">
+          <span aria-hidden className="size-2 rounded-full bg-secondary" /> Participación sobre la venta ABA
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Código del cliente
+        </span>
+        <span className="text-outline">La etiqueta muestra el % real del total; la barra se compara con el líder.</span>
+      </div>
+    </div>
+  );
+});
 
 function FilterChip({
   active,
@@ -1374,6 +1903,7 @@ const DailySalesBars = memo(function DailySalesBars({
   fallbackSummary,
   onHover,
   onPin,
+  onClear,
 }: {
   bars: SalesDayBar[];
   scale: DailySalesScale;
@@ -1383,6 +1913,8 @@ const DailySalesBars = memo(function DailySalesBars({
   fallbackSummary: string;
   onHover: (date: string | null) => void;
   onPin: (date: string) => void;
+  /** Quita el día fijado y cierra el modal de desglose. */
+  onClear: () => void;
 }) {
   const scroller = useRef<HTMLDivElement | null>(null);
   const anchors = useRef(new Map<string, HTMLButtonElement>());
@@ -1439,6 +1971,7 @@ const DailySalesBars = memo(function DailySalesBars({
         <div className="min-w-0">
           <h3 className="text-label-sm font-bold uppercase tracking-[0.14em] text-outline">Ventas por día</h3>
           <p className="text-label-md text-on-surface-variant">{summary}</p>
+          <p className="text-label-sm text-outline">Clic en una barra para abrir el desglose por producto y cliente.</p>
         </div>
         <div className="flex items-center gap-space-2xs">
           <button
@@ -1460,10 +1993,7 @@ const DailySalesBars = memo(function DailySalesBars({
           {pinnedDate && (
             <button
               type="button"
-              onClick={() => {
-                onHover(null);
-                onPin(pinnedDate);
-              }}
+              onClick={onClear}
               className="inline-flex h-7 items-center gap-1 rounded-pill border border-outline-variant/40 px-space-sm text-label-sm font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
             >
               <X aria-hidden className="size-3.5" /> Ver todo el mes
@@ -1602,7 +2132,7 @@ const DailySalesBars = memo(function DailySalesBars({
 });
 
 /** Eje de referencia: 0 % a la izquierda y el 100 % de la meta en el marcador. */
-function DeviationScale({ markerPct }: { markerPct: number }) {
+function DeviationScale({ markerPct, metaLabel = 'meta 100 %' }: { markerPct: number; metaLabel?: string }) {
   return (
     <div className="px-space-xs">
       <div className="relative h-4 text-label-sm text-outline">
@@ -1611,7 +2141,7 @@ function DeviationScale({ markerPct }: { markerPct: number }) {
           className="absolute top-0 -translate-x-1/2 whitespace-nowrap font-semibold leading-none text-secondary"
           style={{ left: `${markerPct}%` }}
         >
-          meta 100 %
+          {metaLabel}
         </span>
       </div>
       <div className="relative h-3">
@@ -1912,6 +2442,12 @@ function cumulativeOption(report: ForecastSalesResponse, pinnedDate: string | nu
   };
 }
 
+interface CustomSeriesApi {
+  value: (dimension: number) => number;
+  coord: (point: number[]) => [number, number];
+  size: (range: [number, number]) => [number, number];
+}
+
 function historyOption(report: ForecastSalesResponse, row: ForecastSalesRow): Record<string, unknown> {
   const categories = [
     ...row.history.map((entry) => monthLabel(entry.year, entry.month, true)),
@@ -1920,14 +2456,33 @@ function historyOption(report: ForecastSalesResponse, row: ForecastSalesRow): Re
   const values = [...row.history.map((entry) => entry.actualKg), row.actualKg];
   // Meta de cada mes: snapshot histórico y, en el mes del informe, su meta.
   const targets = [...row.history.map((entry) => entry.forecastKg), row.forecastKg > 0 ? row.forecastKg : null];
-  const hasHistoryTarget = row.history.some((entry) => entry.forecastKg !== null);
+  const lastIndex = values.length - 1;
+  // Variación % contra el mes anterior. El mes en curso entra con su venta
+  // parcial: mientras se vende, el punto sube/baja como un mes más.
+  const growth = monthOverMonthPct(values);
+  const numericGrowth = growth.filter((value): value is number => value !== null);
+  const hasGrowth = numericGrowth.length > 0;
+  const growthSpan = numericGrowth.length > 0 ? Math.max(...numericGrowth) - Math.min(...numericGrowth) : 0;
+  const growthPad = Math.max(6, growthSpan * 0.18);
+  const growthMin = hasGrowth ? Math.min(0, ...numericGrowth) - growthPad : 0;
+  const growthMax = hasGrowth ? Math.max(0, ...numericGrowth) + growthPad : 0;
   const numericTargets = targets.filter((value): value is number => value !== null);
-  // Incluye la meta en la escala para que la línea de referencia no se corte.
+  // Incluye la meta en la escala para que los guiones no se corten.
   const axisMax = Math.max(...values, ...numericTargets, 1) * 1.08;
+  // Meses con meta: cada barra lleva su propio guion, sin unirlos entre meses.
+  const metaMarks = targets.flatMap((target, index) =>
+    target !== null && target > 0 ? [[index, target, values[index]]] : [],
+  );
+
+  const tipRow = (name: string, value: string, color = '#fff') =>
+    `<div style="display:flex;justify-content:space-between;gap:18px;margin-top:4px;">
+      <span style="color:rgba(255,255,255,.72);">${name}</span>
+      <strong style="font-variant-numeric:tabular-nums;color:${color};">${value}</strong>
+    </div>`;
 
   return {
     animationDuration: 450,
-    grid: { left: 6, right: 12, top: 26, bottom: 2, containLabel: true },
+    grid: { left: 6, right: 8, top: 26, bottom: 2, containLabel: true },
     tooltip: {
       trigger: 'axis',
       confine: true,
@@ -1936,21 +2491,35 @@ function historyOption(report: ForecastSalesResponse, row: ForecastSalesRow): Re
       padding: [8, 10],
       textStyle: { color: '#fff', fontSize: 12 },
       extraCssText: 'border-radius:12px;box-shadow:0 18px 40px -28px rgba(8,29,44,.6);',
-      formatter: (params: Array<{ seriesName?: string; value?: number | null; dataIndex?: number }>) => {
+      formatter: (params: Array<{ dataIndex?: number }>) => {
         const index = params[0]?.dataIndex ?? 0;
         const label =
-          index === values.length - 1 ? `${monthLabel(report.year, report.month)} (en curso)` : categories[index];
-        const lines = params
-          .filter((item) => item.value !== null && item.value !== undefined)
-          .map(
-            (item) =>
-              `<div style="display:flex;justify-content:space-between;gap:18px;margin-top:4px;">
-                <span style="color:rgba(255,255,255,.72);">${item.seriesName ?? ''}</span>
-                <strong style="font-variant-numeric:tabular-nums;color:#fff;">${fmtKg(Number(item.value))} kg</strong>
-              </div>`,
-          )
-          .join('');
-        return `<div style="min-width:160px;"><strong>${label}</strong>${lines}</div>`;
+          index === lastIndex ? `${monthLabel(report.year, report.month)} (en curso)` : categories[index];
+        const meta = targets[index] ?? null;
+        const actual = values[index] ?? 0;
+        const delta = meta !== null && meta > 0 ? actual - meta : null;
+        const growthPct = growth[index] ?? null;
+        const lines = [tipRow('Venta real', `${fmtKg(actual)} kg`)];
+        if (delta !== null && meta !== null) {
+          lines.push(tipRow('Meta del mes', `${fmtKg(meta)} kg`, '#d9f99d'));
+          if (delta > 0) {
+            lines.push(
+              tipRow('Sobrepasó', `+${fmtKg(delta)} kg (${fmtSignedPct((delta / meta) * 100)})`, '#d9f99d'),
+            );
+          } else if (delta < 0) {
+            lines.push(
+              tipRow('Faltó', `-${fmtKg(Math.abs(delta))} kg (${fmtSignedPct((delta / meta) * 100)})`, '#fca5a5'),
+            );
+          } else {
+            lines.push(tipRow('Meta', 'cumplida exacta', '#d9f99d'));
+          }
+        } else {
+          lines.push(tipRow('Meta del mes', 'sin meta', 'rgba(255,255,255,.6)'));
+        }
+        if (growthPct !== null && index > 0) {
+          lines.push(tipRow('Crecimiento', `${fmtSignedPct(growthPct)} vs ${categories[index - 1]}`, '#fca5a5'));
+        }
+        return `<div style="min-width:190px;"><strong>${label}</strong>${lines.join('')}</div>`;
       },
     },
     xAxis: {
@@ -1960,12 +2529,32 @@ function historyOption(report: ForecastSalesResponse, row: ForecastSalesRow): Re
       axisTick: { show: false },
       axisLabel: { color: C.outline, fontSize: 10 },
     },
-    yAxis: {
-      type: 'value',
-      max: axisMax,
-      splitLine: { lineStyle: { color: C.grid } },
-      axisLabel: { color: C.outline, fontSize: 10, formatter: (value: number) => compact(value) },
-    },
+    yAxis: [
+      {
+        type: 'value',
+        max: axisMax,
+        splitLine: { lineStyle: { color: C.grid } },
+        axisLabel: { color: C.outline, fontSize: 10, formatter: (value: number) => compact(value) },
+      },
+      ...(hasGrowth
+        ? [
+            {
+              type: 'value',
+              position: 'right',
+              min: growthMin,
+              max: growthMax,
+              splitLine: { show: false },
+              axisLine: { show: false },
+              axisTick: { show: false },
+              axisLabel: {
+                color: '#b91c1c',
+                fontSize: 9,
+                formatter: (value: number) => `${Math.round(value)} %`,
+              },
+            },
+          ]
+        : []),
+    ],
     series: [
       {
         name: 'Venta real',
@@ -1974,34 +2563,76 @@ function historyOption(report: ForecastSalesResponse, row: ForecastSalesRow): Re
         data: values.map((value, index) => ({
           value,
           itemStyle: {
-            color: index === values.length - 1 ? C.navyLight : C.navy,
+            color: index === lastIndex ? C.navyLight : C.navy,
             borderRadius: [6, 6, 0, 0],
           },
         })),
-        // Sin meta histórica, una línea horizontal marca la meta vigente.
-        markLine:
-          !hasHistoryTarget && row.forecastKg > 0
-            ? {
-                symbol: 'none',
-                silent: true,
-                lineStyle: { color: C.lime, type: 'dashed', width: 1.5 },
-                label: { formatter: `Meta ${compact(row.forecastKg)}`, color: '#4b6700', fontSize: 10, position: 'insideEndTop' },
-                data: [{ yAxis: row.forecastKg }],
-              }
-            : undefined,
       },
-      ...(hasHistoryTarget
+      {
+        // Guion de meta por barra: si la barra la supera, el tramo de exceso
+        // se tiñe de verde sobre la barra en vez de alargar la línea.
+        name: 'Meta',
+        type: 'custom',
+        silent: true,
+        tooltip: { show: false },
+        data: metaMarks,
+        z: 4,
+        renderItem: (_params: unknown, api: CustomSeriesApi) => {
+          const index = api.value(0);
+          const meta = api.value(1);
+          const actual = api.value(2);
+          if (!Number.isFinite(meta)) return null;
+          const [cx, cy] = api.coord([index, meta]);
+          const band = api.size([1, 0])[0] ?? 0;
+          // Misma geometría que la barra de ECharts: 69 % de la banda, tope
+          // `barMaxWidth` (38 px). Si cambia cualquiera de los dos, cambia aquí.
+          const barWidth = Math.min(band * 0.69, 38);
+          const half = Math.max(barWidth, 10) / 2 + 3;
+          const children: Array<Record<string, unknown>> = [];
+          if (Number.isFinite(actual) && actual > meta) {
+            const [topY] = api.coord([index, actual]);
+            children.push({
+              type: 'rect',
+              shape: {
+                x: cx - barWidth / 2,
+                y: topY,
+                width: barWidth,
+                height: Math.max(0, cy - topY),
+                r: 6,
+              },
+              style: { fill: 'rgba(149, 200, 0, 0.22)', stroke: 'rgba(149, 200, 0, 0.55)', lineWidth: 1 },
+            });
+          }
+          children.push({
+            type: 'line',
+            shape: { x1: cx - half, y1: cy, x2: cx + half, y2: cy },
+            style: { stroke: C.lime, lineWidth: 2, lineCap: 'round', lineDash: [5, 4] },
+          });
+          return { type: 'group', children };
+        },
+      },
+      ...(hasGrowth
         ? [
             {
-              name: 'Meta',
+              name: 'Crecimiento',
               type: 'line',
-              data: targets,
-              connectNulls: false,
+              yAxisIndex: 1,
+              data: growth,
+              smooth: 0.25,
               symbol: 'circle',
-              symbolSize: 6,
-              lineStyle: { color: C.lime, type: 'dashed', width: 1.8 },
-              itemStyle: { color: C.lime },
-              z: 3,
+              symbolSize: 5,
+              connectNulls: false,
+              lineStyle: { width: 2, color: C.red },
+              itemStyle: { color: C.red, borderColor: '#fff', borderWidth: 1 },
+              z: 5,
+              // Referencia 0 %: separa el crecimiento del descenso.
+              markLine: {
+                symbol: 'none',
+                silent: true,
+                lineStyle: { color: 'rgba(220, 38, 38, 0.32)', type: 'dashed', width: 1 },
+                label: { show: false },
+                data: [{ yAxis: 0 }],
+              },
             },
           ]
         : []),

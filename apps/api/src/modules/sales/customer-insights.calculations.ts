@@ -380,14 +380,20 @@ function buildMonthly(
   }
   return [...buckets.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([month, bucket]) => ({
-      month,
-      sacks: round2(bucket.sacks),
-      kg: round2(bucket.kg),
-      tonnes: round2(bucket.kg / 1000),
-      notes: bucket.notes.size,
-      billed: billingByMonth ? round2(billingByMonth.get(month) ?? 0) : null,
-    }));
+    .map(([month, bucket]) => {
+      // Un mes sin documentos de facturación no es «facturado 0»: es «sin
+      // dato». La diferencia importa en la gráfica (corta la línea en vez de
+      // dibujarla pegada al eje) y en el tooltip.
+      const billed = billingByMonth?.get(month);
+      return {
+        month,
+        sacks: round2(bucket.sacks),
+        kg: round2(bucket.kg),
+        tonnes: round2(bucket.kg / 1000),
+        notes: bucket.notes.size,
+        billed: billingByMonth ? (billed === undefined ? null : round2(billed)) : null,
+      };
+    });
 }
 
 function buildAnnual(

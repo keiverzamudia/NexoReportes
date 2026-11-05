@@ -99,6 +99,7 @@ export class PermissionsService implements OnModuleInit {
     // permisos por defecto en los roles de sistema que aún no los tengan, sin
     // resucitar permisos que un administrador haya quitado a mano.
     await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'llegadas');
+    await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'vendedoras');
   }
 
   private async seedMissingModule(

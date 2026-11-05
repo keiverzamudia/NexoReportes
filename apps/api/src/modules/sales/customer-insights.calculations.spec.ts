@@ -132,6 +132,19 @@ describe('buildCustomerInsights', () => {
     expect(result.annual.length).toBeGreaterThan(0);
   });
 
+  it('marca como null el facturado de un mes sin documentos', () => {
+    const input = baseInput();
+    const monthWithoutBilling = monthAgo(3).key;
+    input.billingRows = input.billingRows.filter((row) => row.month !== monthWithoutBilling);
+
+    const result = buildCustomerInsights(input);
+
+    expect(result.monthly.find((item) => item.month === monthWithoutBilling)?.billed).toBeNull();
+    expect(result.monthly.find((item) => item.month === monthAgo(2).key)?.billed).toBe(1000);
+    // El total del periodo sí descuenta el mes sin facturación.
+    expect(result.totals.billed).toBe(11_000);
+  });
+
   it('clasifica los productos y separa los perdidos', () => {
     const result = buildCustomerInsights(baseInput());
     const byCode = new Map(result.products.map((product) => [product.code, product]));

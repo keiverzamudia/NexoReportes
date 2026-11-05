@@ -20,6 +20,7 @@
 
 import type {
   AvailabilityStatus,
+  ForecastCustomerSalesResponse,
   ForecastPlanResponse,
   ForecastPlanRow,
   ForecastPlanWeek,
@@ -140,6 +141,8 @@ function compactQty(value: number): string {
 export default function ForecastPage() {
   const [tick, setTick] = useState(0);
   const [tab, setTab] = useState<Tab>('asignador');
+  // «Ventas vs Forecast» puede mirar la desviación por producto o por cliente.
+  const [salesView, setSalesView] = useState<'product' | 'customer'>('product');
   const [ym, setYm] = useState(currentMonthValue);
   const [search, setSearch] = useState('');
   const [onlyDemand, setOnlyDemand] = useState(false);
@@ -191,6 +194,20 @@ export default function ForecastPage() {
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
 
+  const customerSales = useQuery<ForecastCustomerSalesResponse>({
+    queryKey: ['forecast-sales-customers', tick, year, month, includeToday],
+    queryFn: () =>
+      apiFetch<ForecastCustomerSalesResponse>(
+        `/forecast/sales/customers?year=${year}&month=${month}&includeToday=${includeToday ? 'true' : 'false'}`,
+      ),
+    // Solo se pide al abrir el modo cliente: el informe de productos no paga
+    // esta consulta adicional.
+    enabled: tab === 'ventas' && salesView === 'customer',
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
+  });
+
   const rows = useMemo(() => {
     const all = forecast.data?.rows ?? [];
     const needle = search.trim().toLowerCase();
@@ -205,7 +222,7 @@ export default function ForecastPage() {
   const error = forecast.error ?? plan.error;
   // El informe de ventas pinta su propio error; solo la sesión vencida se
   // resuelve aquí para no duplicar banners.
-  if ([forecast.error, plan.error, sales.error].some((err) => err instanceof AuthRequiredError)) {
+  if ([forecast.error, plan.error, sales.error, customerSales.error].some((err) => err instanceof AuthRequiredError)) {
     return <LoginScreen onSuccess={() => setTick((t) => t + 1)} />;
   }
 
@@ -213,8 +230,17 @@ export default function ForecastPage() {
   const totalForecast = (forecast.data?.rows ?? []).reduce((a, r) => a + r.monthlyQty, 0);
   // El encabezado resume la pestaña activa: en «Ventas» manda el informe de
   // facturación (el catálogo local de producción puede estar vacío en dev).
-  const headerArticles = tab === 'ventas' ? (sales.data?.rows.length ?? 0) : rows.length;
-  const headerForecastKg = tab === 'ventas' ? (sales.data?.totals.forecastKg ?? 0) : totalForecast;
+  const isCustomerView = tab === 'ventas' && salesView === 'customer';
+  const headerArticles = isCustomerView
+    ? (customerSales.data?.totals.activeCustomerCount ?? 0)
+    : tab === 'ventas'
+      ? (sales.data?.rows.length ?? 0)
+      : rows.length;
+  const headerForecastKg = isCustomerView
+    ? (customerSales.data?.totals.actualKg ?? 0)
+    : tab === 'ventas'
+      ? (sales.data?.totals.forecastKg ?? 0)
+      : totalForecast;
 
   return (
     <>
@@ -224,11 +250,24 @@ export default function ForecastPage() {
           eyebrow="Producción · Alimentos balanceados (línea ABA)"
           icon={CalendarRange}
           title="Forecast"
-          subtitle="Forecast mensual por artículo y ventas reales de Profit contra la meta."
+          subtitle={
+            isCustomerView
+              ? 'Participación real de cada cliente en la venta ABA del mes a la fecha.'
+              : 'Forecast mensual por artículo y ventas reales de Profit contra la meta.'
+          }
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
-              <Kpi label="Artículos" value={String(headerArticles)} icon={CalendarRange} />
-              <Kpi label="Forecast del mes" value={fmtQty(headerForecastKg, 0)} suffix="kg" tone="primary" />
+              <Kpi
+                label={isCustomerView ? 'Clientes con venta' : 'Artículos'}
+                value={String(headerArticles)}
+                icon={CalendarRange}
+              />
+              <Kpi
+                label={isCustomerView ? 'Venta a la fecha' : 'Forecast del mes'}
+                value={fmtQty(headerForecastKg, 0)}
+                suffix="kg"
+                tone="primary"
+              />
             </div>
           }
         />
@@ -255,10 +294,12 @@ export default function ForecastPage() {
                   { value: 'ventas', label: 'Ventas vs Forecast' },
                 ]}
               />
-              <div className="flex items-center gap-space-2xs">
-                <span className="font-semibold uppercase text-label-sm text-outline">Presentación</span>
-                <Segmented ariaLabel="Presentación" value={unit} onChange={setUnit} options={UNIT_OPTIONS} />
-              </div>
+              {!isCustomerView && (
+                <div className="flex items-center gap-space-2xs">
+                  <span className="font-semibold uppercase text-label-sm text-outline">Presentación</span>
+                  <Segmented ariaLabel="Presentación" value={unit} onChange={setUnit} options={UNIT_OPTIONS} />
+                </div>
+              )}
             </div>
             {tab === 'asignador' && (
               <div className="flex flex-wrap items-center gap-space-md">
@@ -271,20 +312,24 @@ export default function ForecastPage() {
             )}
             {tab === 'ventas' && (
               <div className="flex flex-wrap items-end gap-space-md">
-                <div className="flex flex-col gap-space-2xs">
-                  <span className="font-semibold uppercase text-label-sm text-outline">Base de días</span>
-                  <Segmented ariaLabel="Base de días del informe" value={basis} onChange={setBasis} options={BASIS_OPTIONS} />
-                </div>
-                <label className="flex flex-col gap-space-2xs">
-                  <span className="font-semibold uppercase text-label-sm text-outline">Histórico</span>
-                  <Select
-                    ariaLabel="Ventana histórica"
-                    value={historyMonths}
-                    onChange={setHistoryMonths}
-                    options={HISTORY_OPTIONS}
-                    className="h-9 w-32"
-                  />
-                </label>
+                {!isCustomerView && (
+                  <div className="flex flex-col gap-space-2xs">
+                    <span className="font-semibold uppercase text-label-sm text-outline">Base de días</span>
+                    <Segmented ariaLabel="Base de días del informe" value={basis} onChange={setBasis} options={BASIS_OPTIONS} />
+                  </div>
+                )}
+                {!isCustomerView && (
+                  <label className="flex flex-col gap-space-2xs">
+                    <span className="font-semibold uppercase text-label-sm text-outline">Histórico</span>
+                    <Select
+                      ariaLabel="Ventana histórica"
+                      value={historyMonths}
+                      onChange={setHistoryMonths}
+                      options={HISTORY_OPTIONS}
+                      className="h-9 w-32"
+                    />
+                  </label>
+                )}
                 <label className="flex h-9 items-center gap-space-xs text-body-md text-on-surface-variant">
                   <input
                     type="checkbox"
@@ -352,6 +397,12 @@ export default function ForecastPage() {
             unit={unit}
             canEdit={canEdit}
             onRetry={() => void sales.refetch()}
+            mode={salesView}
+            onModeChange={setSalesView}
+            customerReport={customerSales.data}
+            customerLoading={customerSales.isLoading}
+            customerError={customerSales.error instanceof Error ? customerSales.error : null}
+            onCustomerRetry={() => void customerSales.refetch()}
           />
         )}
       </main>

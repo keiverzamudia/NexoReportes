@@ -58,6 +58,12 @@ export const APP_MODULES: AppModuleDefinition[] = [
     ],
   },
   {
+    key: 'vendedoras',
+    label: 'Vendedoras',
+    href: '/vendedoras',
+    actions: [{ action: 'read', label: 'Ver' }],
+  },
+  {
     key: 'pedidos',
     label: 'Pedidos',
     href: '/pedidos',
@@ -126,6 +132,7 @@ export const APP_MODULES: AppModuleDefinition[] = [
 export type AppModuleKey =
   | 'disponibilidad'
   | 'forecast'
+  | 'vendedoras'
   | 'pedidos'
   | 'clientes'
   | 'despacho'
@@ -153,6 +160,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['disponibilidad', 'read'],
     ['forecast', 'read'],
     ['forecast', 'update'],
+    ['vendedoras', 'read'],
     ['pedidos', 'read'],
     ['pedidos', 'create'],
     ['pedidos', 'update'],
@@ -1516,6 +1524,9 @@ export const NOTIFICATION_TYPES = [
   'DESPACHO_CERRADO',
   'DESPACHO_NOVEDAD',
   'DESPACHO_CANCELADO',
+  // Tiempos: cierre de carga por cliente y factura entregada.
+  'DESPACHO_CARGA_CERRADA',
+  'DESPACHO_FACTURADO',
   'MENSAJE',
   // PCP: clientes esperados por un despacho publicado y sus hitos en planta.
   'LLEGADA_ESPERADA',
@@ -1544,8 +1555,35 @@ export const zDispatchSheetLine = z.object({
   note: z.string().nullable(),
   checkedAt: z.string().nullable(),
   checkedByName: z.string().nullable(),
+  // Relojes derivados del cliente al que pertenece el renglón. `loadClosedAt`
+  // es el momento en que el almacén cerró ESTE producto (coincide con
+  // `checkedAt`); `loadStartedAt` es el inicio de carga del cliente.
+  loadStartedAt: z.string().nullable(),
+  loadClosedAt: z.string().nullable(),
+  loadClosedByName: z.string().nullable(),
 });
 export type DispatchSheetLine = z.infer<typeof zDispatchSheetLine>;
+
+// Relojes y factura de un cliente dentro del despacho.
+export const zDispatchCustomerProgress = z.object({
+  customerKey: z.string(),
+  customerCode: z.string().nullable(),
+  customerName: z.string().nullable(),
+  loadStartedAt: z.string().nullable(),
+  loadStartedByName: z.string().nullable(),
+  loadClosedAt: z.string().nullable(),
+  invoiceDeliveredAt: z.string().nullable(),
+  invoiceDeliveredByName: z.string().nullable(),
+  invoiceRef: z.string().nullable(),
+  note: z.string().nullable(),
+  // Conteos de productos del cliente (los calcula el servidor).
+  products: z.number().int(),
+  pendingProducts: z.number().int(),
+  loadedProducts: z.number().int(),
+  partialProducts: z.number().int(),
+  missingProducts: z.number().int(),
+});
+export type DispatchCustomerProgress = z.infer<typeof zDispatchCustomerProgress>;
 
 export const zDispatchSheetEvent = z.object({
   id: z.string(),
@@ -1595,9 +1633,16 @@ export const zDispatchSheetSummary = z.object({
   customers: z.array(z.string()),
   nextDeliveryDate: z.string().nullable(),
   updatedAt: z.string(),
+  // Tiempos agregados de la hoja (mín. inicio y máx. cierre / factura).
+  loadStartedAt: z.string().nullable(),
+  loadClosedAt: z.string().nullable(),
+  invoiceDeliveredAt: z.string().nullable(),
+  pendingInvoiceCustomers: z.number().int(),
   // Permisos resueltos para quien consulta (evita duplicar reglas en el web).
   canOperate: z.boolean(),
   canCancel: z.boolean(),
+  // Puede marcar «Factura entregada», incluso después de cerrar el despacho.
+  canInvoice: z.boolean(),
 });
 export type DispatchSheetSummary = z.infer<typeof zDispatchSheetSummary>;
 
@@ -1606,6 +1651,8 @@ export const zDispatchSheetDetail = zDispatchSheetSummary.extend({
   events: z.array(zDispatchSheetEvent),
   // Guía de carga del camión copiada de la simulación. null = sin guía.
   loadPlan: zLoadPlan.nullable(),
+  // Un registro por cliente con sus relojes y factura.
+  customerProgress: z.array(zDispatchCustomerProgress),
 });
 export type DispatchSheetDetail = z.infer<typeof zDispatchSheetDetail>;
 
@@ -1703,6 +1750,148 @@ export type DispatchCancelInput = z.infer<typeof zDispatchCancelInput>;
 
 export const zDispatchMessageInput = z.object({ body: z.string().trim().min(1).max(500) });
 export type DispatchMessageInput = z.infer<typeof zDispatchMessageInput>;
+
+// Factura entregada por cliente (o para todo el despacho). El número es
+// opcional: el hito lo marca la hora del servidor.
+export const zDispatchInvoiceInput = z.object({
+  invoiceRef: z.string().trim().max(60).optional(),
+  note: z.string().trim().max(240).optional(),
+});
+export type DispatchInvoiceInput = z.infer<typeof zDispatchInvoiceInput>;
+
+export const zDispatchCustomerKeyInput = z.object({
+  customerKey: z.string().trim().min(1).max(240),
+});
+export type DispatchCustomerKeyInput = z.infer<typeof zDispatchCustomerKeyInput>;
+
+export const zDispatchCustomerInvoiceInput = zDispatchInvoiceInput.extend({
+  customerKey: z.string().trim().min(1).max(240),
+});
+export type DispatchCustomerInvoiceInput = z.infer<typeof zDispatchCustomerInvoiceInput>;
+
+// Corrección de una factura ya marcada: exige motivo y deja rastro.
+export const zDispatchReopenInvoiceInput = z.object({
+  reason: z.string().trim().min(3, 'Indica el motivo').max(240),
+});
+export type DispatchReopenInvoiceInput = z.infer<typeof zDispatchReopenInvoiceInput>;
+
+export const zDispatchCustomerReopenInput = zDispatchReopenInvoiceInput.extend({
+  customerKey: z.string().trim().min(1).max(240),
+});
+export type DispatchCustomerReopenInput = z.infer<typeof zDispatchCustomerReopenInput>;
+
+// ============================================================
+// Reporte de tiempos de despacho.
+//
+// Los relojes viven por cliente (`DispatchCustomerProgress`). El reporte se
+// puede agrupar por día o mes y filtrar por cliente o por facturas pendientes.
+// ============================================================
+export const DISPATCH_METRIC_GRANULARITIES = ['day', 'month'] as const;
+export const zDispatchMetricGranularity = z.enum(DISPATCH_METRIC_GRANULARITIES);
+export type DispatchMetricGranularity = z.infer<typeof zDispatchMetricGranularity>;
+
+export const zDispatchMetricsQuery = z
+  .object({
+    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    granularity: zDispatchMetricGranularity.default('day'),
+    customerCode: z.string().trim().max(240).optional(),
+    invoiceStatus: z.enum(['all', 'pending', 'delivered']).default('all'),
+  })
+  .superRefine((value, ctx) => {
+    if (value.from > value.to) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['to'], message: 'La fecha final debe ser mayor o igual a la inicial.' });
+    }
+  });
+export type DispatchMetricsQuery = z.infer<typeof zDispatchMetricsQuery>;
+
+const zDispatchDurationStats = z.object({
+  groups: z.number().int(),
+  avgMinutes: z.number().nullable(),
+  medianMinutes: z.number().nullable(),
+  p90Minutes: z.number().nullable(),
+});
+export type DispatchDurationStats = z.infer<typeof zDispatchDurationStats>;
+
+export const zDispatchMetricsSummary = z.object({
+  dispatches: z.number().int(),
+  customers: z.number().int(),
+  orders: z.number().int(),
+  kg: z.number(),
+  load: zDispatchDurationStats,
+  invoice: zDispatchDurationStats.extend({
+    pending: z.number().int(),
+  }),
+  onTime: z.object({
+    orders: z.number().int(),
+    late: z.number().int(),
+    pct: z.number().nullable(),
+  }),
+});
+export type DispatchMetricsSummary = z.infer<typeof zDispatchMetricsSummary>;
+
+export const zDispatchMetricsSeriesPoint = z.object({
+  period: z.string(),
+  label: z.string(),
+  loadGroups: z.number().int(),
+  loadAvgMinutes: z.number().nullable(),
+  invoiceGroups: z.number().int(),
+  invoiceAvgMinutes: z.number().nullable(),
+  onTimePct: z.number().nullable(),
+});
+export type DispatchMetricsSeriesPoint = z.infer<typeof zDispatchMetricsSeriesPoint>;
+
+export const zDispatchMetricsCustomer = z.object({
+  customerCode: z.string().nullable(),
+  customerName: z.string(),
+  dispatches: z.number().int(),
+  orders: z.number().int(),
+  kg: z.number(),
+  loadAvgMinutes: z.number().nullable(),
+  loadMedianMinutes: z.number().nullable(),
+  loadP90Minutes: z.number().nullable(),
+  invoiceAvgMinutes: z.number().nullable(),
+  invoiceMedianMinutes: z.number().nullable(),
+  invoiceP90Minutes: z.number().nullable(),
+  pendingInvoices: z.number().int(),
+  onTimePct: z.number().nullable(),
+  lastInvoiceAt: z.string().nullable(),
+});
+export type DispatchMetricsCustomer = z.infer<typeof zDispatchMetricsCustomer>;
+
+export const zDispatchMetricsOrder = z.object({
+  orderNumber: z.string(),
+  dispatchId: z.string(),
+  dispatchNumber: z.string(),
+  customerCode: z.string().nullable(),
+  customerName: z.string(),
+  productCode: z.string(),
+  description: z.string().nullable(),
+  effectiveDate: z.string().nullable(),
+  loadStartedAt: z.string().nullable(),
+  loadClosedAt: z.string().nullable(),
+  loadMinutes: z.number().nullable(),
+  invoiceDeliveredAt: z.string().nullable(),
+  invoiceMinutes: z.number().nullable(),
+  onTime: z.boolean().nullable(),
+  status: zDispatchLineStatus,
+  kg: z.number(),
+});
+export type DispatchMetricsOrder = z.infer<typeof zDispatchMetricsOrder>;
+
+export const zDispatchMetricsResponse = z.object({
+  range: z.object({
+    from: z.string(),
+    to: z.string(),
+    granularity: zDispatchMetricGranularity,
+  }),
+  summary: zDispatchMetricsSummary,
+  series: z.array(zDispatchMetricsSeriesPoint),
+  customers: z.array(zDispatchMetricsCustomer),
+  orders: z.array(zDispatchMetricsOrder),
+  generatedAt: z.string(),
+});
+export type DispatchMetricsResponse = z.infer<typeof zDispatchMetricsResponse>;
 
 // ============================================================
 // Llegadas de clientes (PCP).
@@ -2239,6 +2428,272 @@ export const zForecastSalesResponse = z.object({
 export type ForecastSalesResponse = z.infer<typeof zForecastSalesResponse>;
 
 // ============================================================
+// Detalle de un día (`GET /forecast/sales/day`).
+//
+// Alimenta el modal «Desglose del día»: se pide solo al abrir un día concreto
+// para no engordar el informe mensual con todas las combinaciones
+// cliente × artículo. La venta es la misma fuente que `salesReport` (notas de
+// entrega no anuladas, línea ABA), así los kg del modal cuadran con la barra.
+// ============================================================
+
+export const zForecastSalesDayQuery = z.object({
+  // Día concreto en la zona del negocio (`yyyy-mm-dd`).
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'La fecha debe tener el formato yyyy-mm-dd'),
+});
+export type ForecastSalesDayQuery = z.infer<typeof zForecastSalesDayQuery>;
+
+// Producto comprado por un cliente dentro del día.
+export const zForecastSalesDayCustomerProduct = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  // Kg de la presentación (uni_relac). Null en granel o sin relación.
+  kgPerUom: z.number().nullable(),
+  kg: z.number(),
+  units: z.number(),
+  // Solo para artículos SAC (kg / kg por saco). Null en granel.
+  sacks: z.number().nullable(),
+});
+export type ForecastSalesDayCustomerProduct = z.infer<typeof zForecastSalesDayCustomerProduct>;
+
+export const zForecastSalesDayCustomer = z.object({
+  customerCode: z.string(),
+  customerName: z.string(),
+  kg: z.number(),
+  units: z.number(),
+  /** Participación del cliente en el total del día (% sobre kg). */
+  sharePct: z.number().nullable(),
+  products: z.array(zForecastSalesDayCustomerProduct),
+});
+export type ForecastSalesDayCustomer = z.infer<typeof zForecastSalesDayCustomer>;
+
+export const zForecastSalesDayDetailProduct = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  kgPerUom: z.number().nullable(),
+  kg: z.number(),
+  units: z.number(),
+  // Solo para artículos SAC (kg / kg por saco). Null en granel.
+  sacks: z.number().nullable(),
+  /** Participación del producto en el total del día (% sobre kg). */
+  sharePct: z.number().nullable(),
+});
+export type ForecastSalesDayDetailProduct = z.infer<typeof zForecastSalesDayDetailProduct>;
+
+export const zForecastSalesDayDetail = z.object({
+  date: z.string(),
+  // false = Profit no respondió: el modal avisa, no pinta ceros como ventas.
+  available: z.boolean(),
+  kg: z.number(),
+  units: z.number(),
+  products: z.array(zForecastSalesDayDetailProduct),
+  customers: z.array(zForecastSalesDayCustomer),
+  // true si Profit devolvió más filas que el límite de la consulta.
+  truncated: z.boolean(),
+  generatedAt: z.string(),
+});
+export type ForecastSalesDayDetail = z.infer<typeof zForecastSalesDayDetail>;
+
+// ============================================================
+// Vendedoras vs Forecast (módulo `/vendedoras`)
+//
+// La venta se atribuye al VENDEDOR DE LA NOTA (`not_ent.co_ven`), no al
+// vendedor asignado al cliente. La meta de la empresa (la misma del informe
+// «Ventas vs Forecast») se reparte entre las vendedoras según su
+// participación histórica en los meses cerrados de la ventana consultada y,
+// dentro de cada vendedora, entre sus clientes con la misma regla.
+//
+// Σ cuotas = 100 % y Σ metas por vendedora = meta de la empresa (el residuo
+// de redondeo se ajusta en la vendedora/cliente de mayor peso). Sin histórico
+// se usa un reparto igualitario marcado como `EQUAL_FALLBACK`; sin meta los
+// porcentajes son `null`, nunca `Infinity`.
+// ============================================================
+export const FORECAST_SELLER_ALLOCATION_BASES = ['HISTORY', 'EQUAL_FALLBACK', 'NONE'] as const;
+export const zForecastSellerAllocationBasis = z.enum(FORECAST_SELLER_ALLOCATION_BASES);
+export type ForecastSellerAllocationBasis = z.infer<typeof zForecastSellerAllocationBasis>;
+
+// Métricas de run-rate compartidas por vendedoras y clientes (mismo motor que
+// el informe de ventas: corte a ayer y días hábiles lun–sáb).
+const zForecastRunRateFields = {
+  dailyAvgKg: z.number(),
+  projectedKg: z.number().nullable(),
+  attainmentPct: z.number().nullable(),
+  projectedAttainmentPct: z.number().nullable(),
+  gapKg: z.number().nullable(),
+  requiredDailyKg: z.number().nullable(),
+  historicalAvgKg: z.number().nullable(),
+  vsHistoricalPct: z.number().nullable(),
+};
+
+export const zForecastSellerHistory = z.object({
+  year: z.number().int(),
+  month: z.number().int(),
+  actualKg: z.number(),
+});
+export type ForecastSellerHistory = z.infer<typeof zForecastSellerHistory>;
+
+export const zForecastSellerDaily = z.object({
+  date: z.string(),
+  actualKg: z.number(),
+  invoiceCount: z.number().int(),
+  // Null después del corte (la línea real no se dibuja a futuro).
+  cumulativeKg: z.number().nullable(),
+  projectedCumulativeKg: z.number().nullable(),
+  // Ritmo uniforme de la cuota (null sin meta).
+  forecastCumulativeKg: z.number().nullable(),
+});
+export type ForecastSellerDaily = z.infer<typeof zForecastSellerDaily>;
+
+export const zForecastSellerClientRow = z.object({
+  clientCode: z.string(),
+  clientName: z.string(),
+  customerType: z.string().nullable(),
+  // Kg de los meses cerrados de la ventana: base de la cuota del cliente.
+  historicalKg: z.number(),
+  // % de la venta histórica de su vendedora (null si la vendedora no tiene base).
+  shareOfSellerPct: z.number().nullable(),
+  // % de la meta de la empresa que le toca a este cliente.
+  quotaPct: z.number().nullable(),
+  // Meta asignada al cliente = meta de la vendedora × shareOfSellerPct.
+  targetKg: z.number(),
+  actualKg: z.number(),
+  actualUnits: z.number(),
+  invoiceCount: z.number().int(),
+  lastInvoiceDate: z.string().nullable(),
+  // Cliente sin histórico que ya compró en el mes: suma venta, no tiene meta.
+  isNew: z.boolean(),
+  ...zForecastRunRateFields,
+});
+export type ForecastSellerClientRow = z.infer<typeof zForecastSellerClientRow>;
+
+export const zForecastSellerRow = z.object({
+  sellerCode: z.string(),
+  sellerName: z.string(),
+  clientCount: z.number().int(),
+  activeClientCount: z.number().int(),
+  invoiceCount: z.number().int(),
+  // Kg históricos de la ventana (base de la cuota).
+  historicalKg: z.number(),
+  // % de la venta histórica de la empresa. Null si no hay histórico.
+  sharePct: z.number().nullable(),
+  // % de la venta DEL MES de la empresa (representación actual).
+  currentSharePct: z.number().nullable(),
+  // % de la meta de la empresa que le toca (la cuota que debe cumplir).
+  quotaPct: z.number().nullable(),
+  // Meta asignada (kg) = meta de la empresa × quotaPct.
+  targetKg: z.number(),
+  actualKg: z.number(),
+  actualUnits: z.number(),
+  lastInvoiceDate: z.string().nullable(),
+  ...zForecastRunRateFields,
+  history: z.array(zForecastSellerHistory),
+  daily: z.array(zForecastSellerDaily),
+  clients: z.array(zForecastSellerClientRow),
+});
+export type ForecastSellerRow = z.infer<typeof zForecastSellerRow>;
+
+export const zForecastSellersResponse = z.object({
+  year: z.number().int(),
+  month: z.number().int(),
+  asOf: z.string().nullable(),
+  basis: zForecastSalesBasis,
+  status: zForecastSalesStatus,
+  // false = Profit no respondió: la UI avisa, no muestra ceros como ventas.
+  salesAvailable: z.boolean(),
+  forecastAvailable: z.boolean(),
+  forecastSource: zForecastSalesSource,
+  // Cómo se repartió la meta: histórico, igualitario de respaldo o sin meta.
+  allocationBasis: zForecastSellerAllocationBasis,
+  days: zForecastSalesDays,
+  totals: z.object({
+    forecastKg: z.number(),
+    actualKg: z.number(),
+    actualUnits: z.number(),
+    ...zForecastRunRateFields,
+    invoiceCount: z.number().int(),
+    lastInvoiceDate: z.string().nullable(),
+    sellerCount: z.number().int(),
+    clientCount: z.number().int(),
+  }),
+  // Serie de la red completa (misma forma que el informe de ventas).
+  daily: z.array(zForecastSalesDaily),
+  sellers: z.array(zForecastSellerRow),
+  generatedAt: z.string(),
+});
+export type ForecastSellersResponse = z.infer<typeof zForecastSellersResponse>;
+
+// ============================================================
+// Participación por cliente (`/forecast/sales/customers`).
+//
+// Sin histórico ni meta por cliente: la venta real de cada cliente se mide
+// contra la venta total ABA del mes hasta el corte. Cada producto del cliente
+// lleva dos porcentajes:
+//  · shareOfCustomerPct: peso del producto dentro de la compra del cliente.
+//  · shareOfProductPct: peso del cliente dentro de la venta total del producto.
+// ============================================================
+
+export const zForecastCustomerProductRow = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  kgPerUom: z.number().nullable(),
+  /** Kg vendidos de este producto al cliente en el mes a la fecha. */
+  kg: z.number(),
+  units: z.number(),
+  // Solo para artículos SAC (kg / kg por saco). Null en granel.
+  sacks: z.number().nullable(),
+  /** Peso del producto dentro de la compra total del cliente. */
+  shareOfCustomerPct: z.number(),
+  /** Peso del cliente dentro de la venta total de ese producto. */
+  shareOfProductPct: z.number(),
+});
+export type ForecastCustomerProductRow = z.infer<typeof zForecastCustomerProductRow>;
+
+export const zForecastCustomerSalesRow = z.object({
+  customerCode: z.string(),
+  customerName: z.string(),
+  customerType: z.string().nullable(),
+  vendor: z.string().nullable(),
+  actualKg: z.number(),
+  actualUnits: z.number(),
+  /** % de la venta ABA del mes a la fecha que representa este cliente. */
+  sharePct: z.number(),
+  /** Productos con venta en el mes a la fecha. */
+  productCount: z.number().int(),
+  lastInvoiceDate: z.string().nullable(),
+  products: z.array(zForecastCustomerProductRow),
+});
+export type ForecastCustomerSalesRow = z.infer<typeof zForecastCustomerSalesRow>;
+
+export const zForecastCustomerSalesResponse = z.object({
+  year: z.number().int(),
+  month: z.number().int(),
+  // Fecha de corte efectiva (yyyy-mm-dd) en America/Caracas.
+  asOf: z.string().nullable(),
+  status: zForecastSalesStatus,
+  // false = Profit no respondió: la UI avisa, no muestra ceros como ventas.
+  salesAvailable: z.boolean(),
+  days: zForecastSalesDays,
+  totals: z.object({
+    actualKg: z.number(),
+    actualUnits: z.number(),
+    /** Clientes incluidos en la tabla (catálogo activo + clientes con venta). */
+    customerCount: z.number().int(),
+    /** Clientes con venta > 0. */
+    activeCustomerCount: z.number().int(),
+    /** Productos distintos con venta en el mes. */
+    productCount: z.number().int(),
+    lastInvoiceDate: z.string().nullable(),
+  }),
+  customers: z.array(zForecastCustomerSalesRow),
+  // true si Profit devolvió más filas que el límite de la consulta.
+  truncated: z.boolean(),
+  generatedAt: z.string(),
+});
+export type ForecastCustomerSalesResponse = z.infer<typeof zForecastCustomerSalesResponse>;
+
+// ============================================================
 // Bitácora de auditoría (Usuarios → Bitácoras)
 //
 // Fuente principal: `AuditEvent`. Se complementa con las notas/mensajes de
@@ -2287,6 +2742,10 @@ export const AUDIT_ACTIONS: Record<string, AuditActionDefinition> = {
   DISPATCH_SEND: { module: 'dispatch', label: 'Publicó un despacho', severity: 'INFO' },
   DISPATCH_ACK: { module: 'dispatch', label: 'Acusó un despacho', severity: 'INFO' },
   DISPATCH_LINE: { module: 'dispatch', label: 'Actualizó la carga de un renglón', severity: 'INFO' },
+  DISPATCH_LOAD_START: { module: 'dispatch', label: 'Inició la carga de un cliente', severity: 'INFO' },
+  DISPATCH_LOAD_CLOSE: { module: 'dispatch', label: 'Cerró la carga de un cliente', severity: 'INFO' },
+  DISPATCH_INVOICE: { module: 'dispatch', label: 'Registró una factura entregada', severity: 'INFO' },
+  DISPATCH_REOPEN: { module: 'dispatch', label: 'Reabrió la carga o factura de un cliente', severity: 'WARN' },
   DISPATCH_COMPLETE: { module: 'dispatch', label: 'Cerró un despacho', severity: 'INFO' },
   DISPATCH_CANCEL: { module: 'dispatch', label: 'Anuló un despacho', severity: 'WARN' },
   ARRIVAL_CHECK_IN: { module: 'arrivals', label: 'Marcó la llegada de un cliente', severity: 'INFO' },

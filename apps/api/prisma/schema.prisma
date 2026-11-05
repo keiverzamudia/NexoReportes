@@ -593,6 +593,9 @@ model DispatchSheet {
   lines    DispatchSheetLine[]
   events   DispatchSheetEvent[]
   arrivals CustomerArrival[]
+  // Relojes por cliente: inicio/cierre de carga y factura entregada.
+  // Es la base de los reportes de tiempos (no altera la máquina de estados).
+  customerProgress DispatchCustomerProgress[]
 
   @@index([status, sentAt])
   @@index([assignedToId, status])
@@ -647,6 +650,48 @@ model DispatchSheetEvent {
   createdAt  DateTime      @default(now())
 
   @@index([sheetId, createdAt])
+}
+
+// ============================================================
+// Tiempos por cliente del despacho.
+//
+// El almacén inicia la carga de un cliente (arranca los relojes), cierra
+// cada producto y luego marca la factura entregada. El reloj de carga se
+// detiene producto a producto; el de factura sigue hasta el hito final.
+// Se guarda por cliente para poder reportar tiempos por cliente y por orden
+// sin depender de la máquina de estados de la hoja.
+// ============================================================
+model DispatchCustomerProgress {
+  id          String        @id @default(cuid())
+  sheetId     String
+  sheet       DispatchSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  // customerCode cuando existe; si no, el nombre; si no, SIN_CLIENTE.
+  customerKey String
+  customerCode String?
+  customerName String?
+
+  loadStartedAt      DateTime?
+  loadStartedById    String?
+  loadStartedByName  String?
+  // Se completa sola cuando ya no quedan renglones PENDIENTE del cliente.
+  loadClosedAt       DateTime?
+
+  invoiceDeliveredAt     DateTime?
+  invoiceDeliveredById   String?
+  invoiceDeliveredByName String?
+  // Número de factura / nota de entrega (texto libre).
+  invoiceRef             String?
+  note                   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sheetId, customerKey])
+  @@index([sheetId])
+  @@index([customerCode])
+  @@index([loadStartedAt])
+  @@index([loadClosedAt])
+  @@index([invoiceDeliveredAt])
 }
 
 // ============================================================

@@ -9,9 +9,9 @@
 // ============================================================
 
 import type { DispatchSheetDetail } from '@nexo/contracts';
-import { CheckCheck, Download, Loader2, X } from 'lucide-react';
+import { CheckCheck, Clock, Download, Loader2, Receipt, X } from 'lucide-react';
 import type { DispatchReport } from '../lib/dispatch-sheet';
-import { formatBusinessDate, formatNumber } from '../lib/dispatch-sheet';
+import { formatBusinessDate, formatDateTime, formatDurationBetween, formatNumber } from '../lib/dispatch-sheet';
 import { LineStatusBadge } from './DispatchSheetParts';
 import { Badge, cx } from './ui';
 
@@ -114,6 +114,36 @@ export function DispatchReportDialog({
               }
               tone={report.pending.lines > 0 ? 'error' : 'muted'}
             />
+          </div>
+
+          <div className="mt-space-md grid grid-cols-1 gap-space-sm rounded-xl border border-outline-variant/40 bg-surface-container-low/50 p-space-sm sm:grid-cols-3">
+            <div>
+              <p className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wider text-outline">
+                <Clock aria-hidden className="size-3.5" /> Inicio de carga
+              </p>
+              <p className="font-semibold text-primary">{formatDateTime(sheet.loadStartedAt)}</p>
+            </div>
+            <div>
+              <p className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wider text-outline">
+                <CheckCheck aria-hidden className="size-3.5" /> Carga cerrada
+              </p>
+              <p className="font-semibold text-primary">{formatDateTime(sheet.loadClosedAt)}</p>
+              <p className="text-label-sm text-on-surface-variant">
+                {formatDurationBetween(sheet.loadStartedAt, sheet.loadClosedAt)}
+              </p>
+            </div>
+            <div>
+              <p className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wider text-outline">
+                <Receipt aria-hidden className="size-3.5" /> Factura entregada
+              </p>
+              <p className="font-semibold text-primary">{formatDateTime(sheet.invoiceDeliveredAt)}</p>
+              <p className="text-label-sm text-on-surface-variant">
+                {formatDurationBetween(sheet.loadStartedAt, sheet.invoiceDeliveredAt)}
+                {sheet.pendingInvoiceCustomers > 0
+                  ? ` · ${sheet.pendingInvoiceCustomers} cliente(s) pendiente(s)`
+                  : ''}
+              </p>
+            </div>
           </div>
 
           {!readOnly && report.pending.lines > 0 && (

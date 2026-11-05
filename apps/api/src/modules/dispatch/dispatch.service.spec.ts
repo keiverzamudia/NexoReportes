@@ -33,6 +33,7 @@ function createFakePrisma() {
   const state = {
     sheets: [] as Row[],
     lines: [] as Row[],
+    progress: [] as Row[],
     events: [] as Row[],
     notifications: [] as Row[],
     users: [
@@ -64,6 +65,7 @@ function createFakePrisma() {
   const withRelations = (sheet: Row) => ({
     ...sheet,
     lines: state.lines.filter((line) => line.sheetId === sheet.id),
+    customerProgress: state.progress.filter((row) => row.sheetId === sheet.id),
     events: state.events.filter((event) => event.sheetId === sheet.id),
     assignedTo: sheet.assignedToId ? state.users.find((user) => user.id === sheet.assignedToId) ?? null : null,
   });
@@ -122,6 +124,7 @@ function createFakePrisma() {
         };
         delete sheet.lines;
         delete sheet.events;
+        delete sheet.customerProgress;
         state.sheets.push(sheet);
 
         for (const line of data.lines?.create ?? []) {
@@ -129,6 +132,18 @@ function createFakePrisma() {
         }
         for (const event of data.events?.create ? [data.events.create] : []) {
           state.events.push({ id: id('ev'), sheetId: sheet.id, createdAt: new Date(), ...event });
+        }
+        for (const progress of data.customerProgress?.create ?? []) {
+          state.progress.push({
+            id: id('progress'),
+            sheetId: sheet.id,
+            loadStartedAt: null,
+            loadClosedAt: null,
+            invoiceDeliveredAt: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            ...progress,
+          });
         }
         return withRelations(sheet);
       },
@@ -153,6 +168,42 @@ function createFakePrisma() {
         const event = { id: id('ev'), createdAt: new Date(), ...data };
         state.events.push(event);
         return event;
+      },
+    },
+    dispatchCustomerProgress: {
+      create: async ({ data }: Row) => {
+        const row = {
+          id: id('progress'),
+          loadStartedAt: null,
+          loadClosedAt: null,
+          invoiceDeliveredAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...data,
+        };
+        state.progress.push(row);
+        return row;
+      },
+      update: async ({ where, data }: Row) => {
+        const row = state.progress.find((item) => item.id === where.id);
+        if (!row) throw new Error('no encontrado');
+        Object.assign(row, data, { updatedAt: new Date() });
+        return row;
+      },
+      updateMany: async ({ where, data }: Row) => {
+        const rows = state.progress.filter((row) => matches(where, row));
+        for (const row of rows) Object.assign(row, data, { updatedAt: new Date() });
+        return { count: rows.length };
+      },
+      delete: async ({ where }: Row) => {
+        const index = state.progress.findIndex((row) => row.id === where.id);
+        if (index < 0) throw new Error('no encontrado');
+        return state.progress.splice(index, 1)[0];
+      },
+      deleteMany: async ({ where }: Row = {}) => {
+        const before = state.progress.length;
+        state.progress = state.progress.filter((row) => !matches(where, row));
+        return { count: before - state.progress.length };
       },
     },
     notification: {
@@ -683,7 +734,9 @@ describe('DispatchService — bitácora y notificaciones', () => {
 
     await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
     await service.complete(operator1, sheet.id, {});
-    expect(typesFor('u-plan')).toEqual(['DESPACHO_CERRADO']);
+    // El último renglón cierra la carga del cliente y, al completar, el
+    // despacho: el planificador recibe ambos hitos.
+    expect(typesFor('u-plan')).toEqual(['DESPACHO_CARGA_CERRADA', 'DESPACHO_CERRADO']);
 
     // El aviso lleva a la hoja y firma a quien actuó.
     const last = prisma.state.notifications.filter((row) => row.recipientId === 'u-plan').at(-1)!;
@@ -733,5 +786,76 @@ describe('DispatchService — bitácora y notificaciones', () => {
     expect((await service.list(outsider, { scope: 'history' })).items).toHaveLength(0);
     // «Publicados por mí» solo trae lo propio.
     expect((await service.list(planner, { scope: 'created' })).items).toHaveLength(2);
+  });
+});
+
+describe('DispatchService — tiempos por cliente', () => {
+  it('inicia la carga sin marcar productos, cierra por producto y factura después', async () => {
+    const prisma = createFakePrisma();
+    const sheet = await publish(prisma);
+    const service = new DispatchService(prisma as never, audit, arrivals);
+    const customerKey = '294201237';
+
+    const started = await service.startLoad(operator1, sheet.id, { customerKey });
+    expect(started.lines.every((line) => line.status === 'PENDIENTE')).toBe(true);
+    const progress = started.customerProgress.find((row) => row.customerKey === customerKey)!;
+    expect(progress.loadStartedAt).not.toBeNull();
+    expect(progress.loadClosedAt).toBeNull();
+    expect(started.status).toBe('EN_PROCESO');
+    expect(started.claimedByName).toBe('ALEXIS RIVAS');
+
+    // Cerrar el primer producto no cierra el cliente todavía.
+    const afterFirst = await service.updateLine(operator1, sheet.id, started.lines[0]!.id, { status: 'CARGADO' });
+    expect(afterFirst.customerProgress.find((row) => row.customerKey === customerKey)!.loadClosedAt).toBeNull();
+
+    // El último producto cierra la carga del cliente.
+    const afterLast = await service.updateLine(operator1, sheet.id, started.lines[1]!.id, { status: 'CARGADO' });
+    const closed = afterLast.customerProgress.find((row) => row.customerKey === customerKey)!;
+    expect(closed.loadClosedAt).not.toBeNull();
+    expect(closed.pendingProducts).toBe(0);
+
+    const invoiced = await service.deliverInvoice(operator1, sheet.id, {
+      customerKey,
+      invoiceRef: 'FAC-001',
+    });
+    const invoice = invoiced.customerProgress.find((row) => row.customerKey === customerKey)!;
+    expect(invoice.invoiceDeliveredAt).not.toBeNull();
+    expect(invoice.invoiceRef).toBe('FAC-001');
+    // La bitácora solo la ve el ADMIN, pero el evento quedó registrado.
+    const adminView = await service.detail(admin, sheet.id);
+    expect(adminView.events.some((event) => event.type === 'FACTURA_ENTREGADA')).toBe(true);
+
+    // Con factura entregada, la carga queda bloqueada.
+    await expect(
+      service.updateLine(operator1, sheet.id, invoiced.lines[0]!.id, { status: 'PENDIENTE' }),
+    ).rejects.toThrow(/factura/i);
+  });
+
+  it('factura todo solo cuando la carga completa está cerrada y permite reabrir con ADMIN', async () => {
+    const prisma = createFakePrisma();
+    const sheet = await publish(prisma);
+    const service = new DispatchService(prisma as never, audit, arrivals);
+
+    await expect(service.deliverAllInvoices(operator1, sheet.id, {})).rejects.toThrow(/producto/i);
+
+    await service.startLoad(operator1, sheet.id, { customerKey: '294201237' });
+    for (const line of sheet.lines) {
+      await service.updateLine(operator1, sheet.id, line.id, { status: 'CARGADO' });
+    }
+
+    const all = await service.deliverAllInvoices(operator1, sheet.id, { note: 'Factura global' });
+    expect(all.customerProgress.every((row) => row.invoiceDeliveredAt !== null)).toBe(true);
+    expect(all.pendingInvoiceCustomers).toBe(0);
+
+    await expect(
+      service.reopenInvoice(operator1, sheet.id, { customerKey: '294201237', reason: 'Error de número' }),
+    ).rejects.toThrow(/administrador/i);
+
+    const reopened = await service.reopenInvoice(admin, sheet.id, {
+      customerKey: '294201237',
+      reason: 'Error de número',
+    });
+    expect(reopened.customerProgress.find((row) => row.customerKey === '294201237')!.invoiceDeliveredAt).toBeNull();
+    expect(reopened.events.some((event) => event.type === 'FACTURA_REABIERTA')).toBe(true);
   });
 });
