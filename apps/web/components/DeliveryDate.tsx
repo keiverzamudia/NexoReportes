@@ -3,10 +3,9 @@
 // ============================================================
 // Fecha de entrega con capa tentativa.
 //
-// Una sola fecha visible:
-//  · verde cuando tiene fecha tentativa;
-//  · normal cuando es la original de Profit.
-// Al pasar el mouse (o enfocar) muestra la fecha original.
+// La original de Profit siempre está visible (gris). Si además hay
+// fecha tentativa, se muestra al lado en verde: «original → tentativa».
+// Al pasar el mouse (o enfocar) el tooltip conserva el rango original.
 // Doble clic abre el editor (también un toque en móvil).
 // ============================================================
 
@@ -39,7 +38,6 @@ export function DeliveryDateButton({
   const pointerType = useRef<string | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; below: boolean } | null>(null);
 
-  const display = tentativeDate ?? originalDate;
   const hasTentative = Boolean(tentativeDate);
   const action = canEdit ? (hasTentative ? 'Doble clic para cambiar la fecha' : 'Doble clic para asignar fecha') : null;
 
@@ -73,7 +71,7 @@ export function DeliveryDateButton({
       <button
         ref={buttonRef}
         type="button"
-        aria-label={`${label}. ${hasTentative ? 'Fecha tentativa' : 'Fecha original'} ${fmtDate(display)}. Original ${originalLabel}.${action ? ` ${action}.` : ''}`}
+        aria-label={`${label}. Original ${originalLabel}.${hasTentative ? ` Tentativa ${fmtDate(tentativeDate)}.` : ''}${action ? ` ${action}.` : ''}`}
         aria-disabled={!canEdit}
         tabIndex={canEdit ? 0 : -1}
         onPointerDown={(event) => {
@@ -93,11 +91,17 @@ export function DeliveryDateButton({
         onMouseLeave={hideTip}
         onFocus={showTip}
         onBlur={hideTip}
-        className={`select-none whitespace-nowrap rounded-md px-1 py-0.5 text-label-sm tabular-nums transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70 ${
-          hasTentative ? 'font-semibold text-secondary' : 'text-outline'
-        } ${canEdit ? 'cursor-pointer hover:bg-surface-container-low hover:text-primary' : 'cursor-default'} ${className}`}
+        className={`select-none whitespace-nowrap rounded-md px-1 py-0.5 text-label-sm tabular-nums text-outline transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70 ${
+          canEdit ? 'cursor-pointer hover:bg-surface-container-low hover:text-primary' : 'cursor-default'
+        } ${className}`}
       >
-        {fmtDate(display)}
+        <span className={hasTentative ? 'text-outline' : undefined}>{fmtDate(originalDate)}</span>
+        {hasTentative && (
+          <>
+            <span aria-hidden className="mx-1 text-outline">→</span>
+            <span className="font-semibold text-secondary">{fmtDate(tentativeDate)}</span>
+          </>
+        )}
       </button>
 
       {tip &&
