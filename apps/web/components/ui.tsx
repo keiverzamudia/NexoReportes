@@ -508,6 +508,7 @@ export function DataTable<T>({
   renderExpanded,
   sticky = true,
   showHelpRow = false,
+  onRowDoubleClick,
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -529,6 +530,8 @@ export function DataTable<T>({
   sticky?: boolean;
   /** Muestra bajo cada encabezado la descripción corta de `help.short`. */
   showHelpRow?: boolean;
+  /** Doble clic sobre una fila (escritorio) o tarjeta (teléfono). */
+  onRowDoubleClick?: (row: T) => void;
 }) {
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
 
@@ -645,7 +648,14 @@ export function DataTable<T>({
               const isOpen = expandedKey != null && expandedKey === key;
               return (
                 <Fragment key={key}>
-                  <tr className={cx('group transition-colors', isOpen ? 'bg-surface-container-low' : 'hover:bg-surface-container-low/70')}>
+                  <tr
+                    onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row) : undefined}
+                    className={cx(
+                      'group transition-colors',
+                      isOpen ? 'bg-surface-container-low' : 'hover:bg-surface-container-low/70',
+                      onRowDoubleClick && 'cursor-pointer',
+                    )}
+                  >
                     {columns.map((c, index) => (
                       <td
                         key={c.key}
@@ -688,7 +698,15 @@ export function DataTable<T>({
           const key = rowKey(row);
           const isOpen = expandedKey != null && expandedKey === key;
           return (
-            <li key={key} className={cx('flex flex-col gap-space-sm px-space-lg py-space-md transition-colors', isOpen && 'bg-surface-container-low')}>
+            <li
+              key={key}
+              onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row) : undefined}
+              className={cx(
+                'flex flex-col gap-space-sm px-space-lg py-space-md transition-colors',
+                isOpen && 'bg-surface-container-low',
+                onRowDoubleClick && 'cursor-pointer',
+              )}
+            >
               <div className="flex items-start justify-between gap-space-sm">
                 <div className="flex min-w-0 flex-col gap-space-2xs">
                   {idCols.map((c) => (
