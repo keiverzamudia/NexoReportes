@@ -11,6 +11,7 @@ import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Boxes, PackageSearch, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AppNav, LoginScreen } from '../../components/shell';
+import { AvailabilityCustomersModal } from '../../components/AvailabilityCustomersModal';
 import {
   Badge,
   Card,
@@ -201,6 +202,8 @@ export default function DisponibilidadPage() {
   const [unit, setUnit] = useState<UnitFilter>('ALL');
   // El KPI «A producir» se puede ver en kg (por defecto) o en toneladas.
   const [inTons, setInTons] = useState(false);
+  // Producto abierto en el modal de clientes (doble clic en una fila).
+  const [customersProduct, setCustomersProduct] = useState<AvailabilityRow | null>(null);
 
   const { data, isLoading, error } = useQuery<AvailabilityResponse>({
     queryKey: ['availability', tick],
@@ -317,6 +320,7 @@ export default function DisponibilidadPage() {
               columns={COLUMNS}
               rows={rows}
               rowKey={(r) => r.productCode}
+              onRowDoubleClick={setCustomersProduct}
               empty={
                 <EmptyState
                   icon={PackageSearch}
@@ -343,11 +347,20 @@ export default function DisponibilidadPage() {
                   <span className="line-through decoration-1">0</span> tachado corresponde a artículos a granel (KG),
                   que no se producen en sacos; en los artículos SAC el 0 es una cantidad real.
                 </span>
+                <span className="text-primary">
+                  Doble clic en una fila para ver los clientes, sus sacos/kilogramos y su % del total solicitado.
+                </span>
               </div>
             </div>
           </Card>
         )}
       </main>
+
+      <AvailabilityCustomersModal
+        open={customersProduct !== null}
+        product={customersProduct}
+        onClose={() => setCustomersProduct(null)}
+      />
     </>
   );
 }

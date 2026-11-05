@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
+  AvailabilityProductCustomers,
   AvailabilityResponse,
   InventoryByWarehouse,
   InventorySnapshotSummary,
@@ -27,6 +28,10 @@ function toNumberOrNull(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function round3(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }
 
 @Injectable()
@@ -117,6 +122,125 @@ export class CatalogService {
       snapshotAt: snapshot ? snapshot.takenAt.toISOString() : null,
       source: snapshot?.source ?? null,
       rows,
+    };
+  }
+
+  // Desglose del solicitado de un producto por cliente. Se usa al hacer doble
+  // clic en una fila de Disponibilidad. Parte de los mismos renglones activos
+  // que alimentan `availability()`, así que los totales cuadran con la tabla.
+  async availabilityCustomers(code: string): Promise<AvailabilityProductCustomers> {
+    const product = await this.prisma.product.findUnique({ where: { externalCode: code } });
+    if (!product) {
+      throw new NotFoundException(`Producto ${code} no existe en el catálogo sincronizado`);
+    }
+
+    const [snapshot, lines] = await Promise.all([
+      this.prisma.inventorySnapshot.findFirst({
+        orderBy: { takenAt: 'desc' },
+        include: { lines: { where: { productCode: code }, include: { warehouse: true } } },
+      }),
+      this.prisma.salesOrderLine.findMany({
+        where: { productCode: code, order: { isActive: true } },
+        select: {
+          pendingQty: true,
+          pendingKg: true,
+          uom: true,
+          order: {
+            select: {
+              externalNumber: true,
+              customerCode: true,
+              customerName: true,
+              customer: { select: { externalCode: true, name: true } },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const inventory: InventoryByWarehouse[] = (snapshot?.lines ?? []).map((line) => ({
+      warehouseCode: line.warehouseCode,
+      warehouseName: line.warehouse?.name ?? null,
+      qty: toNumber(line.qty),
+      reservedQty: toNumber(line.reservedQty),
+    }));
+
+    const demandQty = lines.reduce((acc, line) => acc + toNumber(line.pendingQty), 0);
+    // Igual que Prisma.aggregate: si ningún renglón trae kg, el total es null.
+    const demandKg = lines.some((line) => line.pendingKg !== null && line.pendingKg !== undefined)
+      ? lines.reduce((acc, line) => acc + toNumber(line.pendingKg), 0)
+      : null;
+    const row = computeAvailability(this.toInput(product, inventory, { pendingQty: demandQty, pendingKg: demandKg }));
+    const kgPerUom = toNumberOrNull(product.kgPerUom);
+
+    const byCustomer = new Map<
+      string,
+      {
+        customerCode: string;
+        customerName: string;
+        sacks: number;
+        kg: number;
+        orders: Set<string>;
+      }
+    >();
+
+    for (const line of lines) {
+      const customerCode = line.order.customerCode ?? line.order.customer?.externalCode ?? 'SIN_CLIENTE';
+      const customerName =
+        line.order.customerName ?? line.order.customer?.name ?? (customerCode === 'SIN_CLIENTE' ? 'Sin cliente' : customerCode);
+      const key = customerCode;
+      let entry = byCustomer.get(key);
+      if (!entry) {
+        entry = { customerCode, customerName, sacks: 0, kg: 0, orders: new Set<string>() };
+        byCustomer.set(key, entry);
+      }
+
+      const pendingQty = toNumber(line.pendingQty);
+      const pendingKg = toNumberOrNull(line.pendingKg);
+      const uom = (line.uom ?? product.uom ?? '').toUpperCase();
+      // SAC manda en sacos; el resto (KG y unidades no reconocidas) se lee en
+      // kg y, si el artículo declara empaque, se muestra el equivalente en sacos.
+      if (uom === 'SAC') {
+        entry.sacks += pendingQty;
+        entry.kg += pendingKg ?? (kgPerUom === null ? 0 : pendingQty * kgPerUom);
+      } else {
+        const lineKg = pendingKg ?? (kgPerUom === null ? pendingQty : pendingQty * kgPerUom);
+        entry.kg += lineKg;
+        if (kgPerUom !== null && kgPerUom > 0) entry.sacks += lineKg / kgPerUom;
+      }
+      entry.orders.add(line.order.externalNumber);
+    }
+
+    const customers = [...byCustomer.values()].sort(
+      (a, b) => b.kg - a.kg || b.sacks - a.sacks || a.customerName.localeCompare(b.customerName, 'es'),
+    );
+    const totalSacks = round3(customers.reduce((acc, customer) => acc + customer.sacks, 0));
+    const totalKg = round3(customers.reduce((acc, customer) => acc + customer.kg, 0));
+    // La participación se mide en la unidad de venta del producto. Si no hay
+    // sacos utilizables (p. ej. producto a granel), se usa kg como denominador.
+    const shareInSacks = row.uom === 'SAC' && totalSacks > 0;
+
+    return {
+      productCode: row.productCode,
+      description: row.description,
+      uom: row.uom,
+      kgPerUom: row.kgPerUom,
+      stockTotal: row.stockTotal,
+      demandQty: row.demandQty,
+      demandKg: row.demandKg,
+      totalSacks,
+      totalKg,
+      customers: customers.map((customer) => {
+        const base = shareInSacks ? customer.sacks : customer.kg;
+        const total = shareInSacks ? totalSacks : totalKg;
+        return {
+          customerCode: customer.customerCode,
+          customerName: customer.customerName,
+          ordersCount: customer.orders.size,
+          sacks: round3(customer.sacks),
+          kg: round3(customer.kg),
+          sharePct: total > 0 ? round3((base / total) * 100) : 0,
+        };
+      }),
     };
   }
 

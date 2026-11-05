@@ -461,6 +461,36 @@ export const zAvailabilityResponse = z.object({
 });
 export type AvailabilityResponse = z.infer<typeof zAvailabilityResponse>;
 
+// Desglose del solicitado de UN producto por cliente (doble clic en
+// Disponibilidad). Las cantidades se entregan en las dos lecturas que usa el
+// negocio: sacos y kilogramos equivalentes. `sharePct` es la participación de
+// cada cliente sobre el 100 % de lo solicitado de ese producto.
+export const zAvailabilityCustomer = z.object({
+  customerCode: z.string(),
+  customerName: z.string(),
+  // Pedidos activos distintos que aportan al solicitado del cliente.
+  ordersCount: z.number().int(),
+  sacks: z.number(),
+  kg: z.number(),
+  sharePct: z.number(),
+});
+export type AvailabilityCustomer = z.infer<typeof zAvailabilityCustomer>;
+
+export const zAvailabilityProductCustomers = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  kgPerUom: z.number().nullable(),
+  stockTotal: z.number(),
+  // Totales del producto: deben coincidir con la fila de Disponibilidad.
+  demandQty: z.number(),
+  demandKg: z.number().nullable(),
+  totalSacks: z.number(),
+  totalKg: z.number(),
+  customers: z.array(zAvailabilityCustomer),
+});
+export type AvailabilityProductCustomers = z.infer<typeof zAvailabilityProductCustomers>;
+
 export const zProductDetail = z.object({
   product: zProduct,
   inventory: z.array(zInventoryByWarehouse),

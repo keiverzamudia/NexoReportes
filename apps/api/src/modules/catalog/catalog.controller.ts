@@ -41,6 +41,13 @@ export class CatalogController {
     return this.catalog.availability();
   }
 
+  @Get('availability/:code/customers')
+  // Desglose por cliente del solicitado de un producto (doble clic en la tabla).
+  @RequirePermission('disponibilidad:read')
+  availabilityCustomers(@Param('code') code: string) {
+    return this.catalog.availabilityCustomers(code);
+  }
+
   @Get('inventory/snapshots/latest')
   latestSnapshot() {
     return this.catalog.latestSnapshotSummary();
