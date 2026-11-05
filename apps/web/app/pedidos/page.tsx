@@ -2601,12 +2601,16 @@ function GroupRow({
 }) {
   const coveragePct = Math.round(coverage * 100);
   const tone = coveragePct >= 100 ? 'success' : coveragePct > 0 ? 'warning' : 'danger';
-  // Resumen de fecha del grupo: si hay tentativas, se muestra la más próxima
-  // en verde; el tooltip conserva el rango original y las fechas mezcladas.
+  // Resumen de fecha del grupo: la original de Profit siempre va visible y,
+  // si hay tentativas, se muestra la más próxima al lado en verde. En la
+  // vista por cliente el botón conserva el rango original en el tooltip.
   const tentativeCount = group.lines.filter((line) => line.tentativeDate).length;
-  const distinctTentativeDates = new Set(
-    group.lines.map((line) => line.tentativeDate).filter((value): value is string => Boolean(value)),
-  ).size;
+  const tentativeDates = [
+    ...new Set(group.lines.map((line) => line.tentativeDate).filter((value): value is string => Boolean(value))),
+  ].sort();
+  const distinctTentativeDates = tentativeDates.length;
+  // Fecha tentativa del grupo: la más próxima (la primera del arreglo ordenado).
+  const earliestTentative = tentativeDates[0] ?? null;
   const originalDates = [...new Set(group.lines.map((line) => line.requestedDate).filter((value): value is string => Boolean(value)))].sort();
   // La fecha del grupo es la PRÓXIMA entrega efectiva (tentativa u original).
   // Si esa próxima entrega es tentativa, va en verde; si no, queda normal y
@@ -2699,8 +2703,14 @@ function GroupRow({
                   hint={dateHint}
                 />
               ) : (
-                <span className={earliestIsTentative ? 'font-semibold text-secondary' : 'text-outline'}>
-                  {fmtDate(earliestEffective)}
+                <span className="inline-flex flex-wrap items-center gap-x-1 tabular-nums" title={dateHint}>
+                  <span className="text-outline">{fmtDate(earliestOriginal)}</span>
+                  {earliestTentative && (
+                    <>
+                      <span aria-hidden className="text-outline">→</span>
+                      <span className="font-semibold text-secondary">{fmtDate(earliestTentative)}</span>
+                    </>
+                  )}
                 </span>
               )}
               {!selectable && <span className="font-bold uppercase text-critical">sin existencia</span>}
