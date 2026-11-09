@@ -964,6 +964,8 @@ export default function PedidosPage() {
   //
   // La altura del gráfico se calcula por filas: con 12 productos y 220 px
   // ECharts ocultaba etiquetas alternas del eje Y (`axisLabel.interval: 'auto'`).
+  // Se listan TODOS los productos (sin top 12 ni fila «Otros») y la tarjeta
+  // hace scroll: así no se agrupa nada y se llega a todos los códigos.
   const coverageData = useMemo(() => {
     // Comprometido por producto: únicamente renglones marcados.
     const committed = new Map<string, CoverageCommitted>();
@@ -987,6 +989,8 @@ export default function PedidosPage() {
         demandKg: info.demandKg,
       })),
       [...committed.values()],
+      // Sin límite: no se agrupa el resto en «Otros»; la tarjeta hace scroll.
+      Number.POSITIVE_INFINITY,
     );
   }, [productInfo, queue, allLineByKey]);
 
@@ -1006,9 +1010,11 @@ export default function PedidosPage() {
     return {
       animationDuration: 300,
       animationDurationUpdate: 220,
-      grid: { left: 4, right: 52, top: 8, bottom: 44, containLabel: true },
+      grid: { left: 4, right: 52, top: 28, bottom: 8, containLabel: true },
       tooltip: {
         ...CHART_TOOLTIP,
+        // Con la tarjeta en scroll, el tooltip no debe salirse del área.
+        confine: true,
         trigger: 'axis',
         axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(0,51,102,0.06)' } },
         formatter: (params: unknown) => {
@@ -1033,7 +1039,7 @@ export default function PedidosPage() {
           );
         },
       },
-      legend: { bottom: 2, icon: 'roundRect', itemWidth: 9, itemHeight: 9, itemGap: 14, textStyle: { color: C.outline, fontSize: 11 } },
+      legend: { top: 0, icon: 'roundRect', itemWidth: 9, itemHeight: 9, itemGap: 14, textStyle: { color: C.outline, fontSize: 11 } },
       xAxis: {
         type: 'value',
         axisLabel: { color: C.outline, fontSize: 10, formatter: (v: number) => compactKg(v) },
@@ -1642,15 +1648,20 @@ export default function PedidosPage() {
               <div className="flex flex-col rounded-xl bg-surface/80 p-space-sm">
                 <div className="mb-space-xs font-semibold uppercase tracking-wider text-label-sm text-outline">Cobertura por producto (kg)</div>
                 {coverageData.rows.length > 0 ? (
-                  <EChart
-                    option={coverageChart}
-                    height={coverageHeight}
-                    ariaLabel="Cobertura por producto en kilogramos. La fila «Otros» abre el detalle de los productos agrupados."
-                    onCategoryClick={(index) => {
-                      if (coverageData.rows[index]?.kind === 'others') setOthersOpen(true);
-                    }}
-                    pointerCategories={othersIndex >= 0 ? [othersIndex] : undefined}
-                  />
+                  <div
+                    className="overflow-y-auto overscroll-contain pr-1"
+                    style={{ maxHeight: 320 }}
+                  >
+                    <EChart
+                      option={coverageChart}
+                      height={coverageHeight}
+                      ariaLabel="Cobertura por producto en kilogramos. Desplázate para ver todos los productos."
+                      onCategoryClick={(index) => {
+                        if (coverageData.rows[index]?.kind === 'others') setOthersOpen(true);
+                      }}
+                      pointerCategories={othersIndex >= 0 ? [othersIndex] : undefined}
+                    />
+                  </div>
                 ) : (
                   <div className="flex h-[220px] items-center justify-center rounded-lg border border-dashed border-outline-variant/40 px-space-md text-center text-body-sm text-on-surface-variant">
                     Sin productos con demanda en los filtros actuales.
