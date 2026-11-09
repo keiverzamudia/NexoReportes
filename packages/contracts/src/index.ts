@@ -1766,18 +1766,36 @@ export type DispatchSheetListResponse = z.infer<typeof zDispatchSheetListRespons
 //
 // No es el total de la hoja: es SOLO lo que falta por cargar
 // (`plannedQty - loadedQty > 0` en hojas abiertas). La vista de Despacho lo
-// muestra como una franja compacta, nunca como tarjetas de KPI.
+// muestra como un «brief de carga»: una cifra protagonista (renglones), tres
+// métricas de apoyo, el termómetro de urgencia y el desglose por despacho.
 //
-//   · orders   = pedidos distintos (`orderNumber`) con algo por cargar.
-//   · lines    = renglones por cargar.
-//   · customers= clientes distintos con algo por cargar.
-//   · sacks    = unidades SAC por cargar; sacksKg = su equivalente en kg.
-//   · bulkKg   = kg pendientes de renglones KG (granel).
-//   · otherKg  = kg pendientes de otras unidades (no SAC / no KG).
-//   · urgency  = pedidos agrupados por su fecha de entrega más próxima.
+//   · openSheets= hojas abiertas, tengan o no algo por cargar.
+//   · sheets    = hojas abiertas que todavía tienen algo por cargar.
+//   · orders    = pedidos distintos (`orderNumber`) con algo por cargar.
+//   · lines     = renglones por cargar.
+//   · customers = clientes distintos con algo por cargar.
+//   · sacks     = unidades SAC por cargar; sacksKg = su equivalente en kg.
+//   · bulkKg    = kg pendientes de renglones KG (granel).
+//   · otherKg   = kg pendientes de otras unidades (no SAC / no KG).
+//   · urgency   = pedidos agrupados por su fecha de entrega más próxima.
+//   · oldestDue = fecha de entrega más antigua entre los pedidos pendientes.
+//   · bySheet   = desglose de lo pendiente por hoja (para «Ver desglose»).
 // ============================================================
+export const zDispatchPulseSheet = z.object({
+  id: z.string(),
+  number: z.string(),
+  orders: z.number().int(),
+  lines: z.number().int(),
+  sacks: z.number(),
+  kg: z.number(),
+  oldestDue: z.string().nullable(),
+});
+export type DispatchPulseSheet = z.infer<typeof zDispatchPulseSheet>;
+
 export const zDispatchPulse = z.object({
   generatedAt: z.string(),
+  // Hojas abiertas en total (con o sin pendientes).
+  openSheets: z.number().int(),
   // Hojas abiertas que todavía tienen al menos un renglón por cargar.
   sheets: z.number().int(),
   orders: z.number().int(),
@@ -1788,6 +1806,10 @@ export const zDispatchPulse = z.object({
   bulkKg: z.number(),
   otherKg: z.number(),
   totalKg: z.number(),
+  // yyyy-MM-dd de la entrega más antigua todavía pendiente.
+  oldestDue: z.string().nullable(),
+  // Nombres de los clientes con carga pendiente (máx. 4, para el tooltip).
+  customerNames: z.array(z.string()),
   urgency: z.object({
     overdue: z.number().int(),
     today: z.number().int(),
@@ -1795,6 +1817,7 @@ export const zDispatchPulse = z.object({
     later: z.number().int(),
     noDate: z.number().int(),
   }),
+  bySheet: z.array(zDispatchPulseSheet),
 });
 export type DispatchPulse = z.infer<typeof zDispatchPulse>;
 

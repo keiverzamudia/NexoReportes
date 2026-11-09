@@ -21,8 +21,6 @@ import type {
 import { useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
-  BarChart3,
-  ChevronDown,
   ClipboardList,
   RefreshCw,
   Search,
@@ -32,6 +30,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
+import { DispatchHistoryBrief } from '../../components/DispatchHistoryBrief';
 import { DispatchPulseStrip } from '../../components/DispatchPulseStrip';
 import { DispatchTimesReport } from '../../components/DispatchTimesReport';
 import { SheetStatusBadge } from '../../components/DispatchSheetParts';
@@ -92,23 +91,6 @@ function rangeForPreset(preset: HistoryPreset): { from: string; to: string } {
       break;
   }
   return { from: isoDate(start), to: isoDate(end) };
-}
-
-function HistoryMetric({
-  value,
-  label,
-  tone = 'text-primary',
-}: {
-  value: string;
-  label: string;
-  tone?: string;
-}) {
-  return (
-    <span className="inline-flex items-baseline gap-1.5">
-      <span className={cx('text-label-lg font-bold tabular-nums', tone)}>{value}</span>
-      <span className="text-label-sm text-on-surface-variant">{label}</span>
-    </span>
-  );
 }
 
 export default function DespachoPage() {
@@ -177,6 +159,7 @@ export default function DespachoPage() {
     data: pulse,
     isLoading: pulseLoading,
     error: pulseError,
+    refetch: refetchPulse,
   } = useQuery<DispatchPulse>({
     queryKey: ['dispatch-pulse'],
     queryFn: () => apiFetch<DispatchPulse>('/dispatch-sheets/pulse'),
@@ -198,6 +181,7 @@ export default function DespachoPage() {
     data: historyStats,
     isLoading: historyStatsLoading,
     error: historyStatsError,
+    refetch: refetchHistoryStats,
   } = useQuery<DispatchMetricsResponse>({
     queryKey: ['dispatch-metrics', historyRange.from, historyRange.to, 'day', '', 'all', true],
     queryFn: () => apiFetch<DispatchMetricsResponse>(`/dispatch-sheets/metrics?${historyStatsParams.toString()}`),
@@ -417,61 +401,24 @@ export default function DespachoPage() {
         />
 
         {canSeePulse && scope !== 'history' && (
-          <DispatchPulseStrip pulse={pulse} loading={pulseLoading} error={pulseError} />
+          <DispatchPulseStrip
+            pulse={pulse}
+            loading={pulseLoading}
+            error={pulseError}
+            onRetry={() => void refetchPulse()}
+          />
         )}
 
         {scope === 'history' && (
-          <Card className="flex flex-wrap items-center gap-x-5 gap-y-2 px-space-md py-space-sm">
-            <span className="text-label-sm font-semibold uppercase tracking-[0.14em] text-outline">Resumen del período</span>
-            <span className="text-label-sm tabular-nums text-outline">
-              {formatBusinessDate(historyRange.from)} – {formatBusinessDate(historyRange.to)}
-            </span>
-            {historyStatsLoading && !historyStats ? (
-              <span className="text-label-sm text-on-surface-variant">Calculando…</span>
-            ) : historyStats ? (
-              <>
-                <HistoryMetric value={formatNumber(historyStats.summary.dispatches)} label="despachos" />
-                <HistoryMetric value={formatNumber(historyStats.summary.orders)} label="pedidos" />
-                <HistoryMetric value={formatNumber(historyStats.summary.lines)} label="renglones" />
-                <HistoryMetric value={formatNumber(historyStats.summary.kg)} label="kg" />
-                <HistoryMetric
-                  value={historyStats.summary.onTime.pct === null ? '—' : `${historyStats.summary.onTime.pct}%`}
-                  label="a tiempo"
-                  tone={
-                    historyStats.summary.onTime.pct === null
-                      ? 'text-outline'
-                      : historyStats.summary.onTime.pct < 90
-                        ? 'text-warning'
-                        : 'text-secondary'
-                  }
-                />
-                <HistoryMetric
-                  value={formatNumber(historyStats.summary.invoice.pending)}
-                  label="facturas pend."
-                  tone={historyStats.summary.invoice.pending > 0 ? 'text-warning' : 'text-secondary'}
-                />
-              </>
-            ) : (
-              <span className="text-label-sm text-on-surface-variant">Sin datos en el período.</span>
-            )}
-            <button
-              type="button"
-              onClick={() => setHistoryStatsOpen((open) => !open)}
-              className="ml-auto inline-flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-low"
-              aria-expanded={historyStatsOpen}
-            >
-              <BarChart3 aria-hidden className="size-4" />
-              {historyStatsOpen ? 'Ocultar reporte' : 'Ver reporte completo'}
-              <ChevronDown aria-hidden className={cx('size-3.5 transition-transform', historyStatsOpen && 'rotate-180')} />
-            </button>
-          </Card>
-        )}
-
-        {historyStatsError && !(historyStatsError instanceof AuthRequiredError) && scope === 'history' && (
-          <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
-            <AlertTriangle aria-hidden className="size-4" />{' '}
-            {historyStatsError instanceof Error ? historyStatsError.message : 'No se pudo consultar el resumen'}
-          </p>
+          <DispatchHistoryBrief
+            stats={historyStats}
+            loading={historyStatsLoading}
+            error={historyStatsError}
+            range={historyRange}
+            reportOpen={historyStatsOpen}
+            onToggleReport={() => setHistoryStatsOpen((open) => !open)}
+            onRetry={() => void refetchHistoryStats()}
+          />
         )}
 
         <Card className="flex flex-col">
@@ -547,6 +494,7 @@ export default function DespachoPage() {
             rowKey={(row) => row.id}
             loading={isLoading}
             defaultSortKey={scope === 'history' ? 'closed' : 'number'}
+            defaultSortDir={scope === 'history' ? 'desc' : 'asc'}
             maxHeightClass="md:max-h-[min(72vh,900px)]"
             mobileSummary={<span>{sheets.length} despacho(s) en {SCOPE_LABELS[scope].toLowerCase()}</span>}
             empty={

@@ -1,4 +1,4 @@
-import type { DispatchPulse } from '@nexo/contracts';
+import type { DispatchPulse, DispatchPulseSheet } from '@nexo/contracts';
 import { businessDateKey } from './dispatch-metrics';
 
 // ============================================================
@@ -28,9 +28,15 @@ export interface PulseLineInput {
   plannedKg: unknown;
   loadedQty: unknown;
   loadedKg: unknown;
+  /** ANULADO = retirado del plan: no debe contar como pendiente. */
+  status?: string | null;
 }
 
 export interface PulseSheetInput {
+  // Opcionales para no romper a los consumidores que solo necesitan totales;
+  // el servicio de Despacho siempre los entrega.
+  id?: string;
+  number?: string;
   lines: PulseLineInput[];
 }
 
@@ -63,6 +69,18 @@ function addDays(key: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** Guarda la fecha de entrega más antigua de un pedido (mapa nº orden → fecha). */
+function mergeOrderDate(orders: Map<string, string | null>, orderNumber: string, dateKey: string | null): void {
+  if (!orders.has(orderNumber)) {
+    orders.set(orderNumber, dateKey);
+    return;
+  }
+  const current = orders.get(orderNumber) ?? null;
+  if (dateKey && (current === null || dateKey < current)) {
+    orders.set(orderNumber, dateKey);
+  }
+}
+
 export function buildDispatchPulse(
   sheets: PulseSheetInput[],
   now: Date = new Date(),
@@ -79,11 +97,22 @@ export function buildDispatchPulse(
   let otherKg = 0;
   let totalKg = 0;
   const orders = new Map<string, string | null>();
-  const customers = new Set<string>();
+  // Cliente (código o nombre) → nombre visible, para el tooltip de la tarjeta.
+  const customers = new Map<string, string | null>();
+  const bySheet: DispatchPulseSheet[] = [];
+  let oldestDue: string | null = null;
 
   for (const sheet of sheets) {
     let sheetHasPending = false;
+    let sheetLines = 0;
+    let sheetSacks = 0;
+    let sheetKg = 0;
+    const sheetOrders = new Map<string, string | null>();
+
     for (const line of sheet.lines) {
+      // Un renglón anulado es historia: no suma al pendiente ni a los pedidos.
+      if (line.status === 'ANULADO') continue;
+
       const pendingQty = Math.max(0, toNumber(line.plannedQty) - toNumber(line.loadedQty));
       const pendingKg = Math.max(0, toNumber(line.plannedKg) - toNumber(line.loadedKg));
 
@@ -93,35 +122,51 @@ export function buildDispatchPulse(
 
       sheetHasPending = true;
       lines += 1;
+      sheetLines += 1;
 
       const orderNumber = line.orderNumber?.trim();
+      const dateKey = effectiveDateKey(line.effectiveDate);
       if (orderNumber) {
-        const dateKey = effectiveDateKey(line.effectiveDate);
-        if (!orders.has(orderNumber)) {
-          orders.set(orderNumber, dateKey);
-        } else {
-          const current = orders.get(orderNumber) ?? null;
-          if (dateKey && (current === null || dateKey < current)) {
-            orders.set(orderNumber, dateKey);
-          }
-        }
+        mergeOrderDate(orders, orderNumber, dateKey);
+        mergeOrderDate(sheetOrders, orderNumber, dateKey);
       }
 
       const customer = line.customerCode?.trim() || line.customerName?.trim();
-      if (customer) customers.add(customer);
+      const customerName = line.customerName?.trim() || null;
+      if (customer) {
+        if (!customers.has(customer)) customers.set(customer, customerName);
+        else if (!customers.get(customer) && customerName) customers.set(customer, customerName);
+      }
 
       const uom = (line.uom ?? '').trim().toUpperCase();
       if (uom === 'SAC') {
         sacks += pendingQty;
         sacksKg += pendingKg;
+        sheetSacks += pendingQty;
       } else if (uom === 'KG') {
         bulkKg += pendingKg;
       } else {
         otherKg += pendingKg;
       }
       totalKg += pendingKg;
+      sheetKg += pendingKg;
     }
-    if (sheetHasPending) sheetsWithPending += 1;
+
+    if (sheetHasPending) {
+      sheetsWithPending += 1;
+      const sheetDates = [...sheetOrders.values()].filter((value): value is string => Boolean(value)).sort();
+      const sheetOldest = sheetDates[0] ?? null;
+      if (sheetOldest && (oldestDue === null || sheetOldest < oldestDue)) oldestDue = sheetOldest;
+      bySheet.push({
+        id: sheet.id ?? '',
+        number: sheet.number ?? '',
+        orders: sheetOrders.size,
+        lines: sheetLines,
+        sacks: round2(sheetSacks),
+        kg: round2(sheetKg),
+        oldestDue: sheetOldest,
+      });
+    }
   }
 
   const urgency = { overdue: 0, today: 0, week: 0, later: 0, noDate: 0 };
@@ -133,8 +178,11 @@ export function buildDispatchPulse(
     else urgency.later += 1;
   }
 
+  const customerNames = [...new Set([...customers.values()].filter((name): name is string => Boolean(name)))].slice(0, 4);
+
   return {
     generatedAt: now.toISOString(),
+    openSheets: sheets.length,
     sheets: sheetsWithPending,
     orders: orders.size,
     lines,
@@ -144,6 +192,9 @@ export function buildDispatchPulse(
     bulkKg: round2(bulkKg),
     otherKg: round2(otherKg),
     totalKg: round2(totalKg),
+    oldestDue,
+    customerNames,
     urgency,
+    bySheet,
   };
 }

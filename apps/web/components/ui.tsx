@@ -504,6 +504,7 @@ export function DataTable<T>({
   maxHeightClass = 'md:max-h-[min(72vh,900px)]',
   sortable = true,
   defaultSortKey,
+  defaultSortDir = 'asc',
   expandedKey,
   renderExpanded,
   sticky = true,
@@ -522,6 +523,8 @@ export function DataTable<T>({
   maxHeightClass?: string;
   sortable?: boolean;
   defaultSortKey?: string;
+  /** Dirección inicial del orden por `defaultSortKey` (por defecto ascendente). */
+  defaultSortDir?: 'asc' | 'desc';
   /** Clave de la fila abierta (acordeón). Ver `renderExpanded`. */
   expandedKey?: string | null;
   /** Contenido que se despliega **dentro de la fila** (escritorio) o de la tarjeta (teléfono). */
@@ -536,7 +539,7 @@ export function DataTable<T>({
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
 
   const sorted = useMemo(() => {
-    const active = sort ?? (defaultSortKey ? { key: defaultSortKey, dir: 'asc' as const } : null);
+    const active = sort ?? (defaultSortKey ? { key: defaultSortKey, dir: defaultSortDir } : null);
     if (!active) return rows;
     const col = columns.find((c) => c.key === active.key);
     if (!col?.sortValue) return rows;
@@ -547,7 +550,7 @@ export function DataTable<T>({
       const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb), 'es');
       return active.dir === 'asc' ? cmp : -cmp;
     });
-  }, [rows, columns, sort, defaultSortKey]);
+  }, [rows, columns, sort, defaultSortKey, defaultSortDir]);
 
   function toggleSort(col: Column<T>) {
     if (!sortable || !col.sortValue) return;
