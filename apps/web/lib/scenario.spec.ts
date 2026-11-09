@@ -26,6 +26,7 @@ function line(overrides: Partial<OrderGroupLine> = {}): OrderGroupLine {
     orderNumber: '408251710',
     customerCode: '294201237',
     customerName: 'AGRICOLA LA CAÑADA',
+    orderDate: '2026-10-18T00:00:00.000Z',
     requestedDate: '2026-10-20T00:00:00.000Z',
     tentativeDate: null,
     authorized: true,

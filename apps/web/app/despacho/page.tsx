@@ -196,7 +196,7 @@ export default function DespachoPage() {
               : 'border border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low',
           )}
         >
-          {row.canOperate && row.status !== 'DESPACHADO' && row.status !== 'CANCELADO' ? 'Operar' : 'Abrir'}
+          Abrir
         </Link>
       ),
     },
@@ -335,7 +335,7 @@ export default function DespachoPage() {
           <Users aria-hidden className="size-3.5" />
           {isOperator
             ? 'Los despachos abiertos los toma el primer operador que inicia la carga. Enviar o cargar nunca escribe en Profit.'
-            : 'Ves todo lo pendiente del almacén. La carga la realizan los operadores con permiso «Operar».'}
+            : 'Ves todo lo pendiente del almacén. La carga la realizan los operadores con permiso «Abrir».'}
         </p>
       </main>
     </>

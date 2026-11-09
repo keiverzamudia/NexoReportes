@@ -152,6 +152,7 @@ export async function buildDraftPlan(
       orderNumber: row.order.externalNumber,
       customerCode: row.order.customerCode,
       customerName: row.order.customerName,
+      orderDate: row.order.orderDate ? row.order.orderDate.toISOString() : null,
       requestedDate: row.order.requestedDate ? row.order.requestedDate.toISOString() : null,
       tentativeDate: tentativeByKey.get(draftLineKey(ref)) ?? null,
       authorized: row.order.authorized,

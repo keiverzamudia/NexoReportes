@@ -378,6 +378,7 @@ export class SalesService {
         orderNumber: line.order.externalNumber,
         customerCode: line.order.customerCode,
         customerName: line.order.customerName,
+        orderDate: toDate(line.order.orderDate),
         requestedDate: toDate(line.order.requestedDate),
         tentativeDate: tentativeByLine.get(deliveryDateKey(line.order.externalNumber, line.productCode)) ?? null,
         authorized: line.order.authorized,

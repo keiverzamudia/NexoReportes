@@ -1866,7 +1866,7 @@ export default function PedidosPage() {
                                       </Th>
                                       <Th align="right" className="w-14">Turno</Th>
                                       <Th>Pedido</Th>
-                                      <Th>Entrega</Th>
+                                      <Th>Emisión</Th>
                                       <Th>{by === 'producto' ? 'Cliente' : 'Artículo'}</Th>
                                       <Th align="right">Pend.</Th>
                                       <Th align="right">Asignado</Th>
@@ -1924,10 +1924,10 @@ export default function PedidosPage() {
                                           <Td>
                                             <DeliveryDateButton
                                               tentativeDate={ref.line.tentativeDate}
-                                              originalDate={ref.line.requestedDate}
+                                              originalDate={ref.line.orderDate ?? ref.line.requestedDate}
                                               onEdit={() => openDateEditor(editLines, editMode, editMode === 'seleccion' ? 'Fecha de los seleccionados' : 'Fecha del producto')}
                                               canEdit={canEditDates}
-                                              label={`Fecha de entrega de ${ref.line.productCode}`}
+                                              label={`Fecha de emisión de ${ref.line.productCode}`}
                                             />
                                           </Td>
                                           <Td>
@@ -2601,9 +2601,29 @@ function GroupRow({
 }) {
   const coveragePct = Math.round(coverage * 100);
   const tone = coveragePct >= 100 ? 'success' : coveragePct > 0 ? 'warning' : 'danger';
-  // Resumen de fecha del grupo: la original de Profit siempre va visible y,
+  // Cuando el grupo no tiene renglones marcables puede ser por dos motivos:
+  // no hay existencia o los renglones ya los reservó otra vendedora. El badge
+  // debe decir cuál es para no confundir una reserva ajena con falta de stock.
+  const reservedByOthers = [
+    ...new Set(
+      group.lines.flatMap((line) => {
+        const owner = ownerByKey.get(lineKey(line));
+        return owner && owner.id !== currentUserId ? [owner.name] : [];
+      }),
+    ),
+  ];
+  const lockedByReservation =
+    !selectable &&
+    group.lines.some((line) => {
+      const owner = ownerByKey.get(lineKey(line));
+      if (!owner || owner.id === currentUserId) return false;
+      // Si no estuviera reservado, ¿se podría despachar? Entonces el bloqueo
+      // real es la reserva, no la existencia.
+      return mode === 'total' || (queueByKey.get(lineKey(line))?.dispatchable ?? false);
+    });
+  // Resumen de fecha del grupo: la emisión de Profit siempre va visible y,
   // si hay tentativas, se muestra la más próxima al lado en verde. En la
-  // vista por cliente el botón conserva el rango original en el tooltip.
+  // vista por cliente el botón conserva el rango de emisión en el tooltip.
   const tentativeCount = group.lines.filter((line) => line.tentativeDate).length;
   const tentativeDates = [
     ...new Set(group.lines.map((line) => line.tentativeDate).filter((value): value is string => Boolean(value))),
@@ -2611,7 +2631,7 @@ function GroupRow({
   const distinctTentativeDates = tentativeDates.length;
   // Fecha tentativa del grupo: la más próxima (la primera del arreglo ordenado).
   const earliestTentative = tentativeDates[0] ?? null;
-  const originalDates = [...new Set(group.lines.map((line) => line.requestedDate).filter((value): value is string => Boolean(value)))].sort();
+  const originalDates = [...new Set(group.lines.map((line) => line.orderDate ?? line.requestedDate).filter((value): value is string => Boolean(value)))].sort();
   // La fecha del grupo es la PRÓXIMA entrega efectiva (tentativa u original).
   // Si esa próxima entrega es tentativa, va en verde; si no, queda normal y
   // el tooltip avisa cuántos renglones tienen fecha tentativa.
@@ -2699,7 +2719,7 @@ function GroupRow({
                   originalTo={latestOriginal}
                   onEdit={onEditGroupDate}
                   canEdit={canEditDates}
-                  label={`Fecha de entrega de ${group.label}`}
+                  label={`Fecha de emisión de ${group.label}`}
                   hint={dateHint}
                 />
               ) : (
@@ -2713,7 +2733,20 @@ function GroupRow({
                   )}
                 </span>
               )}
-              {!selectable && <span className="font-bold uppercase text-critical">sin existencia</span>}
+              {!selectable &&
+                (lockedByReservation ? (
+                  <span
+                    className="font-bold uppercase text-critical"
+                    title={`Reservado por ${reservedByOthers.join(', ')}`}
+                  >
+                    reservado por{' '}
+                    {reservedByOthers.length === 1
+                      ? reservedByOthers[0]
+                      : `${reservedByOthers.length} vendedoras`}
+                  </span>
+                ) : (
+                  <span className="font-bold uppercase text-critical">sin existencia</span>
+                ))}
               {onOpenStatement && (
                 <button
                   type="button"
@@ -2750,7 +2783,7 @@ function GroupRow({
                   <tr className="border-b border-outline-variant/30">
                     <Th className="w-8" />
                     <Th>Pedido</Th>
-                    <Th>Entrega</Th>
+                    <Th>Emisión</Th>
                     <Th>{by === 'producto' ? 'Cliente' : 'Artículo'}</Th>
                     <Th align="right">Pend.</Th>
                     <Th align="right">Kg</Th>
@@ -2811,10 +2844,10 @@ function GroupRow({
                         <Td>
                           <DeliveryDateButton
                             tentativeDate={line.tentativeDate}
-                            originalDate={line.requestedDate}
+                            originalDate={line.orderDate ?? line.requestedDate}
                             onEdit={() => onEditLineDate(line)}
                             canEdit={canEditDates}
-                            label={`Fecha de entrega de ${line.productCode}`}
+                            label={`Fecha de emisión de ${line.productCode}`}
                           />
                         </Td>
                         {by === 'producto' ? (

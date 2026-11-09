@@ -424,7 +424,7 @@ function RoleDialog({
         <div className="border-t border-surface-container p-space-md">
           <h3 className="mb-space-sm font-semibold text-on-surface">Matriz de permisos</h3>
           <p className="mb-space-sm text-label-sm normal-case text-on-surface-variant">
-            En Despacho, «Crear» habilita «Armar y enviar simulación»; «Editar» permite operar la carga.
+            En Despacho, «Crear» habilita «Armar y enviar simulación»; «Editar» permite abrir la carga.
           </p>
           <PermissionMatrix
             mode="role"

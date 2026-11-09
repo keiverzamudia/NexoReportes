@@ -88,7 +88,7 @@ export const APP_MODULES: AppModuleDefinition[] = [
     actions: [
       { action: 'read', label: 'Ver' },
       { action: 'create', label: 'Armar y enviar simulación' },
-      { action: 'update', label: 'Operar' },
+      { action: 'update', label: 'Abrir' },
       { action: 'delete', label: 'Anular' },
       { action: 'view_all', label: 'Ver todos los despachos' },
     ],
@@ -997,6 +997,8 @@ export const zOrderGroupLine = z.object({
   orderNumber: z.string(),
   customerCode: z.string().nullable(),
   customerName: z.string().nullable(),
+  // Fecha de emisión del pedido en Profit (día en que se creó).
+  orderDate: z.string().nullable(),
   requestedDate: z.string().nullable(),
   // Fecha tentativa local (capa Nexo). null = usar requestedDate.
   tentativeDate: z.string().nullable(),
