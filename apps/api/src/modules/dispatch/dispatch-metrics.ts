@@ -49,6 +49,7 @@ export interface MetricSheet {
   id: string;
   number: string;
   status: string;
+  sentAt: Date;
   startedAt: Date | null;
   completedAt: Date | null;
   lines: MetricLine[];
@@ -66,6 +67,7 @@ interface GroupMetric {
   invoiceAt: Date | null;
   loadMinutes: number | null;
   invoiceMinutes: number | null;
+  invoiceWaitMinutes: number | null;
   kg: number;
   loadInRange: boolean;
   invoiceInRange: boolean;
@@ -86,6 +88,21 @@ function round(value: number, decimals = 1): number {
 
 function customerKey(line: Pick<MetricLine, 'customerCode' | 'customerName'>): string {
   return line.customerCode?.trim() || line.customerName?.trim() || SIN_CLIENTE;
+}
+
+/**
+ * Pedidos distintos en un conjunto de renglones. Un pedido puede traer
+ * varios productos; si no hay número de orden, cada renglón cuenta aparte.
+ */
+function uniqueOrders(lines: MetricLine[]): number {
+  const orders = new Set<string>();
+  let unkeyed = 0;
+  for (const line of lines) {
+    const key = line.orderNumber?.trim();
+    if (key) orders.add(key);
+    else unkeyed += 1;
+  }
+  return orders.size + unkeyed;
 }
 
 function minutesBetween(from: Date | null, to: Date | null): number | null {
@@ -172,6 +189,8 @@ function buildGroups(sheets: MetricSheet[], query: DispatchMetricsQuery): GroupM
     if (sheet.status === 'CANCELADO') continue;
     const byCustomer = new Map<string, MetricLine[]>();
     for (const line of sheet.lines) {
+      // Los renglones anulados no son operación: no cuentan en tiempos.
+      if (line.status === 'ANULADO') continue;
       const key = customerKey(line);
       const bucket = byCustomer.get(key) ?? [];
       bucket.push(line);
@@ -179,6 +198,7 @@ function buildGroups(sheets: MetricSheet[], query: DispatchMetricsQuery): GroupM
     }
     const progressByKey = new Map(sheet.customerProgress.map((row) => [row.customerKey, row]));
     for (const [key, lines] of byCustomer) {
+      if (lines.length === 0) continue;
       const progress = progressByKey.get(key);
       const pending = lines.filter((line) => line.status === 'PENDIENTE').length;
       const checked = lines
@@ -191,10 +211,11 @@ function buildGroups(sheets: MetricSheet[], query: DispatchMetricsQuery): GroupM
       const loadClose =
         progress?.loadClosedAt ?? (pending === 0 ? lastChecked ?? sheet.completedAt : null);
       const invoiceAt = progress?.invoiceDeliveredAt ?? null;
+      // El reporte se agrupa por DÍA DE CARGA (último producto cerrado): la
+      // factura se atribuye a la misma cohorte aunque se entregue después.
       const loadKey = loadClose ? businessDateKey(loadClose) : null;
-      const invoiceKey = invoiceAt ? businessDateKey(invoiceAt) : null;
       const loadInRange = loadKey !== null && loadKey >= query.from && loadKey <= query.to;
-      const invoiceInRange = invoiceKey !== null && invoiceKey >= query.from && invoiceKey <= query.to;
+      const invoiceInRange = loadInRange && invoiceAt !== null;
       const pendingInRange = loadInRange && invoiceAt === null;
       const customerCode = progress?.customerCode ?? lines[0]?.customerCode ?? null;
       const customerName = progress?.customerName ?? lines[0]?.customerName ?? 'Sin cliente';
@@ -208,7 +229,7 @@ function buildGroups(sheets: MetricSheet[], query: DispatchMetricsQuery): GroupM
       }
       if (query.invoiceStatus === 'pending' && !pendingInRange) continue;
       if (query.invoiceStatus === 'delivered' && !invoiceInRange) continue;
-      if (!loadInRange && !invoiceInRange) continue;
+      if (!loadInRange) continue;
 
       groups.push({
         sheet,
@@ -221,6 +242,7 @@ function buildGroups(sheets: MetricSheet[], query: DispatchMetricsQuery): GroupM
         invoiceAt,
         loadMinutes: minutesBetween(loadStart, loadClose),
         invoiceMinutes: minutesBetween(loadStart, invoiceAt),
+        invoiceWaitMinutes: minutesBetween(loadClose, invoiceAt),
         kg: round(
           lines.reduce((sum, line) => sum + toNumber(line.plannedKg), 0),
           2,
@@ -235,14 +257,27 @@ function buildGroups(sheets: MetricSheet[], query: DispatchMetricsQuery): GroupM
 }
 
 function onTimeForGroup(group: GroupMetric): { orders: number; late: number } {
-  if (!group.invoiceAt) return { orders: 0, late: 0 };
-  const invoiceDay = businessDateKey(group.invoiceAt);
+  // Cumplimiento de ENTREGA: la carga se cerró el día planificado o antes.
+  if (!group.loadClose) return { orders: 0, late: 0 };
+  const closeDay = businessDateKey(group.loadClose);
+  // Un pedido con varios renglones se evalúa una sola vez, con su fecha de
+  // entrega más próxima (la más vieja de sus renglones).
+  const dateByOrder = new Map<string, string | null>();
+  group.lines.forEach((line, index) => {
+    const key = line.orderNumber?.trim() || `__line-${index}`;
+    const current = dateByOrder.get(key);
+    if (current === undefined) {
+      dateByOrder.set(key, line.effectiveDate);
+    } else if (line.effectiveDate && (!current || line.effectiveDate < current)) {
+      dateByOrder.set(key, line.effectiveDate);
+    }
+  });
   let orders = 0;
   let late = 0;
-  for (const line of group.lines) {
-    if (!line.effectiveDate) continue;
+  for (const date of dateByOrder.values()) {
+    if (!date) continue;
     orders += 1;
-    if (invoiceDay > line.effectiveDate) late += 1;
+    if (closeDay > date) late += 1;
   }
   return { orders, late };
 }
@@ -260,10 +295,52 @@ export function buildDispatchMetrics(
 
   let onTimeOrders = 0;
   let lateOrders = 0;
-  for (const group of invoiceGroups) {
+  for (const group of loadGroups) {
     const result = onTimeForGroup(group);
     onTimeOrders += result.orders;
     lateOrders += result.late;
+  }
+
+  // Tiempos globales de la hoja (una observación por despacho):
+  //   respuesta = envío → primer inicio de carga
+  //   ventana   = primer inicio → último cierre (solo despacho)
+  //   ciclo     = envío → último cierre
+  const sheetIds = new Set(groups.map((group) => group.sheet.id));
+  const responseValues: number[] = [];
+  const windowValues: number[] = [];
+  const cycleValues: number[] = [];
+  const totalCycleValues: number[] = [];
+  const invoiceWaitValues = invoiceGroups
+    .map((group) => group.invoiceWaitMinutes)
+    .filter((value): value is number => value !== null);
+  for (const sheet of sheets) {
+    if (!sheetIds.has(sheet.id)) continue;
+    const sheetGroups = groups.filter((group) => group.sheet.id === sheet.id);
+    const starts = sheetGroups
+      .map((group) => group.loadStart)
+      .filter((value): value is Date => value instanceof Date)
+      .sort((a, b) => a.getTime() - b.getTime());
+    const closes = sheetGroups
+      .map((group) => group.loadClose)
+      .filter((value): value is Date => value instanceof Date)
+      .sort((a, b) => a.getTime() - b.getTime());
+    const invoices = sheetGroups
+      .map((group) => group.invoiceAt)
+      .filter((value): value is Date => value instanceof Date)
+      .sort((a, b) => a.getTime() - b.getTime());
+    const firstStart = starts[0] ?? null;
+    const allClosed = sheetGroups.length > 0 && sheetGroups.every((group) => group.loadClose !== null);
+    const lastClose = allClosed ? closes[closes.length - 1] ?? null : null;
+    const allInvoiced = sheetGroups.length > 0 && sheetGroups.every((group) => group.invoiceAt !== null);
+    const lastInvoice = allInvoiced ? invoices[invoices.length - 1] ?? null : null;
+    if (firstStart) responseValues.push(Math.max(0, Math.round((firstStart.getTime() - sheet.sentAt.getTime()) / 60_000)));
+    if (firstStart && lastClose) {
+      windowValues.push(Math.max(0, Math.round((lastClose.getTime() - firstStart.getTime()) / 60_000)));
+      cycleValues.push(Math.max(0, Math.round((lastClose.getTime() - sheet.sentAt.getTime()) / 60_000)));
+    }
+    if (lastInvoice) {
+      totalCycleValues.push(Math.max(0, Math.round((lastInvoice.getTime() - sheet.sentAt.getTime()) / 60_000)));
+    }
   }
 
   const dispatches = new Set(groups.map((group) => group.sheet.id));
@@ -271,7 +348,8 @@ export function buildDispatchMetrics(
   const summary: DispatchMetricsSummary = {
     dispatches: dispatches.size,
     customers: customers.size,
-    orders: groups.reduce((sum, group) => sum + group.lines.length, 0),
+    orders: uniqueOrders(groups.flatMap((group) => group.lines)),
+    lines: groups.reduce((sum, group) => sum + group.lines.length, 0),
     kg: round(
       groups.reduce((sum, group) => sum + group.kg, 0),
       2,
@@ -281,6 +359,11 @@ export function buildDispatchMetrics(
       ...stats(invoiceGroups.map((group) => group.invoiceMinutes!)),
       pending: pendingGroups.length,
     },
+    response: stats(responseValues),
+    loadWindow: stats(windowValues),
+    dispatchCycle: stats(cycleValues),
+    totalCycle: stats(totalCycleValues),
+    invoiceWait: stats(invoiceWaitValues),
     onTime: {
       orders: onTimeOrders,
       late: lateOrders,
@@ -297,17 +380,18 @@ export function buildDispatchMetrics(
     const bucket = loadByPeriod.get(key) ?? [];
     bucket.push(group.loadMinutes!);
     loadByPeriod.set(key, bucket);
-  }
-  for (const group of invoiceGroups) {
-    const key = bucketKey(businessDateKey(group.invoiceAt!), query.granularity);
-    const bucket = invoiceByPeriod.get(key) ?? [];
-    bucket.push(group.invoiceMinutes!);
-    invoiceByPeriod.set(key, bucket);
     const onTime = onTimeByPeriod.get(key) ?? { orders: 0, late: 0 };
     const result = onTimeForGroup(group);
     onTime.orders += result.orders;
     onTime.late += result.late;
     onTimeByPeriod.set(key, onTime);
+  }
+  for (const group of invoiceGroups) {
+    // La factura se atribuye al día de cierre de carga de la misma cohorte.
+    const key = bucketKey(businessDateKey(group.loadClose!), query.granularity);
+    const bucket = invoiceByPeriod.get(key) ?? [];
+    bucket.push(group.invoiceMinutes!);
+    invoiceByPeriod.set(key, bucket);
   }
   const series: DispatchMetricsSeriesPoint[] = periods.map((period) => {
     const loadValues = loadByPeriod.get(period.key) ?? [];
@@ -341,7 +425,7 @@ export function buildDispatchMetrics(
         .filter((group) => group.loadInRange && group.loadMinutes !== null)
         .map((group) => group.loadMinutes!);
       const invoiceValues = customerGroups
-        .filter((group) => group.invoiceInRange && group.invoiceMinutes !== null)
+        .filter((group) => group.loadInRange && group.invoiceMinutes !== null)
         .map((group) => group.invoiceMinutes!);
       const loadStats = stats(loadValues);
       const invoiceStats = stats(invoiceValues);
@@ -349,7 +433,7 @@ export function buildDispatchMetrics(
       let late = 0;
       let lastInvoice: Date | null = null;
       for (const group of customerGroups) {
-        if (!group.invoiceInRange) continue;
+        if (!group.loadInRange) continue;
         const onTime = onTimeForGroup(group);
         orders += onTime.orders;
         late += onTime.late;
@@ -359,7 +443,8 @@ export function buildDispatchMetrics(
         customerCode: first.customerCode,
         customerName: first.customerName,
         dispatches: new Set(customerGroups.map((group) => group.sheet.id)).size,
-        orders: customerGroups.reduce((sum, group) => sum + group.lines.length, 0),
+        orders: uniqueOrders(customerGroups.flatMap((group) => group.lines)),
+        lines: customerGroups.reduce((sum, group) => sum + group.lines.length, 0),
         kg: round(
           customerGroups.reduce((sum, group) => sum + group.kg, 0),
           2,
@@ -396,8 +481,8 @@ export function buildDispatchMetrics(
         invoiceDeliveredAt: group.invoiceAt ? group.invoiceAt.toISOString() : null,
         invoiceMinutes: group.invoiceMinutes,
         onTime:
-          group.invoiceAt && line.effectiveDate
-            ? businessDateKey(group.invoiceAt) <= line.effectiveDate
+          closedAt && line.effectiveDate
+            ? businessDateKey(closedAt) <= line.effectiveDate
             : null,
         status: line.status as DispatchMetricsOrder['status'],
         kg: round(toNumber(line.plannedKg), 2),

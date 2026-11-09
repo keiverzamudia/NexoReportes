@@ -17,6 +17,8 @@
     "db:push": "pnpm --filter @nexo/api db:push",
     "db:migrate": "pnpm --filter @nexo/api db:migrate",
     "db:seed": "pnpm --filter @nexo/api db:seed",
+    "db:mirror": "pnpm --filter @nexo/api db:mirror",
+    "db:mirror:status": "pnpm --filter @nexo/api db:mirror:status",
     "clean": "turbo run clean"
   },
   "engines": {

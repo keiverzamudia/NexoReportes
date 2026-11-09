@@ -115,7 +115,7 @@ export class OrderLifecycleService {
     let canceled = 0;
     let review = 0;
     let errorsCount = 0;
-    const closedNumbers: string[] = [];
+    const closedOrders: Array<{ orderNumber: string; reason: string }> = [];
 
     try {
       const orders = await this.prisma.salesOrder.findMany({
@@ -163,7 +163,7 @@ export class OrderLifecycleService {
             if (result.kind === 'close') {
               if (result.toStatus === 'CANCELADO') canceled += 1;
               else closed += 1;
-              closedNumbers.push(order.externalNumber);
+              closedOrders.push({ orderNumber: order.externalNumber, reason: result.reason });
               if (!dryRun) {
                 await this.closeOrder(order, result, input.actor);
               }
@@ -203,8 +203,8 @@ export class OrderLifecycleService {
         },
       });
 
-      if (!dryRun && closedNumbers.length > 0) {
-        await this.scenarios.pruneClosedOrders(closedNumbers).catch((error) => {
+      if (!dryRun && closedOrders.length > 0) {
+        await this.scenarios.pruneClosedOrders(closedOrders).catch((error) => {
           this.logger.warn(`No se pudo limpiar el plan global: ${(error as Error).message}`);
         });
       }

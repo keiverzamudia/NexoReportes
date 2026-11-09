@@ -60,6 +60,12 @@ const envSchema = z.object({
   ORDER_RECONCILE_BATCH_SIZE: z.coerce.number().int().min(50).max(2000).default(200),
 
   CORS_ORIGINS: z.string().default('http://localhost:4100'),
+
+  // Espejo de la BD local desde el worktree main (solo desarrollo).
+  // 1 = registra /api/dev/db-mirror y muestra el botón en Usuarios → Bitácoras.
+  DB_MIRROR_ENABLED: z.enum(['0', '1']).default('0'),
+  // Ruta explícita del .db de main; si falta se detecta con `git worktree list`.
+  DB_MIRROR_SOURCE: z.string().optional(),
 });
 
 // La validación se ejecuta DENTRO de la factory: ConfigModule.forRoot({ load: [configuration] })
@@ -126,6 +132,9 @@ export default function configuration() {
     },
     forecast: {
       productionLine: 'ABA',
+    },
+    dbMirror: {
+      enabled: env.DB_MIRROR_ENABLED === '1',
     },
     cors: { origins: env.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean) },
   };

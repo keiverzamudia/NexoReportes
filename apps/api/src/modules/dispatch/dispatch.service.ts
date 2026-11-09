@@ -8,11 +8,14 @@ import {
   DispatchCustomerKeyInput,
   DispatchCustomerProgress,
   DispatchCustomerReopenInput,
+  DispatchEventMeta,
+  DispatchEventProduct,
   DispatchInvoiceInput,
   DispatchLineInput,
   DispatchMessageInput,
   DispatchMetricsQuery,
   DispatchMetricsResponse,
+  DispatchPulse,
   DispatchReopenInvoiceInput,
   DispatchSheetCreateInput,
   DispatchSheetDetail,
@@ -28,6 +31,7 @@ import {
   NotificationListResponse,
   OrderGroupLine,
   ScenarioPayload,
+  zDispatchEventMeta,
   zLoadPlan,
   zScenarioPayload,
 } from '@nexo/contracts';
@@ -39,6 +43,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { buildDispatchMetrics } from './dispatch-metrics';
+import { buildDispatchPulse } from './dispatch-pulse';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
 import { ArrivalsService, ArrivalSourceLine } from '../arrivals/arrivals.service';
@@ -78,6 +83,38 @@ interface ViewerInfo {
   id: string;
   code: string | null;
   name: string | null;
+}
+
+export interface SyncActor {
+  id?: string | null;
+  code?: string | null;
+  name?: string | null;
+}
+
+export interface DispatchSyncContext {
+  actor?: SyncActor | null;
+  // Motivo por pedido (Profit): CANCELADO → PEDIDO_ANULADO_EN_PROFIT,
+  // NOTA_ENTREGA → PEDIDO_CERRADO_EN_PROFIT.
+  reasonByOrder?: Map<string, string> | null;
+  // Motivo por defecto para los renglones retirados del plan.
+  defaultReason?: string;
+  source?: 'PLAN' | 'PROFIT' | 'SYSTEM';
+}
+
+export interface DispatchSyncRemoval {
+  sheetId: string;
+  sheetNumber: string;
+  orderNumber: string;
+  productCode: string;
+  customerName: string | null;
+  reason: string;
+}
+
+export interface DispatchSyncReport {
+  removedLines: number;
+  sheetNumbers: string[];
+  canceledSheets: Array<{ id: string; number: string }>;
+  removals: DispatchSyncRemoval[];
 }
 
 type LineRowLite = Pick<
@@ -179,6 +216,17 @@ function durationLabel(minutes: number | null): string {
   return restHours > 0 ? `${days} d ${restHours} h` : `${days} d`;
 }
 
+/** Lee el detalle congelado de un evento; si no es válido, la bitácora cae al texto. */
+function parseEventMeta(raw: string | null | undefined): DispatchEventMeta | null {
+  if (!raw) return null;
+  try {
+    const parsed = zDispatchEventMeta.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 @Injectable()
 export class DispatchService {
   constructor(
@@ -225,6 +273,22 @@ export class DispatchService {
     };
 
     return { items, total: items.length, counters };
+  }
+
+  /**
+   * Pulso de carga: solo lo que falta por cargar en las hojas abiertas.
+   * Se calcula aparte de `list()` para que no dependa del tab o del filtro
+   * activo (Pendientes / Publicados / Historial) y para poder protegerlo con
+   * el permiso `despacho:view_summary`.
+   */
+  async pulse(viewer: DispatchViewer): Promise<DispatchPulse> {
+    const rows = await this.prisma.dispatchSheet.findMany({
+      where: { AND: [this.baseVisibility(viewer), { status: { in: OPEN_STATUSES } }] },
+      include: { lines: { select: LINE_LITE } },
+      orderBy: [{ sentAt: 'asc' }],
+      take: 300,
+    });
+    return buildDispatchPulse(rows);
   }
 
   async detail(viewer: DispatchViewer, id: string): Promise<DispatchSheetDetail> {
@@ -624,16 +688,24 @@ export class DispatchService {
   }
 
   // Refleja los cambios del plan vivo en las hojas abiertas. Los renglones ya
-  // resueltos son intocables; los PENDIENTES se agregan, actualizan o quitan.
-  async syncFromDraft(draftId = 'GLOBAL'): Promise<void> {
+  // resueltos son intocables; los PENDIENTES se agregan, actualizan, anulan o
+  // reactivan. Nunca se borra un renglón: la anulación deja quién, cuándo y por
+  // qué. Si la hoja se queda sin renglones activos, se anula sola.
+  async syncFromDraft(draftId = 'GLOBAL', context: DispatchSyncContext = {}): Promise<DispatchSyncReport> {
     const sheets = await this.prisma.dispatchSheet.findMany({
       where: { draftId, status: { notIn: ['DESPACHADO', 'CANCELADO'] } },
       include: { lines: { orderBy: { position: 'asc' } }, customerProgress: true },
     });
-    if (sheets.length === 0) return;
+    const report: DispatchSyncReport = {
+      removedLines: 0,
+      sheetNumbers: [],
+      canceledSheets: [],
+      removals: [],
+    };
+    if (sheets.length === 0) return report;
 
     const draft = await this.prisma.dispatchDraft.findUnique({ where: { id: draftId } });
-    if (!draft) return;
+    if (!draft) return report;
     const payload = zScenarioPayload.parse(JSON.parse(draft.payload) as unknown);
     const plan = await buildDraftPlan(this.prisma, payload.selected);
     const assignmentByKey = new Map(plan.assignments.map((item) => [draftLineKey(item), item]));
@@ -652,8 +724,15 @@ export class DispatchService {
       .filter((item): item is NonNullable<typeof item> => item !== null);
 
     for (const sheet of sheets) {
-      await this.syncSheet(sheet, planLines, payload, draft.version);
+      const result = await this.syncSheet(sheet, planLines, payload, draft.version, context);
+      if (result.removedLines > 0) {
+        report.removedLines += result.removedLines;
+        if (!report.sheetNumbers.includes(sheet.number)) report.sheetNumbers.push(sheet.number);
+        report.removals.push(...result.removals);
+      }
+      if (result.canceled) report.canceledSheets.push({ id: sheet.id, number: sheet.number });
     }
+    return report;
   }
 
   private async syncSheet(
@@ -666,65 +745,93 @@ export class DispatchService {
     }>,
     payload: ScenarioPayload,
     draftRevision: number,
-  ): Promise<void> {
+    context: DispatchSyncContext,
+  ): Promise<{ removedLines: number; canceled: boolean; removals: DispatchSyncRemoval[] }> {
+    const noChanges = { removedLines: 0, canceled: false, removals: [] as DispatchSyncRemoval[] };
     // Una vez entregada una factura, el plan vivo ya no debe mover esa hoja:
     // la corrección exige reabrir la factura primero.
-    if ((sheet.customerProgress ?? []).some((row) => row.invoiceDeliveredAt !== null)) return;
+    if ((sheet.customerProgress ?? []).some((row) => row.invoiceDeliveredAt !== null)) return noChanges;
 
+    const source = context.source ?? 'PLAN';
+    const actor = context.actor ?? null;
+    const removalName =
+      actor?.name ?? (source === 'PROFIT' ? 'Profit' : source === 'SYSTEM' ? 'Sistema' : 'Simulación del equipo');
+    const removalCode = actor?.code ?? (source === 'PROFIT' ? 'PROFIT' : source === 'SYSTEM' ? 'SYSTEM' : null);
+    const reasonFor = (orderNumber: string) =>
+      context.reasonByOrder?.get(orderNumber) ?? context.defaultReason ?? 'RETIRADO_DEL_PLAN';
+
+    const activeRows = sheet.lines.filter((row) => row.status !== 'ANULADO');
+    const annulledRows = sheet.lines.filter((row) => row.status === 'ANULADO');
     // Los renglones ya resueltos (cargado, parcial o no cargado) son
-    // intocables: la simulación viva solo agrega, actualiza o quita pendientes.
-    const lockedRows = sheet.lines.filter((row) => row.status !== 'PENDIENTE');
+    // intocables: la simulación viva solo toca los PENDIENTES.
+    const lockedRows = activeRows.filter((row) => row.status !== 'PENDIENTE');
+    const pendingRows = activeRows.filter((row) => row.status === 'PENDIENTE');
     const lockedKeys = new Set(lockedRows.map((row) => draftLineKey(row)));
     const planByKey = new Map(planLines.map((item) => [draftLineKey(item.line), item]));
     const existingByKey = new Map(sheet.lines.map((row) => [draftLineKey(row), row]));
 
-    const toDelete: string[] = [];
+    const toAnnull: LineRow[] = [];
     const toUpdate: Array<{ row: LineRow; plan: (typeof planLines)[number] }> = [];
-    for (const row of sheet.lines) {
-      if (row.status !== 'PENDIENTE') continue;
+    for (const row of pendingRows) {
       const plan = planByKey.get(draftLineKey(row));
       if (!plan || plan.assignment.assignedQty <= 0) {
-        toDelete.push(row.id);
+        toAnnull.push(row);
         continue;
       }
       const qtyChanged = round2(toNumber(row.plannedQty)) !== round2(plan.assignment.assignedQty);
       const kgChanged = round2(toNumber(row.plannedKg)) !== round2(plan.assignment.assignedKg);
       if (qtyChanged || kgChanged) toUpdate.push({ row, plan });
     }
-    const toCreate = planLines.filter(
-      (item) =>
-        item.assignment.assignedQty > 0 &&
-        !existingByKey.has(draftLineKey(item.line)) &&
-        !lockedKeys.has(draftLineKey(item.line)),
-    );
+
+    const toCreate: Array<(typeof planLines)[number]> = [];
+    const toRevive: Array<{ row: LineRow; plan: (typeof planLines)[number] }> = [];
+    for (const item of planLines) {
+      if (item.assignment.assignedQty <= 0) continue;
+      const key = draftLineKey(item.line);
+      const existing = existingByKey.get(key);
+      if (!existing) {
+        if (!lockedKeys.has(key)) toCreate.push(item);
+        continue;
+      }
+      // Un renglón anulado que vuelve al plan se reactiva en la misma fila
+      // (la restricción sheet+pedido+artículo es única).
+      if (existing.status === 'ANULADO') toRevive.push({ row: existing, plan: item });
+    }
 
     const loadPlanJson = payload.loadPlan ? JSON.stringify(payload.loadPlan) : null;
     const desiredPending = planLines.filter(
       (item) => item.assignment.assignedQty > 0 && !lockedKeys.has(draftLineKey(item.line)),
     );
+    const desiredKeys = new Set(desiredPending.map((item) => draftLineKey(item.line)));
+    const retainedAnnulled = annulledRows.filter((row) => !desiredKeys.has(draftLineKey(row)));
+    const plannedLines = desiredPending.length + lockedRows.length;
+
+    const rowSignature = (row: LineRow) =>
+      row.status === 'PENDIENTE'
+        ? `${draftLineKey(row)}|PENDIENTE|${round2(toNumber(row.plannedQty))}|${round2(toNumber(row.plannedKg))}|${row.note ?? ''}`
+        : `${draftLineKey(row)}|${row.status}|${round2(toNumber(row.plannedQty))}|${round2(toNumber(row.plannedKg))}|${round2(
+            toNumber(row.loadedQty),
+          )}|${row.note ?? ''}`;
     const signature = [
-      ...lockedRows.map(
-        (row) =>
-          `${draftLineKey(row)}|${row.status}|${round2(toNumber(row.plannedQty))}|${round2(toNumber(row.plannedKg))}|${round2(toNumber(row.loadedQty))}|${row.note ?? ''}`,
-      ),
+      ...lockedRows.map(rowSignature),
       ...desiredPending.map(
         (item) =>
-          `${draftLineKey(item.line)}|PENDIENTE|${round2(item.assignment.assignedQty)}|${round2(item.assignment.assignedKg)}|${payload.comments?.[draftLineKey(item.line)] ?? ''}`,
+          `${draftLineKey(item.line)}|PENDIENTE|${round2(item.assignment.assignedQty)}|${round2(
+            item.assignment.assignedKg,
+          )}|${payload.comments?.[draftLineKey(item.line)] ?? ''}`,
       ),
+      ...retainedAnnulled.map((row) => `${draftLineKey(row)}|ANULADO`),
     ]
       .sort()
       .join(';');
-    const currentSignature = sheet.lines
-      .map(
-        (row) =>
-          `${draftLineKey(row)}|${row.status}|${round2(toNumber(row.plannedQty))}|${round2(toNumber(row.plannedKg))}${
-            row.status === 'PENDIENTE' ? `|${row.note ?? ''}` : `|${round2(toNumber(row.loadedQty))}|${row.note ?? ''}`
-          }`,
-      )
+    const currentSignature = [...activeRows.map(rowSignature), ...annulledRows.map((row) => `${draftLineKey(row)}|ANULADO`)]
       .sort()
       .join(';');
 
-    if (signature === currentSignature && sheet.loadPlanJson === loadPlanJson) return;
+    // Una hoja que ya quedó vacía se procesa igual para poder anularla.
+    if (plannedLines > 0 && signature === currentSignature && sheet.loadPlanJson === loadPlanJson) {
+      return noChanges;
+    }
 
     const plannedSacks = round2(
       desiredPending.reduce((sum, item) => sum + (item.line.uom === 'SAC' ? item.assignment.assignedQty : 0), 0) +
@@ -798,50 +905,102 @@ export class DispatchService {
       lines: snapshotLines,
     };
 
-    // Filas de relojes: crear las de clientes nuevos y quitar huérfanas sin
-    // actividad. Si un cliente ya cerrado recibe un renglón nuevo, se reabre
-    // su carga (sin factura: arriba se descartó la hoja facturada).
-    const deletedIds = new Set(toDelete);
+    // Clientes activos después del cambio: se usan para limpiar relojes
+    // huérfanos sin actividad. La creación/reapertura la resuelve
+    // `recomputeProgress` justo después.
+    const annulledIds = new Set(toAnnull.map((row) => row.id));
     const finalCustomers = new Map<string, { customerCode: string | null; customerName: string | null }>();
-    for (const row of sheet.lines) {
-      if (deletedIds.has(row.id)) continue;
+    for (const row of activeRows) {
+      if (annulledIds.has(row.id)) continue;
       finalCustomers.set(customerKey(row), { customerCode: row.customerCode, customerName: row.customerName });
     }
-    for (const item of toCreate) {
+    for (const item of [...toCreate, ...toRevive.map((entry) => entry.plan)]) {
       finalCustomers.set(customerKey(item.line), {
         customerCode: item.line.customerCode ?? null,
         customerName: item.line.customerName ?? null,
       });
     }
-    const existingProgressKeys = new Set((sheet.customerProgress ?? []).map((row) => row.customerKey));
-    const progressToCreate = [...finalCustomers.entries()].filter(([key]) => !existingProgressKeys.has(key));
     const progressToDelete = (sheet.customerProgress ?? []).filter(
-      (row) => !finalCustomers.has(row.customerKey) && !row.loadStartedAt && !row.invoiceDeliveredAt,
-    );
-    const progressToReopen = [...new Set(toCreate.map((item) => customerKey(item.line)))].filter((key) =>
-      existingProgressKeys.has(key),
+      (row) =>
+        !finalCustomers.has(row.customerKey) &&
+        !row.loadStartedAt &&
+        !row.loadClosedAt &&
+        !row.invoiceDeliveredAt,
     );
 
+    const now = new Date();
+    const shouldCancel = plannedLines === 0;
+    const cancelReason = shouldCancel
+      ? toAnnull.length > 0
+        ? `El plan quedó vacío: se anularon ${toAnnull.length} renglón(es) desde Pedidos.`
+        : 'El despacho no tiene renglones activos.'
+      : null;
+
+    const removals: DispatchSyncRemoval[] = toAnnull.map((row) => ({
+      sheetId: sheet.id,
+      sheetNumber: sheet.number,
+      orderNumber: row.orderNumber,
+      productCode: row.productCode,
+      customerName: row.customerName,
+      reason: reasonFor(row.orderNumber),
+    }));
+
+    const reasonText =
+      source === 'PROFIT'
+        ? 'Profit anuló o cerró los pedidos.'
+        : `Retirados por ${removalName}.`;
+
+    const events: Array<{ kind: 'SYSTEM'; type: string; body: string; meta?: string | null }> = [];
+    if (toAnnull.length > 0) {
+      const products = this.eventProducts(toAnnull);
+      const customers = [...new Set(toAnnull.map((row) => row.customerName ?? 'Sin cliente'))];
+      events.push({
+        kind: 'SYSTEM',
+        type: 'RENGLON_ANULADO',
+        body: this.eventSummary(customers.length === 1 ? customers[0]! : null, products, reasonText),
+        meta: this.eventMeta(toAnnull, customers.length === 1 ? { key: customerKey(toAnnull[0]!), name: customers[0]! } : null),
+      });
+    }
+    if (toRevive.length > 0) {
+      events.push({
+        kind: 'SYSTEM',
+        type: 'RENGLON_REACTIVADO',
+        body: `Volvieron al plan ${toRevive.length} renglón(es) que estaban anulados.`,
+      });
+    }
+    if (toCreate.length > 0 || toUpdate.length > 0 || toRevive.length > 0) {
+      events.push({
+        kind: 'SYSTEM',
+        type: 'SIMULACION_ACTUALIZADA',
+        body: `La simulación del equipo cambió: ${toCreate.length} renglón(es) agregado(s), ${toAnnull.length} anulado(s), ${toUpdate.length} actualizado(s).`,
+      });
+    }
+    if (shouldCancel && cancelReason) {
+      events.push({ kind: 'SYSTEM', type: 'PLAN_VACIO', body: `Anulación automática: ${cancelReason}` });
+    }
+
     await this.prisma.$transaction([
-      ...toDelete.map((id) => this.prisma.dispatchSheetLine.delete({ where: { id } })),
-      ...progressToDelete.map((row) =>
-        this.prisma.dispatchCustomerProgress.delete({ where: { id: row.id } }),
-      ),
-      ...progressToCreate.map(([key, customer]) =>
-        this.prisma.dispatchCustomerProgress.create({
+      ...toAnnull.map((row) =>
+        this.prisma.dispatchSheetLine.update({
+          where: { id: row.id },
           data: {
-            sheetId: sheet.id,
-            customerKey: key,
-            customerCode: customer.customerCode,
-            customerName: customer.customerName,
+            status: 'ANULADO',
+            loadedQty: null,
+            loadedKg: null,
+            checkedAt: null,
+            checkedById: null,
+            checkedByName: null,
+            removedAt: now,
+            removedById: actor?.id ?? null,
+            removedByCode: removalCode,
+            removedByName: removalName,
+            removalReason: reasonFor(row.orderNumber),
+            removalSource: source,
           },
         }),
       ),
-      ...progressToReopen.map((key) =>
-        this.prisma.dispatchCustomerProgress.updateMany({
-          where: { sheetId: sheet.id, customerKey: key },
-          data: { loadClosedAt: null },
-        }),
+      ...progressToDelete.map((row) =>
+        this.prisma.dispatchCustomerProgress.delete({ where: { id: row.id } }),
       ),
       ...toUpdate.map(({ row, plan }) =>
         this.prisma.dispatchSheetLine.update({
@@ -852,6 +1011,29 @@ export class DispatchService {
             effectiveDate: plan.effectiveDate,
             note: payload.comments?.[draftLineKey(plan.line)] ?? row.note ?? null,
             status: 'PENDIENTE',
+          },
+        }),
+      ),
+      ...toRevive.map(({ row, plan }) =>
+        this.prisma.dispatchSheetLine.update({
+          where: { id: row.id },
+          data: {
+            plannedQty: plan.assignment.assignedQty,
+            plannedKg: plan.assignment.assignedKg,
+            effectiveDate: plan.effectiveDate,
+            note: payload.comments?.[draftLineKey(plan.line)] ?? null,
+            status: 'PENDIENTE',
+            loadedQty: null,
+            loadedKg: null,
+            checkedAt: null,
+            checkedById: null,
+            checkedByName: null,
+            removedAt: null,
+            removedById: null,
+            removedByCode: null,
+            removedByName: null,
+            removalReason: null,
+            removalSource: null,
           },
         }),
       ),
@@ -878,24 +1060,91 @@ export class DispatchService {
       this.prisma.dispatchSheet.update({
         where: { id: sheet.id },
         data: {
-          plannedLines: desiredPending.length + lockedRows.length,
+          plannedLines,
           plannedSacks,
           plannedKg,
           photoJson: JSON.stringify(snapshot),
           loadPlanJson,
           draftRevision,
+          ...(shouldCancel
+            ? {
+                status: 'CANCELADO',
+                canceledAt: now,
+                canceledById: actor?.id ?? null,
+                canceledByName: removalName,
+                cancelReason,
+              }
+            : {}),
         },
       }),
-      this.prisma.dispatchSheetEvent.create({
-        data: {
-          sheetId: sheet.id,
-          kind: 'SYSTEM',
-          type: 'SIMULACION_ACTUALIZADA',
-          body: `La simulación del equipo cambió: ${toCreate.length} renglón(es) agregado(s), ${toDelete.length} quitado(s), ${toUpdate.length} actualizado(s).`,
-          authorName: 'Simulación del equipo',
-        },
-      }),
+      ...events.map((event) =>
+        this.prisma.dispatchSheetEvent.create({
+          data: {
+            sheetId: sheet.id,
+            kind: event.kind,
+            type: event.type,
+            body: event.body,
+            meta: event.meta ?? null,
+            authorId: actor?.id ?? null,
+            authorCode: removalCode,
+            authorName: removalName,
+          },
+        }),
+      ),
     ]);
+
+    // Recalcula relojes de los clientes que siguen activos: cierra al cliente
+    // que ya no tiene pendientes y reabre al que recibió un renglón nuevo.
+    await this.recomputeProgress(
+      sheet.id,
+      { id: actor?.id ?? 'SYSTEM', code: removalCode, name: removalName },
+      { notify: shouldCancel ? false : true },
+    );
+
+    for (const removal of removals) {
+      await this.audit.record({
+        actorId: actor?.id ?? null,
+        actorEmail: removalCode,
+        action: 'DISPATCH_LINE_ANNUL',
+        entityType: 'DispatchSheet',
+        entityId: sheet.id,
+        context: {
+          number: sheet.number,
+          orderNumber: removal.orderNumber,
+          productCode: removal.productCode,
+          customer: removal.customerName,
+          reason: removal.reason,
+          source,
+        },
+      });
+    }
+
+    if (shouldCancel && cancelReason) {
+      await this.audit.record({
+        actorId: actor?.id ?? null,
+        actorEmail: removalCode,
+        action: 'DISPATCH_AUTO_CANCEL',
+        entityType: 'DispatchSheet',
+        entityId: sheet.id,
+        context: { number: sheet.number, reason: cancelReason, removedLines: toAnnull.length },
+      });
+      await this.arrivals.cancelForSheet(
+        sheet.id,
+        { id: actor?.id ?? 'SYSTEM', code: removalCode, name: removalName },
+        cancelReason,
+      );
+      await this.notify([sheet.createdById, ...(await this.operatorRecipients(sheet))], {
+        type: 'DESPACHO_CANCELADO',
+        title: `${sheet.number}: anulado`,
+        body: cancelReason,
+        entityId: sheet.id,
+        actorId: actor?.id ?? 'SYSTEM',
+        actorName: removalName,
+        linkPath: `/despacho/${sheet.id}`,
+      });
+    }
+
+    return { removedLines: toAnnull.length, canceled: shouldCancel, removals };
   }
 
   // ---------- Carga por renglón ----------
@@ -908,6 +1157,9 @@ export class DispatchService {
     }
     const line = await this.prisma.dispatchSheetLine.findFirst({ where: { id: lineId, sheetId: sheet.id } });
     if (!line) throw new NotFoundException('Renglón no encontrado.');
+    if (line.status === 'ANULADO') {
+      throw new ConflictException('Este renglón fue anulado porque salió del plan. Vuelve a incluirlo en Pedidos para reactivarlo.');
+    }
 
     const actor = await this.viewerInfo(viewer);
     const progress = this.progressFor(sheet, customerKey(line));
@@ -962,6 +1214,14 @@ export class DispatchService {
           ? null
           : line.note;
 
+    // El sello de cierre es el de la PRIMERA resolución del producto. Editar
+    // nota o cantidad después no mueve el reloj; reabrir a PENDIENTE lo limpia
+    // y volver a cerrarlo toma una hora nueva.
+    const keepCheck = input.status !== 'PENDIENTE' && line.status !== 'PENDIENTE' && line.checkedAt !== null;
+    const checkedAt = input.status === 'PENDIENTE' ? null : keepCheck ? line.checkedAt : new Date();
+    const checkedById = input.status === 'PENDIENTE' ? null : keepCheck ? line.checkedById ?? actor.id : actor.id;
+    const checkedByName = input.status === 'PENDIENTE' ? null : keepCheck ? line.checkedByName ?? actor.name : actor.name;
+
     await this.prisma.dispatchSheetLine.update({
       where: { id: line.id },
       data:
@@ -980,9 +1240,9 @@ export class DispatchService {
               loadedKg,
               status: input.status,
               note: nextNote,
-              checkedAt: new Date(),
-              checkedById: actor.id,
-              checkedByName: actor.name,
+              checkedAt,
+              checkedById,
+              checkedByName,
             },
     });
 
@@ -1116,7 +1376,8 @@ export class DispatchService {
         sheetId: sheet.id,
         kind: 'SYSTEM',
         type: 'CARGA_INICIADA',
-        body: `${actor.name ?? 'Almacén'} inició la carga de ${bucket.name} (${bucket.lines.length} producto(s)).`,
+        body: this.eventSummary(bucket.name, this.eventProducts(bucket.lines)),
+        meta: this.eventMeta(bucket.lines, bucket),
         authorId: actor.id,
         authorCode: actor.code,
         authorName: actor.name,
@@ -1179,14 +1440,18 @@ export class DispatchService {
         note: input.note ?? progress.note ?? null,
       },
     });
+    const invoiceMinutes = minutesBetween(progress.loadStartedAt, now);
     await this.prisma.dispatchSheetEvent.create({
       data: {
         sheetId: sheet.id,
         kind: 'SYSTEM',
         type: 'FACTURA_ENTREGADA',
-        body: `Factura${input.invoiceRef ? ` N° ${input.invoiceRef}` : ''} entregada a ${bucket.name} en ${durationLabel(
-          minutesBetween(progress.loadStartedAt, now),
-        )} desde el inicio de carga.`,
+        body: this.eventSummary(
+          bucket.name,
+          this.eventProducts(bucket.lines),
+          input.invoiceRef ? `Factura N° ${input.invoiceRef}` : null,
+        ),
+        meta: this.eventMeta(bucket.lines, bucket, { invoiceRef: input.invoiceRef ?? null, minutes: invoiceMinutes }),
         authorId: actor.id,
         authorCode: actor.code,
         authorName: actor.name,
@@ -1260,14 +1525,19 @@ export class DispatchService {
         note: input.note ?? null,
       },
     });
+    const allLines = refreshed.lines.filter((line) => line.status !== 'ANULADO');
+    const allProducts = this.eventProducts(allLines);
     await this.prisma.dispatchSheetEvent.create({
       data: {
         sheetId: sheet.id,
         kind: 'SYSTEM',
         type: 'FACTURADO',
-        body: `Facturación entregada a ${progress.length} cliente(s)${
-          input.invoiceRef ? ` (N° ${input.invoiceRef})` : ''
-        }.`,
+        body: this.eventSummary(
+          `${progress.length} cliente(s)`,
+          allProducts,
+          input.invoiceRef ? `Factura N° ${input.invoiceRef}` : null,
+        ),
+        meta: this.eventMeta(allLines, null, { invoiceRef: input.invoiceRef ?? null }),
         authorId: actor.id,
         authorCode: actor.code,
         authorName: actor.name,
@@ -1321,12 +1591,17 @@ export class DispatchService {
         note: input.reason,
       },
     });
+    const bucket = this.customerBuckets(sheet.lines).find((item) => item.key === input.customerKey);
     await this.prisma.dispatchSheetEvent.create({
       data: {
         sheetId: sheet.id,
         kind: 'SYSTEM',
         type: 'FACTURA_REABIERTA',
-        body: `Reabrió la factura de ${progress.customerName ?? input.customerKey}. Motivo: ${input.reason}`,
+        body: this.eventSummary(progress.customerName ?? input.customerKey, bucket ? this.eventProducts(bucket.lines) : [], input.reason),
+        meta: this.eventMeta(bucket?.lines ?? [], {
+          key: progress.customerKey,
+          name: progress.customerName ?? input.customerKey,
+        }),
         authorId: actor.id,
         authorCode: actor.code,
         authorName: actor.name,
@@ -1360,7 +1635,7 @@ export class DispatchService {
       where: {
         AND: [
           this.baseVisibility(viewer),
-          { status: { not: 'CANCELADO' } },
+          { status: query.onlyClosed ? 'DESPACHADO' : { not: 'CANCELADO' } },
           {
             OR: [
               { customerProgress: { some: { loadClosedAt: { gte: from, lte: to } } } },
@@ -1381,6 +1656,7 @@ export class DispatchService {
         id: sheet.id,
         number: sheet.number,
         status: sheet.status,
+        sentAt: sheet.sentAt,
         startedAt: sheet.startedAt,
         completedAt: sheet.completedAt,
         lines: sheet.lines.map((line) => ({
@@ -1420,14 +1696,18 @@ export class DispatchService {
     if (!['RECIBIDO', 'EN_PROCESO', 'CON_NOVEDAD'].includes(sheet.status)) {
       throw new ConflictException('Carga al menos un renglón antes de cerrarlo.');
     }
-    const pending = sheet.lines.filter((line) => line.status === 'PENDIENTE');
+    const activeLines = sheet.lines.filter((line) => line.status !== 'ANULADO');
+    if (activeLines.length === 0) {
+      throw new ConflictException('El despacho no tiene renglones activos: anúlalo o vuelve a incluirlos en Pedidos.');
+    }
+    const pending = activeLines.filter((line) => line.status === 'PENDIENTE');
     if (pending.length > 0) {
       throw new BadRequestException(
         `Faltan ${pending.length} renglón(es) por resolver. Marca cada uno como cargado, parcial o no cargado.`,
       );
     }
     // Las diferencias exigen motivo: sin él, el cierre no deja rastro del porqué.
-    const sinMotivo = sheet.lines.filter(
+    const sinMotivo = activeLines.filter(
       (line) => NOVEDAD_LINE_STATUSES.includes(line.status) && !line.note?.trim(),
     );
     if (sinMotivo.length > 0) {
@@ -1668,6 +1948,9 @@ export class DispatchService {
   private customerBuckets(lines: LineRowLite[]): CustomerGroupBucket[] {
     const map = new Map<string, CustomerGroupBucket>();
     for (const line of lines) {
+      // Los renglones anulados no forman parte de la operación: no deben
+      // aparecer como cliente activo ni bloquear el cierre.
+      if (line.status === 'ANULADO') continue;
       const key = customerKey(line);
       let bucket = map.get(key);
       if (!bucket) {
@@ -1686,6 +1969,61 @@ export class DispatchService {
 
   private progressFor(sheet: SheetWithLines, key: string): ProgressRow | undefined {
     return (sheet.customerProgress ?? []).find((row) => row.customerKey === key);
+  }
+
+  // ---------- Bitácora: detalle congelado ----------
+
+  /**
+   * Guarda en el evento el cliente, la factura y los productos del momento.
+   * Así la bitácora muestra pedido/código/nombre sin depender de cómo cambie
+   * el plan después; el texto `body` queda como respaldo para CSV/histórico.
+   */
+  private eventMeta(
+    lines: LineRowLite[],
+    customer: { key: string; name: string } | null,
+    options: { invoiceRef?: string | null; minutes?: number | null } = {},
+  ): string | null {
+    const products = this.eventProducts(lines);
+    const meta: DispatchEventMeta = {
+      customerKey: customer?.key ?? null,
+      customerName: customer?.name ?? null,
+      invoiceRef: options.invoiceRef ?? null,
+      minutes: options.minutes ?? null,
+      products,
+    };
+    if (products.length === 0 && !meta.invoiceRef && meta.minutes === null) return null;
+    return JSON.stringify(meta);
+  }
+
+  private eventProducts(lines: LineRowLite[]): DispatchEventProduct[] {
+    return lines.map((line) => ({
+      orderNumber: line.orderNumber,
+      productCode: line.productCode,
+      description: line.description ?? null,
+      qty:
+        line.loadedQty != null
+          ? toNumber(line.loadedQty)
+          : line.plannedQty != null
+            ? toNumber(line.plannedQty)
+            : null,
+      uom: line.uom ?? null,
+      status: line.status,
+    }));
+  }
+
+  /** Resumen de una línea para el CSV y para eventos sin `meta`. */
+  private eventSummary(
+    customerName: string | null,
+    products: DispatchEventProduct[],
+    extra?: string | null,
+  ): string {
+    const items = products
+      .map((product) => {
+        const qty = product.qty != null ? ` (${product.qty}${product.uom ? ` ${product.uom}` : ''})` : '';
+        return `${product.orderNumber} ${product.productCode}${qty}`;
+      })
+      .join(' · ');
+    return [customerName, items, extra].filter((part) => Boolean(part && String(part).trim())).join(' · ');
   }
 
   private toProgressList(sheet: SheetWithLines): DispatchCustomerProgress[] {
@@ -1749,10 +2087,13 @@ export class DispatchService {
     const activeBefore = (before.customerProgress ?? []).filter((row) => activeKeys.has(row.customerKey));
     const oldAllClosed = buckets.length > 0 && activeBefore.every((row) => row.loadClosedAt !== null);
     const oldAllInvoiced = buckets.length > 0 && activeBefore.every((row) => row.invoiceDeliveredAt !== null);
-    const events: Array<{ type: string; body: string }> = [];
+    const events: Array<{ type: string; body: string; meta?: string | null }> = [];
 
     for (const bucket of buckets) {
       const previous = previousRows.get(bucket.key);
+      // Se guarda antes de actualizar: algunos clientes de Prisma devuelven la
+      // misma referencia y mutan `previous` al escribir el nuevo cierre.
+      const wasClosed = Boolean(previous?.loadClosedAt);
       const resolved = bucket.lines.filter((line) => line.status !== 'PENDIENTE');
       const pending = bucket.lines.length - resolved.length;
       const checked = resolved
@@ -1784,12 +2125,12 @@ export class DispatchService {
         await this.prisma.dispatchCustomerProgress.update({ where: { id: previous.id }, data });
       }
 
-      if (!previous?.loadClosedAt && closedAt) {
+      if (!wasClosed && closedAt) {
+        const loadMinutes = minutesBetween(startedAt, closedAt);
         events.push({
           type: 'CARGA_CERRADA',
-          body: `Cerró la carga de ${bucket.name}: ${bucket.lines.length} producto(s) en ${durationLabel(
-            minutesBetween(startedAt, closedAt),
-          )}.`,
+          body: this.eventSummary(bucket.name, this.eventProducts(bucket.lines), durationLabel(loadMinutes)),
+          meta: this.eventMeta(bucket.lines, bucket, { minutes: loadMinutes }),
         });
         await this.audit.record({
           actorId: actor.id,
@@ -1804,10 +2145,11 @@ export class DispatchService {
             minutes: minutesBetween(startedAt, closedAt),
           },
         });
-      } else if (previous?.loadClosedAt && !closedAt) {
+      } else if (wasClosed && !closedAt) {
         events.push({
           type: 'CARGA_REABIERTA',
-          body: `Reabrió la carga de ${bucket.name}.`,
+          body: this.eventSummary(bucket.name, this.eventProducts(bucket.lines)),
+          meta: this.eventMeta(bucket.lines, bucket),
         });
         await this.audit.record({
           actorId: actor.id,
@@ -1827,6 +2169,7 @@ export class DispatchService {
           kind: 'SYSTEM',
           type: event.type,
           body: event.body,
+          meta: event.meta ?? null,
           authorId: actor.id,
           authorCode: actor.code,
           authorName: actor.name,
@@ -1918,8 +2261,26 @@ export class DispatchService {
         OR: [{ number: { contains: needle } }, { title: { contains: needle } }, { scenarioName: { contains: needle } }],
       });
     }
-    if (query.from) filters.push({ sentAt: { gte: new Date(`${query.from}T00:00:00.000Z`) } });
-    if (query.to) filters.push({ sentAt: { lte: new Date(`${query.to}T23:59:59.999Z`) } });
+    if (query.from || query.to) {
+      const dateRange = {
+        ...(query.from ? { gte: new Date(`${query.from}T00:00:00.000-04:00`) } : {}),
+        ...(query.to ? { lte: new Date(`${query.to}T23:59:59.999-04:00`) } : {}),
+      };
+      // El historial se filtra por el día en que el despacho salió (cierre o
+      // anulación), no por el día en que se publicó. Las hojas viejas sin
+      // sellos conservan el envío como respaldo.
+      if (query.scope === 'history') {
+        filters.push({
+          OR: [
+            { completedAt: dateRange },
+            { canceledAt: dateRange },
+            { completedAt: null, canceledAt: null, sentAt: dateRange },
+          ],
+        });
+      } else {
+        filters.push({ sentAt: dateRange });
+      }
+    }
 
     // La bandeja de pendientes es de piso: cualquier usuario con «Ver» ve todo
     // lo abierto, sin importar quién lo publicó.
@@ -2016,13 +2377,14 @@ export class DispatchService {
   }
 
   private liveTotals(lines: LineRowLite[]) {
-    const plannedKg = round2(lines.reduce((sum, line) => sum + toNumber(line.plannedKg), 0));
+    const active = lines.filter((line) => line.status !== 'ANULADO');
+    const plannedKg = round2(active.reduce((sum, line) => sum + toNumber(line.plannedKg), 0));
     const loadedSacks = round2(
-      lines.reduce((sum, line) => sum + (line.uom === 'SAC' ? toNumber(line.loadedQty) : 0), 0),
+      active.reduce((sum, line) => sum + (line.uom === 'SAC' ? toNumber(line.loadedQty) : 0), 0),
     );
-    const loadedKg = round2(lines.reduce((sum, line) => sum + toNumber(line.loadedKg), 0));
+    const loadedKg = round2(active.reduce((sum, line) => sum + toNumber(line.loadedKg), 0));
     const checkedPlannedKg = round2(
-      lines.filter((line) => line.status !== 'PENDIENTE').reduce((sum, line) => sum + toNumber(line.plannedKg), 0),
+      active.filter((line) => line.status !== 'PENDIENTE').reduce((sum, line) => sum + toNumber(line.plannedKg), 0),
     );
     return {
       plannedKg,
@@ -2042,10 +2404,23 @@ export class DispatchService {
   }
 
   private toSummary(sheet: SheetWithLines, viewer: DispatchViewer): DispatchSheetSummary {
-    const lines = sheet.lines ?? [];
+    const allLines = sheet.lines ?? [];
+    // Los renglones anulados son historia: no cuentan en totales ni progreso.
+    const lines = allLines.filter((line) => line.status !== 'ANULADO');
+    const annulledLines = allLines.length - lines.length;
     const totals = this.liveTotals(lines);
     // «Resuelto» = cargado, parcial o no cargado. Solo pendiente bloquea.
     const linesDone = lines.filter((line) => line.status !== 'PENDIENTE').length;
+    // Pedidos distintos (nº de orden) y cuántos todavía tienen algo por cargar.
+    const plannedOrderKeys = new Set<string>();
+    const pendingOrderKeys = new Set<string>();
+    for (const line of lines) {
+      const key = line.orderNumber?.trim() || `__line-${line.id}`;
+      plannedOrderKeys.add(key);
+      const pendingQty = Math.max(0, toNumber(line.plannedQty) - toNumber(line.loadedQty));
+      const pendingKg = Math.max(0, toNumber(line.plannedKg) - toNumber(line.loadedKg));
+      if (pendingQty > 0 || pendingKg > 0) pendingOrderKeys.add(key);
+    }
     const closed = ['DESPACHADO', 'CANCELADO'].includes(sheet.status);
     // «Recibido» era el acuse anterior: se muestra como «en carga».
     const status = sheet.status === 'RECIBIDO' ? 'EN_PROCESO' : sheet.status;
@@ -2106,7 +2481,11 @@ export class DispatchService {
       completedByName: sheet.completedByName,
       canceledAt: iso(sheet.canceledAt),
       canceledByName: sheet.canceledByName,
-      plannedLines: sheet.plannedLines || lines.length,
+      cancelReason: sheet.cancelReason,
+      plannedLines: lines.length,
+      plannedOrders: plannedOrderKeys.size,
+      pendingOrders: pendingOrderKeys.size,
+      annulledLines,
       plannedSacks: toNumber(sheet.plannedSacks),
       plannedKg: totals.plannedKg || toNumber(sheet.plannedKg),
       // Una hoja cerrada conserva los totales con los que se firmó, aunque
@@ -2123,6 +2502,9 @@ export class DispatchService {
       loadClosedAt: iso(loadClosedAt),
       invoiceDeliveredAt: iso(invoiceDeliveredAt),
       pendingInvoiceCustomers,
+      totalCustomers: progress.length,
+      closedCustomers: progress.filter((row) => row.loadClosedAt !== null).length,
+      invoicedCustomers: progress.filter((row) => row.invoiceDeliveredAt !== null).length,
       canOperate: this.canOperate(sheet, viewer),
       canCancel: this.canCancel(sheet, viewer),
       canInvoice: this.canInvoice(sheet, viewer),
@@ -2130,8 +2512,9 @@ export class DispatchService {
   }
 
   private toLine(line: LineRow, sheet?: SheetWithLines): DispatchSheetLine {
+    const active = line.status !== 'ANULADO';
     const progress = sheet?.customerProgress?.find((row) => row.customerKey === customerKey(line));
-    const startedAt = progress?.loadStartedAt ?? sheet?.startedAt ?? line.checkedAt ?? null;
+    const startedAt = active ? progress?.loadStartedAt ?? sheet?.startedAt ?? line.checkedAt ?? null : null;
     return {
       id: line.id,
       position: line.position,
@@ -2151,9 +2534,13 @@ export class DispatchService {
       note: line.note,
       checkedAt: iso(line.checkedAt),
       checkedByName: line.checkedByName,
+      removedAt: iso(line.removedAt),
+      removedByName: line.removedByName,
+      removalReason: line.removalReason,
+      removalSource: line.removalSource,
       loadStartedAt: iso(startedAt),
-      loadClosedAt: iso(line.checkedAt),
-      loadClosedByName: line.checkedByName,
+      loadClosedAt: active ? iso(line.checkedAt) : null,
+      loadClosedByName: active ? line.checkedByName : null,
     };
   }
 
@@ -2168,6 +2555,7 @@ export class DispatchService {
       kind: event.kind === 'MESSAGE' ? 'MESSAGE' : 'SYSTEM',
       type: event.type,
       body: event.body,
+      meta: parseEventMeta(event.meta),
       authorId: event.authorId,
       authorCode: event.authorCode,
       authorName: event.authorName,

@@ -42,8 +42,9 @@ import type {
   OrderLifecycleStatus,
 } from '@nexo/contracts';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CalendarRange, ChevronDown, ChevronRight, Download, FileText, History, Lock, MessageSquare, PackageCheck, Pin, PinOff, Receipt, RefreshCw, Save, Search, Send, ShieldCheck, ShoppingCart, Trash2, Truck, Unlock, X } from 'lucide-react';
+import { AlertTriangle, CalendarRange, ChevronDown, ChevronRight, Download, FileText, History, ListTree, Lock, MessageSquare, PackageCheck, Pin, PinOff, Receipt, RefreshCw, Save, Search, Send, ShieldCheck, ShoppingCart, Trash2, Truck, Unlock, X } from 'lucide-react';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { CoverageOthersDialog } from '../../components/CoverageOthersDialog';
 import { CustomerStatementDialog } from '../../components/CustomerStatementDialog';
 import { DeliveryDateButton } from '../../components/DeliveryDate';
 import { DeliveryDateDialog } from '../../components/DeliveryDateDialog';
@@ -59,6 +60,7 @@ import { useLoadingOverlay } from '../../components/loading/LoadingOverlayProvid
 import { AppNav, LoginScreen } from '../../components/shell';
 import { Badge, Card, CoverageBar, DateInput, HeroCard, Kpi, PageHeader, Select, Segmented, Skeleton, Td, TextInput, Th, fmtDate, fmtQty, useGreeting } from '../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
+import { buildCoverageRows, coverageChartHeight, type CoverageCommitted } from '../../lib/coverage';
 import { DispatchInput, DispatchMode, DispatchSort, CommittedEntry, QueueEntry, buildDispatchQueue, summarizeQueue } from '../../lib/dispatch';
 import { hasPermission } from '../../lib/permissions';
 import {
@@ -145,6 +147,20 @@ function compactKg(value: number): string {
   return String(Math.round(value));
 }
 
+// El tooltip de ECharts interpreta HTML: las descripciones vienen de Profit y
+// se escapan para no romper el marcado.
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case '&': return '&amp;';
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '"': return '&quot;';
+      default: return '&#39;';
+    }
+  });
+}
+
 // Clave de la selección vieja (v1). Solo se lee UNA vez para migrarla al
 // borrador del servidor; después se elimina para no mezclar usuarios.
 const SEL_KEY = 'nexo.seleccion.v1';
@@ -182,6 +198,8 @@ export default function PedidosPage() {
   const [portfolioPinned, setPortfolioPinned] = useState(true);
   // Detalle de pedido en modal: la fila no abandona el simulador.
   const [selectedOrder, setSelectedOrder] = useState<{ id: string; number: string } | null>(null);
+  // Detalle de los productos agrupados en la fila «Otros» de la cobertura.
+  const [othersOpen, setOthersOpen] = useState(false);
   const closeOrderRef = useRef<HTMLButtonElement>(null);
 
   // Filtros
@@ -623,13 +641,25 @@ export default function PedidosPage() {
           if (seq !== saveSeqRef.current) return;
           const savedRefs = saved.scenario?.payload.selected ?? [];
           const savedByKey = new Map(savedRefs.map((ref) => [scenarioRefKey(ref.orderNumber, ref.productCode), ref]));
+          const notices: string[] = [];
           for (const key of pendingAddsRef.current) {
             const taken = savedByKey.get(key);
             if (taken?.selectedById && taken.selectedById !== sessionUser?.id) {
               const product = key.split('#')[1] ?? '';
-              setToast(`Lo tomó ${taken.selectedByName ?? 'otra vendedora'} (${product}).`);
+              notices.push(`Lo tomó ${taken.selectedByName ?? 'otra vendedora'} (${product}).`);
             }
           }
+          if (saved.dispatchImpact?.removedLines) {
+            notices.push(
+              `Se anularon ${saved.dispatchImpact.removedLines} renglón(es) en ${saved.dispatchImpact.sheetNumbers.join(', ')}.`,
+            );
+          }
+          if (saved.dispatchImpact?.canceledSheets.length) {
+            notices.push(
+              `Despacho ${saved.dispatchImpact.canceledSheets.map((sheet) => sheet.number).join(', ')} anulado: el plan quedó vacío.`,
+            );
+          }
+          if (notices.length > 0) setToast(notices.join(' · '));
           pendingAddsRef.current.clear();
           dirtyRef.current = false;
           lastSavedRef.current = signature;
@@ -931,49 +961,77 @@ export default function PedidosPage() {
   // Cobertura por producto EN VIVO: lo marcado se «compromete» y descuenta la
   // existencia de ese artículo; el resto de sus pedidos pasa a faltante / «sin
   // existencia». Los KPIs de arriba siguen siendo globales (todo lo pedido).
-  const coverageChart = useMemo(() => {
+  //
+  // La altura del gráfico se calcula por filas: con 12 productos y 220 px
+  // ECharts ocultaba etiquetas alternas del eje Y (`axisLabel.interval: 'auto'`).
+  const coverageData = useMemo(() => {
     // Comprometido por producto: únicamente renglones marcados.
-    const committed = new Map<string, { units: number; pending: number }>();
+    const committed = new Map<string, CoverageCommitted>();
     for (const e of queue) {
       if (!e.selected) continue;
       const ref = allLineByKey.get(e.key);
       if (!ref) continue;
-      const acc = committed.get(ref.line.productCode) ?? { units: 0, pending: 0 };
+      const code = ref.line.productCode;
+      const acc = committed.get(code) ?? { code, units: 0, pending: 0 };
       acc.units += e.assignedQty;
       acc.pending += e.pendingQty;
-      committed.set(ref.line.productCode, acc);
+      committed.set(code, acc);
     }
 
-    const rows = [...productInfo.entries()]
-      .map(([code, e]) => {
-        const kpu = e.kgPerUnit ?? 0;
-        const c = committed.get(code) ?? { units: 0, pending: 0 };
-        // Existencia libre = existencia − comprometido. Con ella se cubre lo
-        // que todavía no se ha marcado.
-        const freeStock = Math.max(0, e.units - c.units);
-        const unmarkedDemand = Math.max(0, e.demandUnits - c.pending);
-        const available = Math.min(freeStock, unmarkedDemand);
-        // Faltante = solicitado que no está comprometido ni se puede cubrir.
-        const missing = Math.max(0, e.demandUnits - c.units - available);
-        return {
-          code,
-          description: e.description,
-          committedKg: Math.round(c.units * kpu),
-          availableKg: Math.round(available * kpu),
-          missingKg: Math.round(missing * kpu),
-        };
-      })
-      .filter((r) => r.committedKg + r.availableKg + r.missingKg > 0)
-      .sort((a, b) => b.committedKg + b.availableKg + b.missingKg - (a.committedKg + a.availableKg + a.missingKg))
-      .slice(0, 12)
-      .reverse();
+    return buildCoverageRows(
+      [...productInfo.entries()].map(([code, info]) => ({
+        code,
+        description: info.description,
+        stockUnits: info.units,
+        demandUnits: info.demandUnits,
+        demandKg: info.demandKg,
+      })),
+      [...committed.values()],
+    );
+  }, [productInfo, queue, allLineByKey]);
+
+  const coverageHeight = coverageChartHeight(coverageData.rows.length);
+
+  // Índice de la fila agregada dentro del eje Y (para cursor y clic).
+  const othersIndex = useMemo(() => coverageData.rows.findIndex((row) => row.kind === 'others'), [coverageData.rows]);
+  // Si el plan se vacía (o cambia el filtro) mientras el modal está abierto,
+  // se cierra solo en lugar de quedar mostrando datos que ya no existen.
+  useEffect(() => {
+    if (othersOpen && coverageData.omitted.length === 0) setOthersOpen(false);
+  }, [othersOpen, coverageData.omitted.length]);
+
+  const coverageChart = useMemo(() => {
+    const rows = coverageData.rows;
+    const othersCount = coverageData.omitted.length;
     return {
-      grid: { left: 4, right: 20, top: 8, bottom: 44, containLabel: true },
+      animationDuration: 300,
+      animationDurationUpdate: 220,
+      grid: { left: 4, right: 52, top: 8, bottom: 44, containLabel: true },
       tooltip: {
         ...CHART_TOOLTIP,
         trigger: 'axis',
         axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(0,51,102,0.06)' } },
-        valueFormatter: (v: number) => `${fmtQty(v, 0)} kg`,
+        formatter: (params: unknown) => {
+          const first = Array.isArray(params) ? (params[0] as { dataIndex?: number }) : null;
+          const row = first && typeof first.dataIndex === 'number' ? rows[first.dataIndex] : undefined;
+          if (!row) return '';
+          const line = (color: string, label: string, value: number) =>
+            `<div style="display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:2px">` +
+            `<span><i style="display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:6px;background:${color}"></i>${label}</span>` +
+            `<b style="font-variant-numeric:tabular-nums">${fmtQty(value, 0)} kg</b></div>`;
+          return (
+            `<div style="font-weight:700;margin-bottom:1px">${escapeHtml(row.code)}</div>` +
+            `<div style="opacity:.72;margin-bottom:6px;max-width:280px">${escapeHtml(row.description)}</div>` +
+            line(C.navy, 'Comprometido', row.committedKg) +
+            line(C.lime, 'Despachable', row.availableKg) +
+            line(C.accent, 'Faltante', row.missingKg) +
+            `<div style="border-top:1px solid rgba(255,255,255,.18);margin-top:6px;padding-top:5px">` +
+            `Demanda total: <b>${fmtQty(row.totalKg, 0)} kg</b> · cobertura potencial <b>${row.coveragePct}%</b></div>` +
+            (row.kind === 'others'
+              ? `<div style="opacity:.8;margin-top:4px">↳ Haz clic para ver los ${othersCount} productos</div>`
+              : '')
+          );
+        },
       },
       legend: { bottom: 2, icon: 'roundRect', itemWidth: 9, itemHeight: 9, itemGap: 14, textStyle: { color: C.outline, fontSize: 11 } },
       xAxis: {
@@ -986,7 +1044,15 @@ export default function PedidosPage() {
       yAxis: {
         type: 'category',
         data: rows.map((r) => r.code),
-        axisLabel: { color: C.ink, fontSize: 11, fontFamily: 'monospace' },
+        // 0 = mostrar TODAS las etiquetas; sin esto ECharts las alterna.
+        // La fila «Otros» va en ámbar: es la única que abre el detalle.
+        axisLabel: {
+          color: (_value: string, index: number) => (rows[index]?.kind === 'others' ? C.accent : C.ink),
+          fontSize: 11,
+          fontFamily: 'monospace',
+          fontWeight: 'normal',
+          interval: 0,
+        },
         axisLine: { show: false },
         axisTick: { show: false },
       },
@@ -996,7 +1062,7 @@ export default function PedidosPage() {
         { name: 'Faltante', type: 'bar', stack: 't', data: rows.map((r) => r.missingKg), color: C.accent, barMaxWidth: 11, itemStyle: { borderRadius: [0, 4, 4, 0] } },
       ],
     };
-  }, [productInfo, queue, allLineByKey]);
+  }, [coverageData]);
 
   const donutChart = useMemo(() => {
     const covered = Math.round(liveSummary.assignedKg);
@@ -1083,7 +1149,7 @@ export default function PedidosPage() {
     if (releaseBusy) return;
     setReleaseBusy(true);
     try {
-      await apiFetch<ScenarioDraftResponse>('/scenarios/draft/lines', {
+      const released = await apiFetch<ScenarioDraftResponse>('/scenarios/draft/lines', {
         method: 'DELETE',
         body: JSON.stringify(all ? { all: true } : {}),
       });
@@ -1092,7 +1158,18 @@ export default function PedidosPage() {
         all ? [] : previous.filter((key) => isTakenByOther(key)),
       );
       await queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
-      setToast(all ? 'Se liberaron todas las selecciones del equipo.' : 'Tus selecciones quedaron libres.');
+      const notices = [all ? 'Se liberaron todas las selecciones del equipo.' : 'Tus selecciones quedaron libres.'];
+      if (released.dispatchImpact?.removedLines) {
+        notices.push(
+          `Se anularon ${released.dispatchImpact.removedLines} renglón(es) en ${released.dispatchImpact.sheetNumbers.join(', ')}.`,
+        );
+      }
+      if (released.dispatchImpact?.canceledSheets.length) {
+        notices.push(
+          `Despacho ${released.dispatchImpact.canceledSheets.map((sheet) => sheet.number).join(', ')} anulado: el plan quedó vacío.`,
+        );
+      }
+      setToast(notices.join(' · '));
     } catch (error) {
       setToast(error instanceof Error ? error.message : 'No se pudieron liberar las selecciones.');
     } finally {
@@ -1538,25 +1615,71 @@ export default function PedidosPage() {
             </Card>
           </div>
 
-          <Card className="p-space-md xl:col-span-8">
+          <Card className="flex flex-col p-space-md xl:col-span-8 xl:self-start">
             <div className="mb-space-sm flex flex-wrap items-start justify-between gap-space-sm">
-              <div>
+              <div className="min-w-0">
                 <p className="text-title-md font-semibold text-primary">Cobertura en vivo</p>
-                <p className="text-label-sm text-on-surface-variant">Lo marcado se compromete y descuenta existencia; el resto pasa a faltante.</p>
+                <p className="text-label-sm text-on-surface-variant">
+                  Comprometido es lo marcado; despachable es lo que aún cubre la existencia libre. El resto es faltante.
+                </p>
+                {coverageData.omittedProducts > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setOthersOpen(true)}
+                    aria-haspopup="dialog"
+                    className="mt-1 inline-flex items-center gap-1 text-label-sm font-semibold text-primary underline decoration-dotted underline-offset-2 transition-colors hover:text-secondary"
+                  >
+                    Top 12 de {coverageData.totalProducts} productos · ver los {coverageData.omittedProducts} de «Otros»
+                    <ChevronRight aria-hidden className="size-3" />
+                  </button>
+                )}
               </div>
               <Badge tone={coveragePct >= 100 ? 'success' : coveragePct > 0 ? 'warning' : 'danger'} dot>
                 {coveragePct}% global
               </Badge>
             </div>
             <div className="grid gap-space-md sm:grid-cols-2">
-              <div className="rounded-xl bg-surface/80 p-space-sm">
+              <div className="flex flex-col rounded-xl bg-surface/80 p-space-sm">
                 <div className="mb-space-xs font-semibold uppercase tracking-wider text-label-sm text-outline">Cobertura por producto (kg)</div>
-                <EChart option={coverageChart} height={220} ariaLabel="Cobertura por producto en kilogramos" />
+                {coverageData.rows.length > 0 ? (
+                  <EChart
+                    option={coverageChart}
+                    height={coverageHeight}
+                    ariaLabel="Cobertura por producto en kilogramos. La fila «Otros» abre el detalle de los productos agrupados."
+                    onCategoryClick={(index) => {
+                      if (coverageData.rows[index]?.kind === 'others') setOthersOpen(true);
+                    }}
+                    pointerCategories={othersIndex >= 0 ? [othersIndex] : undefined}
+                  />
+                ) : (
+                  <div className="flex h-[220px] items-center justify-center rounded-lg border border-dashed border-outline-variant/40 px-space-md text-center text-body-sm text-on-surface-variant">
+                    Sin productos con demanda en los filtros actuales.
+                  </div>
+                )}
               </div>
-              <div className="rounded-xl bg-surface/80 p-space-sm">
+              <div className="flex flex-col rounded-xl bg-surface/80 p-space-sm">
                 <div className="mb-space-xs font-semibold uppercase tracking-wider text-label-sm text-outline">Cobertura global (kg)</div>
-                <EChart option={donutChart} height={220} ariaLabel="Cobertura global en kilogramos" />
+                <div className="flex flex-1 items-center">
+                  <EChart option={donutChart} height={220} ariaLabel="Cobertura global en kilogramos" />
+                </div>
               </div>
+            </div>
+            <div className="mt-space-sm flex flex-wrap items-center gap-space-xs border-t border-outline-variant/25 pt-space-sm">
+              <span className="mr-space-2xs text-label-sm font-semibold uppercase tracking-wider text-outline">Estado por producto</span>
+              <Badge tone="success" dot>{coverageData.summary.sufficient} con existencia</Badge>
+              <Badge tone="warning" dot>{coverageData.summary.partial} parcial</Badge>
+              <Badge tone="danger" dot>{coverageData.summary.none} sin existencia</Badge>
+              {coverageData.omittedProducts > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setOthersOpen(true)}
+                  aria-haspopup="dialog"
+                  className="inline-flex items-center gap-1 rounded-pill bg-surface-container-low px-2.5 py-1 font-bold uppercase text-label-sm text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-primary"
+                >
+                  <ListTree aria-hidden className="size-3.5" />
+                  +{coverageData.omittedProducts} en «Otros»
+                </button>
+              )}
             </div>
           </Card>
         </section>
@@ -2136,6 +2259,8 @@ export default function PedidosPage() {
           </Card>
         )}
       </main>
+
+      <CoverageOthersDialog open={othersOpen} rows={coverageData.omitted} onClose={() => setOthersOpen(false)} />
 
       {selectedOrder && (
         <div

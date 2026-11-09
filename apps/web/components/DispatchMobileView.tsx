@@ -103,8 +103,10 @@ export function DispatchMobileView({
   onOpenCancel,
   onExport,
 }: DispatchMobileViewProps) {
-  const resolved = sheet.lines.filter((line) => line.status !== 'PENDIENTE').length;
-  const percentage = sheet.lines.length > 0 ? Math.round((resolved / sheet.lines.length) * 100) : 0;
+  const activeLines = sheet.lines.filter((line) => line.status !== 'ANULADO');
+  const annulledCount = sheet.lines.length - activeLines.length;
+  const resolved = activeLines.filter((line) => line.status !== 'PENDIENTE').length;
+  const percentage = activeLines.length > 0 ? Math.round((resolved / activeLines.length) * 100) : 0;
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-space-md p-space-md pb-32">
@@ -196,7 +198,7 @@ export function DispatchMobileView({
           <Phase
             icon={ClipboardCheck}
             label="Avance"
-            value={`${resolved}/${sheet.lines.length}`}
+            value={`${resolved}/${activeLines.length}`}
             hint={`${percentage}% resuelto`}
           />
         </div>
@@ -206,6 +208,12 @@ export function DispatchMobileView({
             style={{ width: `${percentage}%` }}
           />
         </div>
+        {annulledCount > 0 && (
+          <p className="mt-2 flex items-center gap-1 text-label-sm text-on-surface-variant">
+            <Ban aria-hidden className="size-3.5 text-error" />
+            {annulledCount} renglón(es) anulado(s) desde Pedidos. No cuentan en el avance.
+          </p>
+        )}
       </Card>
 
       {/* Clientes */}
@@ -216,6 +224,7 @@ export function DispatchMobileView({
           const closedGroup = group.pendingLines === 0;
           const invoiced = Boolean(progress?.invoiceDeliveredAt);
           const isOpen = openGroup === group.key;
+          const orderCount = new Set(group.lines.map((line) => line.orderNumber).filter(Boolean)).size;
           return (
             <Card key={group.key} className="overflow-hidden">
               <button
@@ -226,7 +235,7 @@ export function DispatchMobileView({
                 <div className="min-w-0">
                   <p className="truncate font-bold text-on-surface">{group.name}</p>
                   <p className="text-label-sm tabular-nums text-on-surface-variant">
-                    {group.lines.length} pedido(s) · {formatNumber(group.plannedKg)} kg
+                    {orderCount} pedido(s) · {group.lines.length} renglón(es) · {formatNumber(group.plannedKg)} kg
                   </p>
                   <div className="mt-1 flex flex-wrap items-center gap-1">
                     {!started ? (

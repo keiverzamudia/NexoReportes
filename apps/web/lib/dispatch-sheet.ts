@@ -35,6 +35,8 @@ export const LINE_STATUS_META: Record<DispatchLineStatus, { label: string; tone:
   FALTANTE: { label: 'No cargado', tone: 'danger' },
   // Estado heredado: se conserva para leer hojas históricas.
   NOVEDAD: { label: 'Novedad', tone: 'danger' },
+  // Renglón retirado del plan antes de cargarse (soft-delete con autor).
+  ANULADO: { label: 'Anulado', tone: 'muted' },
 };
 
 export function sheetStatusMeta(status: DispatchSheetStatus) {
@@ -197,6 +199,7 @@ export interface SheetTotals {
 }
 
 export function computeTotals(lines: DispatchSheetLine[]): SheetTotals {
+  const active = lines.filter((line) => line.status !== 'ANULADO');
   let plannedSacks = 0;
   let plannedKg = 0;
   let loadedSacks = 0;
@@ -206,7 +209,7 @@ export function computeTotals(lines: DispatchSheetLine[]): SheetTotals {
   let loaded = 0;
   let partial = 0;
   let missing = 0;
-  for (const line of lines) {
+  for (const line of active) {
     if (line.uom === 'SAC') {
       plannedSacks += line.plannedQty;
       loadedSacks += line.loadedQty ?? 0;
@@ -228,9 +231,9 @@ export function computeTotals(lines: DispatchSheetLine[]): SheetTotals {
     if (line.status !== 'PENDIENTE') checkedPlannedKg += line.plannedKg;
   }
   return {
-    lines: lines.length,
+    lines: active.length,
     done,
-    progress: lines.length > 0 ? done / lines.length : 0,
+    progress: active.length > 0 ? done / active.length : 0,
     loaded,
     partial,
     missing,
@@ -255,10 +258,11 @@ export interface CustomerGroup {
   missingLines: number;
 }
 
-/** Agrupa los renglones por cliente (para la vista de carga en móvil). */
+/** Agrupa los renglones activos por cliente (para la vista de carga). */
 export function groupByCustomer(lines: DispatchSheetLine[]): CustomerGroup[] {
   const map = new Map<string, CustomerGroup>();
   for (const line of lines) {
+    if (line.status === 'ANULADO') continue;
     const key = line.customerCode ?? line.customerName ?? '—';
     let group = map.get(key);
     if (!group) {
@@ -284,6 +288,16 @@ export function groupByCustomer(lines: DispatchSheetLine[]): CustomerGroup[] {
     else group.pendingLines += 1;
   }
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'es'));
+}
+
+/** Renglones que siguen en la operación (excluye anulados). */
+export function activeLines(lines: DispatchSheetLine[]): DispatchSheetLine[] {
+  return lines.filter((line) => line.status !== 'ANULADO');
+}
+
+/** Renglones retirados del plan, para el bloque «Anulados». */
+export function annulledLines(lines: DispatchSheetLine[]): DispatchSheetLine[] {
+  return lines.filter((line) => line.status === 'ANULADO');
 }
 
 // ---------- Reporte de cierre ----------
@@ -319,6 +333,7 @@ export function buildDispatchReport(lines: DispatchSheetLine[]): DispatchReport 
   const missing: DispatchReportCounts = { lines: 0, sacks: 0, kg: 0 };
   const pending: DispatchReportCounts = { lines: 0, sacks: 0, kg: 0 };
   for (const line of lines) {
+    if (line.status === 'ANULADO') continue;
     const bucket =
       line.status === 'CARGADO'
         ? completed
@@ -438,7 +453,7 @@ export function sheetExport(detail: DispatchSheetDetail, generatedAt: Date = new
   aoa.push(SHEET_EXPORT_HEADERS);
 
   const progressByKey = new Map((detail.customerProgress ?? []).map((row) => [row.customerKey, row]));
-  for (const line of detail.lines) {
+  for (const line of detail.lines.filter((item) => item.status !== 'ANULADO')) {
     const progress = progressByKey.get(customerKeyOf(line));
     const startedAt = line.loadStartedAt ?? progress?.loadStartedAt ?? null;
     const closedAt = line.loadClosedAt ?? line.checkedAt ?? null;
@@ -476,6 +491,28 @@ export function sheetExport(detail: DispatchSheetDetail, generatedAt: Date = new
     } · no cargados ${totals.missing} · diferencia ${formatNumber(totals.differenceKg)} kg`,
   ]);
   merges.push({ s: { r: totalRow, c: 0 }, e: { r: totalRow, c: lastColumn } });
+
+  const annulled = detail.lines.filter((line) => line.status === 'ANULADO');
+  if (annulled.length > 0) {
+    aoa.push([]);
+    aoa.push([`RENGLONES ANULADOS · ${annulled.length} (no cuentan en los totales)`]);
+    merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: lastColumn } });
+    aoa.push(['Turno', 'Pedido', 'Código', 'Artículo', 'Cliente', 'Planificado', 'Anulado por', 'Cuándo', 'Motivo']);
+    for (const line of annulled) {
+      aoa.push([
+        line.position,
+        line.orderNumber,
+        line.productCode,
+        line.description ?? '—',
+        line.customerName ?? '—',
+        `${formatNumber(line.plannedQty)} ${line.uom ?? ''}`,
+        line.removedByName ?? '—',
+        formatDateTime(line.removedAt),
+        line.removalReason ?? '—',
+      ]);
+    }
+  }
+
   aoa.push([`Generado ${formatDateTime(generatedAt.toISOString())} · CORPOAGRO · solo lectura`]);
   merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: lastColumn } });
 

@@ -1,6 +1,7 @@
 import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import {
+  DraftDispatchImpact,
   DraftReleaseInput,
   MAX_SCENARIOS,
   ScenarioDetail,
@@ -211,7 +212,7 @@ export class ScenariosService implements OnModuleInit {
     const viewer = asViewer(viewerInput);
     const row = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
     if (!row) {
-      return { scenario: null, lines: [], assignments: [], freeByProduct: [], activeSheet: null };
+      return { scenario: null, lines: [], assignments: [], freeByProduct: [], activeSheet: null, dispatchImpact: null };
     }
     const dataVersion = await this.currentDataVersion();
     return this.buildDraftResponse(row, viewer, dataVersion);
@@ -221,6 +222,7 @@ export class ScenariosService implements OnModuleInit {
     row: DispatchDraft,
     viewer: ScenarioViewer,
     dataVersion: string | null,
+    dispatchImpact: DraftDispatchImpact | null = null,
   ): Promise<ScenarioDraftResponse> {
     const payload = this.parseDraftPayload(row);
     const plan = await buildDraftPlan(this.prisma, payload.selected);
@@ -235,6 +237,7 @@ export class ScenariosService implements OnModuleInit {
       assignments: plan.assignments,
       freeByProduct: plan.freeByProduct,
       activeSheet,
+      dispatchImpact,
     };
   }
 
@@ -428,8 +431,12 @@ export class ScenariosService implements OnModuleInit {
       },
     });
 
-    await this.syncSheetSafely(row);
-    return this.buildDraftResponse(row, viewer, dataVersion);
+    const impact = await this.syncSheetSafely(row, {
+      actor,
+      defaultReason: 'RETIRADO_DEL_PLAN',
+      source: 'PLAN',
+    });
+    return this.buildDraftResponse(row, viewer, dataVersion, impact);
   }
 
   // Libera selecciones. `all` exige override; `lines` respeta al dueño; sin
@@ -450,7 +457,7 @@ export class ScenariosService implements OnModuleInit {
 
     const existing = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
     if (!existing) {
-      return { scenario: null, lines: [], assignments: [], freeByProduct: [], activeSheet: null };
+      return { scenario: null, lines: [], assignments: [], freeByProduct: [], activeSheet: null, dispatchImpact: null };
     }
     if (input.all && !canOverride) {
       throw new ForbiddenException(
@@ -508,8 +515,12 @@ export class ScenariosService implements OnModuleInit {
       entityId: 'GLOBAL',
       context: { removed, all: Boolean(input.all) },
     });
-    await this.syncSheetSafely(row);
-    return this.buildDraftResponse(row, viewer, dataVersion);
+    const impact = await this.syncSheetSafely(row, {
+      actor,
+      defaultReason: 'RETIRADO_DEL_PLAN',
+      source: 'PLAN',
+    });
+    return this.buildDraftResponse(row, viewer, dataVersion, impact);
   }
 
   // Envía la simulación VIVA al almacén. La hoja queda enlazada al borrador y
@@ -594,13 +605,23 @@ export class ScenariosService implements OnModuleInit {
   }
 
   // El guardado nunca debe fallar porque el almacén no pudo sincronizarse.
-  private async syncSheetSafely(row: DispatchDraft): Promise<void> {
+  private async syncSheetSafely(
+    row: DispatchDraft,
+    context: Parameters<DispatchService['syncFromDraft']>[1],
+  ): Promise<DraftDispatchImpact | null> {
     try {
-      await this.dispatch.syncFromDraft(row.id);
+      const report = await this.dispatch.syncFromDraft(row.id, context);
+      if (!report || (report.removedLines === 0 && report.canceledSheets.length === 0)) return null;
+      return {
+        removedLines: report.removedLines,
+        sheetNumbers: report.sheetNumbers,
+        canceledSheets: report.canceledSheets,
+      };
     } catch (error) {
       this.logger.warn(
         `No se pudo sincronizar la hoja de despacho: ${error instanceof Error ? error.message : String(error)}`,
       );
+      return null;
     }
   }
 
@@ -787,11 +808,20 @@ export class ScenariosService implements OnModuleInit {
   // ---------- Limpieza por cierres de pedidos ----------
 
   // Quita del plan global los renglones cuyos pedidos ya salieron de la
-  // cartera (nota de entrega / anulación). Los guardados NO se mutan: son
-  // historia y muestran `closedLines` en la lista/detalle.
-  async pruneClosedOrders(orderNumbers: string[]): Promise<{ removed: number }> {
-    if (orderNumbers.length === 0) return { removed: 0 };
-    const closed = new Set(orderNumbers);
+  // cartera (nota de entrega / anulación) y sincroniza las hojas abiertas para
+  // que esos renglones queden ANULADOS con su motivo. Los guardados NO se
+  // mutan: son historia y muestran `closedLines` en la lista/detalle.
+  async pruneClosedOrders(
+    items: Array<{ orderNumber: string; reason: string }>,
+  ): Promise<{ removed: number }> {
+    if (items.length === 0) return { removed: 0 };
+    const closed = new Set(items.map((item) => item.orderNumber));
+    const reasonByOrder = new Map(
+      items.map((item) => [
+        item.orderNumber,
+        item.reason === 'CANCELADO' ? 'PEDIDO_ANULADO_EN_PROFIT' : 'PEDIDO_CERRADO_EN_PROFIT',
+      ]),
+    );
     const draft = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
     if (!draft) return { removed: 0 };
     // Ya no hay lock de pantalla: el plan se poda siempre y el cliente
@@ -815,13 +845,21 @@ export class ScenariosService implements OnModuleInit {
     next.comments = Object.fromEntries(
       Object.entries(payload.comments ?? {}).filter(([key]) => selected.some((ref) => draftLineKey(ref) === key)),
     );
-    await this.prisma.dispatchDraft.update({
+    const row = await this.prisma.dispatchDraft.update({
       where: { id: 'GLOBAL' },
       data: {
         payload: JSON.stringify(next),
         lineCount: selected.length,
         version: { increment: 1 },
       },
+    });
+    // Atribución correcta: el que anuló fue Profit, no el siguiente usuario
+    // que abra la pantalla de Pedidos.
+    await this.syncSheetSafely(row, {
+      actor: { id: null, code: 'PROFIT', name: 'Profit' },
+      reasonByOrder,
+      source: 'PROFIT',
+      defaultReason: 'PEDIDO_CERRADO_EN_PROFIT',
     });
     return { removed };
   }

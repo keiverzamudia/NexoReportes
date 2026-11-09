@@ -624,6 +624,8 @@ model DispatchSheetLine {
   loadedQty     Decimal?
   loadedKg      Decimal?
   // PENDIENTE | CARGADO | PARCIAL | FALTANTE (marcas actuales)
+  // ANULADO = el renglón salió del plan antes de cargarse. NUNCA se borra:
+  // conserva quién lo anuló, cuándo y por qué para la bitácora y el historial.
   // NOVEDAD queda solo como histórico de lectura. La nota guarda el
   // comentario del planificador o, si hay diferencia, el motivo.
   status        String        @default("PENDIENTE")
@@ -631,9 +633,20 @@ model DispatchSheetLine {
   checkedAt     DateTime?
   checkedById   String?
   checkedByName String?
+  // Anulación del renglón (soft-delete). Solo aplica a renglones PENDIENTES
+  // que dejaron de estar en el plan vivo.
+  removedAt     DateTime?
+  removedById   String?
+  removedByCode String?
+  removedByName String?
+  // RETIRADO_DEL_PLAN | PEDIDO_ANULADO_EN_PROFIT | PEDIDO_CERRADO_EN_PROFIT
+  removalReason String?
+  // PLAN | PROFIT | SYSTEM
+  removalSource String?
 
   @@unique([sheetId, orderNumber, productCode])
   @@index([sheetId, position])
+  @@index([sheetId, status])
 }
 
 model DispatchSheetEvent {
@@ -644,6 +657,10 @@ model DispatchSheetEvent {
   kind       String
   type       String
   body       String?
+  // Detalle congelado del hito (JSON): cliente, factura y productos con
+  // pedido, código, nombre y cantidad. La bitácora lo usa para mostrar el
+  // dato concreto en vez de repetir el título del evento.
+  meta       String?
   authorId   String?
   authorCode String?
   authorName String?

@@ -42,6 +42,10 @@ function line(overrides: Partial<DispatchSheetLine> = {}): DispatchSheetLine {
     note: null,
     checkedAt: null,
     checkedByName: null,
+    removedAt: null,
+    removedByName: null,
+    removalReason: null,
+    removalSource: null,
     loadStartedAt: null,
     loadClosedAt: null,
     loadClosedByName: null,
@@ -73,7 +77,11 @@ function summary(overrides: Partial<DispatchSheetSummary> = {}): DispatchSheetSu
     completedByName: null,
     canceledAt: null,
     canceledByName: null,
+    cancelReason: null,
+    annulledLines: 0,
     plannedLines: 2,
+    plannedOrders: 2,
+    pendingOrders: 2,
     plannedSacks: 70,
     plannedKg: 2800,
     loadedSacks: 0,
@@ -88,6 +96,9 @@ function summary(overrides: Partial<DispatchSheetSummary> = {}): DispatchSheetSu
     loadClosedAt: null,
     invoiceDeliveredAt: null,
     pendingInvoiceCustomers: 0,
+    totalCustomers: 1,
+    closedCustomers: 0,
+    invoicedCustomers: 0,
     canOperate: true,
     canCancel: true,
     canInvoice: true,
@@ -228,6 +239,33 @@ describe('carga y avance', () => {
     expect(groups[0]!.completedLines).toBe(0);
     expect(groups[1]!.pendingLines).toBe(0);
     expect(groups[1]!.completedLines).toBe(1);
+  });
+
+  it('excluye los renglones anulados de totales y agrupación activa', () => {
+    const lines = [
+      line({ id: 'a', status: 'CARGADO', loadedQty: 60, loadedKg: 2400 }),
+      line({
+        id: 'b',
+        productCode: 'ABABOV85',
+        plannedQty: 10,
+        plannedKg: 400,
+        status: 'ANULADO',
+        removedAt: '2026-10-22T13:00:00.000Z',
+        removedByName: 'KEIBER ZAMUDIA',
+        removalReason: 'RETIRADO_DEL_PLAN',
+        removalSource: 'PLAN',
+      }),
+    ];
+    const totals = computeTotals(lines);
+    expect(totals.lines).toBe(1);
+    expect(totals.done).toBe(1);
+    expect(totals.plannedKg).toBe(2400);
+    expect(totals.loadedKg).toBe(2400);
+
+    const groups = groupByCustomer(lines);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.lines).toHaveLength(1);
+    expect(groups[0]!.lines[0]!.id).toBe('a');
   });
 
   it('arma el reporte completo de la hoja con cargados, parciales, no cargados y pendientes', () => {

@@ -60,6 +60,16 @@ export class DispatchController {
     return this.dispatch.list(this.viewer(request), query);
   }
 
+  // Pulso de carga de la bandeja. Permiso propio (`view_summary`) para poder
+  // asignarlo o quitarlo por usuario sin tocar el resto de Despacho.
+  // Antes de ':id' para que no lo capture el parámetro.
+  @Get('pulse')
+  @RequirePermission('despacho:read', 'despacho:view_summary')
+  @ApiOperation({ summary: 'Lo que falta por cargar en las hojas abiertas' })
+  pulse(@Req() request: AuthenticatedRequest) {
+    return this.dispatch.pulse(this.viewer(request));
+  }
+
   // Antes de ':id' para que no lo capture el parámetro.
   @Get('assignees')
   @RequirePermission('despacho:create')

@@ -65,7 +65,20 @@ pnpm start            # levanta API (4010) y Web (4100) juntos vía Turbo
 | `pnpm typecheck` | Verificación de tipos |
 | `pnpm test` | Pruebas unitarias (Vitest) |
 | `pnpm db:migrate` | Migraciones Prisma |
+| `pnpm db:mirror` | Copia la BD del worktree `main` al actual (solo SQLite, desarrollo) |
+| `pnpm db:mirror:status` | Compara esquema y filas entre `main` y este worktree |
 | `pnpm db:studio` | Prisma Studio |
+
+## Base de datos local (worktrees)
+
+Cada worktree tiene su propio SQLite (`apps/api/prisma/nexo.db`, no versionado).
+El worktree **`main` es la fuente de verdad**: el de `pruebas` puede restaurar su
+BD desde main en cualquier momento con `pnpm db:mirror` o con el botón
+**Usuarios → Bitácoras → Base de datos local → Restaurar desde main**.
+
+La restauración es atómica, no requiere reiniciar la API y nunca escribe en
+main. Se habilita con `DB_MIRROR_ENABLED=1` en `apps/api/.env` y solo existe
+fuera de producción. Detalle completo: [docs/DB-MIRROR.md](docs/DB-MIRROR.md).
 
 ## Roles y permisos
 
@@ -82,6 +95,7 @@ del web se filtra con los permisos que devuelve `/auth/me`.
 ## Documentación
 
 - [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) — arquitectura y módulos
+- [docs/DB-MIRROR.md](docs/DB-MIRROR.md) — espejo de la BD local (main → pruebas)
 - [docs/ROADMAP.md](docs/ROADMAP.md) — plan por fases
 - [docs/integration/PROFIT_SQL_MAPPING.md](docs/integration/PROFIT_SQL_MAPPING.md) — mapeo de vistas Profit (pendiente de confirmación)
 - Otras guías en `docs/`

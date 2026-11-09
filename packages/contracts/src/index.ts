@@ -22,7 +22,7 @@ export const zRoleCode = z
   .max(40)
   .regex(/^[A-Z][A-Z0-9_]*$/, 'Usa MAYÚSCULAS, números y guion bajo (ej. SUPERVISOR)');
 
-export const PERMISSION_ACTIONS = ['read', 'create', 'update', 'delete', 'view_all', 'override'] as const;
+export const PERMISSION_ACTIONS = ['read', 'create', 'update', 'delete', 'view_all', 'override', 'view_summary'] as const;
 export const zPermissionAction = z.enum(PERMISSION_ACTIONS);
 export type PermissionAction = z.infer<typeof zPermissionAction>;
 
@@ -91,6 +91,7 @@ export const APP_MODULES: AppModuleDefinition[] = [
       { action: 'update', label: 'Abrir' },
       { action: 'delete', label: 'Anular' },
       { action: 'view_all', label: 'Ver todos los despachos' },
+      { action: 'view_summary', label: 'Ver indicadores' },
     ],
   },
   {
@@ -1483,12 +1484,27 @@ export const zDraftActiveSheet = z.object({
 });
 export type DraftActiveSheet = z.infer<typeof zDraftActiveSheet>;
 
+// Efecto de un guardado/liberación sobre las hojas de despacho abiertas.
+// El web lo usa para avisar sin que el usuario tenga que abrir el despacho.
+export const zDraftDispatchImpact = z.object({
+  removedLines: z.number().int(),
+  sheetNumbers: z.array(z.string()),
+  canceledSheets: z.array(
+    z.object({
+      id: z.string(),
+      number: z.string(),
+    }),
+  ),
+});
+export type DraftDispatchImpact = z.infer<typeof zDraftDispatchImpact>;
+
 export const zScenarioDraftResponse = z.object({
   scenario: zScenarioDetail.nullable(),
   lines: z.array(zOrderGroupLine).default([]),
   assignments: z.array(zDraftAssignment).default([]),
   freeByProduct: z.array(zDraftFreeStock).default([]),
   activeSheet: zDraftActiveSheet.nullable().default(null),
+  dispatchImpact: zDraftDispatchImpact.nullable().default(null),
 });
 export type ScenarioDraftResponse = z.infer<typeof zScenarioDraftResponse>;
 
@@ -1534,7 +1550,9 @@ export const DISPATCH_SHEET_STATUSES = [
 export const zDispatchSheetStatus = z.enum(DISPATCH_SHEET_STATUSES);
 export type DispatchSheetStatus = z.infer<typeof zDispatchSheetStatus>;
 
-export const DISPATCH_LINE_STATUSES = ['PENDIENTE', 'CARGADO', 'PARCIAL', 'FALTANTE', 'NOVEDAD'] as const;
+// ANULADO = renglón retirado del plan antes de cargarse. Se conserva con
+// soft-delete (quién, cuándo y por qué) y no cuenta en totales ni tiempos.
+export const DISPATCH_LINE_STATUSES = ['PENDIENTE', 'CARGADO', 'PARCIAL', 'FALTANTE', 'NOVEDAD', 'ANULADO'] as const;
 export const zDispatchLineStatus = z.enum(DISPATCH_LINE_STATUSES);
 export type DispatchLineStatus = z.infer<typeof zDispatchLineStatus>;
 
@@ -1587,6 +1605,12 @@ export const zDispatchSheetLine = z.object({
   note: z.string().nullable(),
   checkedAt: z.string().nullable(),
   checkedByName: z.string().nullable(),
+  // Anulación del renglón (solo status ANULADO). `removalReason` explica si
+  // salió del plan o si Profit anuló/cerró el pedido.
+  removedAt: z.string().nullable(),
+  removedByName: z.string().nullable(),
+  removalReason: z.string().nullable(),
+  removalSource: z.string().nullable(),
   // Relojes derivados del cliente al que pertenece el renglón. `loadClosedAt`
   // es el momento en que el almacén cerró ESTE producto (coincide con
   // `checkedAt`); `loadStartedAt` es el inicio de carga del cliente.
@@ -1617,12 +1641,35 @@ export const zDispatchCustomerProgress = z.object({
 });
 export type DispatchCustomerProgress = z.infer<typeof zDispatchCustomerProgress>;
 
+// Renglón congelado dentro de un evento de la bitácora. Se guarda al momento
+// del hito para que el detalle no dependa de cómo evolucione el plan.
+export const zDispatchEventProduct = z.object({
+  orderNumber: z.string(),
+  productCode: z.string(),
+  description: z.string().nullable(),
+  qty: z.number().nullable(),
+  uom: z.string().nullable(),
+  status: z.string().nullable(),
+});
+export type DispatchEventProduct = z.infer<typeof zDispatchEventProduct>;
+
+export const zDispatchEventMeta = z.object({
+  customerKey: z.string().nullable(),
+  customerName: z.string().nullable(),
+  invoiceRef: z.string().nullable(),
+  // Duración del hito (minutos): carga del cliente o espera hasta factura.
+  minutes: z.number().nullable(),
+  products: z.array(zDispatchEventProduct),
+});
+export type DispatchEventMeta = z.infer<typeof zDispatchEventMeta>;
+
 export const zDispatchSheetEvent = z.object({
   id: z.string(),
   // SYSTEM = transición de estado; MESSAGE = conversación entre las partes.
   kind: z.enum(['SYSTEM', 'MESSAGE']),
   type: z.string(),
   body: z.string().nullable(),
+  meta: zDispatchEventMeta.nullable(),
   authorId: z.string().nullable(),
   authorCode: z.string().nullable(),
   authorName: z.string().nullable(),
@@ -1654,7 +1701,15 @@ export const zDispatchSheetSummary = z.object({
   completedByName: z.string().nullable(),
   canceledAt: z.string().nullable(),
   canceledByName: z.string().nullable(),
+  // Motivo de la anulación (manual o automática por plan vacío).
+  cancelReason: z.string().nullable(),
   plannedLines: z.number().int(),
+  // Pedidos distintos (nº de orden) en los renglones activos de la hoja.
+  plannedOrders: z.number().int(),
+  // Pedidos con al menos un renglón por cargar (solo hojas abiertas).
+  pendingOrders: z.number().int(),
+  // Renglones anulados (soft-delete): no cuentan en totales ni progreso.
+  annulledLines: z.number().int(),
   plannedSacks: z.number(),
   plannedKg: z.number(),
   loadedSacks: z.number(),
@@ -1670,6 +1725,10 @@ export const zDispatchSheetSummary = z.object({
   loadClosedAt: z.string().nullable(),
   invoiceDeliveredAt: z.string().nullable(),
   pendingInvoiceCustomers: z.number().int(),
+  // Avance de los relojes por cliente (para mostrar parciales en la UI).
+  totalCustomers: z.number().int(),
+  closedCustomers: z.number().int(),
+  invoicedCustomers: z.number().int(),
   // Permisos resueltos para quien consulta (evita duplicar reglas en el web).
   canOperate: z.boolean(),
   canCancel: z.boolean(),
@@ -1701,6 +1760,43 @@ export const zDispatchSheetListResponse = z.object({
   }),
 });
 export type DispatchSheetListResponse = z.infer<typeof zDispatchSheetListResponse>;
+
+// ============================================================
+// Pulso de carga de la bandeja (`GET /dispatch-sheets/pulse`).
+//
+// No es el total de la hoja: es SOLO lo que falta por cargar
+// (`plannedQty - loadedQty > 0` en hojas abiertas). La vista de Despacho lo
+// muestra como una franja compacta, nunca como tarjetas de KPI.
+//
+//   · orders   = pedidos distintos (`orderNumber`) con algo por cargar.
+//   · lines    = renglones por cargar.
+//   · customers= clientes distintos con algo por cargar.
+//   · sacks    = unidades SAC por cargar; sacksKg = su equivalente en kg.
+//   · bulkKg   = kg pendientes de renglones KG (granel).
+//   · otherKg  = kg pendientes de otras unidades (no SAC / no KG).
+//   · urgency  = pedidos agrupados por su fecha de entrega más próxima.
+// ============================================================
+export const zDispatchPulse = z.object({
+  generatedAt: z.string(),
+  // Hojas abiertas que todavía tienen al menos un renglón por cargar.
+  sheets: z.number().int(),
+  orders: z.number().int(),
+  lines: z.number().int(),
+  customers: z.number().int(),
+  sacks: z.number(),
+  sacksKg: z.number(),
+  bulkKg: z.number(),
+  otherKg: z.number(),
+  totalKg: z.number(),
+  urgency: z.object({
+    overdue: z.number().int(),
+    today: z.number().int(),
+    week: z.number().int(),
+    later: z.number().int(),
+    noDate: z.number().int(),
+  }),
+});
+export type DispatchPulse = z.infer<typeof zDispatchPulse>;
 
 export const zDispatchAssignee = z.object({
   id: z.string(),
@@ -1829,6 +1925,11 @@ export const zDispatchMetricsQuery = z
     granularity: zDispatchMetricGranularity.default('day'),
     customerCode: z.string().trim().max(240).optional(),
     invoiceStatus: z.enum(['all', 'pending', 'delivered']).default('all'),
+    // El historial solo cuenta despachos cerrados: deja fuera hojas abiertas.
+    onlyClosed: z
+      .union([z.boolean(), z.enum(['true', 'false'])])
+      .transform((value) => value === true || value === 'true')
+      .default(false),
   })
   .superRefine((value, ctx) => {
     if (value.from > value.to) {
@@ -1848,12 +1949,23 @@ export type DispatchDurationStats = z.infer<typeof zDispatchDurationStats>;
 export const zDispatchMetricsSummary = z.object({
   dispatches: z.number().int(),
   customers: z.number().int(),
+  // Pedidos distintos (nº de orden), no renglones.
   orders: z.number().int(),
+  // Renglones/productos involucrados.
+  lines: z.number().int(),
   kg: z.number(),
   load: zDispatchDurationStats,
   invoice: zDispatchDurationStats.extend({
     pending: z.number().int(),
   }),
+  // Tiempos globales de la hoja. `response` = envío → primer inicio de carga;
+  // `loadWindow` = primer inicio → último cierre (solo despachar);
+  // `dispatchCycle` = envío → último cierre; `invoiceWait` = cierre → factura.
+  response: zDispatchDurationStats,
+  loadWindow: zDispatchDurationStats,
+  dispatchCycle: zDispatchDurationStats,
+  totalCycle: zDispatchDurationStats,
+  invoiceWait: zDispatchDurationStats,
   onTime: z.object({
     orders: z.number().int(),
     late: z.number().int(),
@@ -1878,6 +1990,7 @@ export const zDispatchMetricsCustomer = z.object({
   customerName: z.string(),
   dispatches: z.number().int(),
   orders: z.number().int(),
+  lines: z.number().int(),
   kg: z.number(),
   loadAvgMinutes: z.number().nullable(),
   loadMedianMinutes: z.number().nullable(),
@@ -2780,6 +2893,8 @@ export const AUDIT_ACTIONS: Record<string, AuditActionDefinition> = {
   DISPATCH_REOPEN: { module: 'dispatch', label: 'Reabrió la carga o factura de un cliente', severity: 'WARN' },
   DISPATCH_COMPLETE: { module: 'dispatch', label: 'Cerró un despacho', severity: 'INFO' },
   DISPATCH_CANCEL: { module: 'dispatch', label: 'Anuló un despacho', severity: 'WARN' },
+  DISPATCH_LINE_ANNUL: { module: 'dispatch', label: 'Anuló un renglón de un despacho', severity: 'WARN' },
+  DISPATCH_AUTO_CANCEL: { module: 'dispatch', label: 'Anuló un despacho porque el plan quedó vacío', severity: 'WARN' },
   ARRIVAL_CHECK_IN: { module: 'arrivals', label: 'Marcó la llegada de un cliente', severity: 'INFO' },
   ARRIVAL_CLOSE: { module: 'arrivals', label: 'Cerró la atención de un cliente', severity: 'INFO' },
   ARRIVAL_EDIT: { module: 'arrivals', label: 'Corrigió un registro de llegada', severity: 'WARN' },
@@ -2808,6 +2923,7 @@ export const AUDIT_ACTIONS: Record<string, AuditActionDefinition> = {
   },
   DELIVERY_DATE_SET: { module: 'orders', label: 'Asignó fecha tentativa a pedidos', severity: 'INFO' },
   DELIVERY_DATE_RESTORE: { module: 'orders', label: 'Restauró la fecha tentativa', severity: 'INFO' },
+  DB_MIRROR_RESTORE: { module: 'system', label: 'Restauró la base de datos desde main', severity: 'WARN' },
 };
 
 const ACTION_PREFIX_MODULE: Array<[string, AuditModuleKey]> = [
@@ -2909,3 +3025,47 @@ export const zAuditFeedResponse = z.object({
   facets: zAuditFacets,
 });
 export type AuditFeedResponse = z.infer<typeof zAuditFeedResponse>;
+
+// ============================================================
+// Espejo de la base de datos local (solo desarrollo).
+//
+// El worktree `pruebas` puede reemplazar su SQLite por una foto del worktree
+// `main`. Es unidireccional: main manda y nunca se escribe al revés. El API
+// solo expone estos endpoints cuando `DB_MIRROR_ENABLED=1` y NODE_ENV no es
+// producción; el botón vive en Usuarios → Bitácoras.
+// ============================================================
+
+export const zDbMirrorInfo = z.object({
+  path: z.string(),
+  modifiedAt: z.string(),
+  sizeBytes: z.number().int(),
+  tables: z.number().int(),
+});
+export type DbMirrorInfo = z.infer<typeof zDbMirrorInfo>;
+
+export const zDbMirrorCount = z.object({
+  table: z.string(),
+  source: z.number().int(),
+  target: z.number().int(),
+});
+export type DbMirrorCount = z.infer<typeof zDbMirrorCount>;
+
+export const zDbMirrorStatus = z.object({
+  enabled: z.boolean(),
+  source: zDbMirrorInfo,
+  target: zDbMirrorInfo,
+  schemaOk: z.boolean(),
+  schemaIssues: z.array(z.string()),
+  counts: z.array(zDbMirrorCount),
+  busy: z.boolean(),
+});
+export type DbMirrorStatus = z.infer<typeof zDbMirrorStatus>;
+
+export const zDbMirrorRestoreResult = z.object({
+  ok: z.boolean(),
+  tables: z.number().int(),
+  rows: z.number().int(),
+  sourceModifiedAt: z.string(),
+  durationMs: z.number().int(),
+});
+export type DbMirrorRestoreResult = z.infer<typeof zDbMirrorRestoreResult>;

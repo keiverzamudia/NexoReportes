@@ -49,6 +49,7 @@ import {
   severityMeta,
 } from '../../lib/audit';
 import { Badge, Card, EmptyState, Kpi, Segmented, Select, Skeleton, TextInput, cx } from '../ui';
+import { DbMirrorCard } from './DbMirrorCard';
 
 const MODULE_ICON: Record<string, LucideIcon> = {
   auth: LogIn,
@@ -462,6 +463,8 @@ export function BitacorasPanel() {
           </div>
         )}
       </Card>
+
+      <DbMirrorCard />
 
       {selected && <AuditDrawer entry={selected} onClose={() => setSelected(null)} />}
 

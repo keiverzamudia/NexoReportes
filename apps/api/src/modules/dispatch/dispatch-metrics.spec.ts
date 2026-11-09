@@ -14,6 +14,7 @@ function query(overrides: Partial<DispatchMetricsQuery> = {}): DispatchMetricsQu
     to: '2026-11-30',
     granularity: 'day',
     invoiceStatus: 'all',
+    onlyClosed: false,
     ...overrides,
   };
 }
@@ -23,6 +24,7 @@ function sheet(overrides: Partial<MetricSheet> = {}): MetricSheet {
     id: 'sheet-1',
     number: 'DSP-2026-0001',
     status: 'EN_PROCESO',
+    sentAt: new Date('2026-11-01T13:00:00.000Z'),
     startedAt: new Date('2026-11-01T14:00:00.000Z'),
     completedAt: null,
     lines: [
@@ -84,18 +86,38 @@ describe('buildDispatchMetrics', () => {
     expect(result.summary.dispatches).toBe(1);
     expect(result.summary.customers).toBe(2);
     expect(result.summary.orders).toBe(2);
+    expect(result.summary.lines).toBe(2);
     expect(result.summary.kg).toBe(300);
     expect(result.summary.load).toMatchObject({ groups: 2, avgMinutes: 90, medianMinutes: 90, p90Minutes: 120 });
     expect(result.summary.invoice).toMatchObject({ groups: 1, avgMinutes: 180, pending: 1 });
-    expect(result.summary.onTime).toMatchObject({ orders: 1, late: 0, pct: 100 });
+    expect(result.summary.onTime).toMatchObject({ orders: 2, late: 0, pct: 100 });
 
     const one = result.customers.find((row) => row.customerCode === 'C1')!;
+    expect(one.orders).toBe(1);
+    expect(one.lines).toBe(1);
     expect(one.loadAvgMinutes).toBe(60);
     expect(one.invoiceAvgMinutes).toBe(180);
     expect(one.onTimePct).toBe(100);
     const two = result.customers.find((row) => row.customerCode === 'C2')!;
     expect(two.pendingInvoices).toBe(1);
     expect(two.invoiceAvgMinutes).toBeNull();
+  });
+
+  it('distingue pedidos de renglones cuando un pedido trae varios productos', () => {
+    const multi = sheet();
+    multi.lines = [
+      multi.lines[0]!,
+      { ...multi.lines[0]!, productCode: 'ABB', plannedKg: 50 },
+      multi.lines[1]!,
+    ];
+    const result = buildDispatchMetrics([multi], query());
+    // P-1 aparece en dos renglones; P-2 en uno.
+    expect(result.summary.orders).toBe(2);
+    expect(result.summary.lines).toBe(3);
+    expect(result.summary.onTime.orders).toBe(2);
+    const one = result.customers.find((row) => row.customerCode === 'C1')!;
+    expect(one.orders).toBe(1);
+    expect(one.lines).toBe(2);
   });
 
   it('construye series diarias y mensuales con los periodos vacíos', () => {
@@ -144,13 +166,41 @@ describe('buildDispatchMetrics', () => {
     expect(result.summary.invoice.pending).toBe(1);
   });
 
-  it('marca tarde cuando la factura se entregó después de la fecha planificada', () => {
+  it('marca tarde cuando la carga se cerró después de la fecha planificada', () => {
     const late = sheet();
     late.lines[0]!.effectiveDate = '2026-11-01';
-    late.customerProgress[0]!.invoiceDeliveredAt = new Date('2026-11-03T14:00:00.000Z');
+    // El cumplimiento ahora se mide por el cierre de carga (cohorte), no por
+    // la fecha en que se entregó la factura.
+    late.customerProgress[0]!.loadClosedAt = new Date('2026-11-03T14:00:00.000Z');
     const result = buildDispatchMetrics([late], query());
-    expect(result.summary.onTime.orders).toBe(1);
+    expect(result.summary.onTime.orders).toBe(2);
     expect(result.summary.onTime.late).toBe(1);
-    expect(result.summary.onTime.pct).toBe(0);
+    expect(result.summary.onTime.pct).toBe(50);
+  });
+
+  it('excluye los renglones anulados de los tiempos y totales', () => {
+    const withAnnulled = sheet();
+    withAnnulled.lines[0] = { ...withAnnulled.lines[0]!, status: 'ANULADO' };
+    const result = buildDispatchMetrics([withAnnulled], query());
+    expect(result.summary.orders).toBe(1);
+    expect(result.summary.kg).toBe(200);
+    expect(result.summary.load.groups).toBe(1);
+    expect(result.summary.customers).toBe(1);
+    const orderRows = result.orders;
+    expect(orderRows.some((row) => row.productCode === 'ABA' && row.customerCode === 'C1')).toBe(false);
+  });
+
+  it('calcula respuesta, ventana de carga y ciclo desde el envío', () => {
+    const result = buildDispatchMetrics([sheet()], query());
+    // Envío 13:00 → primer inicio 14:00 del mismo día = 60 min.
+    expect(result.summary.response.avgMinutes).toBe(60);
+    // Primer inicio 14:00 (día 1) → último cierre 16:00 (día 2) = 1560 min.
+    expect(result.summary.loadWindow.avgMinutes).toBe(1560);
+    // Envío 13:00 (día 1) → último cierre 16:00 (día 2) = 1620 min.
+    expect(result.summary.dispatchCycle.avgMinutes).toBe(1620);
+    // C1 facturó a las 17:00 y cerró a las 15:00 = 120 min de espera.
+    expect(result.summary.invoiceWait.avgMinutes).toBe(120);
+    // El ciclo total no se inventa si falta una factura.
+    expect(result.summary.totalCycle.groups).toBe(0);
   });
 });

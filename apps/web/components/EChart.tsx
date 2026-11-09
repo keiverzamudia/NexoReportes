@@ -15,6 +15,10 @@
 // Interacción opcional por índice del eje X (`onIndexHover` / `onIndexClick`):
 // se resuelve con `convertFromPixel`, así funciona en cualquier punto del
 // área de dibujo y no sólo sobre la línea de la serie.
+//
+// `onCategoryClick` hace lo mismo pero con el eje que sea de tipo `category`
+// (X o Y). Sirve para las barras horizontales, donde las categorías están en
+// Y. `pointerCategories` sólo cambia el cursor, sin re-render de React.
 // ============================================================
 
 import { useEffect, useRef } from 'react';
@@ -28,14 +32,31 @@ interface EChartProps {
   onIndexHover?: (index: number | null) => void;
   /** Índice del eje X donde se hizo clic. */
   onIndexClick?: (index: number) => void;
+  /** Índice de la categoría (eje X o Y, el que sea de tipo `category`) donde se hizo clic. */
+  onCategoryClick?: (index: number) => void;
+  /** Categorías que muestran cursor de mano (p. ej. una fila que abre detalle). */
+  pointerCategories?: number[];
 }
 
-export function EChart({ option, height = 240, ariaLabel, className, onIndexHover, onIndexClick }: EChartProps) {
+export function EChart({
+  option,
+  height = 240,
+  ariaLabel,
+  className,
+  onIndexHover,
+  onIndexClick,
+  onCategoryClick,
+  pointerCategories,
+}: EChartProps) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<import('echarts').EChartsType | null>(null);
   const hoverRef = useRef<((index: number | null) => void) | null>(null);
   const clickRef = useRef<((index: number) => void) | null>(null);
+  const categoryClickRef = useRef<((index: number) => void) | null>(null);
+  const pointerCategoriesRef = useRef<number[] | null>(null);
   const countRef = useRef(0);
+  const categoryAxisRef = useRef<'x' | 'y' | null>(null);
+  const categoryCountRef = useRef(0);
   const lastHover = useRef<number | null>(null);
 
   // Los callbacks cambian en cada render: se guardan en refs para no
@@ -43,12 +64,29 @@ export function EChart({ option, height = 240, ariaLabel, className, onIndexHove
   useEffect(() => {
     hoverRef.current = onIndexHover ?? null;
     clickRef.current = onIndexClick ?? null;
-  }, [onIndexHover, onIndexClick]);
+    categoryClickRef.current = onCategoryClick ?? null;
+    pointerCategoriesRef.current = pointerCategories ?? null;
+  }, [onIndexHover, onIndexClick, onCategoryClick, pointerCategories]);
 
-  // Cantidad de categorías del eje X: la usan los listeners ya vinculados.
+  // Eje de categoría y cuántos valores tiene: lo usan los listeners ya
+  // vinculados. Se prefiere Y porque las barras horizontales viven ahí.
   useEffect(() => {
-    const xAxis = (option as { xAxis?: { data?: unknown[] } }).xAxis;
+    const { xAxis, yAxis } = option as {
+      xAxis?: { type?: string; data?: unknown[] };
+      yAxis?: { type?: string; data?: unknown[] };
+    };
     countRef.current = Array.isArray(xAxis?.data) ? xAxis.data.length : 0;
+
+    if (Array.isArray(yAxis?.data)) {
+      categoryAxisRef.current = 'y';
+      categoryCountRef.current = yAxis.data.length;
+    } else if (Array.isArray(xAxis?.data)) {
+      categoryAxisRef.current = 'x';
+      categoryCountRef.current = xAxis.data.length;
+    } else {
+      categoryAxisRef.current = null;
+      categoryCountRef.current = 0;
+    }
     lastHover.current = null;
   }, [option]);
 
@@ -80,6 +118,29 @@ export function EChart({ option, height = 240, ariaLabel, className, onIndexHove
         }
       };
 
+      // Índice de la categoría en el eje que la declara. Para las barras
+      // horizontales es Y, así que un clic en cualquier punto de la fila abre
+      // el detalle de esa categoría.
+      const categoryAt = (offsetX: number, offsetY: number): number | null => {
+        const instance = chart.current;
+        const axis = categoryAxisRef.current;
+        if (!instance || !axis) return null;
+        try {
+          if (!instance.containPixel('grid', [offsetX, offsetY])) return null;
+          const converted = instance.convertFromPixel(
+            axis === 'y' ? { yAxisIndex: 0 } : { xAxisIndex: 0 },
+            axis === 'y' ? offsetY : offsetX,
+          );
+          const index = typeof converted === 'number' ? Math.round(converted) : Number(converted);
+          if (!Number.isFinite(index)) return null;
+          const count = categoryCountRef.current;
+          if (count > 0 && (index < 0 || index > count - 1)) return null;
+          return index;
+        } catch {
+          return null;
+        }
+      };
+
       // Se vincula UNA sola vez, al crear la instancia: `zr.off(evento)` sin
       // handler borraría también los listeners internos de ECharts.
       const bindPointer = (instance: import('echarts').EChartsType) => {
@@ -87,6 +148,11 @@ export function EChart({ option, height = 240, ariaLabel, className, onIndexHove
 
         zr.on('mousemove', (event: unknown) => {
           const { offsetX, offsetY } = event as { offsetX: number; offsetY: number };
+          const pointer = pointerCategoriesRef.current;
+          if (pointer) {
+            const category = categoryAt(offsetX, offsetY);
+            node.style.cursor = category !== null && pointer.includes(category) ? 'pointer' : '';
+          }
           const index = indexAt(offsetX, offsetY);
           if (index === lastHover.current) return;
           lastHover.current = index;
@@ -95,11 +161,19 @@ export function EChart({ option, height = 240, ariaLabel, className, onIndexHove
 
         zr.on('click', (event: unknown) => {
           const { offsetX, offsetY } = event as { offsetX: number; offsetY: number };
+          if (categoryClickRef.current) {
+            const category = categoryAt(offsetX, offsetY);
+            if (category !== null) {
+              categoryClickRef.current(category);
+              return;
+            }
+          }
           const index = indexAt(offsetX, offsetY);
           if (index !== null) clickRef.current?.(index);
         });
 
         zr.on('globalout', () => {
+          if (pointerCategoriesRef.current) node.style.cursor = '';
           if (lastHover.current === null) return;
           lastHover.current = null;
           hoverRef.current?.(null);

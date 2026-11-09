@@ -169,6 +169,12 @@
     outline: 2px solid var(--color-secondary-container);
     outline-offset: 2px;
   }
+
+  /* La selección también pertenece a la identidad: lima + tinta. */
+  ::selection {
+    background-color: var(--color-secondary-container);
+    color: var(--color-on-secondary);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -202,6 +208,29 @@
   }
   to {
     opacity: 1;
+  }
+}
+
+/* Pulso de carga: una sola entrada orquestada (banda + barra). */
+@keyframes nexo-band-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.995);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+  }
+}
+
+@keyframes nexo-strip-grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
   }
 }
 
@@ -244,6 +273,15 @@
 
   .animate-fade {
     animation: nexo-fade 0.4s ease-out both;
+  }
+
+  .animate-band-in {
+    animation: nexo-band-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .animate-strip-grow {
+    animation: nexo-strip-grow 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+    transform-origin: left center;
   }
 
   .load-block {

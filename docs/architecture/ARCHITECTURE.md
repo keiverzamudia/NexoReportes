@@ -126,17 +126,40 @@ controlador.
   se captura en un modal centrado y se guarda en la nota del renglón. Solo
   `PENDIENTE` bloquea el cierre: al cerrar se guardan los totales reales y la
   diferencia contra lo planificado. `NOVEDAD` queda como histórico de lectura.
+- **Anulación de renglones (soft-delete)**: cuando un renglón pendiente sale
+  del plan vivo (el usuario lo desmarca en Pedidos, Profit anula el pedido o lo
+  cierra por nota de entrega), **no se borra**. Pasa a `ANULADO` con
+  `removedAt`, `removedBy*`, `removalReason` y `removalSource`. El detalle lo
+  agrupa en «Anulados» con autor, fecha y motivo; no cuenta en totales,
+  progreso ni tiempos. Si la hoja se queda sin renglones activos, se anula
+  automáticamente (`CANCELADO`, motivo «El plan quedó vacío»), se cancelan las
+  llegadas PCP y se notifica a planificación y almacén. Si el renglón vuelve
+  al plan, se reactiva en la misma fila (`PENDIENTE`) sin duplicar.
 - **Tiempos por cliente** (`DispatchCustomerProgress`): «Iniciar carga» arranca
   los relojes del cliente sin marcar productos; cada producto se cierra con
   «Cerrar carga» y detiene su reloj; la factura se marca por cliente o con
-  «Facturar todo». La carga se mide del inicio al último producto cerrado y la
-  factura del inicio de carga a la entrega. `DispatchSheetLine.checkedAt` sigue
-  siendo la hora de cierre del producto. Las hojas históricas se backfillean
-  con `startedAt`/`completedAt`; el tiempo de factura solo existe desde que se
-  usa el hito.
+  «Facturar todo». Definiciones:
+  - **Respuesta** = envío (`sentAt`) → primer inicio de carga.
+  - **Carga por cliente** = inicio de carga → último producto cerrado.
+  - **Solo despacho (ventana)** = primer inicio → último cierre del despacho;
+    no es suma ni promedio.
+  - **Espera de factura** = cierre de carga → factura entregada.
+  - **Tiempo total** = envío → última factura.
+  El reporte agrupa por **día de cierre de carga** y el cumplimiento «a tiempo»
+  se mide contra la fecha planificada al cerrar la carga (no al facturar).
+  `DispatchSheetLine.checkedAt` conserva la hora de la **primera** resolución:
+  editar una nota o cantidad no mueve el reloj; reabrir a `PENDIENTE` lo limpia.
+  Las hojas históricas se backfillean con `startedAt`/`completedAt`; el tiempo
+  de factura solo existe desde que se usa el hito.
 - **Bitácora solo ADMIN**: el detalle entrega `events` únicamente al rol ADMIN;
-  el resto sigue el avance por la cinta de acuses y el reporte de cierre. El
-  drawer incluye filtros, búsqueda, detalle de carga por producto y CSV.
+  el resto sigue el avance por los relojes y el reporte de cierre. El drawer
+  ordena la lectura en tres capas: **Actividad** (hitos y mensajes), **Clientes**
+  (relojes y productos plegados) y **Detalles** (todos los eventos, filtros
+  avanzados y CSV). Los cambios internos del plan no saturan la vista principal.
+  Cada evento guarda un `meta` congelado (cliente, factura, duración y productos
+  con pedido, código, nombre y cantidad), de modo que el renglón muestra el dato
+  concreto en vez de repetir el título; los eventos históricos se resuelven con
+  los renglones vigentes y, si no coinciden, caen al texto original.
 - **Reporte «Tiempos»**: `GET /dispatch-sheets/metrics` agrega por cliente,
   día o mes, con promedios, medianas, P90, facturas pendientes y cumplimiento
   contra la fecha planificada. La pestaña «Tiempos» reutiliza ECharts y

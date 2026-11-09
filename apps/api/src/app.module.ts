@@ -15,6 +15,7 @@ import { ForecastModule } from './modules/forecast/forecast.module';
 import { ScenariosModule } from './modules/scenarios/scenarios.module';
 import { DispatchModule } from './modules/dispatch/dispatch.module';
 import { ArrivalsModule } from './modules/arrivals/arrivals.module';
+import { DbMirrorModule } from './modules/db-mirror/db-mirror.module';
 
 @Module({
   imports: [
@@ -34,6 +35,11 @@ import { ArrivalsModule } from './modules/arrivals/arrivals.module';
     ScenariosModule,
     DispatchModule,
     ArrivalsModule,
+    // Espejo de la BD local (main → pruebas). La condición se evalúa DESPUÉS
+    // de ConfigModule.forRoot, que es quien carga el .env en process.env.
+    ...(process.env.NODE_ENV !== 'production' && process.env.DB_MIRROR_ENABLED === '1'
+      ? [DbMirrorModule]
+      : []),
   ],
 })
 export class AppModule {}

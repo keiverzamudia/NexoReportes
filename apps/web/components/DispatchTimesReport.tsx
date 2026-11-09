@@ -18,12 +18,14 @@ import { useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
   CalendarRange,
+  ChevronDown,
   Clock,
   Download,
   Loader2,
   Receipt,
   Timer,
   TrendingUp,
+  Truck,
   Users,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -88,9 +90,20 @@ function rangeFor(preset: Preset): { from: string; to: string } {
   return { from: isoDate(start), to: isoDate(end) };
 }
 
-export function DispatchTimesReport() {
-  const [preset, setPreset] = useState<Preset>('30d');
-  const [range, setRange] = useState(() => rangeFor('30d'));
+export function DispatchTimesReport({
+  initialFrom,
+  initialTo,
+  onlyClosed = false,
+}: {
+  /** Rango inicial cuando el reporte se abre desde Historial. */
+  initialFrom?: string;
+  initialTo?: string;
+  /** Solo despachos cerrados (historial), sin hojas abiertas. */
+  onlyClosed?: boolean;
+} = {}) {
+  const initialRange = initialFrom && initialTo ? { from: initialFrom, to: initialTo } : rangeFor('30d');
+  const [preset, setPreset] = useState<Preset>(initialFrom && initialTo ? 'custom' : '30d');
+  const [range, setRange] = useState(initialRange);
   const [granularity, setGranularity] = useState<DispatchMetricGranularity>('day');
   const [customerCode, setCustomerCode] = useState('');
   const [invoiceStatus, setInvoiceStatus] = useState<'all' | 'pending' | 'delivered'>('all');
@@ -107,9 +120,10 @@ export function DispatchTimesReport() {
     invoiceStatus,
   });
   if (customerCode) params.set('customerCode', customerCode);
+  if (onlyClosed) params.set('onlyClosed', 'true');
 
   const { data, isLoading, error, isFetching } = useQuery<DispatchMetricsResponse>({
-    queryKey: ['dispatch-metrics', range.from, range.to, granularity, customerCode, invoiceStatus],
+    queryKey: ['dispatch-metrics', range.from, range.to, granularity, customerCode, invoiceStatus, onlyClosed],
     queryFn: () => apiFetch<DispatchMetricsResponse>(`/dispatch-sheets/metrics?${params.toString()}`),
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
     refetchInterval: 60_000,
@@ -168,7 +182,7 @@ export function DispatchTimesReport() {
           itemStyle: { color: '#5c7c2f' },
         },
         {
-          name: 'Factura',
+          name: 'Hasta factura',
           type: 'line',
           smooth: true,
           symbolSize: 5,
@@ -211,6 +225,14 @@ export function DispatchTimesReport() {
       render: (row) => <span className="tabular-nums">{row.orders}</span>,
     },
     {
+      key: 'lines',
+      header: 'Renglones',
+      kind: 'metric',
+      align: 'right',
+      sortValue: (row) => row.lines,
+      render: (row) => <span className="tabular-nums">{row.lines}</span>,
+    },
+    {
       key: 'kg',
       header: 'Kg',
       kind: 'metric',
@@ -220,7 +242,7 @@ export function DispatchTimesReport() {
     },
     {
       key: 'load',
-      header: 'Carga media',
+      header: 'Carga cliente',
       kind: 'metric',
       align: 'right',
       sortValue: (row) => row.loadAvgMinutes ?? -1,
@@ -228,7 +250,7 @@ export function DispatchTimesReport() {
     },
     {
       key: 'invoice',
-      header: 'Factura media',
+      header: 'Hasta factura',
       kind: 'metric',
       align: 'right',
       sortValue: (row) => row.invoiceAvgMinutes ?? -1,
@@ -253,7 +275,7 @@ export function DispatchTimesReport() {
     },
     {
       key: 'onTime',
-      header: 'A tiempo',
+      header: 'A tiempo (carga)',
       kind: 'metric',
       align: 'right',
       sortValue: (row) => row.onTimePct ?? -1,
@@ -366,6 +388,7 @@ export function DispatchTimesReport() {
       ['Despachos', data.summary.dispatches],
       ['Clientes', data.summary.customers],
       ['Pedidos', data.summary.orders],
+      ['Renglones', data.summary.lines],
       ['Kg', data.summary.kg],
       ['Carga media (min)', data.summary.load.avgMinutes ?? '—'],
       ['Carga mediana (min)', data.summary.load.medianMinutes ?? '—'],
@@ -373,16 +396,22 @@ export function DispatchTimesReport() {
       ['Factura media (min)', data.summary.invoice.avgMinutes ?? '—'],
       ['Factura mediana (min)', data.summary.invoice.medianMinutes ?? '—'],
       ['Factura P90 (min)', data.summary.invoice.p90Minutes ?? '—'],
+      ['Tiempo total: envío → última factura (min)', data.summary.totalCycle.avgMinutes ?? '—'],
+      ['Solo despacho: primer inicio → último cierre (min)', data.summary.loadWindow.avgMinutes ?? '—'],
+      ['Respuesta del almacén: envío → primer inicio (min)', data.summary.response.avgMinutes ?? '—'],
+      ['Espera de factura: cierre → factura (min)', data.summary.invoiceWait.avgMinutes ?? '—'],
+      ['Envío → último cierre (min)', data.summary.dispatchCycle.avgMinutes ?? '—'],
       ['Facturas pendientes', data.summary.invoice.pending],
-      ['% a tiempo', data.summary.onTime.pct ?? '—'],
+      ['% a tiempo (carga)', data.summary.onTime.pct ?? '—'],
     ];
     const customers = [
-      ['Cliente', 'Código', 'Despachos', 'Pedidos', 'Kg', 'Carga media', 'Carga P90', 'Factura media', 'Factura P90', 'Pendientes', '% a tiempo', 'Última factura'],
+      ['Cliente', 'Código', 'Despachos', 'Pedidos', 'Renglones', 'Kg', 'Carga media', 'Carga P90', 'Factura media', 'Factura P90', 'Pendientes', '% a tiempo', 'Última factura'],
       ...data.customers.map((row) => [
         row.customerName,
         row.customerCode ?? '',
         row.dispatches,
         row.orders,
+        row.lines,
         row.kg,
         row.loadAvgMinutes ?? '',
         row.loadP90Minutes ?? '',
@@ -415,7 +444,7 @@ export function DispatchTimesReport() {
     for (const [name, rows] of [
       ['Resumen', summary],
       ['Por cliente', customers],
-      ['Por pedido', orders],
+      ['Por renglón', orders],
     ] as const) {
       const sheet = XLSX.utils.aoa_to_sheet(rows);
       sheet['!cols'] = rows[0]?.map(() => ({ wch: 18 })) ?? [];
@@ -524,11 +553,84 @@ export function DispatchTimesReport() {
         </Card>
       ) : (
         <>
+          <Card className="p-space-md">
+            <details className="group">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-space-sm marker:content-none">
+                <span className="flex items-center gap-space-sm">
+                  <span className="grid size-8 place-items-center rounded-lg bg-primary-fixed text-primary">
+                    <Clock aria-hidden className="size-4" />
+                  </span>
+                  <span>
+                    <span className="block font-bold text-primary">Cómo se miden los tiempos</span>
+                    <span className="block text-label-sm normal-case text-on-surface-variant">
+                      Envío, respuesta, carga, factura y ciclo total, sin ambigüedad.
+                    </span>
+                  </span>
+                </span>
+                <ChevronDown aria-hidden className="size-4 text-outline transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="mt-space-sm grid gap-space-sm md:grid-cols-2 xl:grid-cols-3">
+                <Definition title="Envío" text="Instante en que planificación publica el despacho desde Pedidos. Es el punto de partida de todos los tiempos globales." />
+                <Definition title="Respuesta del almacén" text="Desde el envío hasta que el primer cliente inicia su carga. Mide cuánto tarda el piso en arrancar." />
+                <Definition title="Carga por cliente" text="Desde «Iniciar carga» del cliente hasta que se cierra su último producto. Es la base del promedio, mediana y P90." />
+                <Definition title="Solo despacho (ventana)" text="Desde el primer inicio de carga hasta el último cierre del despacho. No es suma ni promedio: es la ventana operativa real." />
+                <Definition title="Espera de factura" text="Desde el cierre de carga del cliente hasta que se marca su factura entregada. Es tiempo administrativo, no de almacén." />
+                <Definition title="Tiempo total" text="Desde el envío hasta la última factura del despacho. Si aún hay facturas pendientes no se inventa: se muestra el avance." />
+              </div>
+            </details>
+          </Card>
+
           <div className="grid grid-cols-2 gap-space-sm lg:grid-cols-4">
-            <Kpi icon={Clock} label="Carga media" value={formatMinutes(data.summary.load.avgMinutes)} hint={`P90 ${formatMinutes(data.summary.load.p90Minutes)} · ${data.summary.load.groups} cliente(s)`} />
-            <Kpi icon={Timer} label="Factura media" value={formatMinutes(data.summary.invoice.avgMinutes)} hint={`P90 ${formatMinutes(data.summary.invoice.p90Minutes)} · ${data.summary.invoice.pending} pendiente(s)`} />
-            <Kpi icon={Receipt} label="Facturas pendientes" value={`${data.summary.invoice.pending}`} hint={`${data.summary.invoice.groups} entregada(s)`} tone={data.summary.invoice.pending > 0 ? 'warning' : 'success'} />
-            <Kpi icon={TrendingUp} label="A tiempo" value={data.summary.onTime.pct === null ? '—' : `${data.summary.onTime.pct}%`} hint={`${data.summary.onTime.orders} pedido(s) con fecha plan`} tone={data.summary.onTime.pct !== null && data.summary.onTime.pct < 90 ? 'warning' : 'success'} />
+            <Kpi
+              icon={Timer}
+              label="Tiempo total"
+              value={formatMinutes(data.summary.totalCycle.avgMinutes)}
+              hint={`Envío → última factura · ${data.summary.totalCycle.groups} despacho(s)`}
+            />
+            <Kpi
+              icon={Truck}
+              label="Solo despacho"
+              value={formatMinutes(data.summary.loadWindow.avgMinutes)}
+              hint={`Primer inicio → último cierre · ${data.summary.loadWindow.groups} despacho(s)`}
+            />
+            <Kpi
+              icon={Clock}
+              label="Respuesta almacén"
+              value={formatMinutes(data.summary.response.avgMinutes)}
+              hint={`Envío → primer inicio · ${data.summary.response.groups} despacho(s)`}
+            />
+            <Kpi
+              icon={Clock}
+              label="Carga media"
+              value={formatMinutes(data.summary.load.avgMinutes)}
+              hint={`P90 ${formatMinutes(data.summary.load.p90Minutes)} · ${data.summary.load.groups} cliente(s)`}
+            />
+            <Kpi
+              icon={Receipt}
+              label="Espera de factura"
+              value={formatMinutes(data.summary.invoiceWait.avgMinutes)}
+              hint={`Cierre → factura · ${data.summary.invoiceWait.groups} cliente(s)`}
+            />
+            <Kpi
+              icon={Timer}
+              label="Envío → cierre"
+              value={formatMinutes(data.summary.dispatchCycle.avgMinutes)}
+              hint={`Hasta cerrar la carga · ${data.summary.dispatchCycle.groups} despacho(s)`}
+            />
+            <Kpi
+              icon={Receipt}
+              label="Facturas pendientes"
+              value={`${data.summary.invoice.pending}`}
+              hint={`${data.summary.invoice.groups} entregada(s)`}
+              tone={data.summary.invoice.pending > 0 ? 'warning' : 'success'}
+            />
+            <Kpi
+              icon={TrendingUp}
+              label="A tiempo (carga)"
+              value={data.summary.onTime.pct === null ? '—' : `${data.summary.onTime.pct}%`}
+              hint={`${data.summary.onTime.orders} pedido(s) con fecha plan`}
+              tone={data.summary.onTime.pct !== null && data.summary.onTime.pct < 90 ? 'warning' : 'success'}
+            />
           </div>
 
           <Card className="p-space-md">
@@ -536,13 +638,14 @@ export function DispatchTimesReport() {
               <div>
                 <p className="font-bold text-primary">Evolución de tiempos</p>
                 <p className="text-label-sm normal-case text-on-surface-variant">
-                  Promedio por {granularity === 'day' ? 'día' : 'mes'}. La carga se mide del inicio de carga al último producto; la factura, del inicio de carga a la entrega.
+                  Promedio por {granularity === 'day' ? 'día' : 'mes'} de cierre de carga. «Carga» va del inicio al último producto; «Hasta factura», del inicio de carga a la entrega de la factura de la misma cohorte.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-space-xs text-label-sm text-on-surface-variant">
                 <Badge tone="muted">{data.summary.dispatches} despacho(s)</Badge>
                 <Badge tone="muted">{data.summary.customers} cliente(s)</Badge>
                 <Badge tone="muted">{data.summary.orders} pedido(s)</Badge>
+                <Badge tone="muted">{data.summary.lines} renglón(es)</Badge>
                 <Badge tone="muted">{formatNumber(data.summary.kg)} kg</Badge>
               </div>
             </div>
@@ -574,9 +677,9 @@ export function DispatchTimesReport() {
 
           <Card className="overflow-hidden">
             <div className="border-b border-outline-variant/30 bg-surface-container-low/60 px-space-md py-space-sm">
-              <p className="font-bold text-primary">Detalle por pedido</p>
+              <p className="font-bold text-primary">Detalle por renglón</p>
               <p className="text-label-sm normal-case text-on-surface-variant">
-                Hasta 3.000 pedidos. La fecha plan es la entrega esperada del renglón; «tarde» significa que la factura se entregó después.
+                Hasta 3.000 renglones. La fecha plan es la entrega esperada del renglón; «tarde» significa que la carga se cerró después.
               </p>
             </div>
             <DataTable
@@ -585,14 +688,14 @@ export function DispatchTimesReport() {
               rowKey={(row) => `${row.dispatchId}-${row.orderNumber}-${row.productCode}`}
               defaultSortKey="load"
               maxHeightClass="md:max-h-[min(70vh,900px)]"
-              mobileSummary={<span>{data.orders.length} pedido(s) en el detalle</span>}
-              empty={<EmptyState icon={CalendarRange} title="Sin pedidos en el periodo" description="Prueba con otro rango o cliente." />}
+              mobileSummary={<span>{data.orders.length} renglón(es) en el detalle</span>}
+              empty={<EmptyState icon={CalendarRange} title="Sin renglones en el periodo" description="Prueba con otro rango o cliente." />}
             />
           </Card>
 
           <p className="text-label-sm normal-case text-on-surface-variant">
             <AlertTriangle aria-hidden className="mr-1 inline size-3.5" />
-            Los despachos históricos aportan tiempo de carga desde sus sellos globales; el tiempo de factura solo existe desde que se marca «Factura entregada».
+            Tiempo total = envío → última factura. Solo despacho = primer inicio → último cierre. Los renglones anulados no entran en ningún cálculo.
           </p>
         </>
       )}
@@ -602,6 +705,15 @@ export function DispatchTimesReport() {
           <AlertTriangle aria-hidden className="size-4" /> {error instanceof Error ? error.message : 'No se pudo consultar el reporte'}
         </p>
       )}
+    </div>
+  );
+}
+
+function Definition({ title, text }: { title: string; text: string }) {
+  return (
+    <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low/40 px-space-sm py-space-xs">
+      <p className="text-label-md font-bold text-primary">{title}</p>
+      <p className="text-label-sm normal-case text-on-surface-variant">{text}</p>
     </div>
   );
 }
@@ -618,8 +730,7 @@ function Kpi({
   value: string;
   hint: string;
   tone?: 'primary' | 'success' | 'warning';
-}) {
-  return (
+}) {  return (
     <Card className="flex flex-col gap-1 p-space-md">
       <span className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wider text-outline">
         <Icon aria-hidden className="size-3.5" /> {label}

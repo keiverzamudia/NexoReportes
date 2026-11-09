@@ -7,9 +7,12 @@ const standalone = process.env.NEXT_STANDALONE === '1';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // El monorepo tiene lockfiles en la raíz y en la carpeta del usuario: fijar
+  // el root evita que Next infiera `C:\Users\<usuario>` y mezcle artefactos.
+  outputFileTracingRoot: path.join(process.cwd(), '..', '..'),
   // Acceso desde la LAN en desarrollo (evita el aviso "Cross origin request").
   allowedDevOrigins: ['localhost', '127.0.0.1', '10.27.148.210'],
-  ...(standalone ? { output: 'standalone' as const, outputFileTracingRoot: path.join(process.cwd(), '..', '..') } : {}),
+  ...(standalone ? { output: 'standalone' as const } : {}),
   // NOTA: `output: 'standalone'` se habilita en el despliegue Docker/Linux;
   // en Windows los symlinks del standalone rompen el build.
   async rewrites() {

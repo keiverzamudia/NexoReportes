@@ -67,6 +67,8 @@ import { AppNav, LoginScreen } from '../../../components/shell';
 import { Badge, Card, EmptyState, PageHeader, Skeleton, cx } from '../../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../../lib/api';
 import {
+  activeLines as activeSheetLines,
+  annulledLines,
   buildDispatchReport,
   customerKeyOf,
   formatBusinessDate,
@@ -154,6 +156,18 @@ export default function DispatchSheetPage() {
   }, [id]);
 
   const report = useMemo(() => (sheet ? buildDispatchReport(sheet.lines) : null), [sheet]);
+  const activeLines = useMemo(() => (sheet ? activeSheetLines(sheet.lines) : []), [sheet]);
+  const removedLines = useMemo(() => (sheet ? annulledLines(sheet.lines) : []), [sheet]);
+  const removedByCustomer = useMemo(() => {
+    const map = new Map<string, typeof removedLines>();
+    for (const line of removedLines) {
+      const key = line.customerName ?? line.customerCode ?? 'Sin cliente';
+      const bucket = map.get(key) ?? [];
+      bucket.push(line);
+      map.set(key, bucket);
+    }
+    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b, 'es'));
+  }, [removedLines]);
   const progressByKey = useMemo(() => {
     const map = new Map<string, DispatchCustomerProgress>();
     for (const row of sheet?.customerProgress ?? []) map.set(row.customerKey, row);
@@ -162,7 +176,7 @@ export default function DispatchSheetPage() {
   // Renglones del despacho en el formato de la guía de carga.
   const loadPlanLines: LoadPlanLine[] = useMemo(
     () =>
-      (sheet?.lines ?? []).map((line) => ({
+      activeLines.map((line) => ({
         orderNumber: line.orderNumber,
         customerCode: line.customerCode,
         customerName: line.customerName,
@@ -174,15 +188,15 @@ export default function DispatchSheetPage() {
         effectiveDate: line.effectiveDate,
         comment: line.note,
       })),
-    [sheet],
+    [activeLines],
   );
   // «Resuelto» = cargado, parcial o no cargado. Solo pendiente bloquea el cierre.
-  const resolvedLines = sheet?.lines.filter((line) => line.status !== 'PENDIENTE').length ?? 0;
-  const partialLines = sheet?.lines.filter((line) => line.status === 'PARCIAL').length ?? 0;
+  const resolvedLines = activeLines.filter((line) => line.status !== 'PENDIENTE').length;
+  const partialLines = activeLines.filter((line) => line.status === 'PARCIAL').length;
   const missingLines =
-    sheet?.lines.filter((line) => line.status === 'FALTANTE' || line.status === 'NOVEDAD').length ?? 0;
-  const blockingLines = sheet ? sheet.lines.length - resolvedLines : 0;
-  const progress = sheet && sheet.lines.length > 0 ? resolvedLines / sheet.lines.length : 0;
+    activeLines.filter((line) => line.status === 'FALTANTE' || line.status === 'NOVEDAD').length;
+  const blockingLines = activeLines.length - resolvedLines;
+  const progress = activeLines.length > 0 ? resolvedLines / activeLines.length : 0;
   const pendingInvoices = sheet?.pendingInvoiceCustomers ?? 0;
   const canInvoiceAll = Boolean(sheet?.canInvoice) && blockingLines === 0 && pendingInvoices > 0;
   // El cliente ya no tiene pendientes cuando todos sus productos están resueltos.
@@ -553,6 +567,30 @@ export default function DispatchSheetPage() {
           actions={<SheetStatusBadge status={sheet.status} />}
         />
 
+        {sheet.status === 'CANCELADO' && (
+          <Card className="border-critical/30 bg-critical-container/20 p-space-md">
+            <p className="flex items-start gap-space-sm text-body-md text-on-surface">
+              <Ban aria-hidden className="mt-0.5 size-4 shrink-0 text-error" />
+              <span>
+                <span className="font-semibold text-error">Despacho anulado.</span>{' '}
+                {sheet.cancelReason ?? 'Sin motivo registrado.'}
+                {sheet.canceledByName ? ` · ${sheet.canceledByName}` : ''}
+                {sheet.canceledAt ? ` · ${formatDateTime(sheet.canceledAt)}` : ''}
+              </span>
+            </p>
+          </Card>
+        )}
+
+        {removedLines.length > 0 && (
+          <Card className="flex flex-wrap items-center justify-between gap-space-sm border-outline-variant/40 p-space-sm">
+            <p className="flex items-center gap-space-xs text-label-md text-on-surface-variant">
+              <Ban aria-hidden className="size-4 text-error" />
+              {removedLines.length} renglón(es) anulado(s) por cambios en Pedidos. No cuentan en totales ni tiempos.
+            </p>
+            <span className="text-label-sm text-outline">Detalle al final de la carga por cliente.</span>
+          </Card>
+        )}
+
         {/* Datos del envío */}
         <Card className="flex flex-wrap items-center justify-between gap-space-sm p-space-md">
           <div>
@@ -617,7 +655,7 @@ export default function DispatchSheetPage() {
             <div className="min-w-[12rem] flex-1">
               <div className="mb-1 flex items-center justify-between text-label-sm text-on-surface-variant">
                 <span>
-                  {resolvedLines}/{sheet.lines.length} renglones resueltos
+                  {resolvedLines}/{activeLines.length} renglones resueltos
                 </span>
                 <span className="tabular-nums">{Math.round(progress * 100)}%</span>
               </div>
@@ -642,6 +680,10 @@ export default function DispatchSheetPage() {
               {blockingLines > 0 ? (
                 <Badge tone="warning" dot>
                   {blockingLines} por resolver
+                </Badge>
+              ) : activeLines.length === 0 ? (
+                <Badge tone="muted" dot>
+                  sin renglones activos
                 </Badge>
               ) : (
                 <Badge tone="success" dot>
@@ -675,7 +717,8 @@ export default function DispatchSheetPage() {
                       <span className="min-w-0">
                         <span className="block truncate font-semibold text-on-surface">{group.name}</span>
                         <span className="block text-label-sm tabular-nums text-on-surface-variant">
-                          {group.lines.length} pedido(s) · {formatNumber(group.plannedKg)} kg plan ·{' '}
+                          {new Set(group.lines.map((line) => line.orderNumber).filter(Boolean)).size} pedido(s) ·{' '}
+                          {group.lines.length} renglón(es) · {formatNumber(group.plannedKg)} kg plan ·{' '}
                           {group.completedLines} cargado(s)
                           {group.partialLines > 0 ? ` · ${group.partialLines} parcial(es)` : ''}
                           {group.missingLines > 0 ? ` · ${group.missingLines} no cargado(s)` : ''}
@@ -1015,6 +1058,44 @@ export default function DispatchSheetPage() {
                 </section>
               );
             })}
+            {removedLines.length > 0 && (
+              <details className="group border-t border-outline-variant/30">
+                <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-space-sm bg-surface-container-low/40 px-space-md py-space-sm marker:content-none">
+                  <span className="flex items-center gap-space-xs font-semibold text-on-surface">
+                    <ChevronDown aria-hidden className="size-4 text-outline transition-transform group-open:rotate-180" />
+                    <Ban aria-hidden className="size-4 text-error" />
+                    Anulados ({removedLines.length})
+                  </span>
+                  <span className="text-label-sm text-on-surface-variant">
+                    Retirados del plan · no cuentan en el cierre
+                  </span>
+                </summary>
+                <div className="divide-y divide-outline-variant/20">
+                  {removedByCustomer.map(([customerName, lines]) => (
+                    <div key={customerName} className="px-space-md py-space-sm">
+                      <p className="mb-1 font-semibold text-on-surface">{customerName}</p>
+                      <ul className="flex flex-col gap-1">
+                        {lines.map((line) => (
+                          <li key={line.id} className="flex flex-wrap items-center justify-between gap-space-xs text-label-md">
+                            <span className="min-w-0">
+                              <span className="font-bold tabular-nums text-primary">{line.orderNumber}</span>
+                              {' · '}
+                              <span className="font-semibold text-on-surface-variant">{line.productCode}</span>
+                              {' · '}
+                              {line.description ?? '—'}
+                            </span>
+                            <span className="text-right text-label-sm text-outline">
+                              {line.removedByName ?? 'Sistema'} · {formatDateTime(line.removedAt)}
+                              {line.removalReason ? ` · ${line.removalReason === 'RETIRADO_DEL_PLAN' ? 'Retirado en Pedidos' : line.removalReason === 'PEDIDO_ANULADO_EN_PROFIT' ? 'Anulado en Profit' : line.removalReason === 'PEDIDO_CERRADO_EN_PROFIT' ? 'Cerrado en Profit' : line.removalReason}` : ''}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
           </div>
         </Card>
 

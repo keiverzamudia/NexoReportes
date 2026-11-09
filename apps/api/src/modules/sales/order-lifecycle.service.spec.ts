@@ -152,7 +152,9 @@ describe('OrderLifecycleService', () => {
     });
     expect(prisma.events).toHaveLength(1);
     expect(prisma.events[0]).toMatchObject({ toStatus: 'NOTA_ENTREGA', reason: 'NOTA_ENTREGA' });
-    expect(scenarios.pruneClosedOrders).toHaveBeenCalledWith(['1001']);
+    expect(scenarios.pruneClosedOrders).toHaveBeenCalledWith([
+      { orderNumber: '1001', reason: 'NOTA_ENTREGA' },
+    ]);
   });
 
   it('anula desde Profit y no lo cuenta como despacho', async () => {

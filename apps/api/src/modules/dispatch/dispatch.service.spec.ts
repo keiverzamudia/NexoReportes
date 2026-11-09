@@ -11,6 +11,7 @@ function matchValue(where: Row, row: Row): boolean {
   return Object.entries(where).every(([key, value]) => {
     if (value && typeof value === 'object') {
       if ('in' in value) return (value as { in: unknown[] }).in.includes(row[key]);
+      if ('notIn' in value) return !(value as { notIn: unknown[] }).notIn.includes(row[key]);
       if ('startsWith' in value) return String(row[key] ?? '').startsWith((value as { startsWith: string }).startsWith);
       if ('gte' in value) return new Date(row[key]) >= new Date((value as { gte: Date }).gte);
       if ('lte' in value) return new Date(row[key]) <= new Date((value as { lte: Date }).lte);
@@ -45,6 +46,10 @@ function createFakePrisma() {
       { id: 'u-con', profitCode: 'CONS', displayName: 'CONSULTA SOLO', role: 'CONSULTA', isActive: true },
     ],
     scenarios: [] as Row[],
+    // Plan vivo y cartera mínima para probar la sincronización de renglones.
+    draft: null as Row | null,
+    orderLines: [] as Row[],
+    inventory: { lines: [] as Row[] },
     // RBAC: solo estos roles pueden operar despachos (acción «Operar»).
     rolePermissions: [
       { roleCode: 'ALMACEN', module: 'despacho', action: 'update' },
@@ -74,6 +79,27 @@ function createFakePrisma() {
     state,
     dispatchScenario: {
       findFirst: async ({ where }: Row) => state.scenarios.find((row) => matches(where, row)) ?? null,
+    },
+    dispatchDraft: {
+      findUnique: async ({ where }: Row) =>
+        state.draft && matches(where, state.draft) ? state.draft : null,
+    },
+    salesOrderLine: {
+      findMany: async ({ where }: Row) =>
+        state.orderLines.filter((line) => {
+          const orders = where?.order?.externalNumber?.in as string[] | undefined;
+          const products = where?.productCode?.in as string[] | undefined;
+          return (
+            (!orders || orders.includes(line.order.externalNumber)) &&
+            (!products || products.includes(line.productCode))
+          );
+        }),
+    },
+    inventorySnapshot: {
+      findFirst: async () => state.inventory,
+    },
+    deliveryDateOverride: {
+      findMany: async () => [] as Row[],
     },
     user: {
       findUnique: async ({ where }: Row) => state.users.find((user) => user.id === where.id) ?? null,
@@ -328,6 +354,142 @@ async function publish(prisma: ReturnType<typeof createFakePrisma>, assignedToId
   });
 }
 
+// Cartera mínima + plan vivo para probar la sincronización de renglones.
+function seedDraft(
+  prisma: ReturnType<typeof createFakePrisma>,
+  selected: Array<{ orderNumber: string; productCode: string }>,
+) {
+  const order = {
+    externalNumber: '408251710',
+    customerCode: '294201237',
+    customerName: 'AGRICOLA LA CAÑADA',
+    orderDate: null,
+    requestedDate: null,
+    authorized: true,
+  };
+  prisma.state.orderLines = [
+    {
+      orderId: 'o-1',
+      order,
+      productCode: 'ABAPOR77',
+      description: 'POLLO ENGORDE 35KG',
+      uom: 'SAC',
+      pendingQty: 60,
+      pendingKg: 2400,
+    },
+    {
+      orderId: 'o-1',
+      order,
+      productCode: 'ABABOV85',
+      description: 'BOVINO 85',
+      uom: 'SAC',
+      pendingQty: 10,
+      pendingKg: 400,
+    },
+  ];
+  prisma.state.inventory = {
+    lines: [
+      { productCode: 'ABAPOR77', warehouseCode: 'Stock 03', qty: 500 },
+      { productCode: 'ABABOV85', warehouseCode: 'Stock 03', qty: 500 },
+    ],
+  };
+  prisma.state.draft = {
+    id: 'GLOBAL',
+    version: 2,
+    payload: JSON.stringify({
+      recipe: { by: 'cliente', mode: 'disponible', sort: 'cobertura', filters: {} },
+      selected,
+      snapshot: null,
+      loadPlan: null,
+      comments: {},
+    }),
+  };
+}
+
+describe('DispatchService — anulación de renglones', () => {
+  it('marca ANULADO con autor y motivo sin borrar el renglón', async () => {
+    const prisma = createFakePrisma();
+    const service = new DispatchService(prisma as never, audit, arrivals);
+    const sheet = await publish(prisma);
+    prisma.state.sheets[0]!.draftId = 'GLOBAL';
+    seedDraft(prisma, [{ orderNumber: '408251710', productCode: 'ABAPOR77' }]);
+
+    const report = await service.syncFromDraft('GLOBAL', {
+      actor: { id: 'u-plan', code: 'KZ', name: 'KEIBER ZAMUDIA' },
+      defaultReason: 'RETIRADO_DEL_PLAN',
+      source: 'PLAN',
+    });
+
+    expect(report.removedLines).toBe(1);
+    expect(report.canceledSheets).toHaveLength(0);
+    const removed = prisma.state.lines.find((line) => line.productCode === 'ABABOV85')!;
+    expect(removed.status).toBe('ANULADO');
+    expect(removed.removedByName).toBe('KEIBER ZAMUDIA');
+    expect(removed.removalReason).toBe('RETIRADO_DEL_PLAN');
+
+    const fresh = await service.detail(admin, sheet.id);
+    expect(fresh.status).toBe('ENVIADO');
+    expect(fresh.plannedLines).toBe(1);
+    expect(fresh.annulledLines).toBe(1);
+    expect(fresh.lines.find((line) => line.productCode === 'ABABOV85')!.status).toBe('ANULADO');
+  });
+
+  it('anula la hoja cuando el plan queda vacío', async () => {
+    const prisma = createFakePrisma();
+    const service = new DispatchService(prisma as never, audit, arrivals);
+    const sheet = await publish(prisma);
+    prisma.state.sheets[0]!.draftId = 'GLOBAL';
+    seedDraft(prisma, []);
+
+    const report = await service.syncFromDraft('GLOBAL', {
+      actor: { id: 'u-plan', code: 'KZ', name: 'KEIBER ZAMUDIA' },
+      defaultReason: 'RETIRADO_DEL_PLAN',
+      source: 'PLAN',
+    });
+
+    expect(report.removedLines).toBe(2);
+    expect(report.canceledSheets).toEqual([{ id: sheet.id, number: sheet.number }]);
+    const fresh = await service.detail(admin, sheet.id);
+    expect(fresh.status).toBe('CANCELADO');
+    expect(fresh.cancelReason).toContain('plan quedó vacío');
+    expect(fresh.plannedLines).toBe(0);
+    expect(fresh.annulledLines).toBe(2);
+    expect(prisma.state.events.some((event) => event.type === 'PLAN_VACIO')).toBe(true);
+  });
+
+  it('reactiva el renglón si vuelve al plan', async () => {
+    const prisma = createFakePrisma();
+    const service = new DispatchService(prisma as never, audit, arrivals);
+    const sheet = await publish(prisma);
+    prisma.state.sheets[0]!.draftId = 'GLOBAL';
+    seedDraft(prisma, [{ orderNumber: '408251710', productCode: 'ABAPOR77' }]);
+    await service.syncFromDraft('GLOBAL', {
+      actor: { id: 'u-plan', code: 'KZ', name: 'KEIBER ZAMUDIA' },
+      defaultReason: 'RETIRADO_DEL_PLAN',
+      source: 'PLAN',
+    });
+
+    seedDraft(prisma, [
+      { orderNumber: '408251710', productCode: 'ABAPOR77' },
+      { orderNumber: '408251710', productCode: 'ABABOV85' },
+    ]);
+    const report = await service.syncFromDraft('GLOBAL', {
+      actor: { id: 'u-plan', code: 'KZ', name: 'KEIBER ZAMUDIA' },
+      defaultReason: 'RETIRADO_DEL_PLAN',
+      source: 'PLAN',
+    });
+
+    expect(report.removedLines).toBe(0);
+    const revived = prisma.state.lines.find((line) => line.productCode === 'ABABOV85')!;
+    expect(revived.status).toBe('PENDIENTE');
+    expect(revived.removedAt).toBeNull();
+    expect(revived.removalReason).toBeNull();
+    const fresh = await service.detail(admin, sheet.id);
+    expect(fresh.plannedLines).toBe(2);
+    expect(fresh.annulledLines).toBe(0);
+  });
+});
+
 describe('DispatchService — publicar', () => {
   it('crea la hoja con renglones, evento, notificación y correlativo', async () => {
     const prisma = createFakePrisma();
@@ -519,6 +681,20 @@ describe('DispatchService — carga y cierre', () => {
     expect(updated.differenceKg).toBe(0);
   });
 
+  it('cuenta pedidos distintos aunque el pedido traiga varios renglones', async () => {
+    const { service, sheet } = await inProgress();
+    const listed = await service.list(admin, { scope: 'all' });
+    const row = listed.items.find((item) => item.id === sheet.id)!;
+    expect(row.plannedLines).toBe(2);
+    expect(row.plannedOrders).toBe(1);
+    expect(row.pendingOrders).toBe(1);
+
+    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
+    await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
+    const closed = (await service.list(admin, { scope: 'all' })).items.find((item) => item.id === sheet.id)!;
+    expect(closed.pendingOrders).toBe(0);
+  });
+
   it('deshacer devuelve el renglón a pendiente sin tocar las demás marcas', async () => {
     const { service, sheet } = await inProgress();
 
@@ -565,6 +741,51 @@ describe('DispatchService — carga y cierre', () => {
     expect(line.note).toBe('Solo había 24 sacos en el lote');
     expect(updated.status).toBe('CON_NOVEDAD');
     expect(updated.linesDone).toBe(1);
+  });
+
+  it('conserva la hora de cierre al corregir una nota o volver a marcar cargado', async () => {
+    const { prisma, service, sheet } = await inProgress();
+    const lineId = sheet.lines[0]!.id;
+    await service.updateLine(operator1, sheet.id, lineId, { status: 'CARGADO' });
+    const firstCheck = prisma.state.lines.find((line) => line.id === lineId)!.checkedAt;
+    expect(firstCheck).toBeInstanceOf(Date);
+
+    await service.updateLine(operator1, sheet.id, lineId, { status: 'CARGADO' });
+    const afterSame = prisma.state.lines.find((line) => line.id === lineId)!.checkedAt;
+    expect(afterSame).toBe(firstCheck);
+
+    // Reabrir sí limpia el sello; volver a cerrar toma una hora nueva.
+    await service.updateLine(operator1, sheet.id, lineId, { status: 'PENDIENTE' });
+    expect(prisma.state.lines.find((line) => line.id === lineId)!.checkedAt).toBeNull();
+    await service.updateLine(operator1, sheet.id, lineId, { status: 'CARGADO' });
+    expect(prisma.state.lines.find((line) => line.id === lineId)!.checkedAt).toBeInstanceOf(Date);
+  });
+
+  it('guarda pedido, código y nombre del producto al cerrar la carga', async () => {
+    const { prisma, service, sheet } = await inProgress();
+    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
+    await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
+
+    const stored = prisma.state.events.find((row) => row.type === 'CARGA_CERRADA');
+    expect(stored?.meta).toBeTruthy();
+    const meta = JSON.parse(stored!.meta);
+    expect(meta.customerName).toBe('AGRICOLA LA CAÑADA');
+    expect(meta.products).toHaveLength(2);
+    expect(meta.products[0]).toMatchObject({
+      orderNumber: '408251710',
+      productCode: 'ABAPOR77',
+      description: 'POLLO ENGORDE 35KG',
+      qty: 60,
+      uom: 'SAC',
+      status: 'CARGADO',
+    });
+    expect(meta.minutes).toBeGreaterThanOrEqual(0);
+
+    // El detalle entrega el meta ya parseado, no el JSON crudo.
+    const fresh = await service.detail(admin, sheet.id);
+    const closed = fresh.events.find((event) => event.type === 'CARGA_CERRADA');
+    expect(closed?.meta?.products[0]?.productCode).toBe('ABAPOR77');
+    expect(closed?.meta?.customerName).toBe('AGRICOLA LA CAÑADA');
   });
 
   it('rechaza parciales sin motivo o fuera de rango y faltantes sin motivo', async () => {

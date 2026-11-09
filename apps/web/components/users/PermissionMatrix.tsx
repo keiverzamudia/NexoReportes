@@ -21,6 +21,7 @@ const ACTION_LABEL: Record<(typeof PERMISSION_ACTIONS)[number], string> = {
   delete: 'Eliminar',
   view_all: 'Ver todos',
   override: 'Quitar de otros',
+  view_summary: 'Ver indicadores',
 };
 
 export interface PermissionMatrixProps {
