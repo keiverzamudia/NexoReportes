@@ -7,8 +7,10 @@
 //   · Guía de carga del camión y comentarios del planificador.
 //   · Tiempos por cliente: «Iniciar carga» arranca los relojes sin marcar
 //     productos; «Cerrar carga» detiene el reloj de cada producto y
-//     «Factura entregada» cierra el de facturación. El cliente se puede
-//     facturar individualmente o con «Facturar todo».
+//     «Factura entregada» cierra el de facturación. La carga es exclusiva del
+//     operador que tomó la hoja; la factura la puede entregar cualquier
+//     operador de almacén. El cliente se puede facturar individualmente o con
+//     «Facturar todo».
 //   · Carga por renglón: el input «Cargado» se edita en la fila. Si baja del
 //     plan se marca parcial y pide el motivo; si queda en 0, no cargado.
 //     Las diferencias dejan su motivo en el reporte.
@@ -608,7 +610,7 @@ export default function DispatchSheetPage() {
                 {editable
                   ? '«Iniciar carga» arranca el reloj del cliente. Digita la cantidad real y usa «Cerrar carga» en cada producto: si baja del plan se marca parcial con motivo; «No cargado» si no salió nada.'
                   : sheet.claimedByName && !closed
-                    ? `Lo tomó ${sheet.claimedByName}: puedes verlo, pero solo esa persona lo carga.`
+                    ? `Lo tomó ${sheet.claimedByName}: solo esa persona lo carga.${sheet.canInvoice ? ' Tú sí puedes entregar la factura.' : ''}`
                     : 'Solo lectura.'}
               </p>
             </div>

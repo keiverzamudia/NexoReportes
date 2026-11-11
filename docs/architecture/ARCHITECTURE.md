@@ -161,7 +161,9 @@ controlador.
   `DispatchSheetLine.checkedAt` conserva la hora de la **primera** resolución:
   editar una nota o cantidad no mueve el reloj; reabrir a `PENDIENTE` lo limpia.
   Las hojas históricas se backfillean con `startedAt`/`completedAt`; el tiempo
-  de factura solo existe desde que se usa el hito.
+  de factura solo existe desde que se usa el hito. La factura la puede entregar
+  cualquier operador de almacén con `despacho:update`, aunque otro haya tomado
+  la hoja; la carga sigue siendo exclusiva del operador que la tomó.
 - **Bitácora solo ADMIN**: el detalle entrega `events` únicamente al rol ADMIN;
   el resto sigue el avance por los relojes y el reporte de cierre. El drawer
   ordena la lectura en tres capas: **Actividad** (hitos y mensajes), **Clientes**

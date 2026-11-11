@@ -268,7 +268,7 @@ const planner = { id: 'u-plan', role: 'PLANIFICADOR', code: 'KZ' };
 const publisher = { id: 'u-plan', role: 'GERENCIA', code: 'KZ', canPublish: true };
 const almacenPublisher = { id: 'u-alm1', role: 'ALMACEN', code: 'ARIV', canPublish: true };
 const operator1 = { id: 'u-alm1', role: 'ALMACEN', code: 'ARIV' };
-const operator2 = { id: 'u-alm2', role: 'ALMACEN', code: 'AALV' };
+const operator2 = { id: 'u-alm2', role: 'ALMACEN', code: 'AALV', canUpdate: true };
 const manager = { id: 'u-ger', role: 'GERENCIA', code: 'JGER' };
 const admin = { id: 'u-admin', role: 'ADMIN', isAdmin: true, code: 'ADM' };
 const outsider = { id: 'u-con', role: 'CONSULTA', code: 'CONS' };
@@ -1052,6 +1052,33 @@ describe('DispatchService — tiempos por cliente', () => {
     await expect(
       service.updateLine(operator1, sheet.id, invoiced.lines[0]!.id, { status: 'PENDIENTE' }),
     ).rejects.toThrow(/factura/i);
+  });
+
+  it('otro operador de almacén puede facturar aunque la hoja esté tomada', async () => {
+    const prisma = createFakePrisma();
+    const sheet = await publish(prisma);
+    const service = new DispatchService(prisma as never, audit, arrivals);
+    const customerKey = '294201237';
+
+    const started = await service.startLoad(operator1, sheet.id, { customerKey });
+    expect(started.claimedById).toBe('u-alm1');
+
+    // La carga sigue siendo exclusiva de quien tomó la hoja.
+    await expect(
+      service.updateLine(operator2, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' }),
+    ).rejects.toThrow(/ya lo tomó/i);
+
+    // El dueño cierra todos los productos y el otro operador entrega la factura.
+    for (const line of sheet.lines) {
+      await service.updateLine(operator1, sheet.id, line.id, { status: 'CARGADO' });
+    }
+    const invoiced = await service.deliverInvoice(operator2, sheet.id, {
+      customerKey,
+      invoiceRef: 'FAC-002',
+    });
+    const progress = invoiced.customerProgress.find((row) => row.customerKey === customerKey)!;
+    expect(progress.invoiceDeliveredAt).not.toBeNull();
+    expect(progress.invoiceDeliveredByName).toBe('ANA ALVAREZ');
   });
 
   it('factura todo solo cuando la carga completa está cerrada y permite reabrir con ADMIN', async () => {

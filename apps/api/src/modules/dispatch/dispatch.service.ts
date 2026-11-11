@@ -2294,6 +2294,10 @@ export class DispatchService {
       viewer.canDelete === true ||
       ['ADMIN', 'GERENCIA', 'ALMACEN'].includes(viewer.role);
     if (!allowed) return false;
+    // La factura la puede entregar cualquier operador de almacén con
+    // `despacho:update`, aunque otro haya tomado la hoja. La carga sigue
+    // siendo exclusiva del operador que la tomó (`canOperate`).
+    if (viewer.role === 'ALMACEN' && viewer.canUpdate) return true;
     if (!['ADMIN', 'GERENCIA'].includes(viewer.role)) {
       if (sheet.assignedToId && sheet.assignedToId !== viewer.id) return false;
       if (sheet.claimedById && sheet.claimedById !== viewer.id) return false;
