@@ -86,6 +86,8 @@ describe('PermissionsService', () => {
     expect(access?.isAdmin).toBe(true);
     expect(access?.permissions).toContain('usuarios:delete');
     expect(access?.permissions).toContain('despacho:update');
+    expect(access?.permissions).toContain('despacho:view_history');
+    expect(access?.permissions).toContain('despacho:view_removals');
   });
 
   it('si el rol no existe usa la plantilla de sistema como respaldo', async () => {
@@ -105,5 +107,7 @@ describe('PermissionsService', () => {
       ]),
     ).toHaveLength(1);
     expect(() => service.normalizeEntries([{ module: 'pedidos', action: 'update' }])).not.toThrow();
+    expect(() => service.normalizeEntries([{ module: 'despacho', action: 'view_removals' }])).not.toThrow();
+    expect(() => service.normalizeEntries([{ module: 'despacho', action: 'view_history' }])).not.toThrow();
   });
 });

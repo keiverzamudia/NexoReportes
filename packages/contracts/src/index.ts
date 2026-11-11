@@ -22,7 +22,17 @@ export const zRoleCode = z
   .max(40)
   .regex(/^[A-Z][A-Z0-9_]*$/, 'Usa MAYÚSCULAS, números y guion bajo (ej. SUPERVISOR)');
 
-export const PERMISSION_ACTIONS = ['read', 'create', 'update', 'delete', 'view_all', 'override', 'view_summary'] as const;
+export const PERMISSION_ACTIONS = [
+  'read',
+  'create',
+  'update',
+  'delete',
+  'view_all',
+  'override',
+  'view_summary',
+  'view_history',
+  'view_removals',
+] as const;
 export const zPermissionAction = z.enum(PERMISSION_ACTIONS);
 export type PermissionAction = z.infer<typeof zPermissionAction>;
 
@@ -92,6 +102,10 @@ export const APP_MODULES: AppModuleDefinition[] = [
       { action: 'delete', label: 'Anular' },
       { action: 'view_all', label: 'Ver todos los despachos' },
       { action: 'view_summary', label: 'Ver indicadores' },
+      // Vistas separadas de la bandeja. Se conceden por rol o por excepción
+      // individual; por defecto solo ADMIN las tiene.
+      { action: 'view_history', label: 'Ver historial' },
+      { action: 'view_removals', label: 'Ver retiros de simulación' },
     ],
   },
   {
@@ -1851,6 +1865,96 @@ export const zDispatchSheetQuery = z.object({
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 export type DispatchSheetQuery = z.infer<typeof zDispatchSheetQuery>;
+
+// ============================================================
+// Retiros de simulación (`GET /dispatch-sheets/removals`).
+//
+// Renglones que salieron del plan de una hoja de despacho antes de cargarse.
+// Se agrupan por pedido para revisar qué se cayó, por qué y en qué despacho:
+//   · RETIRADO_DEL_PLAN          → ajuste manual desde Pedidos.
+//   · PEDIDO_ANULADO_EN_PROFIT   → el pedido se anuló en Profit.
+//   · PEDIDO_CERRADO_EN_PROFIT   → Profit lo cerró/facturó (nota de entrega).
+// Solo lectura: no toca Profit ni modifica la hoja.
+// ============================================================
+export const DISPATCH_REMOVAL_REASONS = [
+  'RETIRADO_DEL_PLAN',
+  'PEDIDO_ANULADO_EN_PROFIT',
+  'PEDIDO_CERRADO_EN_PROFIT',
+] as const;
+export const zDispatchRemovalReason = z.enum(DISPATCH_REMOVAL_REASONS);
+export type DispatchRemovalReason = z.infer<typeof zDispatchRemovalReason>;
+
+export const zDispatchRemovalsQuery = z
+  .object({
+    // Rango sobre la fecha del retiro. Sin rango = todo el histórico visible.
+    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    reason: zDispatchRemovalReason.optional(),
+    q: z.string().trim().max(80).optional(),
+    sheetId: z.string().trim().min(1).max(60).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.from && value.to && value.from > value.to) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['to'],
+        message: 'La fecha final debe ser mayor o igual a la inicial.',
+      });
+    }
+  });
+export type DispatchRemovalsQuery = z.infer<typeof zDispatchRemovalsQuery>;
+
+export const zDispatchRemovalLine = z.object({
+  id: z.string(),
+  sheetId: z.string(),
+  sheetNumber: z.string(),
+  orderNumber: z.string(),
+  productCode: z.string(),
+  description: z.string().nullable(),
+  uom: z.string().nullable(),
+  plannedQty: z.number(),
+  plannedKg: z.number(),
+  removalReason: z.string().nullable(),
+  removedAt: z.string().nullable(),
+  removedByName: z.string().nullable(),
+});
+export type DispatchRemovalLine = z.infer<typeof zDispatchRemovalLine>;
+
+export const zDispatchRemovalSheet = z.object({
+  id: z.string(),
+  number: z.string(),
+  status: zDispatchSheetStatus,
+});
+export type DispatchRemovalSheet = z.infer<typeof zDispatchRemovalSheet>;
+
+export const zDispatchRemovalOrder = z.object({
+  orderNumber: z.string(),
+  customerCode: z.string().nullable(),
+  customerName: z.string().nullable(),
+  // Despachos donde se retiró al menos un renglón de este pedido.
+  sheets: z.array(zDispatchRemovalSheet),
+  linesCount: z.number().int(),
+  plannedKg: z.number(),
+  // Motivos presentes en el pedido (pueden convivir varios).
+  reasons: z.array(z.string()),
+  // Retiro más reciente del pedido.
+  removedAt: z.string().nullable(),
+  removedByNames: z.array(z.string()),
+  lines: z.array(zDispatchRemovalLine),
+});
+export type DispatchRemovalOrder = z.infer<typeof zDispatchRemovalOrder>;
+
+export const zDispatchRemovalsResponse = z.object({
+  orders: z.array(zDispatchRemovalOrder),
+  totals: z.object({
+    orders: z.number().int(),
+    lines: z.number().int(),
+    plannedKg: z.number(),
+    byReason: z.record(z.string(), z.number().int()),
+  }),
+  generatedAt: z.string(),
+});
+export type DispatchRemovalsResponse = z.infer<typeof zDispatchRemovalsResponse>;
 
 export const zDispatchSheetCreateInput = z.object({
   scenarioId: z.string().min(1, 'Elige un escenario guardado'),

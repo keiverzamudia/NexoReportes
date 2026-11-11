@@ -17,6 +17,8 @@ import {
   DispatchMetricsResponse,
   DispatchPulse,
   DispatchReopenInvoiceInput,
+  DispatchRemovalsQuery,
+  DispatchRemovalsResponse,
   DispatchSheetCreateInput,
   DispatchSheetDetail,
   DispatchSheetEvent,
@@ -44,6 +46,7 @@ import {
 } from '@prisma/client';
 import { buildDispatchMetrics } from './dispatch-metrics';
 import { buildDispatchPulse } from './dispatch-pulse';
+import { buildDispatchRemovals } from './dispatch-removals';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
 import { ArrivalsService, ArrivalSourceLine } from '../arrivals/arrivals.service';
@@ -72,6 +75,9 @@ export interface DispatchViewer {
   canPublish?: boolean;
   // Permiso individual `despacho:view_all`: ve toda la bandeja e historial.
   canViewAll?: boolean;
+  // Vistas separadas de la bandeja (`despacho:view_history` / `view_removals`).
+  canViewHistory?: boolean;
+  canViewRemovals?: boolean;
   // Permisos de la matriz (independientes del rol histórico).
   canUpdate?: boolean;
   canDelete?: boolean;
@@ -239,6 +245,11 @@ export class DispatchService {
   // ---------- Bandeja ----------
 
   async list(viewer: DispatchViewer, query: DispatchSheetQuery): Promise<DispatchSheetListResponse> {
+    // El historial es una vista aparte: entrada a la bandeja no implica ver
+    // hojas cerradas por otros.
+    if (query.scope === 'history' && !viewer.canViewHistory) {
+      throw new ForbiddenException('No tienes permiso para ver el historial de despachos.');
+    }
     const where = this.visibilityWhere(viewer, query);
     const rows = await this.prisma.dispatchSheet.findMany({
       where,
@@ -1684,6 +1695,64 @@ export class DispatchService {
       })),
       query,
     );
+  }
+
+  // ---------- Retiros de simulación ----------
+
+  /**
+   * Renglones ANULADOS de las hojas visibles, agrupados por pedido.
+   * Es solo lectura: muestra qué se retiró del plan y por qué, sin tocar la
+   * hoja ni Profit. El filtro de visibilidad es el mismo de la bandeja.
+   */
+  async removals(viewer: DispatchViewer, query: DispatchRemovalsQuery): Promise<DispatchRemovalsResponse> {
+    const from = query.from ? new Date(`${query.from}T00:00:00.000-04:00`) : null;
+    const to = query.to ? new Date(`${query.to}T23:59:59.999-04:00`) : null;
+    const where: Prisma.DispatchSheetLineWhereInput = {
+      status: 'ANULADO',
+      sheet: this.baseVisibility(viewer),
+    };
+    if (from || to) {
+      where.removedAt = {
+        ...(from ? { gte: from } : {}),
+        ...(to ? { lte: to } : {}),
+      };
+    }
+    if (query.reason) where.removalReason = query.reason;
+    if (query.sheetId) where.sheetId = query.sheetId;
+    if (query.q?.trim()) {
+      const needle = query.q.trim();
+      where.OR = [
+        { orderNumber: { contains: needle } },
+        { productCode: { contains: needle } },
+        { description: { contains: needle } },
+        { customerCode: { contains: needle } },
+        { customerName: { contains: needle } },
+        { sheet: { number: { contains: needle } } },
+      ];
+    }
+
+    const rows = await this.prisma.dispatchSheetLine.findMany({
+      where,
+      select: {
+        id: true,
+        sheetId: true,
+        orderNumber: true,
+        productCode: true,
+        description: true,
+        uom: true,
+        customerCode: true,
+        customerName: true,
+        plannedQty: true,
+        plannedKg: true,
+        removalReason: true,
+        removedAt: true,
+        removedByName: true,
+        sheet: { select: { id: true, number: true, status: true } },
+      },
+      orderBy: { removedAt: 'desc' },
+      take: 5000,
+    });
+    return buildDispatchRemovals(rows);
   }
 
   // ---------- Cerrar ----------

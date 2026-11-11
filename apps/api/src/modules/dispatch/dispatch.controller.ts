@@ -11,6 +11,7 @@ import {
   DispatchMessageInput,
   DispatchMetricsQuery,
   DispatchReopenInvoiceInput,
+  DispatchRemovalsQuery,
   DispatchSheetCreateInput,
   DispatchSheetQuery,
   NotificationQuery,
@@ -25,6 +26,7 @@ import {
   zDispatchMessageInput,
   zDispatchMetricsQuery,
   zDispatchReopenInvoiceInput,
+  zDispatchRemovalsQuery,
   zDispatchSheetCreateInput,
   zDispatchSheetQuery,
   zNotificationQuery,
@@ -90,13 +92,25 @@ export class DispatchController {
 
   // Antes de ':id' para que no lo capture el parámetro.
   @Get('metrics')
-  @RequirePermission('despacho:read')
+  @RequirePermission('despacho:read', 'despacho:view_history')
   @ApiOperation({ summary: 'Tiempos de carga y facturación por día/mes/cliente' })
   metrics(
     @Query(new ZodValidationPipe(zDispatchMetricsQuery)) query: DispatchMetricsQuery,
     @Req() request: AuthenticatedRequest,
   ) {
     return this.dispatch.metrics(this.viewer(request), query);
+  }
+
+  // Retiros de simulación: pantalla hermana del historial. Antes de ':id'
+  // para que no lo capture el parámetro.
+  @Get('removals')
+  @RequirePermission('despacho:read', 'despacho:view_removals')
+  @ApiOperation({ summary: 'Pedidos retirados del plan de las simulaciones' })
+  removals(
+    @Query(new ZodValidationPipe(zDispatchRemovalsQuery)) query: DispatchRemovalsQuery,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.dispatch.removals(this.viewer(request), query);
   }
 
   @Get(':id')
@@ -206,6 +220,8 @@ export class DispatchController {
       isAdmin: request.access?.isAdmin ?? false,
       canPublish: request.access?.permissions.includes('despacho:create') ?? false,
       canViewAll: request.access?.permissions.includes('despacho:view_all') ?? false,
+      canViewHistory: request.access?.permissions.includes('despacho:view_history') ?? false,
+      canViewRemovals: request.access?.permissions.includes('despacho:view_removals') ?? false,
       canUpdate: request.access?.permissions.includes('despacho:update') ?? false,
       canDelete: request.access?.permissions.includes('despacho:delete') ?? false,
       code: request.user?.code ?? null,

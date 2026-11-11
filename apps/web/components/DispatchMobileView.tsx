@@ -104,7 +104,6 @@ export function DispatchMobileView({
   onExport,
 }: DispatchMobileViewProps) {
   const activeLines = sheet.lines.filter((line) => line.status !== 'ANULADO');
-  const annulledCount = sheet.lines.length - activeLines.length;
   const resolved = activeLines.filter((line) => line.status !== 'PENDIENTE').length;
   const percentage = activeLines.length > 0 ? Math.round((resolved / activeLines.length) * 100) : 0;
 
@@ -208,12 +207,6 @@ export function DispatchMobileView({
             style={{ width: `${percentage}%` }}
           />
         </div>
-        {annulledCount > 0 && (
-          <p className="mt-2 flex items-center gap-1 text-label-sm text-on-surface-variant">
-            <Ban aria-hidden className="size-3.5 text-error" />
-            {annulledCount} renglón(es) anulado(s) desde Pedidos. No cuentan en el avance.
-          </p>
-        )}
       </Card>
 
       {/* Clientes */}

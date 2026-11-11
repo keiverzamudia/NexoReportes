@@ -991,20 +991,22 @@ describe('DispatchService — bitácora y notificaciones', () => {
 
     expect((await service.list(operator2, { scope: 'pending' })).items.map((row) => row.id)).toEqual([first.id]);
     expect((await service.list(planner, { scope: 'pending' })).items.map((row) => row.id)).toEqual([first.id]);
-    // El historial también es visible para todo almacén (ve todo lo publicado).
+    // El historial exige el permiso propio, además de la visibilidad base.
     const allHistory = [second.id, third.id];
     for (const viewer of [operator1, operator2]) {
-      const history = (await service.list(viewer, { scope: 'history' })).items.map((row) => row.id);
+      const history = (await service.list({ ...viewer, canViewHistory: true }, { scope: 'history' })).items.map((row) => row.id);
       expect(history).toHaveLength(2);
       expect(history).toEqual(expect.arrayContaining(allHistory));
     }
     // El permiso individual `despacho:view_all` da la misma visibilidad total.
-    const granted = { ...outsider, canViewAll: true };
+    const granted = { ...outsider, canViewAll: true, canViewHistory: true };
     const grantedHistory = (await service.list(granted, { scope: 'history' })).items.map((row) => row.id);
     expect(grantedHistory).toHaveLength(2);
     expect(grantedHistory).toEqual(expect.arrayContaining(allHistory));
-    // Sin el permiso, no ve el historial ajeno.
-    expect((await service.list(outsider, { scope: 'history' })).items).toHaveLength(0);
+    // Sin `view_history` la vista aparte responde 403.
+    await expect(service.list(outsider, { scope: 'history' })).rejects.toThrow(/permiso/i);
+    // Con el permiso, pero sin visibilidad total, no ve historial ajeno.
+    expect((await service.list({ ...outsider, canViewHistory: true }, { scope: 'history' })).items).toHaveLength(0);
     // «Publicados por mí» solo trae lo propio.
     expect((await service.list(planner, { scope: 'created' })).items).toHaveLength(2);
   });

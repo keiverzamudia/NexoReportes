@@ -129,12 +129,23 @@ controlador.
 - **Anulación de renglones (soft-delete)**: cuando un renglón pendiente sale
   del plan vivo (el usuario lo desmarca en Pedidos, Profit anula el pedido o lo
   cierra por nota de entrega), **no se borra**. Pasa a `ANULADO` con
-  `removedAt`, `removedBy*`, `removalReason` y `removalSource`. El detalle lo
-  agrupa en «Anulados» con autor, fecha y motivo; no cuenta en totales,
-  progreso ni tiempos. Si la hoja se queda sin renglones activos, se anula
-  automáticamente (`CANCELADO`, motivo «El plan quedó vacío»), se cancelan las
-  llegadas PCP y se notifica a planificación y almacén. Si el renglón vuelve
-  al plan, se reactiva en la misma fila (`PENDIENTE`) sin duplicar.
+  `removedAt`, `removedBy*`, `removalReason` y `removalSource`; no cuenta en
+  totales, progreso ni tiempos. El detalle del despacho ya **no** muestra el
+  listado de anulados: vive en la pantalla hermana **Retiros de simulación**
+  (`/despacho/retiros`, permiso `despacho:view_removals`), que agrupa por pedido
+  y muestra motivo, autor, fecha y despachos. Si la hoja se queda sin renglones
+  activos, se anula automáticamente (`CANCELADO`, motivo «El plan quedó vacío»),
+  se cancelan las llegadas PCP y se notifica a planificación y almacén. Si el
+  renglón vuelve al plan, se reactiva en la misma fila (`PENDIENTE`) sin
+  duplicar.
+- **Vistas separadas de la bandeja**: `/despacho` queda solo con pendientes y
+  publicados por mí. El **Historial** (`/despacho/historial`, permiso
+  `despacho:view_history`) contiene hojas cerradas o anuladas, el resumen y el
+  reporte de tiempos. **Retiros de simulación** (`/despacho/retiros`, permiso
+  `despacho:view_removals`) contiene los renglones `ANULADO` agrupados por
+  pedido. Ambos permisos se asignan desde la matriz de roles o por excepción de
+  usuario; por defecto solo los tiene ADMIN. El API exige `despacho:read` +
+  el permiso de la vista (403 si falta).
 - **Tiempos por cliente** (`DispatchCustomerProgress`): «Iniciar carga» arranca
   los relojes del cliente sin marcar productos; cada producto se cierra con
   «Cerrar carga» y detiene su reloj; la factura se marca por cliente o con
@@ -163,7 +174,8 @@ controlador.
 - **Reporte «Tiempos»**: `GET /dispatch-sheets/metrics` agrega por cliente,
   día o mes, con promedios, medianas, P90, facturas pendientes y cumplimiento
   contra la fecha planificada. La pestaña «Tiempos» reutiliza ECharts y
-  exporta a Excel. Respeta la visibilidad de `despacho:read`/`view_all`.
+  exporta a Excel. Exige `despacho:read` + `despacho:view_history` y respeta la
+  visibilidad de `despacho:view_all`.
 - **Notificaciones bidireccionales**: cada transición avisa a la contraparte
   (recibido/en proceso/cerrado/novedad al planificador; anulación y mensajes al
   almacén). El aislamiento es por dueño: un despacho ajeno responde 404.
