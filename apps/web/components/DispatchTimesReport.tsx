@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AuthRequiredError, apiFetch } from '../lib/api';
-import { formatDateTime, formatMinutes, formatNumber, lineStatusMeta } from '../lib/dispatch-sheet';
+import { formatDateTime, formatMinutes, formatNumber, lineStatusMeta, minutesBetween } from '../lib/dispatch-sheet';
 import { Badge, Card, DataTable, EmptyState, Segmented, Select, Skeleton, cx, type Column } from './ui';
 import { EChart } from './EChart';
 
@@ -182,7 +182,7 @@ export function DispatchTimesReport({
           itemStyle: { color: '#5c7c2f' },
         },
         {
-          name: 'Hasta factura',
+          name: 'Total (envío → factura)',
           type: 'line',
           smooth: true,
           symbolSize: 5,
@@ -242,7 +242,7 @@ export function DispatchTimesReport({
     },
     {
       key: 'load',
-      header: 'Carga cliente',
+      header: 'Carga (envío → último producto)',
       kind: 'metric',
       align: 'right',
       sortValue: (row) => row.loadAvgMinutes ?? -1,
@@ -250,7 +250,7 @@ export function DispatchTimesReport({
     },
     {
       key: 'invoice',
-      header: 'Hasta factura',
+      header: 'Total (envío → factura)',
       kind: 'metric',
       align: 'right',
       sortValue: (row) => row.invoiceAvgMinutes ?? -1,
@@ -327,15 +327,28 @@ export function DispatchTimesReport({
     },
     {
       key: 'load',
-      header: 'Carga',
+      header: 'Carga (envío → cierre)',
       kind: 'metric',
       align: 'right',
       sortValue: (row) => row.loadMinutes ?? -1,
       render: (row) => <MetricCell value={row.loadMinutes} hint={formatDateTime(row.loadClosedAt)} />,
     },
     {
+      key: 'invoiceWait',
+      header: 'Espera factura',
+      kind: 'metric',
+      align: 'right',
+      sortValue: (row) => minutesBetween(row.loadClosedAt, row.invoiceDeliveredAt) ?? -1,
+      render: (row) => (
+        <MetricCell
+          value={minutesBetween(row.loadClosedAt, row.invoiceDeliveredAt)}
+          hint={formatDateTime(row.invoiceDeliveredAt)}
+        />
+      ),
+    },
+    {
       key: 'invoice',
-      header: 'Factura',
+      header: 'Total (envío → factura)',
       kind: 'metric',
       align: 'right',
       sortValue: (row) => row.invoiceMinutes ?? -1,
@@ -390,12 +403,12 @@ export function DispatchTimesReport({
       ['Pedidos', data.summary.orders],
       ['Renglones', data.summary.lines],
       ['Kg', data.summary.kg],
-      ['Carga media (min)', data.summary.load.avgMinutes ?? '—'],
+      ['Carga media: envío → último producto (min)', data.summary.load.avgMinutes ?? '—'],
       ['Carga mediana (min)', data.summary.load.medianMinutes ?? '—'],
       ['Carga P90 (min)', data.summary.load.p90Minutes ?? '—'],
-      ['Factura media (min)', data.summary.invoice.avgMinutes ?? '—'],
-      ['Factura mediana (min)', data.summary.invoice.medianMinutes ?? '—'],
-      ['Factura P90 (min)', data.summary.invoice.p90Minutes ?? '—'],
+      ['Total medio: envío → factura (min)', data.summary.invoice.avgMinutes ?? '—'],
+      ['Total mediano (min)', data.summary.invoice.medianMinutes ?? '—'],
+      ['Total P90 (min)', data.summary.invoice.p90Minutes ?? '—'],
       ['Tiempo total: envío → última factura (min)', data.summary.totalCycle.avgMinutes ?? '—'],
       ['Solo despacho: primer inicio → último cierre (min)', data.summary.loadWindow.avgMinutes ?? '—'],
       ['Respuesta del almacén: envío → primer inicio (min)', data.summary.response.avgMinutes ?? '—'],
@@ -405,7 +418,7 @@ export function DispatchTimesReport({
       ['% a tiempo (carga)', data.summary.onTime.pct ?? '—'],
     ];
     const customers = [
-      ['Cliente', 'Código', 'Despachos', 'Pedidos', 'Renglones', 'Kg', 'Carga media', 'Carga P90', 'Factura media', 'Factura P90', 'Pendientes', '% a tiempo', 'Última factura'],
+      ['Cliente', 'Código', 'Despachos', 'Pedidos', 'Renglones', 'Kg', 'Carga media (envío → último producto)', 'Carga P90', 'Total medio (envío → factura)', 'Total P90', 'Pendientes', '% a tiempo', 'Última factura'],
       ...data.customers.map((row) => [
         row.customerName,
         row.customerCode ?? '',
@@ -423,7 +436,22 @@ export function DispatchTimesReport({
       ]),
     ];
     const orders = [
-      ['Pedido', 'Cliente', 'Despacho', 'Producto', 'Inicio carga', 'Cierre carga', 'Min carga', 'Factura', 'Min factura', 'Entrega plan', 'A tiempo', 'Estado', 'Kg'],
+      [
+        'Pedido',
+        'Cliente',
+        'Despacho',
+        'Producto',
+        'Enviado',
+        'Último producto',
+        'Min envío → cierre',
+        'Espera factura (min)',
+        'Factura entregada',
+        'Min total envío → factura',
+        'Entrega plan',
+        'A tiempo',
+        'Estado',
+        'Kg',
+      ],
       ...data.orders.map((row) => [
         row.orderNumber,
         row.customerName,
@@ -432,6 +460,7 @@ export function DispatchTimesReport({
         row.loadStartedAt ?? '',
         row.loadClosedAt ?? '',
         row.loadMinutes ?? '',
+        minutesBetween(row.loadClosedAt, row.invoiceDeliveredAt) ?? '',
         row.invoiceDeliveredAt ?? '',
         row.invoiceMinutes ?? '',
         row.effectiveDate ?? '',
@@ -563,19 +592,19 @@ export function DispatchTimesReport({
                   <span>
                     <span className="block font-bold text-primary">Cómo se miden los tiempos</span>
                     <span className="block text-label-sm normal-case text-on-surface-variant">
-                      Envío, respuesta, carga, factura y ciclo total, sin ambigüedad.
+                      Envío, primer producto, carga, factura y total, sin ambigüedad.
                     </span>
                   </span>
                 </span>
                 <ChevronDown aria-hidden className="size-4 text-outline transition-transform group-open:rotate-180" />
               </summary>
               <div className="mt-space-sm grid gap-space-sm md:grid-cols-2 xl:grid-cols-3">
-                <Definition title="Envío" text="Instante en que planificación publica el despacho desde Pedidos. Es el punto de partida de todos los tiempos globales." />
-                <Definition title="Respuesta del almacén" text="Desde el envío hasta que el primer cliente inicia su carga. Mide cuánto tarda el piso en arrancar." />
-                <Definition title="Carga por cliente" text="Desde «Iniciar carga» del cliente hasta que se cierra su último producto. Es la base del promedio, mediana y P90." />
-                <Definition title="Solo despacho (ventana)" text="Desde el primer inicio de carga hasta el último cierre del despacho. No es suma ni promedio: es la ventana operativa real." />
+                <Definition title="Envío (T0)" text="Instante en que planificación publica la simulación como despacho. Es el punto de partida de todos los tiempos: no depende de «Iniciar carga»." />
+                <Definition title="Respuesta del almacén" text="Desde el envío hasta el primer producto marcado. Mide cuánto tarda el piso en registrar el primer movimiento." />
+                <Definition title="Carga por cliente" text="Desde el envío del despacho hasta el último producto cerrado del cliente. Es lo que tardó el pedido en quedar cargado desde que salió de la simulación." />
+                <Definition title="Solo despacho (ventana)" text="Del primer producto marcado al último cierre del despacho. No es suma ni promedio: es la ventana de marcado." />
                 <Definition title="Espera de factura" text="Desde el cierre de carga del cliente hasta que se marca su factura entregada. Es tiempo administrativo, no de almacén." />
-                <Definition title="Tiempo total" text="Desde el envío hasta la última factura del despacho. Si aún hay facturas pendientes no se inventa: se muestra el avance." />
+                <Definition title="Tiempo total" text="Desde el envío hasta que se entrega la factura del cliente. Ahí culmina el tiempo total del pedido. Si falta la factura no se inventa: se muestra en curso." />
               </div>
             </details>
           </Card>
@@ -591,13 +620,13 @@ export function DispatchTimesReport({
               icon={Truck}
               label="Solo despacho"
               value={formatMinutes(data.summary.loadWindow.avgMinutes)}
-              hint={`Primer inicio → último cierre · ${data.summary.loadWindow.groups} despacho(s)`}
+              hint={`Primer producto → último cierre · ${data.summary.loadWindow.groups} despacho(s)`}
             />
             <Kpi
               icon={Clock}
               label="Respuesta almacén"
               value={formatMinutes(data.summary.response.avgMinutes)}
-              hint={`Envío → primer inicio · ${data.summary.response.groups} despacho(s)`}
+              hint={`Envío → primer producto · ${data.summary.response.groups} despacho(s)`}
             />
             <Kpi
               icon={Clock}
@@ -638,7 +667,7 @@ export function DispatchTimesReport({
               <div>
                 <p className="font-bold text-primary">Evolución de tiempos</p>
                 <p className="text-label-sm normal-case text-on-surface-variant">
-                  Promedio por {granularity === 'day' ? 'día' : 'mes'} de cierre de carga. «Carga» va del inicio al último producto; «Hasta factura», del inicio de carga a la entrega de la factura de la misma cohorte.
+                  Promedio por {granularity === 'day' ? 'día' : 'mes'} de cierre de carga. «Carga» va del envío del despacho al último producto; «Total», del envío a la entrega de la factura de la misma cohorte.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-space-xs text-label-sm text-on-surface-variant">

@@ -41,7 +41,6 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardCheck,
-  Clock,
   Download,
   Loader2,
   MessageSquare,
@@ -57,12 +56,12 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { DispatchBitacoraDrawer } from '../../../components/DispatchBitacoraDrawer';
+import { DispatchCustomerTimeline } from '../../../components/DispatchCustomerTimeline';
 import { DispatchInvoiceDialog } from '../../../components/DispatchInvoiceDialog';
 import { DispatchLineDialog } from '../../../components/DispatchLineDialog';
 import { DispatchMobileView } from '../../../components/DispatchMobileView';
 import { DispatchReportDialog } from '../../../components/DispatchReportDialog';
 import { LineStatusBadge, SheetStatusBadge } from '../../../components/DispatchSheetParts';
-import { Elapsed } from '../../../components/DispatchSheetParts';
 import { TruckLoadPlan } from '../../../components/TruckLoadPlan';
 import type { LoadPlanLine } from '../../../components/TruckLoadPlan';
 import { AppNav, LoginScreen } from '../../../components/shell';
@@ -72,11 +71,12 @@ import {
   activeLines as activeSheetLines,
   buildDispatchReport,
   customerKeyOf,
+  customerTimeline,
   formatBusinessDate,
   formatDateTime,
-  formatDurationBetween,
-  formatMinutes,
+  formatDelta,
   formatNumber,
+  formatTime,
   lineEffectiveQty,
   minutesBetween,
   resolveTypedQuantity,
@@ -98,6 +98,20 @@ interface NoteTarget {
   status: 'PARCIAL' | 'FALTANTE';
   loadedQty: number;
   note: string;
+}
+
+/** Sello de cierre de un producto: hora real y tiempo desde el envío. */
+function LineCloseStamp({ at, sentAt }: { at: string | null; sentAt: string | null }) {
+  if (!at) return null;
+  return (
+    <span
+      className="flex flex-col items-end leading-tight tabular-nums text-label-sm text-outline"
+      title={`Cerrado ${formatDateTime(at)} · ${formatDelta(minutesBetween(sentAt, at))} desde el envío`}
+    >
+      <span>{formatTime(at)}</span>
+      <span>{formatDelta(minutesBetween(sentAt, at))}</span>
+    </span>
+  );
 }
 
 export default function DispatchSheetPage() {
@@ -608,7 +622,7 @@ export default function DispatchSheetPage() {
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
                 {editable
-                  ? '«Iniciar carga» arranca el reloj del cliente. Digita la cantidad real y usa «Cerrar carga» en cada producto: si baja del plan se marca parcial con motivo; «No cargado» si no salió nada.'
+                  ? '«Iniciar carga» toma la hoja y avisa que empezaste. El tiempo se mide desde el envío de la simulación hasta tu último producto cerrado, y el total cierra con la factura. Digita la cantidad real y usa «Cerrar carga» en cada producto.'
                   : sheet.claimedByName && !closed
                     ? `Lo tomó ${sheet.claimedByName}: solo esa persona lo carga.${sheet.canInvoice ? ' Tú sí puedes entregar la factura.' : ''}`
                     : 'Solo lectura.'}
@@ -680,6 +694,7 @@ export default function DispatchSheetPage() {
               const loadClosed = Boolean(customerProgress?.loadClosedAt);
               const invoiced = Boolean(customerProgress?.invoiceDeliveredAt);
               const closedGroup = groupClosed(group);
+              const timeline = customerTimeline(sheet.sentAt, customerProgress, group.lines);
               return (
                 <section key={group.key}>
                   <div className="flex flex-wrap items-center justify-between gap-x-space-sm gap-y-2 bg-surface-container-low/60 px-space-md py-space-sm">
@@ -704,29 +719,7 @@ export default function DispatchSheetPage() {
                           {group.missingLines > 0 ? ` · ${group.missingLines} no cargado(s)` : ''}
                           {group.pendingLines > 0 ? ` · ${group.pendingLines} pendiente(s)` : ''}
                         </span>
-                        {(started || loadClosed || invoiced) && (
-                          <span className="mt-0.5 flex flex-wrap items-center gap-x-space-sm gap-y-0.5 text-label-sm text-outline">
-                            {started && customerProgress?.loadStartedAt && (
-                              <span className="inline-flex items-center gap-1">
-                                <Clock aria-hidden className="size-3" />
-                                {loadClosed ? (
-                                  <>Carga: {formatDurationBetween(customerProgress.loadStartedAt, customerProgress.loadClosedAt)}</>
-                                ) : (
-                                  <>
-                                    En carga: <Elapsed since={customerProgress.loadStartedAt} />
-                                  </>
-                                )}
-                              </span>
-                            )}
-                            {invoiced && customerProgress?.invoiceDeliveredAt && (
-                              <span className="inline-flex items-center gap-1 text-secondary">
-                                <Receipt aria-hidden className="size-3" />
-                                Factura: {formatDurationBetween(customerProgress.loadStartedAt, customerProgress.invoiceDeliveredAt)}
-                                {customerProgress.invoiceRef ? ` · N° ${customerProgress.invoiceRef}` : ''}
-                              </span>
-                            )}
-                          </span>
-                        )}
+                        <DispatchCustomerTimeline timeline={timeline} />
                       </span>
                     </button>
 
@@ -992,11 +985,7 @@ export default function DispatchSheetPage() {
                                   ) : (
                                     <>
                                       <LineStatusBadge status={line.status} />
-                                      {line.loadClosedAt && (
-                                        <span className="text-label-sm tabular-nums text-outline">
-                                          {formatMinutes(minutesBetween(line.loadStartedAt, line.loadClosedAt))}
-                                        </span>
-                                      )}
+                                      <LineCloseStamp at={line.loadClosedAt} sentAt={sheet.sentAt} />
                                       {saving ? (
                                         <Loader2 aria-hidden className="size-3.5 animate-spin text-secondary" />
                                       ) : (
@@ -1021,11 +1010,7 @@ export default function DispatchSheetPage() {
                               ) : (
                                 <span className="flex flex-wrap items-center justify-end gap-space-xs">
                                   <LineStatusBadge status={line.status} />
-                                  {line.loadClosedAt && (
-                                    <span className="text-label-sm tabular-nums text-outline">
-                                      {formatMinutes(minutesBetween(line.loadStartedAt, line.loadClosedAt))}
-                                    </span>
-                                  )}
+                                  <LineCloseStamp at={line.loadClosedAt} sentAt={sheet.sentAt} />
                                 </span>
                               )}
                             </Cell>

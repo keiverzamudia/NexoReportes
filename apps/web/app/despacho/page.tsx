@@ -23,6 +23,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
   ClipboardList,
+  Clock,
   RefreshCw,
   Search,
   ShoppingCart,
@@ -74,6 +75,7 @@ export default function DespachoPage() {
   // Franja de pendientes: permiso propio, asignable por usuario. Por defecto
   // solo lo tiene ADMIN (la matriz lo concede después, sin tocar el código).
   const canSeePulse = hasPermission(permissions, 'despacho', 'view_summary');
+  const canSeeTimes = hasPermission(permissions, 'despacho', 'view_history');
 
   // La bandeja siempre arranca en lo que hay por cargar.
   useEffect(() => {
@@ -281,13 +283,25 @@ export default function DespachoPage() {
           title="Despacho"
           subtitle={subtitle}
           actions={
-            canSendSimulation ? (
-              <Link
-                href="/pedidos"
-                className="flex h-10 items-center gap-space-xs rounded-pill bg-primary-container px-space-lg font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary"
-              >
-                <Truck aria-hidden className="size-4" /> Armar y enviar simulación
-              </Link>
+            canSeeTimes || canSendSimulation ? (
+              <div className="flex flex-wrap items-center gap-space-xs">
+                {canSeeTimes && (
+                  <Link
+                    href="/despacho/historial"
+                    className="flex h-10 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
+                  >
+                    <Clock aria-hidden className="size-4" /> Reporte de tiempos
+                  </Link>
+                )}
+                {canSendSimulation && (
+                  <Link
+                    href="/pedidos"
+                    className="flex h-10 items-center gap-space-xs rounded-pill bg-primary-container px-space-lg font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary"
+                  >
+                    <Truck aria-hidden className="size-4" /> Armar y enviar simulación
+                  </Link>
+                )}
+              </div>
             ) : null
           }
         />

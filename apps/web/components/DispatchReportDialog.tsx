@@ -119,17 +119,17 @@ export function DispatchReportDialog({
           <div className="mt-space-md grid grid-cols-1 gap-space-sm rounded-xl border border-outline-variant/40 bg-surface-container-low/50 p-space-sm sm:grid-cols-3">
             <div>
               <p className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wider text-outline">
-                <Clock aria-hidden className="size-3.5" /> Inicio de carga
+                <Clock aria-hidden className="size-3.5" /> Enviado
               </p>
-              <p className="font-semibold text-primary">{formatDateTime(sheet.loadStartedAt)}</p>
+              <p className="font-semibold text-primary">{formatDateTime(sheet.sentAt)}</p>
             </div>
             <div>
               <p className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wider text-outline">
-                <CheckCheck aria-hidden className="size-3.5" /> Carga cerrada
+                <CheckCheck aria-hidden className="size-3.5" /> Último producto
               </p>
               <p className="font-semibold text-primary">{formatDateTime(sheet.loadClosedAt)}</p>
               <p className="text-label-sm text-on-surface-variant">
-                {formatDurationBetween(sheet.loadStartedAt, sheet.loadClosedAt)}
+                {formatDurationBetween(sheet.sentAt, sheet.loadClosedAt)}
               </p>
             </div>
             <div>
@@ -138,7 +138,7 @@ export function DispatchReportDialog({
               </p>
               <p className="font-semibold text-primary">{formatDateTime(sheet.invoiceDeliveredAt)}</p>
               <p className="text-label-sm text-on-surface-variant">
-                {formatDurationBetween(sheet.loadStartedAt, sheet.invoiceDeliveredAt)}
+                {formatDurationBetween(sheet.sentAt, sheet.invoiceDeliveredAt)}
                 {sheet.pendingInvoiceCustomers > 0
                   ? ` · ${sheet.pendingInvoiceCustomers} cliente(s) pendiente(s)`
                   : ''}
