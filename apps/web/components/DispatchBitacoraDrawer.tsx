@@ -84,8 +84,10 @@ export function DispatchBitacoraDrawer({
 
   const progressStats = useMemo(() => {
     const rows = sheet.customerProgress;
-    const starts = rows
-      .map((row) => row.loadStartedAt)
+    // Respuesta = envío → primer producto marcado (no «Iniciar carga»).
+    const marks = sheet.lines
+      .filter((line) => line.status !== 'ANULADO')
+      .map((line) => line.checkedAt)
       .filter((value): value is string => Boolean(value))
       .sort();
     const invoices = rows
@@ -93,7 +95,7 @@ export function DispatchBitacoraDrawer({
       .filter((value): value is string => Boolean(value))
       .sort();
     return {
-      firstStart: starts[0] ?? sheet.loadStartedAt,
+      firstMark: marks[0] ?? null,
       lastInvoice: invoices[invoices.length - 1] ?? null,
       closed: sheet.closedCustomers,
       invoiced: sheet.invoicedCustomers,
@@ -139,7 +141,7 @@ export function DispatchBitacoraDrawer({
     ];
     if (tab === 'customers') {
       rows.push([]);
-      rows.push(['Cliente', 'Pedido', 'Producto', 'Estado', 'Inicio carga', 'Cierre carga', 'Min carga', 'Quién cerró', 'Motivo']);
+      rows.push(['Cliente', 'Pedido', 'Producto', 'Estado', 'Enviado', 'Último producto', 'Min envío → cierre', 'Quién cerró', 'Motivo']);
       for (const group of customers) {
         for (const line of group.lines) {
           rows.push([
@@ -147,9 +149,9 @@ export function DispatchBitacoraDrawer({
             line.orderNumber,
             `${line.productCode} · ${line.description ?? ''}`,
             lineStatusMeta(line.status).label,
-            formatDateTime(line.loadStartedAt),
+            formatDateTime(sheet.sentAt),
             formatDateTime(line.loadClosedAt),
-            formatMinutes(minutesBetween(line.loadStartedAt, line.loadClosedAt)),
+            formatMinutes(minutesBetween(sheet.sentAt, line.loadClosedAt)),
             line.loadClosedByName ?? '—',
             line.note ?? '',
           ]);
@@ -187,20 +189,20 @@ export function DispatchBitacoraDrawer({
   const loadHint =
     sheet.loadClosedAt
       ? `${progressStats.closed}/${progressStats.total} cliente(s) cerrados`
-      : progressStats.firstStart
+      : progressStats.firstMark
         ? `${progressStats.closed}/${progressStats.total} cliente(s) cerrados · en curso`
-        : 'Sin iniciar';
+        : 'Sin movimientos';
   const loadValue =
-    sheet.loadClosedAt && sheet.loadStartedAt
-      ? formatDurationBetween(sheet.loadStartedAt, sheet.loadClosedAt)
-      : progressStats.firstStart
-        ? formatMinutes(minutesBetween(progressStats.firstStart, new Date().toISOString()))
+    sheet.loadClosedAt
+      ? formatDurationBetween(sheet.sentAt, sheet.loadClosedAt)
+      : progressStats.firstMark
+        ? formatMinutes(minutesBetween(sheet.sentAt, new Date().toISOString()))
         : '—';
   const invoiceValue =
-    sheet.invoiceDeliveredAt && sheet.loadStartedAt
-      ? formatDurationBetween(sheet.loadStartedAt, sheet.invoiceDeliveredAt)
-      : progressStats.lastInvoice && progressStats.firstStart
-        ? formatMinutes(minutesBetween(progressStats.firstStart, progressStats.lastInvoice))
+    sheet.invoiceDeliveredAt
+      ? formatDurationBetween(sheet.sentAt, sheet.invoiceDeliveredAt)
+      : progressStats.lastInvoice
+        ? formatMinutes(minutesBetween(sheet.sentAt, progressStats.lastInvoice))
         : '—';
   const invoiceHint =
     progressStats.total > 0
@@ -248,9 +250,9 @@ export function DispatchBitacoraDrawer({
             label="Enviado"
             value={formatDateTime(sheet.sentAt)}
             hint={
-              progressStats.firstStart
-                ? `Respuesta ${formatMinutes(minutesBetween(sheet.sentAt, progressStats.firstStart))}`
-                : 'Sin iniciar'
+              progressStats.firstMark
+                ? `Respuesta ${formatMinutes(minutesBetween(sheet.sentAt, progressStats.firstMark))}`
+                : 'Sin movimientos'
             }
           />
           <Summary
@@ -388,14 +390,14 @@ export function DispatchBitacoraDrawer({
                       <span className="flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
                         <span className="inline-flex items-center gap-1">
                           <Clock aria-hidden className="size-3" />
-                          {progress?.loadStartedAt
-                            ? formatDurationBetween(progress.loadStartedAt, progress.loadClosedAt)
-                            : 'sin iniciar'}
+                          {progress?.loadClosedAt
+                            ? formatDurationBetween(sheet.sentAt, progress.loadClosedAt)
+                            : 'en carga'}
                         </span>
                         {progress?.invoiceDeliveredAt && (
                           <span className="inline-flex items-center gap-1 text-secondary">
                             <Receipt aria-hidden className="size-3" />
-                            {formatDurationBetween(progress.loadStartedAt, progress.invoiceDeliveredAt)}
+                            {formatDurationBetween(sheet.sentAt, progress.invoiceDeliveredAt)}
                           </span>
                         )}
                       </span>
@@ -414,11 +416,11 @@ export function DispatchBitacoraDrawer({
                             <Badge tone={lineStatusMeta(line.status).tone}>{lineStatusMeta(line.status).label}</Badge>
                           </div>
                           <p className="mt-0.5 flex flex-wrap items-center gap-x-space-sm text-label-sm text-outline">
-                            {line.loadStartedAt ? `Inicio ${formatDateTime(line.loadStartedAt)}` : 'Sin iniciar'}
-                            {line.loadClosedAt ? ` · Cierre ${formatDateTime(line.loadClosedAt)}` : ''}
                             {line.loadClosedAt
-                              ? ` · ${formatMinutes(minutesBetween(line.loadStartedAt, line.loadClosedAt))}`
-                              : ''}
+                              ? `Cerrado ${formatDateTime(line.loadClosedAt)} · ${formatMinutes(
+                                  minutesBetween(sheet.sentAt, line.loadClosedAt),
+                                )} desde el envío`
+                              : 'Pendiente de cierre'}
                             {line.loadClosedByName ? ` · ${line.loadClosedByName}` : ''}
                           </p>
                           {line.note && (

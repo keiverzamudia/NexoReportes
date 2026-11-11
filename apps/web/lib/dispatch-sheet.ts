@@ -9,6 +9,7 @@
 // ============================================================
 
 import type {
+  DispatchCustomerProgress,
   DispatchLineStatus,
   DispatchSheetDetail,
   DispatchSheetLine,
@@ -103,6 +104,75 @@ export function formatMinutes(minutes: number | null | undefined): string {
 
 export function formatDurationBetween(startIso: string | null | undefined, endIso: string | null | undefined): string {
   return formatMinutes(minutesBetween(startIso, endIso));
+}
+
+/** «+3 min», «+2 h 10 min». Para mostrar saltos entre hitos. */
+export function formatDelta(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined || !Number.isFinite(minutes)) return '—';
+  return `+${formatMinutes(Math.max(0, minutes))}`;
+}
+
+// ============================================================
+// Línea de tiempos por cliente.
+//
+// Modelo acordado: T0 = salida de la simulación (`sentAt`). No depende de
+// «Iniciar carga», que en la práctica casi nunca se pulsa y dejaba cargas de
+// «0 min». La carga termina con el último producto marcado y el tiempo total
+// culmina cuando se entrega la factura del cliente.
+//
+//   · carga         → envío hasta el último producto cerrado
+//   · esperaFactura → último producto cerrado hasta la factura
+//   · total         → envío hasta la factura
+// ============================================================
+
+export interface CustomerTimeline {
+  sentAt: string | null;
+  /** Primera marca del almacén (referencia de respuesta). */
+  firstMarkAt: string | null;
+  /** «Iniciar carga» declarado; solo informativo, no mide nada. */
+  declaredStartAt: string | null;
+  lastCloseAt: string | null;
+  invoiceAt: string | null;
+  invoiceRef: string | null;
+  invoiceByName: string | null;
+  loadMinutes: number | null;
+  invoiceWaitMinutes: number | null;
+  totalMinutes: number | null;
+  pendingClose: boolean;
+  pendingInvoice: boolean;
+}
+
+/** Hitos y duraciones de un cliente dentro de la hoja. */
+export function customerTimeline(
+  sentAt: string | null | undefined,
+  progress: DispatchCustomerProgress | null | undefined,
+  lines: Pick<DispatchSheetLine, 'checkedAt' | 'loadClosedAt' | 'status'>[],
+): CustomerTimeline {
+  const checked = lines
+    .map((line) => line.checkedAt)
+    .filter((value): value is string => Boolean(value))
+    .sort((a, b) => a.localeCompare(b));
+  const firstMark = checked[0] ?? null;
+  const lastMark = checked[checked.length - 1] ?? null;
+  // Mientras quede un producto pendiente la carga sigue abierta: no se
+  // inventa un cierre con el último producto ya marcado.
+  const closedMark = lines.some((line) => line.status === 'PENDIENTE') ? null : lastMark;
+  const lastCloseAt = progress?.loadClosedAt ?? closedMark;
+  const invoiceAt = progress?.invoiceDeliveredAt ?? null;
+  return {
+    sentAt: sentAt ?? null,
+    firstMarkAt: firstMark,
+    declaredStartAt: progress?.loadStartedAt ?? null,
+    lastCloseAt,
+    invoiceAt,
+    invoiceRef: progress?.invoiceRef ?? null,
+    invoiceByName: progress?.invoiceDeliveredByName ?? null,
+    loadMinutes: minutesBetween(sentAt, lastCloseAt),
+    invoiceWaitMinutes: minutesBetween(lastCloseAt, invoiceAt),
+    totalMinutes: minutesBetween(sentAt, invoiceAt),
+    pendingClose: !lastCloseAt,
+    pendingInvoice: !invoiceAt,
+  };
 }
 
 /** Clave del cliente: mismo criterio que el servidor. */
@@ -399,11 +469,11 @@ export const SHEET_EXPORT_HEADERS = [
   'Cargado',
   'Kg real',
   'Estado',
-  'Inicio carga',
-  'Cierre carga',
-  'Min carga',
+  'Enviado',
+  'Último producto',
+  'Min envío → cierre',
   'Factura entregada',
-  'Min factura',
+  'Total (min)',
   'Factura N°',
   'Nota / motivo',
 ];
@@ -438,11 +508,11 @@ export function sheetExport(detail: DispatchSheetDetail, generatedAt: Date = new
   ]);
   merges.push({ s: { r: 2, c: 0 }, e: { r: 2, c: lastColumn } });
   aoa.push([
-    `Inicio de carga ${formatDateTime(detail.loadStartedAt)} · Carga cerrada ${formatDateTime(
+    `Enviado ${formatDateTime(detail.sentAt)} · Último producto ${formatDateTime(
       detail.loadClosedAt,
-    )} · Factura entregada ${formatDateTime(detail.invoiceDeliveredAt)} · Pendientes de factura ${
-      detail.pendingInvoiceCustomers
-    } cliente(s)`,
+    )} · Factura entregada ${formatDateTime(detail.invoiceDeliveredAt)} · Total ${
+      formatDurationBetween(detail.sentAt, detail.invoiceDeliveredAt)
+    } · Pendientes de factura ${detail.pendingInvoiceCustomers} cliente(s)`,
   ]);
   merges.push({ s: { r: 3, c: 0 }, e: { r: 3, c: lastColumn } });
   if (detail.instructions) {
@@ -455,7 +525,9 @@ export function sheetExport(detail: DispatchSheetDetail, generatedAt: Date = new
   const progressByKey = new Map((detail.customerProgress ?? []).map((row) => [row.customerKey, row]));
   for (const line of detail.lines.filter((item) => item.status !== 'ANULADO')) {
     const progress = progressByKey.get(customerKeyOf(line));
-    const startedAt = line.loadStartedAt ?? progress?.loadStartedAt ?? null;
+    // T0 del reporte: la salida de la simulación. El «inicio declarado» ya no
+    // mide: cada producto vale por su hora de cierre y el total por la factura.
+    const startedAt = detail.sentAt;
     const closedAt = line.loadClosedAt ?? line.checkedAt ?? null;
     const invoiceAt = progress?.invoiceDeliveredAt ?? null;
     aoa.push([

@@ -150,7 +150,7 @@ export function Elapsed({ since, until }: { since: string | null | undefined; un
 const REMOVAL_LABEL: Record<string, string> = {
   RETIRADO_DEL_PLAN: 'Retirado del plan en Pedidos',
   PEDIDO_ANULADO_EN_PROFIT: 'Anulado en Profit',
-  PEDIDO_CERRADO_EN_PROFIT: 'Cerrado por nota de entrega en Profit',
+  PEDIDO_CERRADO_EN_PROFIT: 'Cerrado en Profit',
 };
 
 export function removalReasonLabel(reason: string | null): string {

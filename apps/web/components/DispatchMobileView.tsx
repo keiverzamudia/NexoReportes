@@ -31,15 +31,18 @@ import {
 import Link from 'next/link';
 import type { DispatchReport, CustomerGroup } from '../lib/dispatch-sheet';
 import {
+  customerTimeline,
   formatBusinessDate,
   formatDateTime,
+  formatDelta,
   formatDurationBetween,
-  formatMinutes,
   formatNumber,
+  formatTime,
   lineEffectiveQty,
   minutesBetween,
 } from '../lib/dispatch-sheet';
-import { Elapsed, LineStatusBadge, SheetStatusBadge } from './DispatchSheetParts';
+import { DispatchCustomerTimeline } from './DispatchCustomerTimeline';
+import { LineStatusBadge, SheetStatusBadge } from './DispatchSheetParts';
 import { Badge, Card, cx } from './ui';
 
 type LineResolution = { status: DispatchLineMark; loadedQty?: number; note?: string };
@@ -104,7 +107,6 @@ export function DispatchMobileView({
   onExport,
 }: DispatchMobileViewProps) {
   const activeLines = sheet.lines.filter((line) => line.status !== 'ANULADO');
-  const annulledCount = sheet.lines.length - activeLines.length;
   const resolved = activeLines.filter((line) => line.status !== 'PENDIENTE').length;
   const percentage = activeLines.length > 0 ? Math.round((resolved / activeLines.length) * 100) : 0;
 
@@ -175,15 +177,15 @@ export function DispatchMobileView({
         <div className="grid grid-cols-2 gap-space-sm">
           <Phase
             icon={Clock}
-            label="Inicio de carga"
-            value={formatDateTime(sheet.loadStartedAt)}
-            hint={sheet.loadStartedAt ? 'Reloj de carga y factura' : 'Sin iniciar'}
+            label="Enviado"
+            value={formatDateTime(sheet.sentAt)}
+            hint="Inicio del tiempo"
           />
           <Phase
             icon={CheckCheck}
-            label="Carga cerrada"
+            label="Último producto"
             value={formatDateTime(sheet.loadClosedAt)}
-            hint={formatDurationBetween(sheet.loadStartedAt, sheet.loadClosedAt)}
+            hint={formatDurationBetween(sheet.sentAt, sheet.loadClosedAt)}
           />
           <Phase
             icon={Receipt}
@@ -191,7 +193,7 @@ export function DispatchMobileView({
             value={formatDateTime(sheet.invoiceDeliveredAt)}
             hint={
               sheet.invoiceDeliveredAt
-                ? formatDurationBetween(sheet.loadStartedAt, sheet.invoiceDeliveredAt)
+                ? `Total ${formatDurationBetween(sheet.sentAt, sheet.invoiceDeliveredAt)}`
                 : `${pendingInvoices} pendiente(s)`
             }
           />
@@ -208,12 +210,6 @@ export function DispatchMobileView({
             style={{ width: `${percentage}%` }}
           />
         </div>
-        {annulledCount > 0 && (
-          <p className="mt-2 flex items-center gap-1 text-label-sm text-on-surface-variant">
-            <Ban aria-hidden className="size-3.5 text-error" />
-            {annulledCount} renglón(es) anulado(s) desde Pedidos. No cuentan en el avance.
-          </p>
-        )}
       </Card>
 
       {/* Clientes */}
@@ -225,6 +221,7 @@ export function DispatchMobileView({
           const invoiced = Boolean(progress?.invoiceDeliveredAt);
           const isOpen = openGroup === group.key;
           const orderCount = new Set(group.lines.map((line) => line.orderNumber).filter(Boolean)).size;
+          const timeline = customerTimeline(sheet.sentAt, progress, group.lines);
           return (
             <Card key={group.key} className="overflow-hidden">
               <button
@@ -255,17 +252,8 @@ export function DispatchMobileView({
                         en carga
                       </Badge>
                     )}
-                    {started && progress?.loadStartedAt && (
-                      <span className="inline-flex items-center gap-1 text-label-sm text-outline">
-                        <Clock aria-hidden className="size-3" />
-                        {progress.loadClosedAt ? (
-                          formatDurationBetween(progress.loadStartedAt, progress.loadClosedAt)
-                        ) : (
-                          <Elapsed since={progress.loadStartedAt} />
-                        )}
-                      </span>
-                    )}
                   </div>
+                  <DispatchCustomerTimeline timeline={timeline} className="mt-1" />
                 </div>
                 {isOpen ? (
                   <ChevronDown aria-hidden className="mt-1 size-5 shrink-0 text-primary" />
@@ -358,9 +346,9 @@ export function DispatchMobileView({
                         )}
 
                         {line.loadClosedAt && (
-                          <p className="mt-1 text-label-sm text-outline">
-                            Cerrado {formatDateTime(line.loadClosedAt)} ·{' '}
-                            {formatMinutes(minutesBetween(line.loadStartedAt, line.loadClosedAt))}
+                          <p className="mt-1 text-label-sm tabular-nums text-outline">
+                            Cerrado {formatTime(line.loadClosedAt)} ·{' '}
+                            {formatDelta(minutesBetween(sheet.sentAt, line.loadClosedAt))} desde el envío
                           </p>
                         )}
 

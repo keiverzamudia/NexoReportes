@@ -7,8 +7,10 @@
 //   · Guía de carga del camión y comentarios del planificador.
 //   · Tiempos por cliente: «Iniciar carga» arranca los relojes sin marcar
 //     productos; «Cerrar carga» detiene el reloj de cada producto y
-//     «Factura entregada» cierra el de facturación. El cliente se puede
-//     facturar individualmente o con «Facturar todo».
+//     «Factura entregada» cierra el de facturación. La carga es exclusiva del
+//     operador que tomó la hoja; la factura la puede entregar cualquier
+//     operador de almacén. El cliente se puede facturar individualmente o con
+//     «Facturar todo».
 //   · Carga por renglón: el input «Cargado» se edita en la fila. Si baja del
 //     plan se marca parcial y pide el motivo; si queda en 0, no cargado.
 //     Las diferencias dejan su motivo en el reporte.
@@ -39,7 +41,6 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardCheck,
-  Clock,
   Download,
   Loader2,
   MessageSquare,
@@ -55,12 +56,12 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { DispatchBitacoraDrawer } from '../../../components/DispatchBitacoraDrawer';
+import { DispatchCustomerTimeline } from '../../../components/DispatchCustomerTimeline';
 import { DispatchInvoiceDialog } from '../../../components/DispatchInvoiceDialog';
 import { DispatchLineDialog } from '../../../components/DispatchLineDialog';
 import { DispatchMobileView } from '../../../components/DispatchMobileView';
 import { DispatchReportDialog } from '../../../components/DispatchReportDialog';
 import { LineStatusBadge, SheetStatusBadge } from '../../../components/DispatchSheetParts';
-import { Elapsed } from '../../../components/DispatchSheetParts';
 import { TruckLoadPlan } from '../../../components/TruckLoadPlan';
 import type { LoadPlanLine } from '../../../components/TruckLoadPlan';
 import { AppNav, LoginScreen } from '../../../components/shell';
@@ -68,14 +69,14 @@ import { Badge, Card, EmptyState, PageHeader, Skeleton, cx } from '../../../comp
 import { AuthRequiredError, apiFetch, currentUser } from '../../../lib/api';
 import {
   activeLines as activeSheetLines,
-  annulledLines,
   buildDispatchReport,
   customerKeyOf,
+  customerTimeline,
   formatBusinessDate,
   formatDateTime,
-  formatDurationBetween,
-  formatMinutes,
+  formatDelta,
   formatNumber,
+  formatTime,
   lineEffectiveQty,
   minutesBetween,
   resolveTypedQuantity,
@@ -97,6 +98,20 @@ interface NoteTarget {
   status: 'PARCIAL' | 'FALTANTE';
   loadedQty: number;
   note: string;
+}
+
+/** Sello de cierre de un producto: hora real y tiempo desde el envío. */
+function LineCloseStamp({ at, sentAt }: { at: string | null; sentAt: string | null }) {
+  if (!at) return null;
+  return (
+    <span
+      className="flex flex-col items-end leading-tight tabular-nums text-label-sm text-outline"
+      title={`Cerrado ${formatDateTime(at)} · ${formatDelta(minutesBetween(sentAt, at))} desde el envío`}
+    >
+      <span>{formatTime(at)}</span>
+      <span>{formatDelta(minutesBetween(sentAt, at))}</span>
+    </span>
+  );
 }
 
 export default function DispatchSheetPage() {
@@ -157,17 +172,6 @@ export default function DispatchSheetPage() {
 
   const report = useMemo(() => (sheet ? buildDispatchReport(sheet.lines) : null), [sheet]);
   const activeLines = useMemo(() => (sheet ? activeSheetLines(sheet.lines) : []), [sheet]);
-  const removedLines = useMemo(() => (sheet ? annulledLines(sheet.lines) : []), [sheet]);
-  const removedByCustomer = useMemo(() => {
-    const map = new Map<string, typeof removedLines>();
-    for (const line of removedLines) {
-      const key = line.customerName ?? line.customerCode ?? 'Sin cliente';
-      const bucket = map.get(key) ?? [];
-      bucket.push(line);
-      map.set(key, bucket);
-    }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b, 'es'));
-  }, [removedLines]);
   const progressByKey = useMemo(() => {
     const map = new Map<string, DispatchCustomerProgress>();
     for (const row of sheet?.customerProgress ?? []) map.set(row.customerKey, row);
@@ -581,16 +585,6 @@ export default function DispatchSheetPage() {
           </Card>
         )}
 
-        {removedLines.length > 0 && (
-          <Card className="flex flex-wrap items-center justify-between gap-space-sm border-outline-variant/40 p-space-sm">
-            <p className="flex items-center gap-space-xs text-label-md text-on-surface-variant">
-              <Ban aria-hidden className="size-4 text-error" />
-              {removedLines.length} renglón(es) anulado(s) por cambios en Pedidos. No cuentan en totales ni tiempos.
-            </p>
-            <span className="text-label-sm text-outline">Detalle al final de la carga por cliente.</span>
-          </Card>
-        )}
-
         {/* Datos del envío */}
         <Card className="flex flex-wrap items-center justify-between gap-space-sm p-space-md">
           <div>
@@ -628,9 +622,9 @@ export default function DispatchSheetPage() {
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
                 {editable
-                  ? '«Iniciar carga» arranca el reloj del cliente. Digita la cantidad real y usa «Cerrar carga» en cada producto: si baja del plan se marca parcial con motivo; «No cargado» si no salió nada.'
+                  ? '«Iniciar carga» toma la hoja y avisa que empezaste. El tiempo se mide desde el envío de la simulación hasta tu último producto cerrado, y el total cierra con la factura. Digita la cantidad real y usa «Cerrar carga» en cada producto.'
                   : sheet.claimedByName && !closed
-                    ? `Lo tomó ${sheet.claimedByName}: puedes verlo, pero solo esa persona lo carga.`
+                    ? `Lo tomó ${sheet.claimedByName}: solo esa persona lo carga.${sheet.canInvoice ? ' Tú sí puedes entregar la factura.' : ''}`
                     : 'Solo lectura.'}
               </p>
             </div>
@@ -700,6 +694,7 @@ export default function DispatchSheetPage() {
               const loadClosed = Boolean(customerProgress?.loadClosedAt);
               const invoiced = Boolean(customerProgress?.invoiceDeliveredAt);
               const closedGroup = groupClosed(group);
+              const timeline = customerTimeline(sheet.sentAt, customerProgress, group.lines);
               return (
                 <section key={group.key}>
                   <div className="flex flex-wrap items-center justify-between gap-x-space-sm gap-y-2 bg-surface-container-low/60 px-space-md py-space-sm">
@@ -724,29 +719,7 @@ export default function DispatchSheetPage() {
                           {group.missingLines > 0 ? ` · ${group.missingLines} no cargado(s)` : ''}
                           {group.pendingLines > 0 ? ` · ${group.pendingLines} pendiente(s)` : ''}
                         </span>
-                        {(started || loadClosed || invoiced) && (
-                          <span className="mt-0.5 flex flex-wrap items-center gap-x-space-sm gap-y-0.5 text-label-sm text-outline">
-                            {started && customerProgress?.loadStartedAt && (
-                              <span className="inline-flex items-center gap-1">
-                                <Clock aria-hidden className="size-3" />
-                                {loadClosed ? (
-                                  <>Carga: {formatDurationBetween(customerProgress.loadStartedAt, customerProgress.loadClosedAt)}</>
-                                ) : (
-                                  <>
-                                    En carga: <Elapsed since={customerProgress.loadStartedAt} />
-                                  </>
-                                )}
-                              </span>
-                            )}
-                            {invoiced && customerProgress?.invoiceDeliveredAt && (
-                              <span className="inline-flex items-center gap-1 text-secondary">
-                                <Receipt aria-hidden className="size-3" />
-                                Factura: {formatDurationBetween(customerProgress.loadStartedAt, customerProgress.invoiceDeliveredAt)}
-                                {customerProgress.invoiceRef ? ` · N° ${customerProgress.invoiceRef}` : ''}
-                              </span>
-                            )}
-                          </span>
-                        )}
+                        <DispatchCustomerTimeline timeline={timeline} />
                       </span>
                     </button>
 
@@ -1012,11 +985,7 @@ export default function DispatchSheetPage() {
                                   ) : (
                                     <>
                                       <LineStatusBadge status={line.status} />
-                                      {line.loadClosedAt && (
-                                        <span className="text-label-sm tabular-nums text-outline">
-                                          {formatMinutes(minutesBetween(line.loadStartedAt, line.loadClosedAt))}
-                                        </span>
-                                      )}
+                                      <LineCloseStamp at={line.loadClosedAt} sentAt={sheet.sentAt} />
                                       {saving ? (
                                         <Loader2 aria-hidden className="size-3.5 animate-spin text-secondary" />
                                       ) : (
@@ -1041,11 +1010,7 @@ export default function DispatchSheetPage() {
                               ) : (
                                 <span className="flex flex-wrap items-center justify-end gap-space-xs">
                                   <LineStatusBadge status={line.status} />
-                                  {line.loadClosedAt && (
-                                    <span className="text-label-sm tabular-nums text-outline">
-                                      {formatMinutes(minutesBetween(line.loadStartedAt, line.loadClosedAt))}
-                                    </span>
-                                  )}
+                                  <LineCloseStamp at={line.loadClosedAt} sentAt={sheet.sentAt} />
                                 </span>
                               )}
                             </Cell>
@@ -1058,44 +1023,6 @@ export default function DispatchSheetPage() {
                 </section>
               );
             })}
-            {removedLines.length > 0 && (
-              <details className="group border-t border-outline-variant/30">
-                <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-space-sm bg-surface-container-low/40 px-space-md py-space-sm marker:content-none">
-                  <span className="flex items-center gap-space-xs font-semibold text-on-surface">
-                    <ChevronDown aria-hidden className="size-4 text-outline transition-transform group-open:rotate-180" />
-                    <Ban aria-hidden className="size-4 text-error" />
-                    Anulados ({removedLines.length})
-                  </span>
-                  <span className="text-label-sm text-on-surface-variant">
-                    Retirados del plan · no cuentan en el cierre
-                  </span>
-                </summary>
-                <div className="divide-y divide-outline-variant/20">
-                  {removedByCustomer.map(([customerName, lines]) => (
-                    <div key={customerName} className="px-space-md py-space-sm">
-                      <p className="mb-1 font-semibold text-on-surface">{customerName}</p>
-                      <ul className="flex flex-col gap-1">
-                        {lines.map((line) => (
-                          <li key={line.id} className="flex flex-wrap items-center justify-between gap-space-xs text-label-md">
-                            <span className="min-w-0">
-                              <span className="font-bold tabular-nums text-primary">{line.orderNumber}</span>
-                              {' · '}
-                              <span className="font-semibold text-on-surface-variant">{line.productCode}</span>
-                              {' · '}
-                              {line.description ?? '—'}
-                            </span>
-                            <span className="text-right text-label-sm text-outline">
-                              {line.removedByName ?? 'Sistema'} · {formatDateTime(line.removedAt)}
-                              {line.removalReason ? ` · ${line.removalReason === 'RETIRADO_DEL_PLAN' ? 'Retirado en Pedidos' : line.removalReason === 'PEDIDO_ANULADO_EN_PROFIT' ? 'Anulado en Profit' : line.removalReason === 'PEDIDO_CERRADO_EN_PROFIT' ? 'Cerrado en Profit' : line.removalReason}` : ''}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
           </div>
         </Card>
 

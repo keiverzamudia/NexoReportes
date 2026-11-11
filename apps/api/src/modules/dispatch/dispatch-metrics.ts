@@ -15,10 +15,11 @@ import type {
 // cliente; aquí se calculan los promedios, medianas, P90, series por día/mes
 // y el cumplimiento contra la fecha planificada. Se prueba sin Prisma.
 //
-// Regla de negocio:
-//   · carga   = inicio de carga del cliente → último producto cerrado
-//   · factura = inicio de carga del cliente → factura entregada
-//   · a tiempo = la factura se entregó en la fecha planificada o antes
+// Regla de negocio (T0 = salida de la simulación):
+//   · carga   = envío del despacho → último producto cerrado del cliente
+//   · factura = envío del despacho → factura entregada (tiempo total)
+//   · espera  = último producto cerrado → factura entregada
+//   · a tiempo = la carga se cerró en la fecha planificada o antes
 // ============================================================
 
 export interface MetricLine {
@@ -205,9 +206,11 @@ function buildGroups(sheets: MetricSheet[], query: DispatchMetricsQuery): GroupM
         .map((line) => line.checkedAt)
         .filter((value): value is Date => value instanceof Date)
         .sort((a, b) => a.getTime() - b.getTime());
-      const firstChecked = checked[0] ?? null;
       const lastChecked = checked.length > 0 ? checked[checked.length - 1] : null;
-      const loadStart = progress?.loadStartedAt ?? sheet.startedAt ?? firstChecked;
+      // T0 del modelo: la salida de la simulación. No depende de que alguien
+      // pulse «Iniciar carga», que en la práctica casi nunca se usa y dejaba
+      // «cargas» de 0 min. La factura marca el cierre del tiempo total.
+      const loadStart = sheet.sentAt;
       const loadClose =
         progress?.loadClosedAt ?? (pending === 0 ? lastChecked ?? sheet.completedAt : null);
       const invoiceAt = progress?.invoiceDeliveredAt ?? null;
@@ -302,8 +305,8 @@ export function buildDispatchMetrics(
   }
 
   // Tiempos globales de la hoja (una observación por despacho):
-  //   respuesta = envío → primer inicio de carga
-  //   ventana   = primer inicio → último cierre (solo despacho)
+  //   respuesta = envío → primer producto marcado
+  //   ventana   = primer producto marcado → último cierre (marcado puro)
   //   ciclo     = envío → último cierre
   const sheetIds = new Set(groups.map((group) => group.sheet.id));
   const responseValues: number[] = [];
@@ -316,8 +319,9 @@ export function buildDispatchMetrics(
   for (const sheet of sheets) {
     if (!sheetIds.has(sheet.id)) continue;
     const sheetGroups = groups.filter((group) => group.sheet.id === sheet.id);
-    const starts = sheetGroups
-      .map((group) => group.loadStart)
+    const marks = sheet.lines
+      .filter((line) => line.status !== 'ANULADO')
+      .map((line) => line.checkedAt)
       .filter((value): value is Date => value instanceof Date)
       .sort((a, b) => a.getTime() - b.getTime());
     const closes = sheetGroups
@@ -328,14 +332,14 @@ export function buildDispatchMetrics(
       .map((group) => group.invoiceAt)
       .filter((value): value is Date => value instanceof Date)
       .sort((a, b) => a.getTime() - b.getTime());
-    const firstStart = starts[0] ?? null;
+    const firstMovement = marks[0] ?? null;
     const allClosed = sheetGroups.length > 0 && sheetGroups.every((group) => group.loadClose !== null);
     const lastClose = allClosed ? closes[closes.length - 1] ?? null : null;
     const allInvoiced = sheetGroups.length > 0 && sheetGroups.every((group) => group.invoiceAt !== null);
     const lastInvoice = allInvoiced ? invoices[invoices.length - 1] ?? null : null;
-    if (firstStart) responseValues.push(Math.max(0, Math.round((firstStart.getTime() - sheet.sentAt.getTime()) / 60_000)));
-    if (firstStart && lastClose) {
-      windowValues.push(Math.max(0, Math.round((lastClose.getTime() - firstStart.getTime()) / 60_000)));
+    if (firstMovement) responseValues.push(Math.max(0, Math.round((firstMovement.getTime() - sheet.sentAt.getTime()) / 60_000)));
+    if (firstMovement && lastClose) {
+      windowValues.push(Math.max(0, Math.round((lastClose.getTime() - firstMovement.getTime()) / 60_000)));
       cycleValues.push(Math.max(0, Math.round((lastClose.getTime() - sheet.sentAt.getTime()) / 60_000)));
     }
     if (lastInvoice) {
