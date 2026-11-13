@@ -6,7 +6,7 @@
 // · Arriba: proyección de cierre (run-rate sobre días hábiles) con anillo de
 //   cumplimiento y KPIs.
 // · En medio: acumulado real vs proyección vs ritmo del forecast (ECharts),
-//   la tira de ventas por día con scroll horizontal y desviación por producto
+//   la tira de ventas por día a todo el ancho y desviación por producto
 //   (barras animadas, clic para enfocar).
 // · Abajo: tabla ordenable con semáforo, sacos para artículos SAC y CSV.
 //
@@ -16,6 +16,7 @@
 import type {
   ForecastCustomerSalesResponse,
   ForecastCustomerSalesRow,
+  ForecastResponse,
   ForecastSalesResponse,
   ForecastSalesRow,
 } from '@nexo/contracts';
@@ -26,7 +27,6 @@ import {
   BookOpen,
   CalendarDays,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   Download,
   Info,
@@ -76,6 +76,7 @@ import {
   customerSalesCsvFileName,
   dailySalesScale,
   dayLabel,
+  dayPendingSharePct,
   filterCustomerSalesRows,
   filterSalesRows,
   fmtKg,
@@ -84,15 +85,20 @@ import {
   fmtTonnes,
   monthLabel,
   monthOverMonthPct,
+  pendingCoveragePct,
   salesCsvFileName,
   salesDaysWithSales,
   salesDeviationGeometry,
+  salesGap,
   salesTone,
+  weeklyForecast,
   type DailySalesScale,
   type SalesDayBar,
+  type SalesGapScope,
   type SalesTone,
 } from '../../lib/sales-report';
 import { useHelpRow } from '../../lib/use-help-row';
+import { HERO_TONE } from './seller-ui';
 
 const C = {
   navy: '#003366',
@@ -244,6 +250,97 @@ function HeroStat({ label, value, hint }: { label: string; value: string; hint?:
   );
 }
 
+/** Colores de la barra de avance sobre el fondo oscuro del hero. */
+const GAP_BAR_COLOR = HERO_TONE;
+
+/**
+ * Tarjeta «Brecha»: alterna entre la brecha del mes (venta acumulada vs
+ * forecast) y la del día en curso (ritmo necesario vs venta de hoy), y
+ * acompaña la cifra con su barra de avance.
+ */
+function GapStat({ report }: { report: ForecastSalesResponse }) {
+  const [scope, setScope] = useState<SalesGapScope>('month');
+  const gap = useMemo(() => salesGap(report), [report]);
+  const canPickDay = report.status === 'OPEN' && gap.dayGoalKg !== null;
+  const isDay = canPickDay && scope === 'day';
+
+  const value = isDay ? gap.dayGapKg : gap.monthGapKg;
+  const pct = isDay ? gap.dayPct : gap.monthPct;
+  const tone = salesTone(pct);
+  const filled = pct === null ? 0 : Math.max(0, Math.min(100, pct));
+
+  const display =
+    value === null
+      ? '—'
+      : isDay
+        ? value > 0
+          ? `faltan ${fmtKg(value)} kg`
+          : value === 0
+            ? '0 kg'
+            : `+${fmtKg(Math.abs(value))} kg`
+        : `${value > 0 ? '+' : ''}${fmtKg(value)} kg`;
+
+  const hint = isDay
+    ? value !== null && value <= 0
+      ? 'objetivo del día cumplido'
+      : `objetivo ${fmtKg(gap.dayGoalKg)} kg/día · hoy ${fmtKg(gap.todayKg)} kg`
+    : value === null
+      ? 'depende de la meta'
+      : value >= 0
+        ? 'por encima del forecast'
+        : 'por debajo del forecast';
+
+  return (
+    <div className="rounded-xl bg-white/10 px-space-sm py-space-xs backdrop-blur-sm">
+      <div className="flex flex-wrap items-center justify-between gap-x-space-2xs gap-y-1">
+        <p className="text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-white/55">Brecha</p>
+        {canPickDay && (
+          <div role="group" aria-label="Escala de la brecha" className="flex shrink-0 rounded-pill bg-white/10 p-0.5">
+            {(
+              [
+                { value: 'month', label: 'Mes' },
+                { value: 'day', label: 'Día' },
+              ] as const
+            ).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={scope === option.value}
+                onClick={() => setScope(option.value)}
+                className={`rounded-pill px-1.5 py-0.5 text-[0.6rem] font-bold uppercase tracking-wide transition-colors ${
+                  scope === option.value ? 'bg-white/25 text-white' : 'text-white/50 hover:text-white/80'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <p className="tabular-nums text-title-md font-bold text-white">{display}</p>
+      <p className="text-label-sm text-white/50">{hint}</p>
+      <div
+        role="progressbar"
+        aria-label={isDay ? 'Avance del objetivo del día' : 'Avance de la meta del mes'}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(filled)}
+        aria-valuetext={fmtPct(pct)}
+        className="mt-1 h-1.5 overflow-hidden rounded-pill bg-white/15"
+      >
+        <span
+          aria-hidden
+          className="block h-full rounded-pill transition-[width] duration-700 ease-out"
+          style={{ width: `${filled}%`, background: GAP_BAR_COLOR[tone] }}
+        />
+      </div>
+      <p className="mt-1 text-[0.6rem] text-white/45">
+        {isDay ? 'del objetivo del día' : 'de la meta del mes'} · {fmtPct(pct)}
+      </p>
+    </div>
+  );
+}
+
 function MiniStat({ label, value, hint, tone = 'none' }: { label: string; value: string; hint?: string; tone?: SalesTone }) {
   return (
     <div className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-sm">
@@ -267,6 +364,8 @@ export function SalesReport({
   customerLoading = false,
   customerError = null,
   onCustomerRetry,
+  forecast,
+  forecastLoading = false,
 }: {
   report?: ForecastSalesResponse;
   isLoading: boolean;
@@ -282,6 +381,9 @@ export function SalesReport({
   customerLoading?: boolean;
   customerError?: Error | null;
   onCustomerRetry?: () => void;
+  /** Forecast del Asignador (mensual + semanas) del mes del informe. */
+  forecast?: ForecastResponse;
+  forecastLoading?: boolean;
 }) {
   const [search, setSearch] = useState('');
   const [onlyWithSales, setOnlyWithSales] = useState(false);
@@ -369,6 +471,7 @@ export function SalesReport({
     () => (report ? dailySalesScale(report, dayBars) : { maxKg: 1, goalKg: null }),
     [report, dayBars],
   );
+  const pendingPct = useMemo(() => (report ? pendingCoveragePct(report) : null), [report]);
   const activeDay = hoverDay ?? pinnedDay;
   const activeBar = useMemo(
     () => (activeDay ? dayBars.find((bar) => bar.date === activeDay) ?? null : null),
@@ -379,19 +482,12 @@ export function SalesReport({
     () => (detailDay ? dayBars.find((bar) => bar.date === detailDay) ?? null : null),
     [dayBars, detailDay],
   );
-  // Arranque del scroll: hoy si está en el mes, si no el último día con venta.
-  const initialBarDate = useMemo(() => {
-    if (!report) return null;
-    if (dayBars.some((bar) => bar.date === report.days.today)) return report.days.today;
-    const lastSale = [...dayBars].reverse().find((bar) => bar.kg > 0);
-    return lastSale?.date ?? dayBars[0]?.date ?? null;
-  }, [dayBars, report]);
-  // El clic fija el día y abre el modal; los días futuros solo se marcan.
+  // El clic fija el día y abre el modal si hay venta o pedidos pendientes.
   const openDay = useCallback(
     (date: string) => {
       setPinnedDay(date);
       const bar = dayBars.find((entry) => entry.date === date);
-      if (bar?.future) return;
+      if (!bar || (bar.kg <= 0 && bar.pendingKg <= 0)) return;
       setDetailDay(date);
     },
     [dayBars],
@@ -457,6 +553,23 @@ export function SalesReport({
     [report, focusCode],
   );
   const focusOption = useMemo(() => (report && focusRow ? historyOption(report, focusRow) : {}), [report, focusRow]);
+
+  // Forecast del Asignador para el producto enfocado: mes + reparto semanal.
+  const focusForecast = useMemo(() => {
+    if (!focusRow) return null;
+    const row = forecast?.rows.find((entry) => entry.productCode === focusRow.productCode) ?? null;
+    const monthlyKg = row?.monthlyQty ?? 0;
+    return {
+      monthlyKg,
+      weekly: weeklyForecast({
+        monthKg: monthlyKg,
+        weeks: row?.weeks ?? [],
+        weekRanges: forecast?.weekRanges ?? [],
+        today: report?.days.today ?? null,
+        kgPerUom: focusRow.uom === 'SAC' ? focusRow.kgPerUom : null,
+      }),
+    };
+  }, [focusRow, forecast, report?.days.today]);
 
   const pickerOptions = useMemo(
     () =>
@@ -547,9 +660,18 @@ export function SalesReport({
   const attainment = totals.attainmentPct;
   const projectedAttainment = totals.projectedAttainmentPct;
   const tone = salesTone(projectedAttainment ?? attainment);
-  // La brecha se mide sobre la venta real acumulada, no sobre la proyección de cierre.
-  const gapKg = totals.forecastKg > 0 ? totals.actualKg - totals.forecastKg : null;
   const basisLabel = report.basis === 'WORKING' ? 'día hábil (lun–sáb)' : 'día calendario';
+
+  // De dónde sale la meta del mes que se muestra en la ficha del producto.
+  const focusForecastOrigin = !focusRow
+    ? ''
+    : !isOpen
+      ? 'meta histórica'
+      : focusRow.forecastLiveKg !== null
+        ? 'Profit en vivo'
+        : focusRow.forecastCapturedAt
+          ? 'captura local'
+          : 'meta guardada';
 
   const download = () => {
     const blob = new Blob([buildSalesCsv(report)], { type: 'text/csv;charset=utf-8' });
@@ -1018,7 +1140,10 @@ export function SalesReport({
                 {isFuture ? 'Meta del mes' : isOpen ? 'Proyección de cierre' : 'Venta del mes'}
               </p>
               <div className="mt-space-2xs flex flex-wrap items-end gap-space-sm">
-                <span className="font-display tabular-nums text-[3.4rem] font-black leading-none tracking-tight text-secondary-container">
+                <span
+                  className="font-display tabular-nums text-[3.4rem] font-black leading-none tracking-tight"
+                  style={{ color: tone === 'none' ? 'rgb(255 255 255 / 0.75)' : HERO_TONE[tone] }}
+                >
                   {projected === null ? '—' : fmtKg(projectedTonnes, 1)}
                 </span>
                 <span className="pb-2 text-title-md font-semibold text-white/55">t</span>
@@ -1040,11 +1165,7 @@ export function SalesReport({
                     : `${fmtTonnes(totals.forecastKg)} t`
                 }
               />
-              <HeroStat
-                label="Brecha"
-                value={gapKg === null ? '—' : `${gapKg > 0 ? '+' : ''}${fmtKg(gapKg)} kg`}
-                hint={gapKg === null ? 'depende de la meta' : gapKg >= 0 ? 'por encima del forecast' : 'por debajo del forecast'}
-              />
+              <GapStat report={report} />
               <HeroStat
                 label={isOpen ? 'Ritmo necesario' : 'Entregas'}
                 value={isOpen ? (totals.requiredDailyKg === null ? '—' : `${fmtKg(totals.requiredDailyKg)} kg/día`) : fmtKg(totals.invoiceCount, 0)}
@@ -1082,7 +1203,7 @@ export function SalesReport({
                 {isOpen
                   ? 'Real hasta el corte · proyección punteada · ritmo uniforme del forecast'
                   : 'Venta real acumulada · ritmo uniforme del forecast'}
-                {report.daily.length > 0 && totals.actualKg > 0
+                {report.daily.length > 0 && (totals.actualKg > 0 || totals.pendingKg > 0)
                   ? ' · pasa el mouse o haz clic en un día: la barra de abajo se sincroniza'
                   : ''}
               </p>
@@ -1104,7 +1225,7 @@ export function SalesReport({
             )}
           </header>
           <div className="px-space-sm pb-space-sm">
-            {report.daily.length > 0 && totals.actualKg > 0 ? (
+            {report.daily.length > 0 && (totals.actualKg > 0 || totals.pendingKg > 0) ? (
               <>
                 <EChart
                   option={chartOption}
@@ -1120,8 +1241,10 @@ export function SalesReport({
                   scale={dayScale}
                   activeDate={activeDay}
                   pinnedDate={pinnedDay}
-                  initialDate={initialBarDate}
-                  fallbackSummary={`${daysWithSales.length} días con venta · ${fmtKg(totals.actualKg)} kg · ${fmtKg(totals.invoiceCount)} notas`}
+                  pendingSharePct={pendingPct}
+                  fallbackSummary={`${daysWithSales.length} días con venta · ${fmtKg(totals.actualKg)} kg · ${fmtKg(
+                    totals.invoiceCount,
+                  )} notas${totals.pendingKg > 0 ? ` · ${fmtKg(totals.pendingKg)} kg en pedidos pendientes` : ''}`}
                   onHover={setHoverDay}
                   onPin={openDay}
                   onClear={clearPinnedDay}
@@ -1319,6 +1442,7 @@ export function SalesReport({
 
       {detailDay && detailBar && (
         <DaySalesModal
+          key={detailDay}
           date={detailDay}
           bar={detailBar}
           report={report}
@@ -1426,6 +1550,76 @@ export function SalesReport({
                 </p>
               </div>
 
+              {/* Forecast del mes y su reparto semanal (Asignador). */}
+              <section className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest p-space-sm">
+                <header className="flex flex-wrap items-start justify-between gap-space-sm">
+                  <div className="min-w-0">
+                    <p className="text-label-sm font-semibold uppercase tracking-wide text-outline">Forecast del mes</p>
+                    <p className="tabular-nums text-headline-md font-black text-primary">
+                      {focusRow.forecastKg > 0 ? `${fmtKg(focusRow.forecastKg)} kg` : '—'}
+                    </p>
+                    <p className="text-label-sm text-on-surface-variant">
+                      {focusRow.forecastKg > 0
+                        ? `${focusForecastOrigin}${
+                            focusRow.forecastCapturedAt
+                              ? ` · capturada ${fmtDate(focusRow.forecastCapturedAt.slice(0, 10))}`
+                              : ''
+                          }`
+                        : 'sin meta para el mes'}
+                    </p>
+                  </div>
+                  {focusForecast?.weekly.hasSplit &&
+                    Math.abs(focusForecast.weekly.totalKg - focusRow.forecastKg) > 1 && (
+                      <Badge tone="muted">Desglose {fmtKg(focusForecast.weekly.totalKg)} kg</Badge>
+                    )}
+                </header>
+
+                <div className="my-space-sm h-px bg-surface-container" />
+
+                <div className="flex flex-wrap items-baseline justify-between gap-space-2xs">
+                  <h3 className="text-label-md font-bold text-on-surface">Forecast semanal</h3>
+                  <p className="text-label-sm text-outline">Semanas del Asignador · por defecto mes ÷ 4</p>
+                </div>
+
+                {focusForecast?.weekly.hasSplit ? (
+                  <>
+                    <div className="mt-space-2xs grid grid-cols-2 gap-space-2xs sm:grid-cols-4">
+                      {focusForecast.weekly.tiles.map((tile) => (
+                        <div
+                          key={tile.weekIndex}
+                          className={cx(
+                            'rounded-xl border p-space-2xs',
+                            tile.isCurrent
+                              ? 'border-secondary-container bg-secondary-container/10'
+                              : 'border-outline-variant/30 bg-surface',
+                          )}
+                        >
+                          <p className="flex items-baseline justify-between gap-1 text-label-sm font-semibold uppercase text-outline">
+                            <span>S{tile.weekIndex}</span>
+                            {tile.isCurrent && <span className="normal-case text-secondary">en curso</span>}
+                          </p>
+                          <p className="tabular-nums text-title-md font-black text-on-surface">{fmtKg(tile.kg)} kg</p>
+                          <p className="text-label-sm text-on-surface-variant">{tile.rangeLabel}</p>
+                          <p className="text-label-sm text-outline">
+                            {tile.pctOfMonth === null ? '—' : `${fmtPct(tile.pctOfMonth)} del mes`}
+                            {tile.sacks !== null ? ` · ${fmtKg(tile.sacks)} sacos` : ''}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-space-2xs text-label-sm text-outline">
+                      Se ajustan en la pestaña Asignador; el forecast mensual lo administra Profit.
+                    </p>
+                  </>
+                ) : (
+                  <p className="mt-space-2xs text-label-sm text-on-surface-variant">
+                    {forecastLoading
+                      ? 'Cargando desglose semanal…'
+                      : `Profit no trae desglose semanal para ${monthLabel(report.year, report.month)}.`}
+                  </p>
+                )}
+              </section>
+
               <div className="grid grid-cols-1 gap-space-sm sm:grid-cols-2">
                 <MiniStat
                   label="Venta del mes"
@@ -1446,34 +1640,28 @@ export function SalesReport({
                 />
                 <MiniStat label="Promedio/día" value={`${fmtKg(focusRow.dailyAvgKg)} kg`} hint={`por ${basisLabel}`} />
                 <MiniStat
-                  label={isOpen ? 'Ritmo necesario' : 'Meta del mes'}
+                  label={isOpen ? 'Ritmo necesario' : 'Brecha'}
                   value={
                     isOpen
                       ? focusRow.requiredDailyKg === null
                         ? '—'
                         : `${fmtKg(focusRow.requiredDailyKg)} kg/día`
-                      : focusRow.forecastKg > 0
-                        ? `${fmtKg(focusRow.forecastKg)} kg`
-                        : '—'
+                      : focusRow.gapKg === null
+                        ? '—'
+                        : `${focusRow.gapKg > 0 ? '+' : ''}${fmtKg(focusRow.gapKg)} kg`
                   }
                   hint={
                     isOpen
-                      ? focusRow.forecastKg > 0
-                        ? `meta ${fmtKg(focusRow.forecastKg)} kg${
-                            focusRow.forecastCapturedAt
-                              ? ` · capturada ${fmtDate(focusRow.forecastCapturedAt.slice(0, 10))}`
-                              : ''
-                          }`
-                        : 'sin meta'
-                      : focusRow.forecastKg > 0
-                        ? `meta histórica guardada${
-                            focusRow.forecastCapturedAt
-                              ? ` · ${fmtDate(focusRow.forecastCapturedAt.slice(0, 10))}`
-                              : ''
-                          }`
-                        : 'sin meta guardada'
+                      ? focusRow.requiredDailyKg === null
+                        ? 'sin meta'
+                        : 'para cerrar el forecast del mes'
+                      : focusRow.gapKg === null
+                        ? report.status === 'FUTURE'
+                          ? 'aún sin venta en el mes'
+                          : 'sin meta'
+                        : 'cierre real menos meta'
                   }
-                  tone="warn"
+                  tone={isOpen ? 'warn' : focusRow.gapKg === null ? 'none' : focusRow.gapKg < 0 ? 'bad' : 'good'}
                 />
               </div>
             </div>
@@ -1882,24 +2070,25 @@ function Semaphore({ row }: { row: ForecastSalesRow }) {
   );
 }
 
-/** Ancho de cada día en la tira: fija el scroll horizontal del mes. */
-const DAY_SLOT_PX = 38;
 /** Alto de la pista de barras y de la fila de días. */
 const BAR_AREA_PX = 148;
 const DAY_LABEL_PX = 22;
 
 /**
- * Tira de ventas por día: una columna por día del mes dentro de una caja con
- * scroll horizontal. Comparte `activeDate`/`pinnedDate` con la gráfica de
- * acumulado, así el clic arriba marca la barra y el clic en la barra fija el
- * día en la línea.
+ * Tira de ventas por día: una columna por día del mes. El ancho es fluido —
+ * los días se reparten el espacio disponible del panel, igual que el eje X de
+ * la gráfica de acumulado, así el mes completo entra sin scroll. Cada barra se
+ * apila: abajo la venta real de Profit y arriba el pronóstico de los pedidos
+ * pendientes en su fecha de entrega efectiva. Comparte `activeDate`/`pinnedDate`
+ * con la gráfica, así el clic arriba marca la barra y el clic en la barra fija
+ * el día en la línea.
  */
 const DailySalesBars = memo(function DailySalesBars({
   bars,
   scale,
   activeDate,
   pinnedDate,
-  initialDate,
+  pendingSharePct,
   fallbackSummary,
   onHover,
   onPin,
@@ -1909,60 +2098,54 @@ const DailySalesBars = memo(function DailySalesBars({
   scale: DailySalesScale;
   activeDate: string | null;
   pinnedDate: string | null;
-  initialDate: string | null;
+  /** % del forecast del mes ya comprometido en pedidos pendientes. */
+  pendingSharePct: number | null;
   fallbackSummary: string;
   onHover: (date: string | null) => void;
   onPin: (date: string) => void;
   /** Quita el día fijado y cierra el modal de desglose. */
   onClear: () => void;
 }) {
-  const scroller = useRef<HTMLDivElement | null>(null);
-  const anchors = useRef(new Map<string, HTMLButtonElement>());
+  const plot = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [plotWidth, setPlotWidth] = useState(0);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(frame);
   }, []);
 
-  // Centra un día sin mover la página: solo se toca el scroll de la tira.
-  const centerOn = useCallback((date: string | null, smooth: boolean) => {
-    const box = scroller.current;
-    const node = date ? anchors.current.get(date) : null;
-    if (!box || !node) return;
-    const left = node.offsetLeft + node.offsetWidth / 2 - box.clientWidth / 2;
-    const maxLeft = Math.max(0, box.scrollWidth - box.clientWidth);
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    box.scrollTo({
-      left: Math.max(0, Math.min(left, maxLeft)),
-      behavior: smooth && !reduceMotion ? 'smooth' : 'auto',
-    });
+  // Ancho real del área de barras: define cuánto ocupa cada día.
+  useEffect(() => {
+    const node = plot.current;
+    if (!node) return;
+    const measure = () => setPlotWidth(node.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
   }, []);
 
-  // Al abrir el mes, el tramo con actividad queda a la vista.
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => centerOn(initialDate, false));
-    return () => cancelAnimationFrame(frame);
-  }, [centerOn, initialDate]);
-
-  // Un clic (en la línea o en una barra) centra el día elegido.
-  useEffect(() => {
-    if (!pinnedDate) return;
-    const frame = requestAnimationFrame(() => centerOn(pinnedDate, true));
-    return () => cancelAnimationFrame(frame);
-  }, [centerOn, pinnedDate]);
-
-  const shift = (direction: -1 | 1) => {
-    scroller.current?.scrollBy({ left: direction * DAY_SLOT_PX * 7, behavior: 'smooth' });
-  };
-
   if (bars.length === 0) return null;
+
+  // Días a mostrar con número: si la ranura se estrecha, se rotula 1 de cada N.
+  const slot = plotWidth > 0 ? plotWidth / bars.length : 0;
+  const labelEvery = slot >= 24 || slot === 0 ? 1 : slot >= 16 ? 2 : slot >= 11 ? 3 : 0;
 
   const goalPct =
     scale.goalKg !== null && scale.maxKg > 0 ? Math.min(100, (scale.goalKg / scale.maxKg) * 100) : null;
   const activeBar = activeDate ? bars.find((bar) => bar.date === activeDate) ?? null : null;
+  const pendingTotal = bars.reduce((acc, bar) => acc + bar.pendingKg, 0);
   const summary = activeBar
-    ? `${dayLabel(activeBar.date)}${activeBar.partial ? ' · en curso' : ''} · ${fmtKg(activeBar.kg)} kg · ${fmtKg(activeBar.invoices)} notas`
+    ? `${dayLabel(activeBar.date)}${activeBar.partial ? ' · en curso' : ''} · ${fmtKg(activeBar.kg)} kg · ${fmtKg(
+        activeBar.invoices,
+      )} notas${
+        activeBar.pendingKg > 0
+          ? ` · ${fmtKg(activeBar.pendingKg)} kg en ${fmtKg(activeBar.pendingOrders)} pedidos (${fmtPct(
+              dayPendingSharePct(activeBar),
+            )} del día)`
+          : ''
+      }`
     : fallbackSummary;
 
   return (
@@ -1973,37 +2156,19 @@ const DailySalesBars = memo(function DailySalesBars({
           <p className="text-label-md text-on-surface-variant">{summary}</p>
           <p className="text-label-sm text-outline">Clic en una barra para abrir el desglose por producto y cliente.</p>
         </div>
-        <div className="flex items-center gap-space-2xs">
+        {pinnedDate && (
           <button
             type="button"
-            onClick={() => shift(-1)}
-            aria-label="Ver días anteriores"
-            className="grid size-7 place-items-center rounded-pill border border-outline-variant/40 text-on-surface-variant transition-colors hover:bg-surface-container-low"
+            onClick={onClear}
+            className="inline-flex h-7 items-center gap-1 rounded-pill border border-outline-variant/40 px-space-sm text-label-sm font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
           >
-            <ChevronLeft aria-hidden className="size-3.5" />
+            <X aria-hidden className="size-3.5" /> Ver todo el mes
           </button>
-          <button
-            type="button"
-            onClick={() => shift(1)}
-            aria-label="Ver días siguientes"
-            className="grid size-7 place-items-center rounded-pill border border-outline-variant/40 text-on-surface-variant transition-colors hover:bg-surface-container-low"
-          >
-            <ChevronRight aria-hidden className="size-3.5" />
-          </button>
-          {pinnedDate && (
-            <button
-              type="button"
-              onClick={onClear}
-              className="inline-flex h-7 items-center gap-1 rounded-pill border border-outline-variant/40 px-space-sm text-label-sm font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
-            >
-              <X aria-hidden className="size-3.5" /> Ver todo el mes
-            </button>
-          )}
-        </div>
+        )}
       </header>
 
-      <div className="flex items-start gap-1.5 px-space-xs">
-        {/* Eje de kg/día fuera del scroll: no se va con las barras. */}
+      <div className="flex items-start gap-1.5 pl-space-xs pr-4">
+        {/* Eje de kg/día: mismo margen izquierdo que el eje Y de la gráfica. */}
         <div
           aria-hidden
           className="relative w-9 shrink-0 text-right text-[10px] tabular-nums text-outline"
@@ -2014,14 +2179,8 @@ const DailySalesBars = memo(function DailySalesBars({
           <span className="absolute bottom-0 right-0 translate-y-1/2 leading-none">0</span>
         </div>
 
-        <div
-          ref={scroller}
-          role="group"
-          aria-label="Días del mes"
-          tabIndex={0}
-          className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain rounded-lg pb-1 [scrollbar-width:thin] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/60"
-        >
-          <div className="relative" style={{ width: bars.length * DAY_SLOT_PX }}>
+        <div ref={plot} role="group" aria-label="Días del mes" className="min-w-0 flex-1">
+          <div className="relative w-full">
             {/* Guías horizontales y meta diaria. */}
             <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0" style={{ height: BAR_AREA_PX }}>
               <span className="absolute inset-x-0 top-0 border-t border-dashed border-surface-container" />
@@ -2035,35 +2194,42 @@ const DailySalesBars = memo(function DailySalesBars({
               )}
             </div>
 
-            <ul className="relative flex items-end" style={{ height: BAR_AREA_PX + DAY_LABEL_PX }}>
-              {bars.map((bar) => {
+            <ul className="relative flex w-full items-end" style={{ height: BAR_AREA_PX + DAY_LABEL_PX }}>
+              {bars.map((bar, index) => {
                 const isActive = activeDate === bar.date;
                 const isPinned = pinnedDate === bar.date;
-                const height = bar.kg > 0 ? Math.max(3, (bar.kg / scale.maxKg) * BAR_AREA_PX) : 2;
+                // Barra apilada: venta real abajo y pronóstico de pedidos arriba.
+                const realHeight =
+                  bar.kg > 0
+                    ? Math.max(3, (bar.kg / scale.maxKg) * BAR_AREA_PX)
+                    : bar.pendingKg > 0
+                      ? 0
+                      : 2;
+                const pendingHeight =
+                  bar.pendingKg > 0 ? Math.max(3, (bar.pendingKg / scale.maxKg) * BAR_AREA_PX) : 0;
+                // Evita números pegados cuando el mes se reparte en poco ancho.
+                const showLabel =
+                  labelEvery === 0
+                    ? isPinned || bar.isToday
+                    : isPinned || bar.isToday || index % labelEvery === 0;
 
                 return (
-                  <li
-                    key={bar.date}
-                    className="shrink-0"
-                    style={{ width: DAY_SLOT_PX, height: BAR_AREA_PX + DAY_LABEL_PX }}
-                  >
+                  <li key={bar.date} className="min-w-0 flex-1" style={{ height: BAR_AREA_PX + DAY_LABEL_PX }}>
                     <button
                       type="button"
-                      ref={(node) => {
-                        if (node) anchors.current.set(bar.date, node);
-                        else anchors.current.delete(bar.date);
-                      }}
                       aria-pressed={isPinned}
                       aria-label={`Día ${bar.dayNumber}: ${fmtKg(bar.kg)} kg, ${fmtKg(bar.invoices)} notas${
-                        bar.partial ? ', día en curso' : bar.future ? ', día futuro' : ''
-                      }`}
+                        bar.pendingKg > 0
+                          ? `, ${fmtKg(bar.pendingKg)} kg en ${fmtKg(bar.pendingOrders)} pedidos pendientes`
+                          : ''
+                      }${bar.partial ? ', día en curso' : bar.future ? ', día futuro' : ''}`}
                       onClick={() => onPin(bar.date)}
                       onMouseEnter={() => onHover(bar.date)}
                       onMouseLeave={() => onHover(null)}
                       onFocus={() => onHover(bar.date)}
                       onBlur={() => onHover(null)}
                       className={cx(
-                        'group flex h-full w-full flex-col items-center justify-end rounded-md px-[3px] pb-0 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70',
+                        'group flex h-full w-full flex-col items-center justify-end rounded-md px-px pb-0 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70',
                         isActive ? 'bg-surface-container-low' : 'hover:bg-surface-container-low/60',
                       )}
                     >
@@ -2071,27 +2237,42 @@ const DailySalesBars = memo(function DailySalesBars({
                         <span
                           aria-hidden
                           className={cx(
-                            'relative w-full max-w-[22px] rounded-t-[4px] transition-[height] duration-500 ease-out',
-                            bar.future
-                              ? 'bg-surface-container-high/60'
-                              : bar.kg <= 0
-                                ? 'bg-surface-container-high'
-                                : bar.partial
-                                  ? 'bg-primary-container/45'
-                                  : 'bg-primary-container',
+                            'relative flex w-full max-w-[18px] flex-col justify-end overflow-hidden rounded-t-[4px] transition-[height] duration-500 ease-out',
                             isPinned && 'ring-2 ring-secondary ring-offset-1',
                             isActive && !isPinned && 'ring-1 ring-primary/30',
                           )}
-                          style={{ height: mounted ? height : 0 }}
+                          style={{ height: mounted ? realHeight + pendingHeight : 0 }}
                         >
-                          {bar.partial && bar.kg > 0 && (
-                            <span className="absolute inset-x-0 top-0 h-1 rounded-t-[4px] bg-secondary" />
+                          {bar.pendingKg > 0 && (
+                            <span
+                              className="w-full border-t border-dashed border-white/70"
+                              style={{ height: mounted ? pendingHeight : 0, background: C.amber }}
+                            />
+                          )}
+                          {realHeight > 0 && (
+                            <span
+                              className={cx(
+                                'relative w-full',
+                                bar.future
+                                  ? 'bg-surface-container-high/60'
+                                  : bar.kg <= 0
+                                    ? 'bg-surface-container-high'
+                                    : bar.partial
+                                      ? 'bg-primary-container/45'
+                                      : 'bg-primary-container',
+                              )}
+                              style={{ height: realHeight }}
+                            >
+                              {bar.partial && bar.kg > 0 && (
+                                <span className="absolute inset-x-0 top-0 h-1 bg-secondary" />
+                              )}
+                            </span>
                           )}
                         </span>
                       </span>
                       <span
                         className={cx(
-                          'flex h-[22px] min-w-[20px] items-center justify-center rounded-pill px-1 text-[10px] tabular-nums',
+                          'flex h-[22px] w-full items-center justify-center whitespace-nowrap rounded-pill text-[10px] tabular-nums',
                           isPinned
                             ? 'bg-primary-container font-bold text-white'
                             : bar.isToday
@@ -2101,7 +2282,7 @@ const DailySalesBars = memo(function DailySalesBars({
                                 : 'text-outline',
                         )}
                       >
-                        {bar.dayNumber}
+                        {showLabel ? bar.dayNumber : ''}
                       </span>
                     </button>
                   </li>
@@ -2119,6 +2300,13 @@ const DailySalesBars = memo(function DailySalesBars({
         <span className="inline-flex items-center gap-1">
           <span aria-hidden className="size-2 rounded-full bg-secondary" /> En curso
         </span>
+        {pendingTotal > 0 && (
+          <span className="inline-flex items-center gap-1">
+            <span aria-hidden className="size-2 rounded-full" style={{ background: C.amber }} />
+            Pedidos por entregar {fmtKg(pendingTotal)} kg
+            {pendingSharePct !== null ? ` · ${fmtPct(pendingSharePct)} del forecast` : ''}
+          </span>
+        )}
         {scale.goalKg !== null && (
           <span className="inline-flex items-center gap-1">
             <span aria-hidden className="w-4 border-t-2 border-dashed border-secondary" /> Meta/día{' '}

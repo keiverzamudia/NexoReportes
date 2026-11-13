@@ -8,6 +8,7 @@ import {
   DispatchCustomerKeyInput,
   DispatchCustomerProgress,
   DispatchCustomerReopenInput,
+  DispatchCustomerRow,
   DispatchEventMeta,
   DispatchEventProduct,
   DispatchInvoiceInput,
@@ -262,7 +263,8 @@ export class DispatchService {
       take: 300,
     });
 
-    const summaries = rows.map((row) => this.toSummary(row, viewer));
+    const vendors = await this.customerVendors(rows);
+    const summaries = rows.map((row) => this.toSummary(row, viewer, vendors));
     const items = query.status ? summaries.filter((item) => item.status === query.status) : summaries;
 
     const counters = {
@@ -315,8 +317,9 @@ export class DispatchService {
     // Un despacho ajeno responde 404: no se filtra su existencia.
     if (!sheet || !this.canSee(sheet, viewer)) throw new NotFoundException('Despacho no encontrado.');
 
+    const vendors = await this.customerVendors([sheet]);
     return {
-      ...this.toSummary(sheet, viewer),
+      ...this.toSummary(sheet, viewer, vendors),
       lines: sheet.lines.map((line) => this.toLine(line, sheet)),
       events: this.eventsFor(sheet, viewer),
       loadPlan: this.parseLoadPlan(sheet.loadPlanJson),
@@ -2476,7 +2479,11 @@ export class DispatchService {
     }
   }
 
-  private toSummary(sheet: SheetWithLines, viewer: DispatchViewer): DispatchSheetSummary {
+  private toSummary(
+    sheet: SheetWithLines,
+    viewer: DispatchViewer,
+    vendors?: Map<string, string | null>,
+  ): DispatchSheetSummary {
     const allLines = sheet.lines ?? [];
     // Los renglones anulados son historia: no cuentan en totales ni progreso.
     const lines = allLines.filter((line) => line.status !== 'ANULADO');
@@ -2530,6 +2537,7 @@ export class DispatchService {
     const pendingInvoiceCustomers = progress.filter(
       (row) => row.loadClosedAt !== null && row.invoiceDeliveredAt === null,
     ).length;
+    const customerRows = this.customerSummaries(sheet, lines, progress, vendors);
 
     return {
       id: sheet.id,
@@ -2569,6 +2577,7 @@ export class DispatchService {
       linesDone,
       progress: lines.length > 0 ? linesDone / lines.length : 0,
       customers: customers.slice(0, 3),
+      customerRows,
       nextDeliveryDate: (pendingDates[0] ?? allDates[0]) || null,
       updatedAt: sheet.updatedAt.toISOString(),
       loadStartedAt: iso(starts[0] ?? sheet.startedAt),
@@ -2582,6 +2591,110 @@ export class DispatchService {
       canCancel: this.canCancel(sheet, viewer),
       canInvoice: this.canInvoice(sheet, viewer),
     };
+  }
+
+  /**
+   * Vendedor asignado a cada cliente según el catálogo local (Profit lo
+   * sincroniza en `Customer.vendor`). Se resuelve en una sola consulta por
+   * bandeja, no por renglón.
+   */
+  private async customerVendors(
+    sheets: Array<{ lines?: LineRowLite[] }>,
+  ): Promise<Map<string, string | null>> {
+    const codes = new Set<string>();
+    for (const sheet of sheets) {
+      for (const line of sheet.lines ?? []) {
+        const code = line.customerCode?.trim();
+        if (code) codes.add(code);
+      }
+    }
+    if (codes.size === 0) return new Map();
+    const customers = await this.prisma.customer.findMany({
+      where: { externalCode: { in: [...codes] } },
+      select: { externalCode: true, vendor: true },
+    });
+    return new Map(customers.map((customer) => [customer.externalCode, customer.vendor?.trim() || null]));
+  }
+
+  /**
+   * Una fila por cliente para la bandeja: pedidos, renglones, sacos, kg,
+   * próxima entrega y avance de sus relojes. Se apoya en los mismos buckets
+   * que el detalle para que ambos números coincidan.
+   */
+  private customerSummaries(
+    sheet: SheetWithLines,
+    lines: LineRowLite[],
+    progress: DispatchCustomerProgress[],
+    vendors?: Map<string, string | null>,
+  ): DispatchCustomerRow[] {
+    const progressByKey = new Map(progress.map((row) => [row.customerKey, row]));
+    return this.customerBuckets(lines).map((bucket) => {
+      const clock = progressByKey.get(bucket.key);
+      const plannedOrderKeys = new Set<string>();
+      const pendingOrderKeys = new Set<string>();
+      const pendingDates: string[] = [];
+      const allDates: string[] = [];
+      let plannedSacks = 0;
+      let loadedSacks = 0;
+      let plannedKg = 0;
+      let loadedKg = 0;
+      let linesDone = 0;
+      let partialLines = 0;
+      let missingLines = 0;
+
+      for (const line of bucket.lines) {
+        const orderKey = line.orderNumber?.trim() || `__line-${line.id}`;
+        plannedOrderKeys.add(orderKey);
+        const pendingQty = Math.max(0, toNumber(line.plannedQty) - toNumber(line.loadedQty));
+        const pendingKg = Math.max(0, toNumber(line.plannedKg) - toNumber(line.loadedKg));
+        if (pendingQty > 0 || pendingKg > 0) pendingOrderKeys.add(orderKey);
+        plannedKg += toNumber(line.plannedKg);
+        loadedKg += toNumber(line.loadedKg);
+        if (line.uom === 'SAC') {
+          plannedSacks += toNumber(line.plannedQty);
+          loadedSacks += toNumber(line.loadedQty);
+        }
+        if (line.status !== 'PENDIENTE') linesDone += 1;
+        if (line.status === 'PARCIAL') partialLines += 1;
+        else if (line.status === 'FALTANTE' || line.status === 'NOVEDAD') missingLines += 1;
+        if (line.effectiveDate) {
+          allDates.push(line.effectiveDate);
+          if (line.status === 'PENDIENTE') pendingDates.push(line.effectiveDate);
+        }
+      }
+
+      pendingDates.sort();
+      allDates.sort();
+      const status: DispatchCustomerRow['status'] =
+        sheet.status === 'CANCELADO'
+          ? 'ANULADO'
+          : clock?.invoiceDeliveredAt
+            ? 'FACTURADA'
+            : clock?.loadClosedAt
+              ? 'CARGA_CERRADA'
+              : clock?.loadStartedAt
+                ? 'EN_CARGA'
+                : 'PENDIENTE';
+
+      return {
+        customerKey: bucket.key,
+        customerCode: bucket.code,
+        customerName: bucket.name,
+        vendor: bucket.code ? (vendors?.get(bucket.code.trim()) ?? null) : null,
+        status,
+        plannedOrders: plannedOrderKeys.size,
+        pendingOrders: pendingOrderKeys.size,
+        plannedLines: bucket.lines.length,
+        linesDone,
+        partialLines,
+        missingLines,
+        plannedSacks: round2(plannedSacks),
+        plannedKg: round2(plannedKg),
+        loadedSacks: round2(loadedSacks),
+        loadedKg: round2(loadedKg),
+        nextDeliveryDate: (pendingDates[0] ?? allDates[0]) || null,
+      };
+    });
   }
 
   private toLine(line: LineRow, sheet?: SheetWithLines): DispatchSheetLine {

@@ -19,6 +19,9 @@ export class MssqlProfitAdapter implements ProfitAdapter {
   readonly dialect = 'mssql' as const;
   private readonly logger = new Logger(MssqlProfitAdapter.name);
   private pool: sql.ConnectionPool | null = null;
+  // Conexión en curso: si dos consultas llegan con el pool frío, comparten la
+  // misma promesa en vez de crear dos pools y cerrar una conexión por accidente.
+  private connecting: Promise<sql.ConnectionPool> | null = null;
   // Una sola lectura a la vez: el pool de SQL Server no tolera dos consultas
   // concurrentes (el sync y la reconciliación comparten este adaptador).
   private readQueue: Promise<unknown> = Promise.resolve();
@@ -58,9 +61,23 @@ export class MssqlProfitAdapter implements ProfitAdapter {
     if (this.pool?.connected) {
       return this.pool;
     }
-    this.pool = new sql.ConnectionPool(this.poolConfig());
-    await this.pool.connect();
-    return this.pool;
+    if (this.connecting) {
+      return this.connecting;
+    }
+    const pool = new sql.ConnectionPool(this.poolConfig());
+    this.pool = pool;
+    this.connecting = pool
+      .connect()
+      .then(() => {
+        this.connecting = null;
+        return pool;
+      })
+      .catch((error: unknown) => {
+        this.connecting = null;
+        this.pool = null;
+        throw error;
+      });
+    return this.connecting;
   }
 
   async testConnection(): Promise<ProfitConnectionTest> {

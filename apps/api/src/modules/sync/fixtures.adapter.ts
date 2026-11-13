@@ -240,6 +240,45 @@ const FIXTURE_SELLER_CLIENTS = [
   { code: '900000005', name: 'GRANJA LA ESPERANZA, C.A', tipo: 'L3 MINORISTA' },
 ];
 
+// Cartera de desarrollo: cada cliente pertenece a un vendedor distinto del
+// que firma sus notas. Así se puede ver el cruce cartera/nota en la UI.
+const FIXTURE_PORTFOLIO = new Map(
+  FIXTURE_SELLER_CLIENTS.map((client, index) => [
+    client.code,
+    FIXTURE_SELLERS[(index + 2) % FIXTURE_SELLERS.length]!,
+  ]),
+);
+
+// Cliente con cartera pero sin compras: ejercita el caso «asignado y en cero».
+const FIXTURE_PORTFOLIO_EXTRAS = [
+  { code: '900000099', name: 'CLIENTE SIN COMPRAS, C.A', tipo: 'L3 MINORISTA', sellerCode: '012' },
+];
+
+function sellerPortfolio(limit: number): Record<string, unknown>[] {
+  const rows = FIXTURE_SELLER_CLIENTS.map((client) => {
+    const seller = FIXTURE_PORTFOLIO.get(client.code)!;
+    return {
+      co_ven: seller.code,
+      ven_des: seller.name,
+      co_cli: client.code,
+      cli_des: client.name,
+      tipo: client.tipo,
+    };
+  });
+  for (const extra of FIXTURE_PORTFOLIO_EXTRAS) {
+    const seller = FIXTURE_SELLERS.find((entry) => entry.code === extra.sellerCode);
+    if (!seller) continue;
+    rows.push({
+      co_ven: seller.code,
+      ven_des: seller.name,
+      co_cli: extra.code,
+      cli_des: extra.name,
+      tipo: extra.tipo,
+    });
+  }
+  return rows.slice(0, limit);
+}
+
 function fixtureSellerOf(fecha: string, coArt: string) {
   const day = Number(fecha.slice(8, 10)) || 1;
   const productIndex = Math.max(0, SALES_PRODUCTS.findIndex((product) => product.co_art === coArt));
@@ -258,8 +297,10 @@ function sellerSalesMonthly(params: Record<string, unknown>, limit: number): Rec
     {
       anio: number;
       mes: number;
-      co_ven: string;
-      ven_des: string;
+      co_ven_nota: string;
+      ven_nota: string;
+      co_ven_cartera: string;
+      ven_cartera: string;
       co_cli: string;
       cli_des: string;
       tipo: string;
@@ -275,13 +316,16 @@ function sellerSalesMonthly(params: Record<string, unknown>, limit: number): Rec
     if (from && day < from) continue;
     if (to && day >= to) continue;
     const { seller, client } = fixtureSellerOf(day, String(row.co_art));
+    const portfolio = FIXTURE_PORTFOLIO.get(client.code) ?? seller;
     const [year, month] = day.split('-');
     const key = `${year}-${month}-${seller.code}-${client.code}`;
     const bucket = buckets.get(key) ?? {
       anio: Number(year),
       mes: Number(month),
-      co_ven: seller.code,
-      ven_des: seller.name,
+      co_ven_nota: seller.code,
+      ven_nota: seller.name,
+      co_ven_cartera: portfolio.code,
+      ven_cartera: portfolio.name,
       co_cli: client.code,
       cli_des: client.name,
       tipo: client.tipo,
@@ -300,8 +344,13 @@ function sellerSalesMonthly(params: Record<string, unknown>, limit: number): Rec
   return [...buckets.values()].map((bucket) => ({
     anio: bucket.anio,
     mes: bucket.mes,
-    co_ven: bucket.co_ven,
-    ven_des: bucket.ven_des,
+    co_ven_nota: bucket.co_ven_nota,
+    ven_nota: bucket.ven_nota,
+    co_ven_cartera: bucket.co_ven_cartera,
+    ven_cartera: bucket.ven_cartera,
+    // Compatibilidad con consumidores antiguos del fixture.
+    co_ven: bucket.co_ven_nota,
+    ven_des: bucket.ven_nota,
     co_cli: bucket.co_cli,
     cli_des: bucket.cli_des,
     tipo: bucket.tipo,
@@ -312,6 +361,88 @@ function sellerSalesMonthly(params: Record<string, unknown>, limit: number): Rec
     notas: bucket.dias.size,
     ultima: bucket.ultima,
   })).slice(0, limit);
+}
+
+// Nombre del vendedor para el expediente de productos.
+function sellerNameFixture(params: Record<string, unknown>, _limit: number): Record<string, unknown>[] {
+  const code = String(params.coVen ?? '').trim();
+  const seller = FIXTURE_SELLERS.find((entry) => entry.code === code);
+  return seller ? [{ ven_des: seller.name }] : [];
+}
+
+// Productos vendidos por un vendedor: misma asignación cartera/nota que el
+// resto de fixtures. Devuelve las filas que el servicio agrega por producto.
+function sellerProductsFixture(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const coVen = String(params.coVen ?? '').trim();
+  const buckets = new Map<
+    string,
+    {
+      anio: number;
+      mes: number;
+      co_art: string;
+      art_des: string;
+      uni_venta: string;
+      uni_relac: number;
+      co_cli: string;
+      co_ven_nota: string;
+      co_ven_cartera: string;
+      unid: number;
+      kg: number;
+      dias: Set<string>;
+      ultima: string;
+    }
+  >();
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const { seller, client } = fixtureSellerOf(day, String(row.co_art));
+    const portfolio = FIXTURE_PORTFOLIO.get(client.code) ?? seller;
+    if (coVen && seller.code !== coVen && portfolio.code !== coVen) continue;
+    const [year, month] = day.split('-');
+    const key = `${year}-${month}-${row.co_art}-${client.code}-${seller.code}-${portfolio.code}`;
+    const bucket = buckets.get(key) ?? {
+      anio: Number(year),
+      mes: Number(month),
+      co_art: String(row.co_art),
+      art_des: String(row.art_des),
+      uni_venta: String(row.uni_venta),
+      uni_relac: Number(row.uni_relac),
+      co_cli: client.code,
+      co_ven_nota: seller.code,
+      co_ven_cartera: portfolio.code,
+      unid: 0,
+      kg: 0,
+      dias: new Set<string>(),
+      ultima: day,
+    };
+    bucket.unid += Number(row.unid);
+    bucket.kg += Number(row.kg);
+    bucket.dias.add(day);
+    if (day > bucket.ultima) bucket.ultima = day;
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => ({
+      anio: bucket.anio,
+      mes: bucket.mes,
+      co_art: bucket.co_art,
+      art_des: bucket.art_des,
+      uni_venta: bucket.uni_venta,
+      uni_relac: bucket.uni_relac,
+      co_cli: bucket.co_cli,
+      co_ven_nota: bucket.co_ven_nota,
+      co_ven_cartera: bucket.co_ven_cartera,
+      unid: bucket.unid,
+      kg: bucket.kg,
+      notas: bucket.dias.size,
+      ultima: bucket.ultima,
+    }))
+    .slice(0, limit);
 }
 
 // Ventas por cliente y artículo (desviación por cliente). Reutiliza la misma
@@ -385,15 +516,25 @@ function customerProductSales(params: Record<string, unknown>, limit: number): R
 function sellerSalesDaily(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
   const from = paramDay(params.desde);
   const to = paramDay(params.hasta);
-  const buckets = new Map<string, { fecha: string; co_ven: string; kg: number; unid: number }>();
+  const buckets = new Map<
+    string,
+    { fecha: string; co_ven_nota: string; co_ven_cartera: string; kg: number; unid: number }
+  >();
 
   for (const row of SALES_DAILY) {
     const day = String(row.fecha);
     if (from && day < from) continue;
     if (to && day >= to) continue;
-    const { seller } = fixtureSellerOf(day, String(row.co_art));
-    const key = `${day}-${seller.code}`;
-    const bucket = buckets.get(key) ?? { fecha: day, co_ven: seller.code, kg: 0, unid: 0 };
+    const { seller, client } = fixtureSellerOf(day, String(row.co_art));
+    const portfolio = FIXTURE_PORTFOLIO.get(client.code) ?? seller;
+    const key = `${day}-${seller.code}-${portfolio.code}`;
+    const bucket = buckets.get(key) ?? {
+      fecha: day,
+      co_ven_nota: seller.code,
+      co_ven_cartera: portfolio.code,
+      kg: 0,
+      unid: 0,
+    };
     bucket.kg += Number(row.kg);
     bucket.unid += Number(row.unid);
     buckets.set(key, bucket);
@@ -401,13 +542,14 @@ function sellerSalesDaily(params: Record<string, unknown>, limit: number): Recor
 
   return [...buckets.values()]
     .map((bucket) => {
-      const sellerIndex = Math.max(0, FIXTURE_SELLERS.findIndex((seller) => seller.code === bucket.co_ven));
+      const sellerIndex = Math.max(0, FIXTURE_SELLERS.findIndex((seller) => seller.code === bucket.co_ven_nota));
       return {
         ...bucket,
+        co_ven: bucket.co_ven_nota,
         notas: 1 + ((Number(bucket.fecha.slice(8, 10)) + sellerIndex) % 3),
       };
     })
-    .sort((a, b) => a.fecha.localeCompare(b.fecha) || a.co_ven.localeCompare(b.co_ven))
+    .sort((a, b) => a.fecha.localeCompare(b.fecha) || a.co_ven_nota.localeCompare(b.co_ven_nota))
     .slice(0, limit);
 }
 
@@ -1021,8 +1163,11 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     if (lower.includes('nexo:customer_sales')) return customerSales(params, limit);
     // Desviación por cliente: producto × cliente × mes.
     if (lower.includes('nexo:customer_products')) return customerProductSales(params, limit);
-    // Vendedoras vs Forecast: se detecta por el marcador del SELECT y va antes
+    // Vendedor vs Forecast: se detecta por el marcador del SELECT y va antes
     // del bloque genérico de `reng_nde`.
+    if (lower.includes('nexo:seller_name')) return sellerNameFixture(params, limit);
+    if (lower.includes('nexo:seller_products')) return sellerProductsFixture(params, limit);
+    if (lower.includes('nexo:seller_portfolio')) return sellerPortfolio(limit);
     if (lower.includes('nexo:seller_sales_monthly')) return sellerSalesMonthly(params, limit);
     if (lower.includes('nexo:seller_sales_daily')) return sellerSalesDaily(params, limit);
     // Reconciliación de pedidos: se detecta por el marcador del SELECT.

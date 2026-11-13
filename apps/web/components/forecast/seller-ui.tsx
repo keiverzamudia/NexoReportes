@@ -1,7 +1,7 @@
 'use client';
 
 // ============================================================
-// Piezas visuales compartidas por «Vendedoras vs Forecast».
+// Piezas visuales compartidas por «Vendedor vs Forecast».
 //
 // Mantienen el lenguaje del informe de ventas (hero navy, anillo de
 // cumplimiento, barras contra meta) sin duplicar los componentes de
@@ -42,6 +42,14 @@ export const TONE_PILL: Record<SalesTone, string> = {
   warn: 'bg-warning-container text-on-warning-container',
   bad: 'bg-critical-container text-on-critical-container',
   none: 'bg-surface-container-high text-on-surface-variant',
+};
+
+/** Semáforo para cifras sobre el fondo oscuro del hero (contraste ≥ 4,5:1). */
+export const HERO_TONE: Record<SalesTone, string> = {
+  good: '#95C800',
+  warn: '#e8a33d',
+  bad: '#ef4444',
+  none: 'rgb(255 255 255 / 0.35)',
 };
 
 export const TONE_BADGE: Record<SalesTone, 'success' | 'warning' | 'danger' | 'muted'> = {
@@ -287,7 +295,7 @@ export function ShareStrip({
       <div
         className="flex h-3 w-full overflow-hidden rounded-pill bg-white/10"
         role="img"
-        aria-label="Reparto de la venta del mes por vendedora"
+        aria-label="Reparto de la venta del mes por vendedor"
       >
         {slices.map((slice) => {
           const content = (
@@ -504,7 +512,7 @@ export function cumulativeOption(input: {
   };
 }
 
-/** Histórico mensual de la vendedora contra su cuota mensual. */
+/** Histórico mensual del vendedor contra su cuota mensual. */
 export function monthlyHistoryOption(seller: ForecastSellerRow): Record<string, unknown> {
   const labels = seller.history.map((entry) => `${entry.month}/${String(entry.year).slice(2)}`);
   const values = seller.history.map((entry) => entry.actualKg);
@@ -559,6 +567,101 @@ export function monthlyHistoryOption(seller: ForecastSellerRow): Record<string, 
               data: [{ yAxis: quota }],
             }
           : undefined,
+      },
+    ],
+  };
+}
+
+/**
+ * Histórico mensual con las dos vistas del expediente: cartera asignada y
+ * notas firmadas por el vendedor. Así el modo Nota no queda vacío cuando el
+ * vendedor no firmó notas en la ventana.
+ */
+export function monthlyHistoryDualOption(seller: ForecastSellerRow): Record<string, unknown> {
+  const base = seller.carteraHistory.length > 0 ? seller.carteraHistory : seller.history;
+  const labels = base.map((entry) => `${entry.month}/${String(entry.year).slice(2)}`);
+  const carteraValues = seller.carteraHistory.map((entry) => entry.actualKg);
+  const noteValues = seller.noteHistory.map((entry) => entry.actualKg);
+  const carteraTarget = seller.carteraTargetKg;
+  const noteTarget = seller.noteTargetKg;
+
+  return {
+    animationDuration: 600,
+    animationEasing: 'cubicOut',
+    grid: { left: 8, right: 12, top: 26, bottom: 4, containLabel: true },
+    legend: {
+      top: 0,
+      right: 4,
+      itemWidth: 10,
+      itemHeight: 10,
+      textStyle: { color: '#737780', fontSize: 10 },
+    },
+    tooltip: {
+      trigger: 'axis',
+      confine: true,
+      backgroundColor: 'rgba(8, 29, 44, 0.94)',
+      borderWidth: 0,
+      padding: [8, 10],
+      textStyle: { color: '#fff', fontSize: 12 },
+      extraCssText: 'border-radius:12px;',
+      formatter: (params: Array<{ dataIndex?: number }>) => {
+        const index = params[0]?.dataIndex;
+        const cartera = index !== undefined ? seller.carteraHistory[index] : undefined;
+        const nota = index !== undefined ? seller.noteHistory[index] : undefined;
+        if (!cartera && !nota) return '';
+        return `<div style="font-weight:700;margin-bottom:2px;">${labels[index!]}</div>
+          <div style="display:flex;justify-content:space-between;gap:18px;"><span style="color:rgba(255,255,255,.72);">Cartera</span><strong>${fmtKg(cartera?.actualKg ?? 0)} kg</strong></div>
+          <div style="display:flex;justify-content:space-between;gap:18px;"><span style="color:rgba(255,255,255,.72);">Nota</span><strong>${fmtKg(nota?.actualKg ?? 0)} kg</strong></div>
+          <div style="display:flex;justify-content:space-between;gap:18px;"><span style="color:rgba(255,255,255,.72);">Cuota cartera</span><strong>${fmtKg(carteraTarget)} kg</strong></div>
+          <div style="display:flex;justify-content:space-between;gap:18px;"><span style="color:rgba(255,255,255,.72);">Cuota nota</span><strong>${fmtKg(noteTarget)} kg</strong></div>`;
+      },
+    },
+    xAxis: {
+      type: 'category',
+      data: labels,
+      axisLine: { lineStyle: { color: '#d6ebff' } },
+      axisTick: { show: false },
+      axisLabel: { color: '#737780', fontSize: 10 },
+    },
+    yAxis: {
+      type: 'value',
+      splitLine: { lineStyle: { color: '#eef6ff' } },
+      axisLabel: { color: '#737780', fontSize: 10, formatter: (value: number) => compact(value) },
+    },
+    series: [
+      {
+        name: 'Cartera',
+        type: 'bar',
+        data: carteraValues,
+        barMaxWidth: 26,
+        itemStyle: { borderRadius: [5, 5, 0, 0], color: '#003366' },
+        markLine:
+          carteraTarget > 0
+            ? {
+                symbol: 'none',
+                silent: true,
+                lineStyle: { color: '#003366', type: 'dashed', width: 1.5, opacity: 0.7 },
+                label: { formatter: 'cuota cartera', color: '#003366', fontSize: 9, position: 'insideEndTop' },
+                data: [{ yAxis: carteraTarget }],
+              }
+            : undefined,
+      },
+      {
+        name: 'Nota',
+        type: 'bar',
+        data: noteValues,
+        barMaxWidth: 26,
+        itemStyle: { borderRadius: [5, 5, 0, 0], color: '#95C800' },
+        markLine:
+          noteTarget > 0
+            ? {
+                symbol: 'none',
+                silent: true,
+                lineStyle: { color: '#4b6700', type: 'dashed', width: 1.5, opacity: 0.7 },
+                label: { formatter: 'cuota nota', color: '#4b6700', fontSize: 9, position: 'insideEndTop' },
+                data: [{ yAxis: noteTarget }],
+              }
+            : undefined,
       },
     ],
   };

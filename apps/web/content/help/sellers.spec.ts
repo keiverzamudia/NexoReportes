@@ -6,9 +6,9 @@ import {
   SELLERS_HELP_TERMS,
 } from './sellers';
 
-// Columnas de las tablas de Vendedoras vs Forecast (mismo orden que la UI).
+// Columnas de las tablas de Vendedor vs Forecast (mismo orden que la UI).
 const SELLER_KEYS = [
-  'vendedora',
+  'vendedor',
   'clientes',
   'cuota',
   'meta',
@@ -30,8 +30,8 @@ const CLIENT_KEYS = [
   'brechaCliente',
 ];
 
-describe('ayuda de Vendedoras vs Forecast', () => {
-  it('cubre exactamente las columnas de la tabla de vendedoras', () => {
+describe('ayuda de Vendedor vs Forecast', () => {
+  it('cubre exactamente las columnas de la tabla de vendedores', () => {
     expect(Object.keys(SELLER_COLUMN_HELP).sort()).toEqual([...SELLER_KEYS].sort());
   });
 

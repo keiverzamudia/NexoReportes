@@ -137,6 +137,24 @@ function createFakePrisma(
     customerType: string | null;
     vendor: string | null;
   }> = [],
+  pending: {
+    overrides?: Array<{ orderNumber: string; productCode: string; tentativeDate: Date }>;
+    lines?: Array<{
+      lineNumber?: number;
+      productCode: string;
+      description?: string;
+      uom?: string;
+      pendingQty?: number;
+      pendingKg: number | null;
+      order: {
+        externalNumber: string;
+        requestedDate: Date | null;
+        customerCode?: string | null;
+        customerName?: string | null;
+        authorized?: boolean | null;
+      };
+    }>;
+  } = {},
 ) {
   const capturedAt = new Date('2026-10-01T00:00:00Z');
   const targets: FakeTargetRow[] = seed.map((row) => ({
@@ -168,7 +186,10 @@ function createFakePrisma(
       findMany: async () => [],
     },
     salesOrderLine: {
-      findMany: async () => [],
+      findMany: async () => pending.lines ?? [],
+    },
+    deliveryDateOverride: {
+      findMany: async () => pending.overrides ?? [],
     },
     inventorySnapshot: {
       findFirst: async () => null,
@@ -373,6 +394,72 @@ describe('ForecastService.salesReport', () => {
     expect(report.daily[28]!.cumulativeKg).toBeNull(); // hoy queda fuera del acumulado
     expect(report.daily[30]!.projectedCumulativeKg).toBeCloseTo(562_500, 0);
     expect(report.daily[30]!.forecastCumulativeKg).toBeCloseTo(480_000, 0);
+  });
+
+  it('proyecta los pedidos pendientes en su fecha de entrega efectiva', async () => {
+    const { adapter } = adapterWith({
+      monthly: BASE_MONTHLY,
+      daily: buildDaily(),
+      forecast: [{ co_art: 'ABAGP13', forecast_mes: 480_000 }],
+    });
+    const db = createFakePrisma([], undefined, [], {
+      overrides: [
+        { orderNumber: 'P-2', productCode: 'ABAGP13', tentativeDate: new Date('2026-10-22T00:00:00Z') },
+      ],
+      lines: [
+        {
+          productCode: 'ABAGP13',
+          pendingKg: 12_000,
+          order: { externalNumber: 'P-1', requestedDate: new Date('2026-10-20T00:00:00Z') },
+        },
+        // Pedido movido con fecha tentativa: pesa el 22, no el 15.
+        {
+          productCode: 'ABAGP13',
+          pendingKg: 8_000,
+          order: { externalNumber: 'P-2', requestedDate: new Date('2026-10-15T00:00:00Z') },
+        },
+        // Entrega en otro mes: no entra a la tira del informe.
+        {
+          productCode: 'ABABOV67',
+          pendingKg: 5_000,
+          order: { externalNumber: 'P-3', requestedDate: new Date('2026-11-02T00:00:00Z') },
+        },
+        // Atrasado: se queda en su día original junto a la venta real.
+        {
+          productCode: 'ABAGP13',
+          pendingKg: 2_000,
+          order: { externalNumber: 'P-4', requestedDate: new Date('2026-10-03T00:00:00Z') },
+        },
+      ],
+    });
+
+    const report = await service(adapter, db).salesReport({ ...QUERY, year: 2026, month: 10 });
+
+    expect(report.totals.pendingKg).toBe(22_000);
+    expect(report.totals.pendingOrders).toBe(3);
+    expect(report.daily[2]!.pendingKg).toBe(2_000); // 3 de octubre
+    expect(report.daily[19]!.pendingKg).toBe(12_000); // 20 de octubre
+    expect(report.daily[21]!.pendingKg).toBe(8_000); // 22 de octubre (tentativa)
+    expect(report.daily[14]!.pendingKg).toBe(0); // 15 de octubre ya no cuenta
+    expect(report.daily.reduce((acc, day) => acc + day.pendingKg, 0)).toBe(22_000);
+  });
+
+  it('si la cartera local falla, el informe de ventas sigue disponible', async () => {
+    const { adapter } = adapterWith({
+      monthly: BASE_MONTHLY,
+      daily: buildDaily(),
+      forecast: [{ co_art: 'ABAGP13', forecast_mes: 480_000 }],
+    });
+    const db = createFakePrisma();
+    db.deliveryDateOverride.findMany = (async () => {
+      throw new Error('SQLite caído');
+    }) as never;
+
+    const report = await service(adapter, db).salesReport({ ...QUERY, year: 2026, month: 10 });
+
+    expect(report.salesAvailable).toBe(true);
+    expect(report.totals.pendingKg).toBe(0);
+    expect(report.daily.every((day) => day.pendingKg === 0)).toBe(true);
   });
 
   it('la serie diaria trae el desglose por producto del día', async () => {
@@ -728,6 +815,135 @@ describe('ForecastService.salesDayDetail', () => {
     expect(detail.available).toBe(false);
     expect(detail.products).toEqual([]);
     expect(detail.customers).toEqual([]);
+  });
+
+  it('suma la cartera pendiente del día por cliente y producto', async () => {
+    const { adapter } = adapterWith({ dayCustomers: DAY_ROWS });
+    const db = createFakePrisma([], undefined, [], {
+      overrides: [
+        { orderNumber: 'P-2', productCode: 'ABABOV67', tentativeDate: new Date('2026-10-27T00:00:00Z') },
+      ],
+      lines: [
+        {
+          productCode: 'ABAGP13',
+          description: 'GALLINA PONEDORA PLUS 18% - 40 KG',
+          uom: 'SAC',
+          pendingQty: 50,
+          pendingKg: 2_000,
+          order: {
+            externalNumber: 'P-1',
+            requestedDate: new Date('2026-10-27T00:00:00Z'),
+            customerCode: 'C3',
+            customerName: 'CLIENTE TRES',
+            authorized: true,
+          },
+        },
+        // Pedido movido al 27 con fecha tentativa: cuenta acá y no el 24.
+        {
+          productCode: 'ABABOV67',
+          description: 'MULTIESPECIE LINEA NARANJA SACO 35 KG',
+          uom: 'SAC',
+          pendingQty: 30,
+          pendingKg: 1_050,
+          order: {
+            externalNumber: 'P-2',
+            requestedDate: new Date('2026-10-24T00:00:00Z'),
+            customerCode: 'C1',
+            customerName: 'CLIENTE UNO',
+            authorized: null,
+          },
+        },
+        // Entrega otro día: no entra en el 27.
+        {
+          productCode: 'ABAGP13',
+          description: 'GALLINA PONEDORA PLUS 18% - 40 KG',
+          uom: 'SAC',
+          pendingQty: 12,
+          pendingKg: 500,
+          order: {
+            externalNumber: 'P-3',
+            requestedDate: new Date('2026-10-28T00:00:00Z'),
+            customerCode: 'C4',
+            customerName: 'CLIENTE CUATRO',
+            authorized: true,
+          },
+        },
+      ],
+    });
+
+    const detail = await service(adapter, db).salesDayDetail('2026-10-27');
+
+    expect(detail.pendingAvailable).toBe(true);
+    expect(detail.pendingKg).toBe(3_050);
+    expect(detail.pendingOrders).toBe(2);
+    expect(detail.pendingCustomers.map((customer) => customer.customerCode)).toEqual(['C3', 'C1']);
+    expect(detail.pendingCustomers[0]).toMatchObject({
+      customerName: 'CLIENTE TRES',
+      kg: 2_000,
+      orderCount: 1,
+      sharePct: 65.6,
+    });
+    expect(detail.pendingCustomers[0]!.lines[0]).toMatchObject({
+      orderNumber: 'P-1',
+      kg: 2_000,
+      requestedDate: '2026-10-27',
+      tentativeDate: null,
+      authorized: true,
+    });
+    expect(detail.pendingCustomers[1]!.lines[0]).toMatchObject({
+      orderNumber: 'P-2',
+      requestedDate: '2026-10-24',
+      tentativeDate: '2026-10-27',
+    });
+    expect(detail.pendingProducts.map((product) => product.productCode)).toEqual(['ABAGP13', 'ABABOV67']);
+    expect(detail.pendingProducts[0]).toMatchObject({ kg: 2_000, orderCount: 1, sharePct: 65.6 });
+    // La venta real no se mezcla con la cartera.
+    expect(detail.kg).toBe(13_500);
+  });
+
+  it('si la cartera local falla, la venta del día sigue disponible', async () => {
+    const { adapter } = adapterWith({ dayCustomers: DAY_ROWS });
+    const db = createFakePrisma();
+    db.deliveryDateOverride.findMany = (async () => {
+      throw new Error('SQLite caído');
+    }) as never;
+
+    const detail = await service(adapter, db).salesDayDetail('2026-10-27');
+
+    expect(detail.available).toBe(true);
+    expect(detail.kg).toBe(13_500);
+    expect(detail.pendingAvailable).toBe(false);
+    expect(detail.pendingKg).toBe(0);
+    expect(detail.pendingCustomers).toEqual([]);
+  });
+
+  it('si Profit falla, la cartera pendiente igual se muestra', async () => {
+    const { adapter } = adapterWith({ failDayCustomers: true });
+    const db = createFakePrisma([], undefined, [], {
+      lines: [
+        {
+          productCode: 'ABAGP13',
+          description: 'GALLINA PONEDORA PLUS 18% - 40 KG',
+          uom: 'SAC',
+          pendingQty: 50,
+          pendingKg: 2_000,
+          order: {
+            externalNumber: 'P-1',
+            requestedDate: new Date('2026-10-27T00:00:00Z'),
+            customerCode: 'C3',
+            customerName: 'CLIENTE TRES',
+            authorized: true,
+          },
+        },
+      ],
+    });
+
+    const detail = await service(adapter, db).salesDayDetail('2026-10-27');
+
+    expect(detail.available).toBe(false);
+    expect(detail.pendingAvailable).toBe(true);
+    expect(detail.pendingKg).toBe(2_000);
+    expect(detail.pendingCustomers[0]!.customerCode).toBe('C3');
   });
 
   it('cachea el detalle por fecha', async () => {

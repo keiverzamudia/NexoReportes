@@ -5,13 +5,22 @@ import { APP_MODULES, permissionKey } from '@nexo/contracts';
 // Helpers de la matriz de permisos en el cliente. La fuente de verdad sigue
 // siendo el servidor: aquí solo se decide qué mostrar/habilitar.
 
+// El módulo «Vendedoras» pasó a «Vendedor». Los JWT emitidos antes del cambio
+// todavía traen `vendedoras:read` (duran 15 min): se acepta como alias
+// temporal para no ocultar el menú a mitad de sesión.
+const LEGACY_MODULE_ALIASES: Record<string, string> = {
+  vendedor: 'vendedoras',
+};
+
 /** true si la sesión tiene la acción indicada sobre el módulo. */
 export function hasPermission(
   permissions: string[] | undefined | null,
   module: string,
   action = 'read',
 ): boolean {
-  return Boolean(permissions?.includes(permissionKey(module, action)));
+  if (permissions?.includes(permissionKey(module, action))) return true;
+  const legacy = LEGACY_MODULE_ALIASES[module];
+  return legacy ? Boolean(permissions?.includes(permissionKey(legacy, action))) : false;
 }
 
 /** true si el usuario puede abrir el módulo (acción read). */

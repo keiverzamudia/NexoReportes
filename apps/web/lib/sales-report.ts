@@ -4,6 +4,7 @@ import type {
   ForecastSalesDayCustomer,
   ForecastSalesResponse,
   ForecastSalesRow,
+  ForecastWeekRange,
 } from '@nexo/contracts';
 
 // ============================================================
@@ -266,6 +267,10 @@ export interface SalesDayBar {
   kg: number;
   units: number;
   invoices: number;
+  /** Kg comprometidos en pedidos con entrega efectiva ese día (pronóstico). */
+  pendingKg: number;
+  /** Pedidos distintos que aportan ese pronóstico. */
+  pendingOrders: number;
   /** Día posterior al corte: todavía se está vendiendo. */
   partial: boolean;
   /** Día que aún no llega: la ranura queda vacía. */
@@ -287,6 +292,8 @@ export function buildDayBars(report: ForecastSalesResponse): SalesDayBar[] {
     kg: day.actualKg,
     units: day.actualUnits,
     invoices: day.invoiceCount,
+    pendingKg: day.pendingKg ?? 0,
+    pendingOrders: day.pendingOrders ?? 0,
     partial: cut !== null && day.date > cut && day.date <= today,
     future: day.date > today,
     isToday: day.date === today,
@@ -312,10 +319,11 @@ function niceCeil(value: number): number {
 
 /**
  * Escala de la tira diaria. La meta por día usa la misma pendiente que la
- * línea «Ritmo forecast» del acumulado (forecast ÷ días del mes).
+ * línea «Ritmo forecast» del acumulado (forecast ÷ días del mes). El tope mide
+ * la barra apilada (venta real + pronóstico de pedidos).
  */
 export function dailySalesScale(report: ForecastSalesResponse, bars: SalesDayBar[]): DailySalesScale {
-  const peak = bars.reduce((max, bar) => Math.max(max, bar.kg), 0);
+  const peak = bars.reduce((max, bar) => Math.max(max, bar.kg + bar.pendingKg), 0);
   const goalKg =
     report.totals.forecastKg > 0 && report.days.workingInMonth > 0
       ? report.totals.forecastKg / report.days.workingInMonth
@@ -323,6 +331,67 @@ export function dailySalesScale(report: ForecastSalesResponse, bars: SalesDayBar
   const base = Math.max(peak, goalKg ?? 0);
   // 5 % de aire: el día más alto no toca el borde de la pista.
   return { maxKg: base > 0 ? niceCeil(base * 1.05) : 1, goalKg };
+}
+
+/** % del forecast del mes ya comprometido en pedidos pendientes. */
+export function pendingCoveragePct(report: ForecastSalesResponse): number | null {
+  const forecastKg = report.totals.forecastKg;
+  if (!Number.isFinite(forecastKg) || forecastKg <= 0) return null;
+  return (report.totals.pendingKg / forecastKg) * 100;
+}
+
+/** % que el pronóstico representa dentro del día (real + pendiente). */
+export function dayPendingSharePct(bar: SalesDayBar): number | null {
+  const total = bar.kg + bar.pendingKg;
+  if (total <= 0) return null;
+  return (bar.pendingKg / total) * 100;
+}
+
+// ---------- Brecha del mes y del día ----------
+
+export type SalesGapScope = 'month' | 'day';
+
+export interface SalesGapSnapshot {
+  /** Brecha del mes: venta acumulada − forecast (negativa = falta). */
+  monthGapKg: number | null;
+  /** Avance del mes: venta acumulada ÷ forecast. */
+  monthPct: number | null;
+  /** Objetivo del día: el ritmo necesario del hero (kg/día). */
+  dayGoalKg: number | null;
+  /** Venta registrada hoy (el día en curso entra parcial). */
+  todayKg: number;
+  /** Lo que falta hoy para el ritmo necesario; ≤ 0 si ya se cumplió. */
+  dayGapKg: number | null;
+  /** Avance del día: venta de hoy ÷ ritmo necesario. */
+  dayPct: number | null;
+}
+
+/**
+ * Cifras de la tarjeta «Brecha». El mes compara la venta acumulada contra el
+ * forecast; el día compara la venta de hoy contra el ritmo necesario que
+ * publica el API (`totals.requiredDailyKg`), es decir, lo que hay que vender
+ * por día para cerrar el mes en meta.
+ */
+export function salesGap(report: ForecastSalesResponse): SalesGapSnapshot {
+  const forecastKg = report.totals.forecastKg;
+  const actualKg = report.totals.actualKg;
+  const todayKg = report.daily.find((day) => day.date === report.days.today)?.actualKg ?? 0;
+  const dayGoalKg = report.status === 'OPEN' ? report.totals.requiredDailyKg : null;
+
+  return {
+    monthGapKg: forecastKg > 0 ? actualKg - forecastKg : null,
+    monthPct: forecastKg > 0 ? report.totals.attainmentPct : null,
+    dayGoalKg,
+    todayKg,
+    dayGapKg: dayGoalKg === null ? null : dayGoalKg - todayKg,
+    // Meta 0 = el mes ya está cubierto: el día cuenta como cumplido.
+    dayPct:
+      dayGoalKg === null ? null : dayGoalKg > 0 ? roundPct((todayKg / dayGoalKg) * 100) : 100,
+  };
+}
+
+function roundPct(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 // ---------- Desglose del día (tabla del panel) ----------
@@ -412,6 +481,69 @@ export function clientsForProduct(
   return rows
     .map((row) => ({ ...row, sharePct: sharePct(row.kg, total) }))
     .sort((a, b) => b.kg - a.kg || a.customerName.localeCompare(b.customerName));
+}
+
+// ---------- Forecast semanal del producto ----------
+
+export interface WeeklyForecastTile {
+  weekIndex: number;
+  from: string;
+  to: string;
+  /** Rango corto para la etiqueta: «08–14». */
+  rangeLabel: string;
+  kg: number;
+  /** Peso de la semana sobre el forecast mensual. */
+  pctOfMonth: number | null;
+  /** Equivalente en sacos (solo artículos SAC). */
+  sacks: number | null;
+  /** La fecha de hoy cae dentro de la semana. */
+  isCurrent: boolean;
+}
+
+export interface WeeklyForecast {
+  tiles: WeeklyForecastTile[];
+  totalKg: number;
+  /** false = Profit no trajo desglose para el mes: no se pintan ceros falsos. */
+  hasSplit: boolean;
+}
+
+/**
+ * Reparte el forecast del producto en sus 4 semanas con las cantidades del
+ * Asignador (`weeks[].qty`, ya en kg) y los rangos que devuelve el API.
+ */
+export function weeklyForecast({
+  monthKg,
+  weeks,
+  weekRanges,
+  today = null,
+  kgPerUom = null,
+}: {
+  monthKg: number;
+  weeks: ReadonlyArray<{ weekIndex: number; qty: number }>;
+  weekRanges: ReadonlyArray<ForecastWeekRange>;
+  /** Día de hoy (yyyy-mm-dd) para marcar la semana en curso. */
+  today?: string | null;
+  /** Kg por saco de los artículos SAC; null en granel. */
+  kgPerUom?: number | null;
+}): WeeklyForecast {
+  const byWeek = new Map(
+    weeks.map((week) => [week.weekIndex, Number.isFinite(week.qty) ? Math.max(0, week.qty) : 0]),
+  );
+  const tiles = weekRanges.map((range) => {
+    const kg = byWeek.get(range.weekIndex) ?? 0;
+    return {
+      weekIndex: range.weekIndex,
+      from: range.from,
+      to: range.to,
+      rangeLabel: `${range.from.slice(8, 10)}–${range.to.slice(8, 10)}`,
+      kg,
+      pctOfMonth: sharePct(kg, monthKg),
+      sacks: kgPerUom !== null && kgPerUom > 0 ? kg / kgPerUom : null,
+      isCurrent: Boolean(today && today >= range.from && today <= range.to),
+    };
+  });
+  const totalKg = tiles.reduce((acc, tile) => acc + tile.kg, 0);
+  return { tiles, totalKg, hasSplit: totalKg > 0 };
 }
 
 // ---------- Barras de desviación por producto ----------

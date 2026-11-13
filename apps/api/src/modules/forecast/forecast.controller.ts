@@ -4,10 +4,12 @@ import {
   ForecastQuery,
   ForecastSalesDayQuery,
   ForecastSalesQuery,
+  ForecastSellersQuery,
   ForecastSetWeeks,
   zForecastQuery,
   zForecastSalesDayQuery,
   zForecastSalesQuery,
+  zForecastSellersQuery,
   zForecastSetWeeks,
 } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
@@ -29,12 +31,24 @@ export class ForecastController {
     private readonly sellers: SellersService,
   ) {}
 
-  // Vendedoras vs Forecast: misma venta (notas de entrega) y misma meta que
-  // «Ventas vs Forecast», repartida por participación histórica. El permiso es
-  // del módulo `vendedoras`, no del forecast de producción.
+  // Desglose por producto de un vendedor: cartera, firmado por él y firmado
+  // por otros. Se pide al abrir la pestaña Productos del expediente.
+  @Get('sellers/:sellerCode/products')
+  @RequirePermission('vendedor:read')
+  sellerProducts(
+    @Param('sellerCode') sellerCode: string,
+    @Query(new ZodValidationPipe(zForecastSellersQuery)) query: ForecastSellersQuery,
+  ) {
+    return this.sellers.sellerProducts(sellerCode, query);
+  }
+
+  // Vendedor vs Forecast: misma meta que «Ventas vs Forecast», repartida por
+  // participación histórica. El criterio por defecto es la cartera asignada en
+  // Profit; `attribution=NOTE` conserva la lectura por nota de entrega. El
+  // permiso es del módulo `vendedor`, no del forecast de producción.
   @Get('sellers')
-  @RequirePermission('vendedoras:read')
-  sellersReport(@Query(new ZodValidationPipe(zForecastSalesQuery)) query: ForecastSalesQuery) {
+  @RequirePermission('vendedor:read')
+  sellersReport(@Query(new ZodValidationPipe(zForecastSellersQuery)) query: ForecastSellersQuery) {
     return this.sellers.sellersReport(query);
   }
 

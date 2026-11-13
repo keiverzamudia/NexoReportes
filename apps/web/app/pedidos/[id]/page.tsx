@@ -82,7 +82,7 @@ export default function PedidoDetallePage() {
             />
 
             <div className="grid grid-cols-2 gap-space-sm md:grid-cols-4">
-              <Kpi label="Emisión" value={fmtDate(order.orderDate)} tone="default" />
+              <Kpi label="Creación" value={fmtDate(order.orderDate)} tone="default" />
               <Kpi label="Entrega comprometida" value={fmtDate(order.requestedDate)} tone="default" />
               <Kpi label="Vendedor" value={order.vendor ?? '—'} tone="muted" />
               <Kpi label="Tipo de cliente" value={order.customerType ?? '—'} tone="muted" />

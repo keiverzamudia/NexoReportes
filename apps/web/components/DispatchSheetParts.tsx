@@ -5,7 +5,14 @@
 // bitácora. La cinta de acuses se retiró: el flujo va de enviado a carga.
 // ============================================================
 
-import type { DispatchEventProduct, DispatchLineStatus, DispatchSheetEvent, DispatchSheetLine, DispatchSheetStatus } from '@nexo/contracts';
+import type {
+  DispatchCustomerRowStatus,
+  DispatchEventProduct,
+  DispatchLineStatus,
+  DispatchSheetEvent,
+  DispatchSheetLine,
+  DispatchSheetStatus,
+} from '@nexo/contracts';
 import {
   AlertTriangle,
   Ban,
@@ -22,7 +29,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Badge, cx } from './ui';
-import { formatDateTime, formatMinutes, formatNumber, minutesBetween, sheetStatusMeta, lineStatusMeta } from '../lib/dispatch-sheet';
+import { formatDateTime, formatMinutes, formatNumber, minutesBetween, sheetStatusMeta, lineStatusMeta, customerRowStatusMeta } from '../lib/dispatch-sheet';
 
 export function SheetStatusBadge({ status }: { status: DispatchSheetStatus }) {
   const meta = sheetStatusMeta(status);
@@ -36,6 +43,16 @@ export function SheetStatusBadge({ status }: { status: DispatchSheetStatus }) {
 export function LineStatusBadge({ status }: { status: DispatchLineStatus }) {
   const meta = lineStatusMeta(status);
   return <Badge tone={meta.tone}>{meta.label}</Badge>;
+}
+
+/** Estado del cliente dentro de la hoja (bandeja y detalle por cliente). */
+export function CustomerStatusBadge({ status }: { status: DispatchCustomerRowStatus }) {
+  const meta = customerRowStatusMeta(status);
+  return (
+    <Badge tone={meta.tone} dot>
+      {meta.label}
+    </Badge>
+  );
 }
 
 const EVENT_ICON: Record<string, LucideIcon> = {

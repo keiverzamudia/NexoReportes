@@ -6,6 +6,9 @@
 //   · Pendientes → todo lo abierto, sin importar quién lo publicó.
 //   · Publicados por mí → lo que envié desde el simulador (solo con permiso).
 //
+// La bandeja se lee POR CLIENTE: cada renglón de la tabla es un cliente del
+// despacho, no la hoja completa. El código DSP queda como referencia al final.
+//
 // El historial y los retiros de simulación son pantallas hermanas
 // (`/despacho/historial` y `/despacho/retiros`) con permiso propio, para que
 // la bandeja del operador quede limpia. La simulación se envía completa desde
@@ -14,10 +17,9 @@
 // ============================================================
 
 import type {
+  DispatchCustomerRowStatus,
   DispatchPulse,
   DispatchSheetListResponse,
-  DispatchSheetStatus,
-  DispatchSheetSummary,
 } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -33,21 +35,30 @@ import {
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { DespachoSubNav } from '../../components/DespachoSubNav';
+import { DispatchClientExpansion } from '../../components/DispatchClientExpansion';
 import { DispatchPulseStrip } from '../../components/DispatchPulseStrip';
-import { SheetStatusBadge } from '../../components/DispatchSheetParts';
+import { CustomerStatusBadge } from '../../components/DispatchSheetParts';
 import { AppNav, LoginScreen } from '../../components/shell';
 import { Badge, Card, DataTable, EmptyState, PageHeader, Select, Segmented, TextInput, type Column, cx } from '../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
-import { formatBusinessDate, formatDateTime, formatNumber, relativeTime, sortSheets } from '../../lib/dispatch-sheet';
+import {
+  clientRowsFrom,
+  formatBusinessDate,
+  formatDateTime,
+  formatNumber,
+  relativeTime,
+  type DispatchClientRow,
+} from '../../lib/dispatch-sheet';
 import { hasPermission } from '../../lib/permissions';
 
 type Scope = 'pending' | 'created';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'Estado: Todos' },
-  { value: 'ENVIADO', label: 'Pendiente' },
-  { value: 'EN_PROCESO', label: 'En carga' },
-  { value: 'CON_NOVEDAD', label: 'Con novedad' },
+  { value: 'PENDIENTE', label: 'Sin iniciar' },
+  { value: 'EN_CARGA', label: 'En carga' },
+  { value: 'CARGA_CERRADA', label: 'Carga cerrada' },
+  { value: 'FACTURADA', label: 'Facturada' },
 ];
 
 const SCOPE_LABELS: Record<Scope, string> = {
@@ -58,8 +69,10 @@ const SCOPE_LABELS: Record<Scope, string> = {
 export default function DespachoPage() {
   const [tick, setTick] = useState(0);
   const [scope, setScope] = useState<Scope>('pending');
-  const [status, setStatus] = useState<DispatchSheetStatus | ''>('');
+  const [status, setStatus] = useState<DispatchCustomerRowStatus | ''>('');
   const [q, setQ] = useState('');
+  // Cliente abierto dentro de la bandeja (`sheetId:customerKey`).
+  const [openRow, setOpenRow] = useState<string | null>(null);
 
   const { data: sessionUser } = useQuery({
     queryKey: ['me'],
@@ -68,6 +81,7 @@ export default function DespachoPage() {
     retry: false,
   });
   const permissions = sessionUser?.permissions;
+  const isAdmin = sessionUser?.role === 'ADMIN';
   const isOperator = hasPermission(permissions, 'despacho', 'update');
   // «Armar y enviar simulación» se habilita con el permiso de Despacho.
   const canSendSimulation = hasPermission(permissions, 'despacho', 'create');
@@ -82,13 +96,13 @@ export default function DespachoPage() {
     setScope('pending');
   }, [sessionUser?.id]);
 
+  // La bandeja se pide completa por tab: el estado y la búsqueda son por
+  // cliente, así que se filtran en memoria sobre las filas ya aplanadas.
   const params = new URLSearchParams();
   params.set('scope', scope);
-  if (status) params.set('status', status);
-  if (q.trim()) params.set('q', q.trim());
 
   const { data, isLoading, error, dataUpdatedAt, isFetching } = useQuery<DispatchSheetListResponse>({
-    queryKey: ['dispatch-sheets', tick, scope, status, q],
+    queryKey: ['dispatch-sheets', tick, scope],
     queryFn: () => apiFetch<DispatchSheetListResponse>(`/dispatch-sheets?${params.toString()}`),
     refetchInterval: 20_000,
     // El tablero del almacén no se congela cuando la pestaña no tiene foco.
@@ -112,27 +126,62 @@ export default function DespachoPage() {
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
 
-  const sheets = useMemo(() => sortSheets(data?.items ?? []), [data]);
+  const clientRows = useMemo(() => clientRowsFrom(data?.items ?? []), [data]);
+  const rowKey = (row: DispatchClientRow) => `${row.sheet.id}:${row.customerKey}`;
+  const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return clientRows.filter((row) => {
+      if (status && row.status !== status) return false;
+      if (!needle) return true;
+      return [row.customerName, row.customerCode ?? '', row.sheet.number, row.sheet.title].some((value) =>
+        value.toLowerCase().includes(needle),
+      );
+    });
+  }, [clientRows, status, q]);
   const hasFilters = Boolean(status || q);
 
   if (error instanceof AuthRequiredError) {
     return <LoginScreen onSuccess={() => setTick((t) => t + 1)} />;
   }
 
-  const columns: Column<DispatchSheetSummary>[] = [
+  const columns: Column<DispatchClientRow>[] = [
     {
-      key: 'number',
-      header: 'Despacho',
+      key: 'delivery',
+      header: 'Entrega',
+      kind: 'field',
+      sortValue: (row) => row.nextDeliveryDate ?? '9999-12-31',
+      render: (row) => <span className="tabular-nums text-on-surface-variant">{formatBusinessDate(row.nextDeliveryDate)}</span>,
+    },
+    {
+      key: 'customer',
+      header: 'Cliente',
       kind: 'id',
-      sortValue: (row) => row.number,
-      render: (row) => (
-        <Link href={`/despacho/${row.id}`} className="flex flex-col leading-tight">
-          <span className="font-bold tabular-nums text-primary">{row.number}</span>
-          <span className="max-w-[18rem] truncate text-body-md text-on-surface-variant" title={row.title}>
-            Enviado por {row.createdByName ?? row.createdByCode ?? '—'}
+      sortValue: (row) => row.customerName,
+      render: (row) => {
+        const parts: string[] = [];
+        if (row.partialLines > 0) parts.push(`${row.partialLines} parcial(es)`);
+        if (row.missingLines > 0) parts.push(`${row.missingLines} no cargado(s)`);
+        const novedades = parts.join(' · ');
+        return (
+          <span className="flex flex-col leading-tight">
+            <span className="flex min-w-0 items-center gap-space-xs">
+              <span className="block max-w-[20rem] truncate text-on-surface" title={row.customerName}>
+                {row.customerName}
+              </span>
+              {novedades && (
+                <span
+                  className="inline-flex shrink-0 items-center text-warning"
+                  title={`Novedad en el despacho: ${novedades}`}
+                  aria-label={`Novedad en el despacho: ${novedades}`}
+                >
+                  <AlertTriangle aria-hidden className="size-4" />
+                </span>
+              )}
+            </span>
+            {row.customerCode && <span className="text-label-sm tabular-nums text-outline">{row.customerCode}</span>}
           </span>
-        </Link>
-      ),
+        );
+      },
     },
     {
       key: 'status',
@@ -141,10 +190,10 @@ export default function DespachoPage() {
       sortValue: (row) => row.status,
       render: (row) => (
         <span className="flex flex-col items-start gap-0.5">
-          <SheetStatusBadge status={row.status} />
-          {row.status === 'CANCELADO' && row.cancelReason && (
-            <span className="max-w-[16rem] truncate text-label-sm text-outline" title={row.cancelReason}>
-              {row.cancelReason}
+          <CustomerStatusBadge status={row.status} />
+          {row.sheet.status === 'CANCELADO' && row.sheet.cancelReason && (
+            <span className="max-w-[16rem] truncate text-label-sm text-outline" title={row.sheet.cancelReason}>
+              {row.sheet.cancelReason}
             </span>
           )}
         </span>
@@ -170,17 +219,20 @@ export default function DespachoPage() {
       header: 'Renglones',
       kind: 'metric',
       align: 'right',
-      sortValue: (row) => row.progress,
-      render: (row) => (
-        <span className="flex flex-col items-end gap-0.5">
-          <span className="font-semibold tabular-nums text-on-surface">
-            {row.linesDone}/{row.plannedLines}
+      sortValue: (row) => (row.plannedLines > 0 ? row.linesDone / row.plannedLines : 0),
+      render: (row) => {
+        const ratio = row.plannedLines > 0 ? row.linesDone / row.plannedLines : 0;
+        return (
+          <span className="flex flex-col items-end gap-0.5">
+            <span className="font-semibold tabular-nums text-on-surface">
+              {row.linesDone}/{row.plannedLines}
+            </span>
+            <span className="h-1 w-16 overflow-hidden rounded-pill bg-surface-container-high">
+              <span className="block h-full rounded-pill bg-secondary-container" style={{ width: `${Math.round(ratio * 100)}%` }} />
+            </span>
           </span>
-          <span className="h-1 w-16 overflow-hidden rounded-pill bg-surface-container-high">
-            <span className="block h-full rounded-pill bg-secondary-container" style={{ width: `${Math.round(row.progress * 100)}%` }} />
-          </span>
-        </span>
-      ),
+        );
+      },
     },
     {
       key: 'sacks',
@@ -204,30 +256,38 @@ export default function DespachoPage() {
       align: 'right',
       sortValue: (row) => row.plannedKg,
       render: (row) => (
-        <span className="flex flex-col items-end leading-tight tabular-nums">
+        <span className="tabular-nums">
           <span className="font-semibold text-on-surface">{formatNumber(row.plannedKg)}</span>
-          {row.status === 'DESPACHADO' && (
-            <span className={cx('text-label-sm', row.differenceKg < 0 ? 'text-error' : 'text-secondary')}>
-              {row.differenceKg === 0 ? 'sin diferencia' : `${formatNumber(row.differenceKg)} kg`}
-            </span>
+          {row.loadedKg > 0 && row.loadedKg !== row.plannedKg && (
+            <span className="ml-space-xs text-label-sm text-secondary">({formatNumber(row.loadedKg)} real)</span>
           )}
         </span>
       ),
     },
     {
-      key: 'delivery',
-      header: 'Entrega',
+      key: 'vendor',
+      header: 'Vendedor',
       kind: 'field',
-      sortValue: (row) => row.nextDeliveryDate ?? '9999-12-31',
-      render: (row) => <span className="tabular-nums text-on-surface-variant">{formatBusinessDate(row.nextDeliveryDate)}</span>,
+      sortValue: (row) => row.vendor ?? '',
+      title: (row) => row.vendor ?? undefined,
+      render: (row) => (
+        <span className="block max-w-[14rem] truncate text-on-surface-variant">{row.vendor ?? '—'}</span>
+      ),
     },
     {
-      key: 'customers',
-      header: 'Clientes',
+      key: 'number',
+      header: 'Despacho',
       kind: 'field',
+      sortValue: (row) => row.sheet.number,
       render: (row) => (
-        <span className="block max-w-[14rem] truncate text-on-surface-variant" title={row.customers.join(' · ')}>
-          {row.customers.length > 0 ? row.customers.join(' · ') : '—'}
+        <span className="flex flex-col leading-tight">
+          <span className="flex flex-wrap items-baseline gap-x-space-xs">
+            <span className="font-bold tabular-nums text-primary">{row.sheet.number}</span>
+            <span className="text-label-sm tabular-nums text-outline">{formatDateTime(row.sheet.sentAt)}</span>
+          </span>
+          <span className="max-w-[14rem] truncate text-body-md text-on-surface-variant" title={row.sheet.title}>
+            Enviado por {row.sheet.createdByName ?? row.sheet.createdByCode ?? '—'}
+          </span>
         </span>
       ),
     },
@@ -236,19 +296,27 @@ export default function DespachoPage() {
       header: '',
       kind: 'action',
       align: 'right',
-      render: (row) => (
-        <Link
-          href={`/despacho/${row.id}`}
-          className={cx(
-            'inline-flex h-10 items-center gap-space-xs rounded-pill px-space-sm font-semibold text-label-md transition-all md:h-8',
-            row.canOperate && row.status !== 'DESPACHADO' && row.status !== 'CANCELADO'
-              ? 'bg-secondary-container text-on-secondary shadow-soft hover:-translate-y-0.5'
-              : 'border border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low',
-          )}
-        >
-          Abrir
-        </Link>
-      ),
+      render: (row) => {
+        const key = rowKey(row);
+        const open = openRow === key;
+        return (
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpenRow(open ? null : key)}
+            className={cx(
+              'inline-flex h-10 items-center gap-space-xs rounded-pill px-space-sm font-semibold text-label-md transition-all md:h-8',
+              open
+                ? 'border border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low'
+                : row.sheet.canOperate && row.sheet.status !== 'DESPACHADO' && row.sheet.status !== 'CANCELADO'
+                  ? 'bg-secondary-container text-on-secondary shadow-soft hover:-translate-y-0.5'
+                  : 'border border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low',
+            )}
+          >
+            {open ? 'Cerrar' : 'Abrir'}
+          </button>
+        );
+      },
     },
   ];
 
@@ -258,15 +326,9 @@ export default function DespachoPage() {
   ];
 
   // «Publicados por mí» conserva el filtro de sus propias hojas cerradas; la
-  // bandeja de pendientes solo trabaja con estados abiertos.
+  // bandeja de pendientes solo trabaja con clientes en curso.
   const statusOptions =
-    scope === 'created'
-      ? [
-          ...STATUS_OPTIONS,
-          { value: 'DESPACHADO', label: 'Despachados' },
-          { value: 'CANCELADO', label: 'Anulados' },
-        ]
-      : STATUS_OPTIONS;
+    scope === 'created' ? [...STATUS_OPTIONS, { value: 'ANULADO', label: 'Anulados' }] : STATUS_OPTIONS;
 
   const subtitle =
     scope === 'pending'
@@ -329,8 +391,8 @@ export default function DespachoPage() {
                 }}
                 options={scopeOptions}
               />
-              <Select className="w-44" value={status} onChange={(value) => setStatus(value as DispatchSheetStatus | '')} options={statusOptions} ariaLabel="Estado" />
-              <TextInput className="w-56" icon={Search} value={q} onChange={setQ} placeholder="Buscar N° o título…" ariaLabel="Buscar despacho" />
+              <Select className="w-44" value={status} onChange={(value) => setStatus(value as DispatchCustomerRowStatus | '')} options={statusOptions} ariaLabel="Estado" />
+              <TextInput className="w-56" icon={Search} value={q} onChange={setQ} placeholder="Buscar cliente, N° o título…" ariaLabel="Buscar cliente o despacho" />
             </div>
             <div className="flex items-center gap-space-sm">
               {isFetching && <RefreshCw aria-hidden className="size-3.5 animate-spin text-outline" />}
@@ -338,35 +400,44 @@ export default function DespachoPage() {
                 {dataUpdatedAt ? `actualizado ${relativeTime(new Date(dataUpdatedAt).toISOString())}` : 'sincronizando…'}
               </span>
               <Badge tone={hasFilters ? 'primary' : 'muted'} dot>
-                {sheets.length} despacho{sheets.length === 1 ? '' : 's'}
+                {rows.length} cliente{rows.length === 1 ? '' : 's'}
               </Badge>
             </div>
           </div>
 
           <DataTable
             columns={columns}
-            rows={sheets}
-            rowKey={(row) => row.id}
+            rows={rows}
+            rowKey={rowKey}
+            expandedKey={openRow}
+            onRowClick={(row) => setOpenRow((current) => (current === rowKey(row) ? null : rowKey(row)))}
+            renderExpanded={(row) => (
+              <DispatchClientExpansion
+                sheetId={row.sheet.id}
+                customerKey={row.customerKey}
+                isAdmin={isAdmin}
+              />
+            )}
             loading={isLoading}
-            defaultSortKey="number"
+            defaultSortKey="delivery"
             defaultSortDir="asc"
             maxHeightClass="md:max-h-[min(72vh,900px)]"
-            mobileSummary={<span>{sheets.length} despacho(s) en {SCOPE_LABELS[scope].toLowerCase()}</span>}
+            mobileSummary={<span>{rows.length} cliente(s) en {SCOPE_LABELS[scope].toLowerCase()}</span>}
             empty={
               <EmptyState
                 icon={ClipboardList}
                 title={
                   hasFilters
-                    ? 'Sin despachos para este filtro'
+                    ? 'Sin clientes para este filtro'
                     : scope === 'pending'
-                      ? 'No hay despachos pendientes'
+                      ? 'No hay clientes por cargar'
                       : 'Todavía no has enviado simulaciones'
                 }
                 description={
                   hasFilters
                     ? 'Prueba con otro estado o limpia la búsqueda.'
                     : scope === 'pending'
-                      ? 'Cuando envíes una simulación desde Pedidos aparecerá aquí para cargarla.'
+                      ? 'Cuando envíes una simulación desde Pedidos, cada cliente aparecerá aquí para cargarlo.'
                       : 'Arma el plan en Pedidos y usa «Guardar y enviar a despacho».'
                 }
                 action={

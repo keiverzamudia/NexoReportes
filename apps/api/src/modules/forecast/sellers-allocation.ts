@@ -1,5 +1,5 @@
 // ============================================================
-// Motor PURO del reparto de la meta entre vendedoras y clientes.
+// Motor PURO del reparto de la meta entre vendedores y clientes.
 //
 // Sin Prisma, sin HTTP y sin `new Date()`: recibe pesos (kg históricos) y un
 // total, y devuelve cuotas en kg que suman EXACTAMENTE el total (salvo el
@@ -28,7 +28,7 @@ export interface AllocateOptions {
   decimals?: number;
   /**
    * Sin pesos positivos: reparte el total en partes iguales. Útil cuando la
-   * ventana histórica está vacía (instalación nueva) pero hay vendedoras.
+   * ventana histórica está vacía (instalación nueva) pero hay vendedores.
    */
   equalWhenEmpty?: boolean;
 }

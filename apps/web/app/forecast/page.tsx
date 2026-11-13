@@ -403,6 +403,8 @@ export default function ForecastPage() {
             customerLoading={customerSales.isLoading}
             customerError={customerSales.error instanceof Error ? customerSales.error : null}
             onCustomerRetry={() => void customerSales.refetch()}
+            forecast={forecast.data}
+            forecastLoading={forecast.isLoading}
           />
         )}
       </main>

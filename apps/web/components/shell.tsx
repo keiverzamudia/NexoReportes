@@ -331,7 +331,7 @@ interface NavLink {
 const NAV_LINKS: NavLink[] = [
   { href: '/disponibilidad', label: 'Disponibilidad', icon: Boxes, module: 'disponibilidad' },
   { href: '/forecast', label: 'Forecast', icon: CalendarRange, module: 'forecast' },
-  { href: '/vendedoras', label: 'Vendedoras', icon: Trophy, module: 'vendedoras' },
+  { href: '/vendedor', label: 'Vendedor', icon: Trophy, module: 'vendedor' },
   { href: '/pedidos', label: 'Pedidos', icon: ShoppingCart, module: 'pedidos' },
   { href: '/despacho', label: 'Despacho', icon: ClipboardList, module: 'despacho' },
   { href: '/llegadas', label: 'Llegadas', icon: DoorOpen, module: 'llegadas' },

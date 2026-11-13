@@ -364,7 +364,7 @@ export default function PedidosPage() {
 
   // ---------- Plan vivo compartido (sin lock) ----------
   // El servidor sella el dueño de cada renglón y devuelve la asignación ya
-  // calculada. Con eso las tres vendedoras ven el mismo compromiso y el mismo
+  // calculada. Con eso los tres vendedores ven el mismo compromiso y el mismo
   // stock libre, aunque cada una filtre clientes distintos.
   const draftQuery = useQuery<ScenarioDraftResponse>({
     queryKey: ['scenario-draft'],
@@ -441,7 +441,7 @@ export default function PedidosPage() {
       if (!ref.selectedById) continue;
       const key = byRef.get(scenarioRefKey(ref.orderNumber, ref.productCode));
       if (!key) continue;
-      map.set(key, { id: ref.selectedById, name: ref.selectedByName ?? 'otra vendedora' });
+      map.set(key, { id: ref.selectedById, name: ref.selectedByName ?? 'otro vendedor' });
     }
     return map;
   }, [draftQuery.data]);
@@ -646,7 +646,7 @@ export default function PedidosPage() {
             const taken = savedByKey.get(key);
             if (taken?.selectedById && taken.selectedById !== sessionUser?.id) {
               const product = key.split('#')[1] ?? '';
-              notices.push(`Lo tomó ${taken.selectedByName ?? 'otra vendedora'} (${product}).`);
+              notices.push(`Lo tomó ${taken.selectedByName ?? 'otro vendedor'} (${product}).`);
             }
           }
           if (saved.dispatchImpact?.removedLines) {
@@ -1343,7 +1343,7 @@ export default function PedidosPage() {
     if (typeof window !== 'undefined') window.history.replaceState(null, '', '/pedidos');
   }
 
-  // ¿El renglón ya lo reservó otra vendedora? El servidor manda; el cliente
+  // ¿El renglón ya lo reservó otro vendedor? El servidor manda; el cliente
   // solo pinta el candado y evita el clic.
   function isTakenByOther(key: string): boolean {
     const owner = ownerByKey.get(key);
@@ -1353,7 +1353,7 @@ export default function PedidosPage() {
   // Renglones seleccionables de un grupo: en «Solo despachable», únicamente los
   // que tienen existencia para despachar (completo o parcial). En «Solicitado
   // total» no se restringe: esa simulación sobregira el stock a propósito.
-  // Lo ya tomado por otra vendedora nunca entra en la selección masiva.
+  // Lo ya tomado por otro vendedor nunca entra en la selección masiva.
   function dispatchableKeys(group: OrderGroup): string[] {
     return group.lines
       .map(lineKey)
@@ -2108,7 +2108,7 @@ export default function PedidosPage() {
                                                 disabled={takenByOther && !canOverride}
                                                 title={
                                                   takenByOther && !canOverride
-                                                    ? `Lo reservó ${owner?.name ?? 'otra vendedora'}`
+                                                    ? `Lo reservó ${owner?.name ?? 'otro vendedor'}`
                                                     : 'Liberar este renglón'
                                                 }
                                                 className="rounded-pill border border-outline-variant/40 px-2.5 py-1 font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low disabled:cursor-not-allowed disabled:opacity-40"
@@ -2738,7 +2738,7 @@ function GroupRow({
   const coveragePct = Math.round(coverage * 100);
   const tone = coveragePct >= 100 ? 'success' : coveragePct > 0 ? 'warning' : 'danger';
   // Cuando el grupo no tiene renglones marcables puede ser por dos motivos:
-  // no hay existencia o los renglones ya los reservó otra vendedora. El badge
+  // no hay existencia o los renglones ya los reservó otro vendedor. El badge
   // debe decir cuál es para no confundir una reserva ajena con falta de stock.
   const reservedByOthers = [
     ...new Set(
@@ -2878,7 +2878,7 @@ function GroupRow({
                     reservado por{' '}
                     {reservedByOthers.length === 1
                       ? reservedByOthers[0]
-                      : `${reservedByOthers.length} vendedoras`}
+                      : `${reservedByOthers.length} vendedores`}
                   </span>
                 ) : (
                   <span className="font-bold uppercase text-critical">sin existencia</span>
@@ -2954,7 +2954,7 @@ function GroupRow({
                             aria-label="Seleccionar renglón para despacho"
                             title={
                               blockedByOwner
-                                ? `Lo reservó ${owner?.name ?? 'otra vendedora'}`
+                                ? `Lo reservó ${owner?.name ?? 'otro vendedor'}`
                                 : blocked
                                   ? 'Sin existencia para despachar'
                                   : undefined

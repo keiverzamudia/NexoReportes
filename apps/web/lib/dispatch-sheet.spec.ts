@@ -90,6 +90,7 @@ function summary(overrides: Partial<DispatchSheetSummary> = {}): DispatchSheetSu
     linesDone: 0,
     progress: 0,
     customers: ['AGRICOLA LA CAÑADA'],
+    customerRows: [],
     nextDeliveryDate: '2026-10-21',
     updatedAt: '2026-10-21T15:00:00.000Z',
     loadStartedAt: null,

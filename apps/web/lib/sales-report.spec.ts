@@ -19,6 +19,7 @@ import {
   customerSalesCsvFileName,
   dailySalesScale,
   dayLabel,
+  dayPendingSharePct,
   filterCustomerSalesRows,
   filterSalesRows,
   fmtPct,
@@ -26,11 +27,13 @@ import {
   fmtTonnes,
   monthLabel,
   monthOverMonthPct,
+  pendingCoveragePct,
   productsForDay,
   salesCsvFileName,
   sharePct,
   salesDaysWithSales,
   salesDeviationGeometry,
+  salesGap,
   salesTone,
 } from './sales-report';
 
@@ -86,6 +89,8 @@ function report(overrides: Partial<ForecastSalesResponse> = {}): ForecastSalesRe
       forecastKg: 570_000,
       actualKg: 500_000,
       actualUnits: 13_214,
+      pendingKg: 0,
+      pendingOrders: 0,
       dailyAvgKg: 20_833.3,
       projectedKg: 562_500,
       attainmentPct: 87.7,
@@ -98,9 +103,9 @@ function report(overrides: Partial<ForecastSalesResponse> = {}): ForecastSalesRe
       lastInvoiceDate: '2026-10-28',
     },
     daily: [
-      { date: '2026-10-27', actualKg: 20_000, actualUnits: 500, invoiceCount: 3, products: [], cumulativeKg: 480_000, projectedCumulativeKg: 480_000, forecastCumulativeKg: 528_888.9 },
-      { date: '2026-10-28', actualKg: 20_000, actualUnits: 500, invoiceCount: 3, products: [], cumulativeKg: 500_000, projectedCumulativeKg: 500_000, forecastCumulativeKg: 549_999.9 },
-      { date: '2026-10-29', actualKg: 80, actualUnits: 2, invoiceCount: 1, products: [], cumulativeKg: null, projectedCumulativeKg: 520_833.3, forecastCumulativeKg: 571_110.9 },
+      { date: '2026-10-27', actualKg: 20_000, actualUnits: 500, invoiceCount: 3, pendingKg: 0, pendingOrders: 0, products: [], cumulativeKg: 480_000, projectedCumulativeKg: 480_000, forecastCumulativeKg: 528_888.9 },
+      { date: '2026-10-28', actualKg: 20_000, actualUnits: 500, invoiceCount: 3, pendingKg: 0, pendingOrders: 0, products: [], cumulativeKg: 500_000, projectedCumulativeKg: 500_000, forecastCumulativeKg: 549_999.9 },
+      { date: '2026-10-29', actualKg: 80, actualUnits: 2, invoiceCount: 1, pendingKg: 0, pendingOrders: 0, products: [], cumulativeKg: null, projectedCumulativeKg: 520_833.3, forecastCumulativeKg: 571_110.9 },
     ],
     history: [],
     rows: [row()],
@@ -234,6 +239,8 @@ describe('ventas del día — panel bajo la gráfica', () => {
         actualKg: 20_000,
         actualUnits: 500,
         invoiceCount: 3,
+        pendingKg: 0,
+        pendingOrders: 0,
         products: [
           { productCode: 'ABAKG01', kg: 8_000, units: 8_000 },
           { productCode: 'ABAGP13', kg: 12_000, units: 300 },
@@ -247,6 +254,8 @@ describe('ventas del día — panel bajo la gráfica', () => {
         actualKg: 0,
         actualUnits: 0,
         invoiceCount: 0,
+        pendingKg: 0,
+        pendingOrders: 0,
         products: [],
         cumulativeKg: 480_000,
         projectedCumulativeKg: 500_000,
@@ -257,6 +266,8 @@ describe('ventas del día — panel bajo la gráfica', () => {
         actualKg: 80,
         actualUnits: 2,
         invoiceCount: 1,
+        pendingKg: 0,
+        pendingOrders: 0,
         products: [{ productCode: 'ABAGP13', kg: 80, units: 2 }],
         cumulativeKg: null,
         projectedCumulativeKg: 520_833.3,
@@ -340,6 +351,8 @@ describe('barras diarias — tira bajo el acumulado', () => {
         actualKg: 20_000,
         actualUnits: 500,
         invoiceCount: 3,
+        pendingKg: 0,
+        pendingOrders: 0,
         products: [],
         cumulativeKg: 480_000,
         projectedCumulativeKg: 480_000,
@@ -350,6 +363,8 @@ describe('barras diarias — tira bajo el acumulado', () => {
         actualKg: 0,
         actualUnits: 0,
         invoiceCount: 0,
+        pendingKg: 0,
+        pendingOrders: 0,
         products: [],
         cumulativeKg: 480_000,
         projectedCumulativeKg: 500_000,
@@ -360,6 +375,8 @@ describe('barras diarias — tira bajo el acumulado', () => {
         actualKg: 80,
         actualUnits: 2,
         invoiceCount: 1,
+        pendingKg: 0,
+        pendingOrders: 0,
         products: [],
         cumulativeKg: null,
         projectedCumulativeKg: 520_833.3,
@@ -370,6 +387,8 @@ describe('barras diarias — tira bajo el acumulado', () => {
         actualKg: 0,
         actualUnits: 0,
         invoiceCount: 0,
+        pendingKg: 0,
+        pendingOrders: 0,
         products: [],
         cumulativeKg: null,
         projectedCumulativeKg: null,
@@ -420,10 +439,103 @@ describe('barras diarias — tira bajo el acumulado', () => {
     expect(scale.maxKg).toBe(25_000);
   });
 
+  it('apila en cada día los kg comprometidos en pedidos pendientes', () => {
+    const withPending = report({
+      daily: data.daily.map((day, index) => ({
+        ...day,
+        pendingKg: index === 0 ? 10_000 : index === 2 ? 5_000 : 0,
+        pendingOrders: index === 0 ? 2 : index === 2 ? 1 : 0,
+      })),
+      totals: { ...data.totals, pendingKg: 15_000, pendingOrders: 3 },
+    });
+
+    const bars = buildDayBars(withPending);
+
+    expect(bars[0]).toMatchObject({ pendingKg: 10_000, pendingOrders: 2 });
+    expect(bars[1]).toMatchObject({ pendingKg: 0, pendingOrders: 0 });
+    expect(pendingCoveragePct(withPending)).toBeCloseTo((15_000 / 570_000) * 100, 1);
+    expect(dayPendingSharePct(bars[2]!)).toBeCloseTo((5_000 / 5_080) * 100, 1);
+    // La barra apilada (real + pronóstico) manda en la escala.
+    expect(dailySalesScale(withPending, bars).maxKg).toBe(40_000);
+  });
+
+  it('sin meta, los porcentajes de pedidos pendientes no se inventan', () => {
+    expect(pendingCoveragePct(report({ totals: { ...data.totals, forecastKg: 0 } }))).toBeNull();
+    expect(dayPendingSharePct(buildDayBars(data)[1]!)).toBeNull();
+  });
+
   it('sin días ni meta la pista no queda en cero', () => {
     const empty = report({ daily: [], totals: { ...data.totals, forecastKg: 0 } });
 
     expect(dailySalesScale(empty, [])).toEqual({ maxKg: 1, goalKg: null });
+  });
+});
+
+// ============================================================
+// Brecha del mes y del día.
+// ============================================================
+
+describe('brecha del mes y del día', () => {
+  it('el mes mide la venta acumulada y el día el ritmo necesario menos la venta de hoy', () => {
+    const gap = salesGap(report());
+
+    expect(gap.monthGapKg).toBe(-70_000);
+    expect(gap.monthPct).toBe(87.7);
+    expect(gap.dayGoalKg).toBeCloseTo(23_333.3, 1);
+    expect(gap.todayKg).toBe(80);
+    expect(gap.dayGapKg).toBeCloseTo(23_253.3, 1);
+    expect(gap.dayPct).toBeCloseTo(0.3, 1);
+  });
+
+  it('si hoy ya superó el ritmo necesario el faltante queda negativo', () => {
+    const data = report();
+    const gap = salesGap(
+      report({
+        daily: data.daily.map((day) => (day.date === '2026-10-29' ? { ...day, actualKg: 30_000 } : day)),
+      }),
+    );
+
+    expect(gap.todayKg).toBe(30_000);
+    expect(gap.dayGapKg).toBeCloseTo(-6_666.7, 1);
+    expect(gap.dayPct).toBeCloseTo(128.6, 1);
+  });
+
+  it('un mes cerrado no ofrece brecha del día', () => {
+    const gap = salesGap(
+      report({
+        status: 'CLOSED',
+        totals: { ...report().totals, requiredDailyKg: null },
+        days: { ...report().days, today: '2026-11-03' },
+      }),
+    );
+
+    expect(gap.monthGapKg).toBe(-70_000);
+    expect(gap.dayGoalKg).toBeNull();
+    expect(gap.todayKg).toBe(0);
+    expect(gap.dayGapKg).toBeNull();
+    expect(gap.dayPct).toBeNull();
+  });
+
+  it('sin meta no inventa brecha ni porcentajes', () => {
+    const gap = salesGap(
+      report({
+        totals: { ...report().totals, forecastKg: 0, attainmentPct: null, requiredDailyKg: null },
+      }),
+    );
+
+    expect(gap.monthGapKg).toBeNull();
+    expect(gap.monthPct).toBeNull();
+    expect(gap.dayGoalKg).toBeNull();
+    expect(gap.dayGapKg).toBeNull();
+    expect(gap.dayPct).toBeNull();
+  });
+
+  it('con la meta del mes ya cubierta el día cuenta como cumplido', () => {
+    const gap = salesGap(report({ totals: { ...report().totals, requiredDailyKg: 0 } }));
+
+    expect(gap.dayGoalKg).toBe(0);
+    expect(gap.dayGapKg).toBe(-80);
+    expect(gap.dayPct).toBe(100);
   });
 });
 

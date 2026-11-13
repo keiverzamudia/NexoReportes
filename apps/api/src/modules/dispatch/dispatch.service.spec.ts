@@ -49,6 +49,7 @@ function createFakePrisma() {
     // Plan vivo y cartera mínima para probar la sincronización de renglones.
     draft: null as Row | null,
     orderLines: [] as Row[],
+    customers: [] as Row[],
     inventory: { lines: [] as Row[] },
     // RBAC: solo estos roles pueden operar despachos (acción «Operar»).
     rolePermissions: [
@@ -97,6 +98,12 @@ function createFakePrisma() {
     },
     inventorySnapshot: {
       findFirst: async () => state.inventory,
+    },
+    customer: {
+      findMany: async ({ where }: Row = {}) =>
+        state.customers
+          .filter((row) => matches(where, row))
+          .map((row) => ({ externalCode: row.externalCode, vendor: row.vendor ?? null })),
     },
     deliveryDateOverride: {
       findMany: async () => [] as Row[],

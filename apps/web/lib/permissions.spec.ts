@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { firstAllowedHref } from './permissions';
+import { firstAllowedHref, hasPermission } from './permissions';
 
 // ============================================================
 // Módulo de inicio según permisos. Lo usan la puerta de sesión (`/`),
@@ -23,6 +23,12 @@ describe('primer módulo permitido', () => {
 
   it('ignora permisos de módulos sin pantalla', () => {
     expect(firstAllowedHref(['auditoria:read', 'sincronizacion:update'])).toBeNull();
+  });
+
+  it('acepta el permiso legado vendedoras:read durante la transición', () => {
+    expect(hasPermission(['vendedoras:read'], 'vendedor')).toBe(true);
+    expect(hasPermission(['vendedor:read'], 'vendedor')).toBe(true);
+    expect(hasPermission(['otro:read'], 'vendedor')).toBe(false);
   });
 
   it('con todo el catálogo entra por Disponibilidad', () => {

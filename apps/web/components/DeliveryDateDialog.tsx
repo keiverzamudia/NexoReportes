@@ -1,11 +1,11 @@
 'use client';
 
 // ============================================================
-// Modal de fecha tentativa para uno o varios renglones.
+// Modal de entrega estimada para uno o varios renglones.
 //
 // Se abre encima del plan (no navega). Aplica la misma fecha a todos
 // los ítems o restaura la original de Profit. La fecha original nunca
-// se modifica; la capa tentativa vive sólo en Nexo.
+// se modifica; la capa estimada vive sólo en Nexo.
 // ============================================================
 
 import type { DeliveryDateApplyResponse, DeliveryDateItem } from '@nexo/contracts';
@@ -144,7 +144,7 @@ export function DeliveryDateDialog({
               <CalendarRange aria-hidden className="size-5" />
             </span>
             <div className="min-w-0">
-              <p className="text-label-sm font-semibold uppercase tracking-[0.14em] text-outline">Fecha tentativa</p>
+              <p className="text-label-sm font-semibold uppercase tracking-[0.14em] text-outline">Entrega estimada</p>
               <h2 id="delivery-date-title" className="truncate text-title-md text-primary">
                 {target.title}
               </h2>
@@ -168,15 +168,15 @@ export function DeliveryDateDialog({
         <div className="flex-1 overflow-y-auto p-space-md sm:p-space-lg">
           <div className="flex flex-col gap-space-md">
             <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low/70 p-space-sm">
-              <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Fecha original de Profit</p>
+              <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Fecha de entrega original de Profit</p>
               <p className="mt-space-2xs text-title-md font-bold tabular-nums text-primary">{originalLabel}</p>
               <p className="mt-space-2xs text-label-sm text-on-surface-variant">
-                No se modifica. La fecha tentativa sólo vive en Corpoagro.
+                No se modifica. La entrega estimada sólo vive en Corpoagro.
               </p>
             </div>
 
             <label className="flex flex-col gap-space-2xs">
-              <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Nueva fecha</span>
+              <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Nueva fecha de entrega</span>
               <DateInput ariaLabel="Nueva fecha de entrega" value={date} onChange={setDate} className="w-full" autoFocus />
               {tentatives.length > 1 && (
                 <span className="text-label-sm text-on-surface-variant">
@@ -227,8 +227,8 @@ export function DeliveryDateDialog({
 
             {hasTentative && (
               <p className="rounded-xl border border-secondary/25 bg-secondary-container/10 p-space-sm text-label-sm text-on-surface-variant">
-                <strong className="text-secondary">Restaurar original</strong> quita la fecha tentativa de los renglones
-                seleccionados. Los que no tengan tentativa quedan igual.
+                <strong className="text-secondary">Restaurar original</strong> quita la entrega estimada de los renglones
+                seleccionados. Los que no tengan estimada quedan igual.
               </p>
             )}
 

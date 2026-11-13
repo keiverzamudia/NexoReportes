@@ -17,6 +17,7 @@ import type {
   ForecastSalesDayCustomer,
   ForecastSalesDayDetail,
   ForecastSalesDayDetailProduct,
+  ForecastSalesDayPendingLine,
   ForecastSalesResponse,
 } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
@@ -26,6 +27,7 @@ import {
   ChevronDown,
   PackageSearch,
   RotateCw,
+  Truck,
   Users,
   X,
 } from 'lucide-react';
@@ -43,6 +45,28 @@ import { Badge, Segmented, Skeleton, TextInput, cx } from '../ui';
 
 type DayTab = 'product' | 'customer';
 
+/** Ámbar del pronóstico: el mismo tono de la tira de barras. */
+const AMBER = '#d18700';
+
+/** Renglón pendiente con su cliente, para poder listarlo en ambos desgloses. */
+interface PendingLineView extends ForecastSalesDayPendingLine {
+  customerCode: string;
+  customerName: string;
+}
+
+/** Fila unificada: venta real del día + pedidos pendientes con entrega ese día. */
+interface DayProductRow extends ForecastSalesDayDetailProduct {
+  pendingKg: number;
+  pendingOrders: number;
+  pendingLines: PendingLineView[];
+}
+
+interface DayCustomerRow extends ForecastSalesDayCustomer {
+  pendingKg: number;
+  pendingOrders: number;
+  pendingLines: PendingLineView[];
+}
+
 function longDayLabel(date: string): string {
   const day = Number(date.slice(8, 10));
   const month = Number(date.slice(5, 7));
@@ -57,31 +81,60 @@ function longDayLabel(date: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function shortDate(iso: string): string {
+  return `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+}
+
+/** Fecha del pedido pendiente: tentativa si se movió, si no la de Profit. */
+function pendingDateLabel(line: ForecastSalesDayPendingLine): string {
+  const tentative = line.tentativeDate ? shortDate(line.tentativeDate) : null;
+  const original = line.requestedDate ? shortDate(line.requestedDate) : null;
+  if (tentative && tentative !== original) {
+    return `tentativa ${tentative}${original ? ` · Profit ${original}` : ''}`;
+  }
+  return original ? `Profit ${original}` : 'sin fecha';
+}
+
+function Stat({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone?: 'amber' }) {
   return (
-    <div className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-sm">
+    <div
+      className={cx(
+        'rounded-xl border p-space-sm',
+        tone === 'amber' ? 'border-warning/40 bg-warning-container/30' : 'border-outline-variant/30 bg-surface-container-lowest',
+      )}
+    >
       <p className="text-label-sm font-semibold uppercase tracking-wide text-outline">{label}</p>
-      <p className="tabular-nums text-title-md font-black text-on-surface">{value}</p>
+      <p
+        className="tabular-nums text-title-md font-black text-on-surface"
+        style={tone === 'amber' ? { color: AMBER } : undefined}
+      >
+        {value}
+      </p>
       {hint && <p className="truncate text-label-sm text-on-surface-variant">{hint}</p>}
     </div>
   );
 }
 
-function ShareBar({ pct, strong = false }: { pct: number | null; strong?: boolean }) {
-  const width = pct === null ? 0 : Math.max(0, Math.min(100, pct));
+/**
+ * Barra de participación del día con dos segmentos: vendido (azul) y pendiente
+ * (ámbar). Ambos porcentajes se miden sobre el total comprometido del día.
+ */
+function CommittedShare({ soldPct, pendingPct }: { soldPct: number | null; pendingPct: number | null }) {
+  const sold = Math.max(0, Math.min(100, soldPct ?? 0));
+  const pending = Math.max(0, Math.min(100, pendingPct ?? 0));
   return (
     <div className="flex items-center gap-2">
-      <div className="h-1.5 min-w-14 flex-1 overflow-hidden rounded-pill bg-surface-container-high">
-        <div
-          className={cx(
-            'h-full rounded-pill transition-[width] duration-700 ease-out',
-            strong ? 'bg-secondary' : 'bg-primary-container',
-          )}
-          style={{ width: `${width}%` }}
-        />
+      <div className="flex h-1.5 min-w-14 flex-1 overflow-hidden rounded-pill bg-surface-container-high">
+        <div className="h-full bg-primary-container" style={{ width: `${sold}%` }} />
+        <div className="h-full" style={{ width: `${pending}%`, background: AMBER }} />
       </div>
-      <span className="w-14 shrink-0 text-right text-label-sm font-semibold tabular-nums text-on-surface-variant">
-        {fmtPct(pct)}
+      <span className="w-16 shrink-0 text-right text-label-sm font-semibold tabular-nums text-on-surface-variant">
+        {sold > 0 ? fmtPct(sold) : '—'}
+        {pending > 0 && (
+          <span className="block text-[10px] font-bold" style={{ color: AMBER }}>
+            +{fmtPct(pending)}
+          </span>
+        )}
       </span>
     </div>
   );
@@ -116,7 +169,7 @@ export function DaySalesModal({
   goalKg: number | null;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<DayTab>('product');
+  const [tab, setTab] = useState<DayTab>(bar.kg > 0 ? 'product' : 'customer');
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
   const [expandedCustomer, setExpandedCustomer] = useState<string | null>(null);
   const [customerSearch, setCustomerSearch] = useState('');
@@ -169,17 +222,114 @@ export function DaySalesModal({
   );
 
   const unavailable = Boolean(detail.data && !detail.data.available);
-  const products = detail.data?.available ? detail.data.products : fallbackProducts;
-  const customers = detail.data?.available ? detail.data.customers : [];
+  const pendingUnavailable = Boolean(detail.data && !detail.data.pendingAvailable);
+
+  const soldProducts = detail.data?.available ? detail.data.products : fallbackProducts;
+  const soldCustomers = detail.data?.available ? detail.data.customers : [];
   const totalKg = detail.data?.available ? detail.data.kg : bar.kg;
-  const totalSacks = products.reduce((acc, product) => acc + (product.sacks ?? 0), 0);
-  const hasSacks = products.some((product) => product.sacks !== null);
+  // Mientras llega el detalle, el total pendiente ya se conoce por la barra.
+  const pendingKg = detail.data?.pendingAvailable ? detail.data.pendingKg : bar.pendingKg;
+  const pendingOrders = detail.data?.pendingAvailable ? detail.data.pendingOrders : bar.pendingOrders;
+  const committedKg = totalKg + pendingKg;
+
+  // Renglones pendientes aplanados con su cliente: sirven para expandir tanto
+  // el producto como el cliente sin volver a consultar.
+  const pendingLines = useMemo<PendingLineView[]>(
+    () =>
+      (detail.data?.pendingCustomers ?? []).flatMap((customer) =>
+        customer.lines.map((line) => ({
+          ...line,
+          customerCode: customer.customerCode,
+          customerName: customer.customerName,
+        })),
+      ),
+    [detail.data],
+  );
+
+  const productRows = useMemo<DayProductRow[]>(() => {
+    const map = new Map<string, DayProductRow>();
+    for (const product of soldProducts) {
+      map.set(product.productCode, { ...product, pendingKg: 0, pendingOrders: 0, pendingLines: [] });
+    }
+    for (const product of detail.data?.pendingProducts ?? []) {
+      const lines = pendingLines.filter((line) => line.productCode === product.productCode);
+      const existing = map.get(product.productCode);
+      if (existing) {
+        existing.pendingKg = product.kg;
+        existing.pendingOrders = product.orderCount;
+        existing.pendingLines = lines;
+      } else {
+        map.set(product.productCode, {
+          productCode: product.productCode,
+          description: product.description,
+          uom: product.uom,
+          kgPerUom: null,
+          kg: 0,
+          units: 0,
+          sacks: null,
+          sharePct: null,
+          pendingKg: product.kg,
+          pendingOrders: product.orderCount,
+          pendingLines: lines,
+        });
+      }
+    }
+    return [...map.values()].sort(
+      (a, b) => b.kg + b.pendingKg - (a.kg + a.pendingKg) || a.productCode.localeCompare(b.productCode),
+    );
+  }, [soldProducts, detail.data, pendingLines]);
+
+  const customerRows = useMemo<DayCustomerRow[]>(() => {
+    const map = new Map<string, DayCustomerRow>();
+    for (const customer of soldCustomers) {
+      map.set(customer.customerCode, { ...customer, pendingKg: 0, pendingOrders: 0, pendingLines: [] });
+    }
+    for (const customer of detail.data?.pendingCustomers ?? []) {
+      const lines = customer.lines.map((line) => ({
+        ...line,
+        customerCode: customer.customerCode,
+        customerName: customer.customerName,
+      }));
+      const existing = map.get(customer.customerCode);
+      if (existing) {
+        existing.pendingKg = customer.kg;
+        existing.pendingOrders = customer.orderCount;
+        existing.pendingLines = lines;
+      } else {
+        map.set(customer.customerCode, {
+          customerCode: customer.customerCode,
+          customerName: customer.customerName,
+          kg: 0,
+          units: 0,
+          sharePct: null,
+          products: [],
+          pendingKg: customer.kg,
+          pendingOrders: customer.orderCount,
+          pendingLines: lines,
+        });
+      }
+    }
+    return [...map.values()].sort(
+      (a, b) => b.kg + b.pendingKg - (a.kg + a.pendingKg) || a.customerName.localeCompare(b.customerName),
+    );
+  }, [soldCustomers, detail.data]);
+
+  // Alias: el JSX de las tablas habla de productos y clientes.
+  const products = productRows;
+  const customers = customerRows;
+
+  const totalSacks = soldProducts.reduce((acc, product) => acc + (product.sacks ?? 0), 0);
+  const hasSacks = soldProducts.some((product) => product.sacks !== null);
   const loadingProducts = detail.isLoading && products.length === 0;
   const loadingCustomers = detail.isLoading;
 
   const goal = goalKg !== null && goalKg > 0 ? goalKg : null;
   const goalPct = goal !== null ? (totalKg / goal) * 100 : null;
   const goalReached = goalPct !== null && goalPct >= 100;
+
+  // Participación sobre el total comprometido del día (vendido + pendiente).
+  const soldShare = (kg: number) => (committedKg > 0 ? (kg / committedKg) * 100 : null);
+  const pendingShare = (kg: number) => (committedKg > 0 ? (kg / committedKg) * 100 : null);
 
   const visibleCustomers = useMemo(() => {
     const needle = customerSearch.trim().toLowerCase();
@@ -194,9 +344,9 @@ export function DaySalesModal({
   const productClients = useMemo(() => {
     const map = new Map<string, ReturnType<typeof clientsForProduct>>();
     if (!expandedProduct) return map;
-    map.set(expandedProduct, clientsForProduct(customers, expandedProduct));
+    map.set(expandedProduct, clientsForProduct(soldCustomers, expandedProduct));
     return map;
-  }, [customers, expandedProduct]);
+  }, [soldCustomers, expandedProduct]);
 
   const errorMessage = detail.error
     ? detail.error.message
@@ -227,14 +377,15 @@ export function DaySalesModal({
             </span>
             <div className="min-w-0">
               <p className="text-label-sm font-semibold uppercase tracking-[0.14em] text-outline">
-                Ventas del día · Desglose
+                Ventas y pedidos del día · Desglose
               </p>
               <h2 id="day-sales-title" className="truncate text-title-md font-bold text-primary">
                 {longDayLabel(date)}
               </h2>
               <p className="flex flex-wrap items-center gap-2 text-label-md text-on-surface-variant">
                 <span className="tabular-nums">
-                  {fmtKg(totalKg)} kg · {fmtKg(bar.invoices)} notas
+                  {fmtKg(totalKg)} kg vendidos
+                  {pendingKg > 0 ? ` · ${fmtKg(pendingKg)} kg pendientes` : ''} · {fmtKg(bar.invoices)} notas
                 </span>
                 {bar.partial && (
                   <Badge tone="warning" dot>
@@ -242,6 +393,11 @@ export function DaySalesModal({
                   </Badge>
                 )}
                 {bar.isToday && !bar.partial && <Badge tone="primary">Hoy</Badge>}
+                {pendingKg > 0 && (
+                  <Badge tone="warning" dot>
+                    {pendingOrders} {pendingOrders === 1 ? 'pedido pendiente' : 'pedidos pendientes'}
+                  </Badge>
+                )}
               </p>
             </div>
           </div>
@@ -266,11 +422,21 @@ export function DaySalesModal({
         </header>
 
         <div className="flex flex-1 flex-col gap-space-sm overflow-y-auto overscroll-contain px-space-md py-space-sm sm:px-space-lg">
-          <div className="grid grid-cols-2 gap-space-sm sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-space-sm sm:grid-cols-5">
             <Stat
               label="Vendido"
               value={`${fmtKg(totalKg)} kg`}
-              hint={bar.partial ? 'día en curso' : 'día completo'}
+              hint={totalKg > 0 ? (bar.partial ? 'día en curso' : 'día completo') : 'sin ventas registradas'}
+            />
+            <Stat
+              label="Pendiente de despacho"
+              tone={pendingKg > 0 ? 'amber' : undefined}
+              value={pendingKg > 0 ? `${fmtKg(pendingKg)} kg` : '—'}
+              hint={
+                pendingKg > 0
+                  ? `${fmtKg(pendingOrders)} ${pendingOrders === 1 ? 'pedido' : 'pedidos'} con entrega este día`
+                  : 'sin pedidos con esta entrega'
+              }
             />
             <Stat label="Notas" value={fmtKg(bar.invoices)} hint="notas de entrega" />
             <Stat
@@ -286,7 +452,9 @@ export function DaySalesModal({
                   ? 'consultando…'
                   : errorMessage && customers.length === 0
                     ? 'sin detalle'
-                    : 'con despachos'
+                    : pendingKg > 0
+                      ? 'con venta o pedido'
+                      : 'con despachos'
               }
             />
           </div>
@@ -351,6 +519,27 @@ export function DaySalesModal({
             </div>
           )}
 
+          {pendingUnavailable && (
+            <p
+              role="status"
+              className="flex items-start gap-space-sm rounded-xl bg-warning-container/50 px-space-sm py-space-xs text-label-md text-on-warning-container"
+            >
+              <Truck aria-hidden className="mt-0.5 size-4 shrink-0" />
+              No se pudo leer la cartera de pedidos: el total pendiente sale de la barra, sin desglose por cliente.
+            </p>
+          )}
+
+          <div className="flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
+            <span className="inline-flex items-center gap-1">
+              <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Vendido
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span aria-hidden className="size-2 rounded-full" style={{ background: AMBER }} /> Pendiente de despacho
+              {committedKg > 0 ? ` · ${fmtPct((pendingKg / committedKg) * 100)} del comprometido` : ''}
+            </span>
+            <span className="text-outline">Las filas ámbar son las ventas que faltaron ese día.</span>
+          </div>
+
           <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-surface-container pb-space-xs">
             <Segmented<DayTab>
               ariaLabel="Ver el desglose por"
@@ -402,12 +591,15 @@ export function DaySalesModal({
                         Producto
                       </th>
                       <th scope="col" className="w-20 py-1 text-right font-semibold">
-                        Kg
+                        Vendido
+                      </th>
+                      <th scope="col" className="w-24 py-1 text-right font-semibold">
+                        Pendiente
                       </th>
                       <th scope="col" className="w-20 py-1 text-right font-semibold">
                         Sacos
                       </th>
-                      <th scope="col" className="w-[34%] py-1 pl-3 text-left font-semibold">
+                      <th scope="col" className="w-[30%] py-1 pl-3 text-left font-semibold">
                         % del día
                       </th>
                     </tr>
@@ -418,7 +610,12 @@ export function DaySalesModal({
                       const clients = open ? productClients.get(product.productCode) ?? [] : [];
                       return (
                         <Fragment key={product.productCode}>
-                          <tr className="border-t border-surface-container/70 align-top">
+                          <tr
+                            className={cx(
+                              'border-t border-surface-container/70 align-top',
+                              product.pendingKg > 0 && 'bg-warning-container/35',
+                            )}
+                          >
                             <td className="py-1.5 pr-2">
                               <button
                                 type="button"
@@ -441,24 +638,48 @@ export function DaySalesModal({
                                   <span className="block truncate text-on-surface" title={product.description}>
                                     {product.description}
                                   </span>
-                                  <span className="text-label-sm text-outline">
-                                    {product.productCode}
-                                    {product.uom ? ` · ${product.uom}` : ''}
+                                  <span className="flex flex-wrap items-center gap-1.5 text-label-sm text-outline">
+                                    <span>
+                                      {product.productCode}
+                                      {product.uom ? ` · ${product.uom}` : ''}
+                                    </span>
+                                    {product.pendingKg > 0 && (
+                                      <Badge tone="warning" dot>
+                                        Pendiente
+                                      </Badge>
+                                    )}
                                   </span>
                                 </span>
                               </button>
                             </td>
-                            <td className="py-1.5 text-right tabular-nums text-on-surface">{fmtKg(product.kg)}</td>
+                            <td className="py-1.5 text-right tabular-nums text-on-surface">
+                              {product.kg > 0 ? fmtKg(product.kg) : <span className="text-outline">—</span>}
+                            </td>
+                            <td className="py-1.5 text-right tabular-nums">
+                              {product.pendingKg > 0 ? (
+                                <span className="font-semibold" style={{ color: AMBER }}>
+                                  {fmtKg(product.pendingKg)}
+                                  <span className="block text-[10px] font-normal text-outline">
+                                    {fmtKg(product.pendingOrders)} {product.pendingOrders === 1 ? 'pedido' : 'pedidos'}
+                                  </span>
+                                </span>
+                              ) : (
+                                <span className="text-outline">—</span>
+                              )}
+                            </td>
                             <td className="py-1.5 text-right tabular-nums text-on-surface-variant">
                               {product.sacks === null ? '—' : fmtKg(product.sacks, 1)}
                             </td>
                             <td className="py-1.5 pl-3">
-                              <ShareBar pct={product.sharePct} />
+                              <CommittedShare
+                                soldPct={soldShare(product.kg)}
+                                pendingPct={pendingShare(product.pendingKg)}
+                              />
                             </td>
                           </tr>
                           {open && (
                             <tr className="bg-surface-container-low/45">
-                              <td colSpan={4} className="px-3 py-2">
+                              <td colSpan={5} className="px-3 py-2">
                                 <p className="mb-1 text-label-sm font-semibold uppercase tracking-wide text-outline">
                                   Clientes que compraron este producto
                                 </p>
@@ -484,6 +705,32 @@ export function DaySalesModal({
                                     ))}
                                   </ul>
                                 )}
+                                {product.pendingLines.length > 0 && (
+                                  <>
+                                    <p className="mb-1 mt-3 text-label-sm font-semibold uppercase tracking-wide" style={{ color: AMBER }}>
+                                      Pedidos pendientes de este producto
+                                    </p>
+                                    <ul className="flex flex-col gap-1">
+                                      {product.pendingLines.map((line) => (
+                                        <li
+                                          key={`${line.orderNumber}-${line.lineNumber}`}
+                                          className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-label-md"
+                                        >
+                                          <span className="min-w-0 truncate text-on-surface">
+                                            <strong className="tabular-nums">#{line.orderNumber}</strong> ·{' '}
+                                            {line.customerName}
+                                            {line.authorized === false && (
+                                              <span className="text-outline"> · sin autorizar</span>
+                                            )}
+                                          </span>
+                                          <span className="shrink-0 tabular-nums" style={{ color: AMBER }}>
+                                            {fmtKg(line.kg)} kg · <span className="text-outline">{pendingDateLabel(line)}</span>
+                                          </span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </>
+                                )}
                               </td>
                             </tr>
                           )}
@@ -495,11 +742,14 @@ export function DaySalesModal({
                     <tr className="border-t-2 border-outline-variant/40 text-label-md font-semibold">
                       <td className="py-1.5 text-on-surface">Total del día</td>
                       <td className="py-1.5 text-right tabular-nums text-on-surface">{fmtKg(totalKg)}</td>
+                      <td className="py-1.5 text-right tabular-nums" style={{ color: pendingKg > 0 ? AMBER : undefined }}>
+                        {pendingKg > 0 ? fmtKg(pendingKg) : '—'}
+                      </td>
                       <td className="py-1.5 text-right tabular-nums text-on-surface-variant">
                         {hasSacks ? fmtKg(totalSacks, 1) : '—'}
                       </td>
                       <td className="py-1.5 pl-3 text-label-sm text-outline">
-                        {detail.data?.truncated ? 'Datos truncados' : '100 % de la venta del día'}
+                        {detail.data?.truncated ? 'Datos truncados' : '100 % del comprometido del día'}
                       </td>
                     </tr>
                   </tfoot>
@@ -550,7 +800,10 @@ export function DaySalesModal({
                       Cliente
                     </th>
                     <th scope="col" className="w-20 py-1 text-right font-semibold">
-                      Kg
+                      Vendido
+                    </th>
+                    <th scope="col" className="w-24 py-1 text-right font-semibold">
+                      Pendiente
                     </th>
                     <th scope="col" className="w-20 py-1 text-right font-semibold" title="solo artículos SAC">
                       Sacos
@@ -558,7 +811,7 @@ export function DaySalesModal({
                     <th scope="col" className="w-24 py-1 text-right font-semibold">
                       Productos
                     </th>
-                    <th scope="col" className="w-[34%] py-1 pl-3 text-left font-semibold">
+                    <th scope="col" className="w-[28%] py-1 pl-3 text-left font-semibold">
                       % del día
                     </th>
                   </tr>
@@ -569,7 +822,12 @@ export function DaySalesModal({
                     const sacks = customerSacks(customer);
                     return (
                       <Fragment key={customer.customerCode}>
-                        <tr className="border-t border-surface-container/70 align-top">
+                        <tr
+                          className={cx(
+                            'border-t border-surface-container/70 align-top',
+                            customer.pendingKg > 0 && 'bg-warning-container/35',
+                          )}
+                        >
                           <td className="py-1.5 pr-2">
                             <button
                               type="button"
@@ -592,15 +850,36 @@ export function DaySalesModal({
                                 <span className="block truncate text-on-surface" title={customer.customerName}>
                                   {customer.customerName}
                                 </span>
-                                <span className="text-label-sm text-outline">
-                                  {customer.customerCode === '__sin_cliente__'
-                                    ? 'notas sin cliente asignado'
-                                    : customer.customerCode}
+                                <span className="flex flex-wrap items-center gap-1.5 text-label-sm text-outline">
+                                  <span>
+                                    {customer.customerCode === '__sin_cliente__'
+                                      ? 'notas sin cliente asignado'
+                                      : customer.customerCode}
+                                  </span>
+                                  {customer.pendingKg > 0 && (
+                                    <Badge tone="warning" dot>
+                                      Pendiente
+                                    </Badge>
+                                  )}
                                 </span>
                               </span>
                             </button>
                           </td>
-                          <td className="py-1.5 text-right tabular-nums text-on-surface">{fmtKg(customer.kg)}</td>
+                          <td className="py-1.5 text-right tabular-nums text-on-surface">
+                            {customer.kg > 0 ? fmtKg(customer.kg) : <span className="text-outline">—</span>}
+                          </td>
+                          <td className="py-1.5 text-right tabular-nums">
+                            {customer.pendingKg > 0 ? (
+                              <span className="font-semibold" style={{ color: AMBER }}>
+                                {fmtKg(customer.pendingKg)}
+                                <span className="block text-[10px] font-normal text-outline">
+                                  {fmtKg(customer.pendingOrders)} {customer.pendingOrders === 1 ? 'pedido' : 'pedidos'}
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="text-outline">—</span>
+                            )}
+                          </td>
                           <td className="py-1.5 text-right tabular-nums text-on-surface-variant">
                             {sacks === null ? '—' : fmtKg(sacks, 1)}
                           </td>
@@ -608,12 +887,15 @@ export function DaySalesModal({
                             {fmtKg(customer.products.length)}
                           </td>
                           <td className="py-1.5 pl-3">
-                            <ShareBar pct={customer.sharePct} strong />
+                            <CommittedShare
+                              soldPct={soldShare(customer.kg)}
+                              pendingPct={pendingShare(customer.pendingKg)}
+                            />
                           </td>
                         </tr>
                         {open && (
                           <tr className="bg-surface-container-low/45">
-                            <td colSpan={5} className="px-3 py-2">
+                            <td colSpan={6} className="px-3 py-2">
                               <p className="mb-1 text-label-sm font-semibold uppercase tracking-wide text-outline">
                                 Productos de este cliente
                               </p>
@@ -652,6 +934,35 @@ export function DaySalesModal({
                                   ))}
                                 </ul>
                               )}
+                              {customer.pendingLines.length > 0 && (
+                                <>
+                                  <p className="mb-1 mt-3 text-label-sm font-semibold uppercase tracking-wide" style={{ color: AMBER }}>
+                                    Pedidos pendientes de este cliente
+                                  </p>
+                                  <ul className="flex flex-col gap-1">
+                                    {customer.pendingLines.map((line) => (
+                                      <li
+                                        key={`${line.orderNumber}-${line.lineNumber}`}
+                                        className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-label-md"
+                                      >
+                                        <span className="min-w-0 truncate text-on-surface">
+                                          <strong className="tabular-nums">#{line.orderNumber}</strong> ·{' '}
+                                          {line.description}
+                                          <span className="text-outline">
+                                            {' '}
+                                            · {line.productCode}
+                                            {line.uom ? ` · ${line.uom}` : ''}
+                                            {line.authorized === false ? ' · sin autorizar' : ''}
+                                          </span>
+                                        </span>
+                                        <span className="shrink-0 tabular-nums" style={{ color: AMBER }}>
+                                          {fmtKg(line.kg)} kg · <span className="text-outline">{pendingDateLabel(line)}</span>
+                                        </span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </>
+                              )}
                             </td>
                           </tr>
                         )}
@@ -663,11 +974,14 @@ export function DaySalesModal({
                   <tr className="border-t-2 border-outline-variant/40 text-label-md font-semibold">
                     <td className="py-1.5 text-on-surface">Total del día</td>
                     <td className="py-1.5 text-right tabular-nums text-on-surface">{fmtKg(totalKg)}</td>
+                    <td className="py-1.5 text-right tabular-nums" style={{ color: pendingKg > 0 ? AMBER : undefined }}>
+                      {pendingKg > 0 ? fmtKg(pendingKg) : '—'}
+                    </td>
                     <td className="py-1.5 text-right tabular-nums text-on-surface-variant">
                       {hasSacks ? fmtKg(totalSacks, 1) : '—'}
                     </td>
                     <td className="py-1.5 text-right tabular-nums text-on-surface-variant">{fmtKg(products.length)}</td>
-                    <td className="py-1.5 pl-3 text-label-sm text-outline">100 % de la venta del día</td>
+                    <td className="py-1.5 pl-3 text-label-sm text-outline">100 % del comprometido del día</td>
                   </tr>
                 </tfoot>
               </table>
@@ -675,8 +989,9 @@ export function DaySalesModal({
           )}
 
           <p className="text-label-sm text-outline">
-            Porcentajes calculados sobre el total vendido del día ({fmtKg(totalKg)} kg). Las notas sin cliente se
-            agrupan como «Sin cliente» para que el reparto sume 100 %. Los sacos solo suman artículos SAC.
+            Las filas y celdas en ámbar son pedidos con entrega ese día que siguen pendientes de despacho: las ventas
+            que faltaron. Los porcentajes se miden sobre el total comprometido ({fmtKg(committedKg)} kg = vendido +
+            pendiente). Las notas sin cliente se agrupan como «Sin cliente» y los sacos solo suman artículos SAC.
           </p>
         </div>
 

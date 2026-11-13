@@ -10,7 +10,7 @@
 
 import { ArrowDownRight, ArrowUpRight, ChevronDown, ChevronUp, Inbox } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { HelpTerm } from '../content/help/types';
 import { ColumnHelp } from './help/ColumnHelp';
 
@@ -510,6 +510,7 @@ export function DataTable<T>({
   sticky = true,
   showHelpRow = false,
   onRowDoubleClick,
+  onRowClick,
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -535,8 +536,46 @@ export function DataTable<T>({
   showHelpRow?: boolean;
   /** Doble clic sobre una fila (escritorio) o tarjeta (teléfono). */
   onRowDoubleClick?: (row: T) => void;
+  /** Clic sobre la fila o tarjeta. No se dispara al pulsar enlaces, botones o campos. */
+  onRowClick?: (row: T) => void;
 }) {
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const rowRefs = useRef(new Map<string, HTMLTableRowElement>());
+  const cardRefs = useRef(new Map<string, HTMLLIElement>());
+
+  /**
+   * Al abrir una fila, la vista se mueve a ese registro: en escritorio dentro
+   * del contenedor con scroll de la tabla (descontando el encabezado fijo) y
+   * en teléfono moviendo la página. Al cerrar no se toca la posición.
+   */
+  useEffect(() => {
+    if (!expandedKey) return;
+    const desktopRow = rowRefs.current.get(expandedKey);
+    const card = cardRefs.current.get(expandedKey);
+    const visibleDesktopRow = desktopRow && desktopRow.getClientRects().length > 0 ? desktopRow : null;
+    const target: HTMLElement | null = visibleDesktopRow ?? card ?? null;
+    if (!target) return;
+
+    const scroller = scrollRef.current;
+    if (scroller && scroller.scrollHeight > scroller.clientHeight + 4) {
+      const header = scroller.querySelector('thead');
+      const offset = (header?.getBoundingClientRect().height ?? 0) + 4;
+      const top = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      scroller.scrollTo({ top: Math.max(0, scroller.scrollTop + top - offset), behavior: 'smooth' });
+      return;
+    }
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [expandedKey]);
+
+  function rowClickHandler(row: T) {
+    if (!onRowClick) return undefined;
+    return (event: React.MouseEvent<HTMLElement>) => {
+      const target = event.target as HTMLElement;
+      if (target.closest('a, button, input, textarea, select, label, summary')) return;
+      onRowClick(row);
+    };
+  }
 
   const sorted = useMemo(() => {
     const active = sort ?? (defaultSortKey ? { key: defaultSortKey, dir: defaultSortDir } : null);
@@ -581,7 +620,7 @@ export function DataTable<T>({
   return (
     <>
       {/* ---------- Escritorio: tabla ---------- */}
-      <div className={cx('hidden overflow-auto md:block', maxHeightClass)}>
+      <div ref={scrollRef} className={cx('hidden overflow-auto md:block', maxHeightClass)}>
         <table className="w-full border-collapse text-body-md">
           <caption className="sr-only">Tabla de datos</caption>
           <thead>
@@ -652,11 +691,16 @@ export function DataTable<T>({
               return (
                 <Fragment key={key}>
                   <tr
+                    ref={(element) => {
+                      if (element) rowRefs.current.set(key, element);
+                      else rowRefs.current.delete(key);
+                    }}
                     onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row) : undefined}
+                    onClick={rowClickHandler(row)}
                     className={cx(
                       'group transition-colors',
                       isOpen ? 'bg-surface-container-low' : 'hover:bg-surface-container-low/70',
-                      onRowDoubleClick && 'cursor-pointer',
+                      (onRowDoubleClick || onRowClick) && 'cursor-pointer',
                     )}
                   >
                     {columns.map((c, index) => (
@@ -703,11 +747,16 @@ export function DataTable<T>({
           return (
             <li
               key={key}
+              ref={(element) => {
+                if (element) cardRefs.current.set(key, element);
+                else cardRefs.current.delete(key);
+              }}
               onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row) : undefined}
+              onClick={rowClickHandler(row)}
               className={cx(
                 'flex flex-col gap-space-sm px-space-lg py-space-md transition-colors',
                 isOpen && 'bg-surface-container-low',
-                onRowDoubleClick && 'cursor-pointer',
+                (onRowDoubleClick || onRowClick) && 'cursor-pointer',
               )}
             >
               <div className="flex items-start justify-between gap-space-sm">
@@ -785,7 +834,12 @@ export function DataTable<T>({
               )}
 
               {isOpen && renderExpanded && (
-                <div className="rounded-lg bg-surface-container px-space-md py-space-sm">{renderExpanded(row)}</div>
+                <div
+                  className="rounded-lg bg-surface-container px-space-md py-space-sm"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  {renderExpanded(row)}
+                </div>
               )}
             </li>
           );

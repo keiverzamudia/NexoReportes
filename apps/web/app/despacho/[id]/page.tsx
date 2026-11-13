@@ -6,7 +6,7 @@
 //
 //   · Guía de carga del camión y comentarios del planificador.
 //   · Tiempos por cliente: «Iniciar carga» arranca los relojes sin marcar
-//     productos; «Cerrar carga» detiene el reloj de cada producto y
+//     productos; «Cargar» detiene el reloj de cada producto y
 //     «Factura entregada» cierra el de facturación. La carga es exclusiva del
 //     operador que tomó la hoja; la factura la puede entregar cualquier
 //     operador de almacén. El cliente se puede facturar individualmente o con
@@ -162,8 +162,11 @@ export default function DispatchSheetPage() {
   }, [toast]);
 
   // Cada despacho arranca plegado: primero se ve el resumen por cliente.
+  // Si la bandeja entra con `?cliente=...`, se abre ese cliente directamente.
   useEffect(() => {
-    setOpenGroup(null);
+    const requested =
+      typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('cliente');
+    setOpenGroup(requested);
     setGroupBusy(null);
     setDrafts({});
     setNoteTarget(null);
@@ -622,7 +625,7 @@ export default function DispatchSheetPage() {
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
                 {editable
-                  ? '«Iniciar carga» toma la hoja y avisa que empezaste. El tiempo se mide desde el envío de la simulación hasta tu último producto cerrado, y el total cierra con la factura. Digita la cantidad real y usa «Cerrar carga» en cada producto.'
+                  ? '«Iniciar carga» toma la hoja y avisa que empezaste. El tiempo se mide desde el envío de la simulación hasta tu último producto cerrado, y el total cierra con la factura. Digita la cantidad real y usa «Cargar» en cada producto.'
                   : sheet.claimedByName && !closed
                     ? `Lo tomó ${sheet.claimedByName}: solo esa persona lo carga.${sheet.canInvoice ? ' Tú sí puedes entregar la factura.' : ''}`
                     : 'Solo lectura.'}
@@ -965,7 +968,7 @@ export default function DispatchSheetPage() {
                                         ) : (
                                           <CheckCheck aria-hidden className="size-3.5" />
                                         )}
-                                        Cerrar carga
+                                        Cargar
                                       </button>
                                       <button
                                         type="button"

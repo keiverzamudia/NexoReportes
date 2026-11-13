@@ -11,6 +11,7 @@ import {
   quotaGeometry,
   sellerHistoryPoints,
   sellerInitials,
+  tabRunRate,
 } from './sellers-report';
 
 function client(overrides: Partial<ForecastSellerClientRow> = {}): ForecastSellerClientRow {
@@ -18,6 +19,20 @@ function client(overrides: Partial<ForecastSellerClientRow> = {}): ForecastSelle
     clientCode: 'C1',
     clientName: 'CLIENTE UNO',
     customerType: 'L2 DISTRIBUIDORES',
+    assignedSellerCode: '012',
+    assignedSellerName: 'LIZ ANTONELLA PEREZ BAEZ',
+    otherSellerKg: 0,
+    otherSellerNames: [],
+    carteraHistoricalKg: 100,
+    carteraCurrentKg: 100,
+    carteraTargetKg: 300,
+    carteraQuotaPct: 30,
+    carteraShareOfSellerPct: 50,
+    noteHistoricalKg: 100,
+    noteCurrentKg: 100,
+    noteTargetKg: 300,
+    noteQuotaPct: 30,
+    noteShareOfSellerPct: 50,
     historicalKg: 100,
     shareOfSellerPct: 50,
     quotaPct: 30,
@@ -44,9 +59,31 @@ function seller(overrides: Partial<ForecastSellerRow> = {}): ForecastSellerRow {
   return {
     sellerCode: '012',
     sellerName: 'LIZ ANTONELLA PEREZ BAEZ',
+    isInternal: false,
+    carteraHistoricalKg: 200,
+    carteraCurrentKg: 100,
+    carteraQuotaPct: 60,
+    carteraTargetKg: 600,
+    noteHistoricalKg: 200,
+    noteCurrentKg: 100,
+    noteQuotaPct: 60,
+    noteTargetKg: 600,
+    carteraHistory: [
+      { year: 2025, month: 2, actualKg: 100 },
+      { year: 2025, month: 3, actualKg: 100 },
+    ],
+    noteHistory: [
+      { year: 2025, month: 2, actualKg: 100 },
+      { year: 2025, month: 3, actualKg: 100 },
+    ],
     clientCount: 1,
+    assignedClientCount: 1,
+    windowClientCount: 1,
     activeClientCount: 1,
     invoiceCount: 2,
+    executedKg: 100,
+    executedHistoricalKg: 200,
+    otherSellerKg: 0,
     historicalKg: 200,
     sharePct: 60,
     currentSharePct: 66.7,
@@ -83,6 +120,8 @@ function report(overrides: Partial<ForecastSellersResponse> = {}): ForecastSelle
     salesAvailable: true,
     forecastAvailable: true,
     forecastSource: 'SNAPSHOT',
+    attribution: 'PORTFOLIO',
+    assignmentAvailable: true,
     allocationBasis: 'HISTORY',
     days: {
       inMonth: 31,
@@ -110,6 +149,9 @@ function report(overrides: Partial<ForecastSellersResponse> = {}): ForecastSelle
       lastInvoiceDate: '2025-03-05',
       sellerCount: 2,
       clientCount: 2,
+      assignedClientCount: 2,
+      windowClientCount: 2,
+      activeClientCount: 2,
     },
     daily: [],
     sellers: [
@@ -171,7 +213,7 @@ describe('filterSellerClients', () => {
 describe('buildSellerNarrative', () => {
   it('resume la red y la mayor cuota', () => {
     const text = buildSellerNarrative(report());
-    expect(text).toContain('2 vendedoras');
+    expect(text).toContain('2 vendedores');
     expect(text).toContain('150 kg');
     expect(text).toContain('1.000 kg');
     expect(text).toContain('LIZ ANTONELLA PEREZ BAEZ');
@@ -220,6 +262,35 @@ describe('buildShareSlices', () => {
   });
 });
 
+describe('tabRunRate', () => {
+  it('en un mes cerrado la proyección es la venta real', () => {
+    const metrics = tabRunRate(100, 200, report());
+    expect(metrics.projectedKg).toBe(100);
+    expect(metrics.attainmentPct).toBe(50);
+    expect(metrics.projectedAttainmentPct).toBe(50);
+    expect(metrics.gapKg).toBe(-100);
+    expect(metrics.requiredDailyKg).toBeNull();
+  });
+
+  it('en un mes abierto proyecta con los días hábiles y calcula el ritmo necesario', () => {
+    const open = report({
+      status: 'OPEN',
+      days: {
+        ...report().days,
+        workingElapsed: 9,
+        workingInMonth: 25,
+        workingRemaining: 16,
+      },
+    });
+    const metrics = tabRunRate(90, 250, open);
+    expect(metrics.projectedKg).toBe(250);
+    expect(metrics.attainmentPct).toBe(36);
+    expect(metrics.projectedAttainmentPct).toBe(100);
+    expect(metrics.gapKg).toBe(0);
+    expect(metrics.requiredDailyKg).toBe(10);
+  });
+});
+
 describe('quotaGeometry', () => {
   it('sin meta la barra queda vacía', () => {
     const geometry = quotaGeometry({ targetKg: 0, actualKg: 100, projectedKg: 120 });
@@ -253,12 +324,12 @@ describe('CSV', () => {
   it('incluye BOM, encabezados y totales', () => {
     const csv = buildSellersCsv(report());
     expect(csv.startsWith('\uFEFF')).toBe(true);
-    expect(csv).toContain('Vendedora');
+    expect(csv).toContain('Vendedor');
     expect(csv).toContain('TOTALES');
     expect(csv).toContain('LIZ ANTONELLA PEREZ BAEZ');
   });
 
-  it('exporta los clientes de una vendedora', () => {
+  it('exporta los clientes de un vendedor', () => {
     const csv = buildSellerClientsCsv(seller());
     expect(csv.startsWith('\uFEFF')).toBe(true);
     expect(csv).toContain('CLIENTE UNO');

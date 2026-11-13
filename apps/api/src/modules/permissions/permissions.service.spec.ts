@@ -97,6 +97,50 @@ describe('PermissionsService', () => {
     expect(access?.permissions).not.toContain('usuarios:read');
   });
 
+  it('migra el permiso legado vendedoras al módulo vendedor', async () => {
+    const createdRoles: unknown[] = [];
+    const deletedRoles: unknown[] = [];
+    const createdOverrides: unknown[] = [];
+    const deletedOverrides: unknown[] = [];
+    const roleRows = [{ roleCode: 'GERENCIA', module: 'vendedoras', action: 'read' }];
+    const userRows = [{ id: 'up1', userId: 'u1', module: 'vendedoras', action: 'read', allowed: false }];
+    const prisma = {
+      rolePermission: {
+        findMany: async ({ where }: { where: { module: string } }) =>
+          roleRows.filter((row) => row.module === where.module),
+        findUnique: async () => null,
+        create: async ({ data }: { data: unknown }) => {
+          createdRoles.push(data);
+        },
+        delete: async ({ where }: { where: unknown }) => {
+          deletedRoles.push(where);
+        },
+      },
+      userPermission: {
+        findMany: async ({ where }: { where: { module: string } }) =>
+          userRows.filter((row) => row.module === where.module),
+        findUnique: async () => null,
+        create: async ({ data }: { data: unknown }) => {
+          createdOverrides.push(data);
+        },
+        delete: async ({ where }: { where: unknown }) => {
+          deletedOverrides.push(where);
+        },
+      },
+    } as never;
+    const service = new PermissionsService(prisma);
+    await (
+      service as unknown as { migrateModuleKey: (from: string, to: string) => Promise<void> }
+    ).migrateModuleKey('vendedoras', 'vendedor');
+
+    expect(createdRoles).toEqual([{ roleCode: 'GERENCIA', module: 'vendedor', action: 'read' }]);
+    expect(createdOverrides).toEqual([
+      { userId: 'u1', module: 'vendedor', action: 'read', allowed: false },
+    ]);
+    expect(deletedRoles).toHaveLength(1);
+    expect(deletedOverrides).toHaveLength(1);
+  });
+
   it('rechaza permisos desconocidos y deduplica entradas válidas', () => {
     const service = serviceFor({ user: null });
     expect(() => service.normalizeEntries([{ module: 'inventado', action: 'read' }])).toThrow(BadRequestException);

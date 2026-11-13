@@ -10,6 +10,9 @@
 
 import type {
   DispatchCustomerProgress,
+  DispatchCustomerRow,
+  DispatchCustomerRowStatus,
+  DispatchLineMark,
   DispatchLineStatus,
   DispatchSheetDetail,
   DispatchSheetLine,
@@ -18,6 +21,13 @@ import type {
 } from '@nexo/contracts';
 
 export type SheetTone = 'default' | 'primary' | 'success' | 'danger' | 'warning' | 'muted';
+
+/** Marca de un renglón cuando el operador guarda una cantidad desde la fila. */
+export interface DispatchLineResolution {
+  status: DispatchLineMark;
+  loadedQty?: number;
+  note?: string;
+}
 
 export const SHEET_STATUS_META: Record<DispatchSheetStatus, { label: string; short: string; tone: SheetTone }> = {
   ENVIADO: { label: 'Pendiente', short: 'Pendiente', tone: 'warning' },
@@ -42,6 +52,22 @@ export const LINE_STATUS_META: Record<DispatchLineStatus, { label: string; tone:
 
 export function sheetStatusMeta(status: DispatchSheetStatus) {
   return SHEET_STATUS_META[status];
+}
+
+// La bandeja lista clientes: el estado refleja sus relojes, no la hoja.
+export const CUSTOMER_ROW_STATUS_META: Record<
+  DispatchCustomerRowStatus,
+  { label: string; tone: SheetTone }
+> = {
+  PENDIENTE: { label: 'Sin iniciar', tone: 'muted' },
+  EN_CARGA: { label: 'En carga', tone: 'primary' },
+  CARGA_CERRADA: { label: 'Carga cerrada', tone: 'success' },
+  FACTURADA: { label: 'Facturada', tone: 'success' },
+  ANULADO: { label: 'Anulado', tone: 'muted' },
+};
+
+export function customerRowStatusMeta(status: DispatchCustomerRowStatus) {
+  return CUSTOMER_ROW_STATUS_META[status];
 }
 
 export function lineStatusMeta(status: DispatchLineStatus) {
@@ -451,6 +477,24 @@ export function sortSheets(sheets: DispatchSheetSummary[]): DispatchSheetSummary
     if (byDate !== 0) return byDate;
     return a.sentAt.localeCompare(b.sentAt);
   });
+}
+
+/** Fila de la bandeja: el cliente con su despacho de origen. */
+export type DispatchClientRow = DispatchCustomerRow & { sheet: DispatchSheetSummary };
+
+/**
+ * Aplana la bandeja a una fila por cliente. Se conserva el orden de trabajo de
+ * las hojas (pendientes primero, luego por número) y se ordena por entrega;
+ * `Array.sort` es estable, así que los empates mantienen el agrupado original.
+ */
+export function clientRowsFrom(sheets: DispatchSheetSummary[]): DispatchClientRow[] {
+  const rows: DispatchClientRow[] = [];
+  for (const sheet of sortSheets(sheets)) {
+    for (const customer of sheet.customerRows ?? []) rows.push({ ...customer, sheet });
+  }
+  return rows.sort((a, b) =>
+    (a.nextDeliveryDate ?? '9999-12-31').localeCompare(b.nextDeliveryDate ?? '9999-12-31'),
+  );
 }
 
 // ---------- Exportación ----------

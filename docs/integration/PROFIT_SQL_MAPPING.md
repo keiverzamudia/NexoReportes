@@ -650,18 +650,27 @@ caída y producto nuevo).
 
 ---
 
-## Vendedoras vs Forecast (`GET /api/forecast/sellers`) — 04/11/2026
+## Vendedor vs Forecast (`GET /api/forecast/sellers`) — 12/11/2026
 
-Informe propio (`/vendedoras`) que evalúa a cada vendedora con los clientes que
-realmente le compraron, su representación en la venta del mes y la cuota de la
-meta de la empresa que le toca cumplir. Es **solo lectura**.
+Informe propio (`/vendedor`) que evalúa a cada vendedor con su cartera asignada
+en Profit, su representación en la venta del mes y la cuota de la meta de la
+empresa que le toca cumplir. Es **solo lectura**.
 
 ### Atribución
 
-La venta se acredita al **vendedor de la nota de entrega** (`not_ent.co_ven`),
-no al vendedor asignado al cliente (`clientes.co_ven`). En `COR_A3` el 39 % del
-volumen de may–oct 2026 sale con un vendedor distinto al de la cartera, por eso
-la evaluación mide quién ejecutó la venta.
+Hay dos criterios (`?attribution=`):
+
+- **PORTFOLIO** (por defecto): cada cliente pertenece al vendedor que tiene
+  asignado hoy en `clientes.co_ven`. La cartera se muestra completa aunque el
+  cliente no haya comprado. Es la lectura que responde «¿cada vendedor tiene
+  realmente sus clientes?».
+- **NOTE**: la venta se acredita al vendedor que firmó la nota de entrega
+  (`not_ent.co_ven`), como en la versión anterior.
+
+En ambos criterios se conserva el cruce: cada vendedor muestra cuánto firmó por
+nota y cada cliente cuánto le facturó otro vendedor. Como Profit solo guarda la
+asignación **actual**, el histórico se reatribuye al vendedor actual. Si se
+necesita la cartera histórica, hay que guardar snapshots.
 
 ### Fuentes
 
@@ -670,26 +679,28 @@ la evaluación mide quién ejecutó la venta.
 | `dbo.not_ent` | `fact_num`, `fec_emis`, `co_cli`, `co_ven`, `anulada` | Encabezado de la nota. |
 | `dbo.reng_nde` | `fact_num`, `co_art`, `total_art` | Renglones (unidades/kg). |
 | `dbo.art` | `co_art`, `uni_relac`, `anulado`, `co_lin` | Kg por unidad y filtros ABA. |
-| `dbo.clientes` | `co_cli`, `cli_des`, `tipo` | Nombre y segmento del cliente. |
+| `dbo.clientes` | `co_cli`, `cli_des`, `tipo`, `co_ven`, `inactivo` | Nombre, segmento y cartera asignada. |
 | `dbo.tipo_cli` | `tip_cli`, `des_tipo` | Descripción del segmento. |
-| `dbo.vendedor` | `co_ven`, `ven_des` | Nombre de la vendedora. |
+| `dbo.vendedor` | `co_ven`, `ven_des` | Nombre del vendedor (cartera y nota). |
 | `dbo.forecast` + `ForecastTarget` | — | Meta de la empresa (viva/snapshot). |
 
 ### Consultas (marcadores)
 
-- `nexo:seller_sales_monthly`: agrupa por año, mes, vendedor de la nota y
-  cliente; devuelve kg, unidades, notas distintas y última nota. Cubre la
-  ventana histórica + el mes del informe en una sola consulta.
-- `nexo:seller_sales_daily`: agrupa por fecha y vendedor para la serie y la
-  proyección individual.
+- `nexo:seller_portfolio`: clientes activos (`inactivo = 0`) con su vendedor
+  asignado. Incluye clientes sin venta.
+- `nexo:seller_sales_monthly`: agrupa por año, mes, vendedor de cartera,
+  vendedor de nota y cliente; devuelve kg, unidades, notas distintas y última
+  nota. Cubre la ventana histórica + el mes del informe en una sola consulta.
+- `nexo:seller_sales_daily`: agrupa por fecha, vendedor de cartera y vendedor
+  de nota para la serie y la proyección individual.
 
 ### Reglas de negocio
 
 ```text
 F  = meta de la empresa (la misma de Ventas vs Forecast)
-Hi = kg de la vendedora en los últimos N meses cerrados (3/6/12/24, default 6)
+Hi = kg del vendedor en los últimos N meses cerrados (3/6/12/24, default 6)
 qi = Hi / ΣH                                → cuota (% del forecast)
-Mi = F × qi                                 → meta de la vendedora
+Mi = F × qi                                 → meta del vendedor
 Mij = Mi × (Hij / Hi)                       → meta del cliente
 ```
 
@@ -699,20 +710,25 @@ Mij = Mi × (Hij / Hi)                       → meta del cliente
 - Sin histórico (`ΣH = 0`) se reparte en partes iguales y se marca
   `allocationBasis = EQUAL_FALLBACK`; sin meta todo queda en 0/`null`.
 - Corte a ayer y días hábiles lun–sáb, igual que el informe de ventas.
-- **Reparto del mes** = venta de la vendedora ÷ venta de la red: responde «qué
-  representación tiene cada una».
+- **Reparto del mes** = venta del vendedor ÷ venta de la red: responde «qué
+  representación tiene cada uno».
 - Las cuentas internas (`001 LA EMPRESA`, `004 EQUIPO DE VENTAS`) participan
-  como una vendedora más.
-- **Caché** de 5 minutos por `año|mes|meses|base|includeToday|hoy`.
-- Si Profit falla, `salesAvailable=false` y la UI avisa; no se pintan ceros.
+  como un vendedor más y se marcan en la UI.
+- **Caché** de 5 minutos por `año|mes|meses|base|includeToday|attribution|hoy`.
+  `refresh=true` la ignora (botón «Actualizar»).
+- Si falla la cartera, el informe cae a `NOTE` con `assignmentAvailable=false` y
+  la UI avisa. Si falla la venta, `salesAvailable=false` y no se pintan ceros.
 
 ### Contrato
 
-`zForecastSellersResponse` en `@nexo/contracts` (reutiliza `zForecastSalesQuery`
-para año, mes, `months`, `basis` e `includeToday`). Permiso `vendedoras:read`.
+`zForecastSellersResponse` en `@nexo/contracts` (extiende `zForecastSalesQuery`
+con `attribution` y `refresh`). Permiso `vendedor:read` (el antiguo
+`vendedoras:read` se migra al arrancar la API).
 
 ### Fixtures
 
-`nexo:seller_sales_monthly` y `nexo:seller_sales_daily` reparten de forma
-determinista las ventas de `SALES_DAILY` entre cinco vendedoras y siete
-clientes de desarrollo.
+`nexo:seller_portfolio`, `nexo:seller_sales_monthly` y
+`nexo:seller_sales_daily` reparten de forma determinista las ventas de
+`SALES_DAILY` entre cinco vendedores y siete clientes de desarrollo. La cartera
+del fixture asigna cada cliente a un vendedor distinto al de la nota para
+ejercitar el cruce.

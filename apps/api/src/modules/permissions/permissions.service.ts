@@ -95,11 +95,52 @@ export class PermissionsService implements OnModuleInit {
       });
     }
 
+    // El módulo «Vendedoras» pasó a llamarse «Vendedor». La clave interna
+    // cambia de `vendedoras` a `vendedor`: se migran los permisos de rol y las
+    // excepciones de usuario antes de sembrar el módulo nuevo.
+    await this.migrateModuleKey('vendedoras', 'vendedor');
+
     // Módulos agregados después de la instalación original: se siembran sus
     // permisos por defecto en los roles de sistema que aún no los tengan, sin
     // resucitar permisos que un administrador haya quitado a mano.
     await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'llegadas');
-    await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'vendedoras');
+    await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'vendedor');
+  }
+
+  /**
+   * Renombra una clave de módulo en la matriz de roles y en las excepciones
+   * de usuario. Es idempotente: si el permiso nuevo ya existe, conserva el
+   * nuevo y elimina el viejo. Se ejecuta al arrancar para no romper sesiones
+   * ni obligar a un script manual.
+   */
+  private async migrateModuleKey(from: string, to: string): Promise<void> {
+    const roleRows = await this.prisma.rolePermission.findMany({ where: { module: from } });
+    for (const row of roleRows) {
+      const exists = await this.prisma.rolePermission.findUnique({
+        where: { roleCode_module_action: { roleCode: row.roleCode, module: to, action: row.action } },
+      });
+      if (!exists) {
+        await this.prisma.rolePermission.create({
+          data: { roleCode: row.roleCode, module: to, action: row.action },
+        });
+      }
+      await this.prisma.rolePermission.delete({
+        where: { roleCode_module_action: { roleCode: row.roleCode, module: from, action: row.action } },
+      });
+    }
+
+    const overrides = await this.prisma.userPermission.findMany({ where: { module: from } });
+    for (const row of overrides) {
+      const exists = await this.prisma.userPermission.findUnique({
+        where: { userId_module_action: { userId: row.userId, module: to, action: row.action } },
+      });
+      if (!exists) {
+        await this.prisma.userPermission.create({
+          data: { userId: row.userId, module: to, action: row.action, allowed: row.allowed },
+        });
+      }
+      await this.prisma.userPermission.delete({ where: { id: row.id } });
+    }
   }
 
   private async seedMissingModule(

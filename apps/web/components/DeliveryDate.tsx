@@ -1,13 +1,12 @@
 'use client';
 
 // ============================================================
-// Fecha de entrega con capa tentativa.
+// Fecha de entrega con capa estimada.
 //
-// La fecha de emisión del pedido (día en que se creó en Profit) siempre
-// está visible (gris). Si además hay fecha tentativa, se muestra al lado
-// en verde: «emisión → tentativa». Al pasar el mouse (o enfocar) el tooltip
-// conserva la fecha de emisión. Doble clic abre el editor (también un toque
-// en móvil).
+// Sin cambios se muestra la entrega que trae Profit en gris. Si hay una
+// entrega estimada (capa local), se muestra sólo esa fecha en verde y la
+// de Profit queda en el tooltip. La fecha de creación/emisión del pedido
+// nunca se edita aquí. Doble clic abre el editor (también un toque en móvil).
 // ============================================================
 
 import { useEffect, useRef, useState } from 'react';
@@ -31,7 +30,7 @@ export function DeliveryDateButton({
   onEdit: () => void;
   canEdit?: boolean;
   label: string;
-  /** Texto extra del tooltip (p. ej. "3 de 4 con fecha tentativa"). */
+  /** Texto extra del tooltip (p. ej. "3 de 4 con entrega estimada"). */
   hint?: string;
   className?: string;
 }) {
@@ -72,7 +71,7 @@ export function DeliveryDateButton({
       <button
         ref={buttonRef}
         type="button"
-        aria-label={`${label}. Emisión ${originalLabel}.${hasTentative ? ` Tentativa ${fmtDate(tentativeDate)}.` : ''}${action ? ` ${action}.` : ''}`}
+        aria-label={`${label}. Entrega Profit ${originalLabel}.${hasTentative ? ` Entrega estimada ${fmtDate(tentativeDate)}.` : ''}${action ? ` ${action}.` : ''}`}
         aria-disabled={!canEdit}
         tabIndex={canEdit ? 0 : -1}
         onPointerDown={(event) => {
@@ -96,12 +95,10 @@ export function DeliveryDateButton({
           canEdit ? 'cursor-pointer hover:bg-surface-container-low hover:text-primary' : 'cursor-default'
         } ${className}`}
       >
-        <span className={hasTentative ? 'text-outline' : undefined}>{fmtDate(originalDate)}</span>
-        {hasTentative && (
-          <>
-            <span aria-hidden className="mx-1 text-outline">→</span>
-            <span className="font-semibold text-secondary">{fmtDate(tentativeDate)}</span>
-          </>
+        {hasTentative ? (
+          <span className="font-semibold text-secondary">{fmtDate(tentativeDate)}</span>
+        ) : (
+          <span>{fmtDate(originalDate)}</span>
         )}
       </button>
 
@@ -118,7 +115,7 @@ export function DeliveryDateButton({
             }}
             className="pointer-events-none z-[80] w-max max-w-[17rem] rounded-xl bg-primary px-space-sm py-space-xs text-on-primary shadow-[0_18px_40px_-24px_rgba(8,29,44,.7)]"
           >
-            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-on-primary/55">Emisión</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-on-primary/55">Entrega Profit</p>
             <p className="mt-0.5 text-label-md font-semibold tabular-nums">{originalLabel}</p>
             {hint && <p className="mt-0.5 text-label-sm text-on-primary/65">{hint}</p>}
             {action && <p className="mt-1 text-label-sm font-semibold text-secondary-container">{action}</p>}

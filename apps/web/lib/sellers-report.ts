@@ -1,5 +1,6 @@
 import type {
   ForecastSellerClientRow,
+  ForecastSellerProductRow,
   ForecastSellerRow,
   ForecastSellersResponse,
 } from '@nexo/contracts';
@@ -17,7 +18,7 @@ import {
 } from './sales-report';
 
 // ============================================================
-// Utilidades puras de «Vendedoras vs Forecast» (probadas con vitest).
+// Utilidades puras de «Vendedor vs Forecast» (probadas con vitest).
 //
 // El API calcula cuotas, metas y proyecciones; aquí solo se filtra, se da
 // formato, se construyen las porciones de la franja de reparto y el CSV. Así
@@ -89,7 +90,7 @@ export function filterSellerClients(
   );
 }
 
-/** Vendedora con la cuota más alta (la que más meta debe cumplir). */
+/** Vendedor con la cuota más alta (el que más meta debe cumplir). */
 export function topQuotaSeller(report: ForecastSellersResponse): ForecastSellerRow | null {
   return [...report.sellers].sort((a, b) => b.targetKg - a.targetKg)[0] ?? null;
 }
@@ -104,10 +105,10 @@ export function buildSellerNarrative(report: ForecastSellersResponse): string {
   const count = totals.sellerCount;
 
   if (count === 0) {
-    return `No hay vendedoras con ventas registradas para ${month}.`;
+    return `No hay vendedores con ventas registradas para ${month}.`;
   }
 
-  const people = count === 1 ? '1 vendedora' : `${fmtKg(count, 0)} vendedoras`;
+  const people = count === 1 ? '1 vendedor' : `${fmtKg(count, 0)} vendedores`;
 
   if (report.status === 'FUTURE') {
     return totals.forecastKg > 0
@@ -142,12 +143,12 @@ export interface SellerShareSlice {
   kg: number;
   pct: number;
   color: string;
-  /** Suma de las vendedoras que no entran en el top. */
+  /** Suma de los vendedores que no entran en el top. */
   other: boolean;
 }
 
 /**
- * Porciones de la franja de reparto de la venta del mes: top `max` vendedoras
+ * Porciones de la franja de reparto de la venta del mes: top `max` vendedores
  * + «Otras». Los porcentajes se ajustan al último tramo para sumar 100 %.
  */
 export function buildShareSlices(report: ForecastSellersResponse, max = 6): SellerShareSlice[] {
@@ -188,7 +189,61 @@ export function buildShareSlices(report: ForecastSellersResponse, max = 6): Sell
   return slices;
 }
 
-/** Geometría de la barra de una vendedora/cliente contra su meta asignada. */
+// ============================================================
+// Run-rate de una pestaña (Cartera o Nota) calculado en el cliente.
+//
+// El API ya entrega las métricas del criterio activo. El expediente necesita
+// las dos vistas a la vez (cartera y nota) sin duplicar 16 campos en el
+// contrato: se recalculan con el mismo calendario del informe.
+// ============================================================
+export interface TabRunRate {
+  dailyAvgKg: number;
+  projectedKg: number | null;
+  attainmentPct: number | null;
+  projectedAttainmentPct: number | null;
+  gapKg: number | null;
+  requiredDailyKg: number | null;
+}
+
+function roundTab(value: number, decimals = 3): number {
+  if (!Number.isFinite(value)) return 0;
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+export function tabRunRate(
+  actualKg: number,
+  targetKg: number,
+  report: ForecastSellersResponse,
+): TabRunRate {
+  const working = report.basis === 'WORKING';
+  const elapsed = working ? report.days.workingElapsed : report.days.elapsed;
+  const total = working ? report.days.workingInMonth : report.days.inMonth;
+  const remaining = working ? report.days.workingRemaining : report.days.remaining;
+  const actual = Number.isFinite(actualKg) ? actualKg : 0;
+  const target = Number.isFinite(targetKg) ? targetKg : 0;
+  const dailyAvgKg = elapsed > 0 ? actual / elapsed : 0;
+  const projectedKg =
+    report.status === 'FUTURE'
+      ? null
+      : report.status === 'CLOSED'
+        ? roundTab(actual)
+        : elapsed > 0
+          ? roundTab(dailyAvgKg * total)
+          : roundTab(actual);
+  const attainmentPct = target > 0 ? roundTab((actual / target) * 100, 1) : null;
+  const projectedAttainmentPct =
+    target > 0 && projectedKg !== null ? roundTab((projectedKg / target) * 100, 1) : null;
+  const gapKg = target > 0 && projectedKg !== null ? roundTab(projectedKg - target) : null;
+  const requiredDailyKg =
+    report.status === 'OPEN' && target > 0
+      ? roundTab(Math.max(0, target - actual) / Math.max(1, remaining), 1)
+      : null;
+
+  return { dailyAvgKg, projectedKg, attainmentPct, projectedAttainmentPct, gapKg, requiredDailyKg };
+}
+
+/** Geometría de la barra de un vendedor/cliente contra su meta asignada. */
 export function quotaGeometry(row: {
   targetKg: number;
   actualKg: number;
@@ -210,7 +265,7 @@ export function quotaTone(row: {
 }
 
 /**
- * Porcentaje de cumplimiento listo para mostrar. Una vendedora con una cuota
+ * Porcentaje de cumplimiento listo para mostrar. Un vendedor con una cuota
  * casi nula (base histórica mínima) puede superar el 1000 %: se acota a
  * «> 999 %» para que la cifra no rompa la fila. El CSV conserva el valor real.
  */
@@ -229,7 +284,7 @@ export interface SellerHistoryPoint {
   quotaKg: number;
 }
 
-/** Últimos N meses de la vendedora con la cuota actual como referencia. */
+/** Últimos N meses del vendedor con la cuota actual como referencia. */
 export function sellerHistoryPoints(seller: ForecastSellerRow): SellerHistoryPoint[] {
   return seller.history.map((entry) => ({
     label: MONTHS_ES_SHORT[entry.month - 1] ?? `${entry.month}`,
@@ -255,14 +310,16 @@ export function allocationLabel(report: ForecastSellersResponse): string {
 // ---------- CSV ----------
 
 const SELLER_CSV_HEADERS = [
-  'Vendedora',
+  'Vendedor',
   'Código',
   'Clientes',
   'Clientes con venta',
+  'Clientes en cartera',
   'Histórico kg',
   'Cuota %',
   'Meta kg',
   'Venta kg',
+  'Venta firmada kg',
   'Unidades',
   'Cumplimiento %',
   'Proyección kg',
@@ -277,8 +334,10 @@ const CLIENT_CSV_HEADERS = [
   'Cliente',
   'Código',
   'Tipo',
+  'Vendedor asignado',
+  'Otras notas kg',
   'Histórico kg',
-  '% de la vendedora',
+  '% del vendedor',
   'Cuota empresa %',
   'Meta kg',
   'Venta kg',
@@ -300,7 +359,7 @@ function csvNumber(value: number | null | undefined, decimals = 1): string {
   return String(Number(value.toFixed(decimals)));
 }
 
-/** CSV de vendedoras con BOM (Excel en español) y fila de totales. */
+/** CSV de vendedores con BOM (Excel en español) y fila de totales. */
 export function buildSellersCsv(report: ForecastSellersResponse): string {
   const lines = [SELLER_CSV_HEADERS.map(csvCell).join(',')];
 
@@ -311,10 +370,12 @@ export function buildSellersCsv(report: ForecastSellersResponse): string {
         seller.sellerCode,
         seller.clientCount,
         seller.activeClientCount,
+        seller.assignedClientCount,
         csvNumber(seller.historicalKg),
         csvNumber(seller.quotaPct),
         csvNumber(seller.targetKg),
         csvNumber(seller.actualKg),
+        csvNumber(seller.executedKg),
         csvNumber(seller.actualUnits),
         csvNumber(seller.attainmentPct),
         csvNumber(seller.projectedKg),
@@ -335,18 +396,20 @@ export function buildSellersCsv(report: ForecastSellersResponse): string {
       'TOTALES',
       '',
       totals.sellerCount,
-      '',
+      totals.activeClientCount,
+      totals.assignedClientCount,
       '',
       '',
       csvNumber(totals.forecastKg),
       csvNumber(totals.actualKg),
+      '',
       csvNumber(totals.actualUnits),
       csvNumber(totals.attainmentPct),
       csvNumber(totals.projectedKg),
       csvNumber(totals.projectedAttainmentPct),
       csvNumber(totals.gapKg),
       csvNumber(totals.requiredDailyKg),
-      // No se suman repartos de vendedoras en el total: la red siempre es 100 %.
+      // No se suman repartos de vendedores en el total: la red siempre es 100 %.
       '',
       totals.lastInvoiceDate ?? '',
     ]
@@ -357,7 +420,7 @@ export function buildSellersCsv(report: ForecastSellersResponse): string {
   return `\uFEFF${lines.join('\r\n')}\r\n`;
 }
 
-/** CSV de los clientes de una vendedora. */
+/** CSV de los clientes de un vendedor. */
 export function buildSellerClientsCsv(seller: ForecastSellerRow): string {
   const lines = [CLIENT_CSV_HEADERS.map(csvCell).join(',')];
 
@@ -367,6 +430,8 @@ export function buildSellerClientsCsv(seller: ForecastSellerRow): string {
         client.clientName,
         client.clientCode,
         client.customerType ?? '',
+        client.assignedSellerName,
+        csvNumber(client.otherSellerKg),
         csvNumber(client.historicalKg),
         csvNumber(client.shareOfSellerPct),
         csvNumber(client.quotaPct),
@@ -386,8 +451,131 @@ export function buildSellerClientsCsv(seller: ForecastSellerRow): string {
   return `\uFEFF${lines.join('\r\n')}\r\n`;
 }
 
+const CARTERA_CSV_HEADERS = [
+  'Cliente',
+  'Código',
+  'Tipo',
+  'Cartera mes kg',
+  'Firmado por él kg',
+  'Otros kg',
+  'Histórico cartera kg',
+  'Meta cartera kg',
+  'Cumplimiento %',
+  'Proyección kg',
+  'Brecha kg',
+  'Última nota',
+] as const;
+
+const NOTA_CSV_HEADERS = [
+  'Cliente',
+  'Código',
+  'Tipo',
+  'Venta firmada kg',
+  'Histórico nota kg',
+  'Meta nota kg',
+  'Cumplimiento %',
+  'Proyección kg',
+  'Brecha kg',
+  'Cartera asignada kg',
+  'Última nota',
+] as const;
+
+const PRODUCT_CSV_HEADERS = [
+  'Producto',
+  'Código',
+  'UOM',
+  'Cartera mes kg',
+  'Firmado por él kg',
+  'Otros kg',
+  'Histórico cartera kg',
+  'Histórico nota kg',
+  'Clientes cartera',
+  'Clientes nota',
+  '% cartera',
+  'Última nota',
+] as const;
+
+/** CSV de la pestaña Cartera del expediente. */
+export function buildSellerCarteraCsv(seller: ForecastSellerRow, report: ForecastSellersResponse): string {
+  const lines = [CARTERA_CSV_HEADERS.map(csvCell).join(',')];
+  for (const client of seller.clients) {
+    const metrics = tabRunRate(client.carteraCurrentKg, client.carteraTargetKg, report);
+    lines.push(
+      [
+        client.clientName,
+        client.clientCode,
+        client.customerType ?? '',
+        csvNumber(client.carteraCurrentKg),
+        csvNumber(client.noteCurrentKg),
+        csvNumber(client.otherSellerKg),
+        csvNumber(client.carteraHistoricalKg),
+        csvNumber(client.carteraTargetKg),
+        csvNumber(metrics.projectedAttainmentPct ?? metrics.attainmentPct),
+        csvNumber(metrics.projectedKg),
+        csvNumber(metrics.gapKg),
+        client.lastInvoiceDate ?? '',
+      ]
+        .map(csvCell)
+        .join(','),
+    );
+  }
+  return `\uFEFF${lines.join('\r\n')}\r\n`;
+}
+
+/** CSV de la pestaña Nota del expediente. */
+export function buildSellerNotaCsv(seller: ForecastSellerRow, report: ForecastSellersResponse): string {
+  const lines = [NOTA_CSV_HEADERS.map(csvCell).join(',')];
+  for (const client of seller.clients.filter((row) => row.noteCurrentKg > 0 || row.noteHistoricalKg > 0)) {
+    const metrics = tabRunRate(client.noteCurrentKg, client.noteTargetKg, report);
+    lines.push(
+      [
+        client.clientName,
+        client.clientCode,
+        client.customerType ?? '',
+        csvNumber(client.noteCurrentKg),
+        csvNumber(client.noteHistoricalKg),
+        csvNumber(client.noteTargetKg),
+        csvNumber(metrics.projectedAttainmentPct ?? metrics.attainmentPct),
+        csvNumber(metrics.projectedKg),
+        csvNumber(metrics.gapKg),
+        csvNumber(client.carteraCurrentKg),
+        client.lastInvoiceDate ?? '',
+      ]
+        .map(csvCell)
+        .join(','),
+    );
+  }
+  return `\uFEFF${lines.join('\r\n')}\r\n`;
+}
+
+/** CSV de la pestaña Productos del expediente. */
+export function buildSellerProductsCsv(products: ForecastSellerProductRow[]): string {
+  const lines = [PRODUCT_CSV_HEADERS.map(csvCell).join(',')];
+  for (const product of products) {
+    lines.push(
+      [
+        product.description,
+        product.productCode,
+        product.uom,
+        csvNumber(product.carteraCurrentKg),
+        csvNumber(product.noteCurrentKg),
+        csvNumber(product.otherCurrentKg),
+        csvNumber(product.carteraHistoricalKg),
+        csvNumber(product.noteHistoricalKg),
+        product.clientCount,
+        product.noteClientCount,
+        csvNumber(product.carteraShareOfSellerPct),
+        product.lastInvoiceDate ?? '',
+      ]
+        .map(csvCell)
+        .join(','),
+    );
+  }
+  return `\uFEFF${lines.join('\r\n')}\r\n`;
+}
+
 export function sellersCsvFileName(report: ForecastSellersResponse): string {
-  return `vendedoras-vs-forecast-${report.year}-${String(report.month).padStart(2, '0')}.csv`;
+  return `vendedor-vs-forecast-${report.year}-${String(report.month).padStart(2, '0')}.csv`;
 }
 
 export function sellerClientsCsvFileName(seller: ForecastSellerRow, report: ForecastSellersResponse): string {

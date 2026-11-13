@@ -18,6 +18,9 @@ import {
   ForecastSalesDayCustomer,
   ForecastSalesDayDetail,
   ForecastSalesDayDetailProduct,
+  ForecastSalesDayPendingCustomer,
+  ForecastSalesDayPendingLine,
+  ForecastSalesDayPendingProduct,
   ForecastSalesHistory,
   ForecastSalesQuery,
   ForecastSalesResponse,
@@ -33,6 +36,7 @@ import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
 import { computeAvailability } from '../availability/availability.engine';
 import { ProfitAdapter, PROFIT_ADAPTER } from '../sync/profit.adapter';
+import { deliveryDateKey } from '../sales/delivery-dates.service';
 import { resolveForecastTargets } from './forecast-targets';
 import {
   buildCustomerShare,
@@ -433,6 +437,43 @@ function warehouseQty(list: InventoryByWarehouse[], code: string): number {
   return round3(list.find((w) => w.warehouseCode === code)?.qty ?? 0);
 }
 
+/**
+ * Cartera comprometida del mes: kg pendientes de pedidos activos agrupados por
+ * día de entrega EFECTIVA (fecha tentativa si existe; si no, la de Profit).
+ * Es la fuente del pronóstico de ventas que se apila en la tira diaria.
+ */
+interface PendingSalesBuckets {
+  byDay: Map<number, { kg: number; orders: number }>;
+  totalKg: number;
+  totalOrders: number;
+}
+
+/** Renglón de pedido pendiente ya normalizado a su fecha de entrega efectiva. */
+interface PendingLine {
+  day: number;
+  orderNumber: string;
+  lineNumber: number;
+  customerCode: string | null;
+  customerName: string | null;
+  productCode: string;
+  description: string;
+  uom: string;
+  kg: number;
+  pendingQty: number;
+  requestedDate: Date | null;
+  tentativeDate: Date | null;
+  authorized: boolean | null;
+}
+
+function emptyPendingBuckets(): PendingSalesBuckets {
+  return { byDay: new Map(), totalKg: 0, totalOrders: 0 };
+}
+
+/** Fecha calendario (yyyy-mm-dd) de una columna DateTime de Prisma. */
+function isoDateOnly(value: Date | null | undefined): string | null {
+  return value ? value.toISOString().slice(0, 10) : null;
+}
+
 @Injectable()
 export class ForecastService {
   private readonly logger = new Logger(ForecastService.name);
@@ -668,35 +709,54 @@ export class ForecastService {
     const start = new Date(`${date}T00:00:00.000Z`);
     const end = new Date(start.getTime() + 86_400_000);
 
-    try {
-      const rows = await this.profit.selectQuery(
+    // La venta (Profit) y la cartera local se consultan en paralelo: el fallo
+    // de una fuente no debe ocultar la otra en el modal.
+    const [salesResult, pendingResult] = await Promise.allSettled([
+      this.profit.selectQuery(
         PROFIT_SALES_DAILY_CUSTOMER_PRODUCT_SQL,
         DAY_DETAIL_QUERY_LIMIT,
         { desde: start, hasta: end },
-      );
-      const data = this.buildDayDetail(date, rows);
-      this.rememberDayDetail(date, data);
-      return data;
-    } catch (error) {
+      ),
+      this.pendingLines(start, end),
+    ]);
+
+    const salesOk = salesResult.status === 'fulfilled';
+    const pendingOk = pendingResult.status === 'fulfilled';
+
+    if (!salesOk) {
       this.logger.warn(
         `Detalle diario de ventas no disponible (${date}): ${
-          error instanceof Error ? error.message : 'error desconocido'
+          salesResult.reason instanceof Error ? salesResult.reason.message : 'error desconocido'
         }`,
       );
-      return {
-        date,
-        available: false,
-        kg: 0,
-        units: 0,
-        products: [],
-        customers: [],
-        truncated: false,
-        generatedAt: new Date().toISOString(),
-      };
     }
+    if (!pendingOk) {
+      this.logger.warn(
+        `Cartera de pedidos del día no disponible (${date}): ${
+          pendingResult.reason instanceof Error ? pendingResult.reason.message : 'error desconocido'
+        }`,
+      );
+    }
+
+    const data = this.buildDayDetail(
+      date,
+      salesOk ? salesResult.value : [],
+      pendingOk ? pendingResult.value : [],
+      salesOk,
+      pendingOk,
+    );
+    // Un fallo transitorio no se cachea: el reintento del modal vuelve a pedir.
+    if (salesOk && pendingOk) this.rememberDayDetail(date, data);
+    return data;
   }
 
-  private buildDayDetail(date: string, rows: Record<string, unknown>[]): ForecastSalesDayDetail {
+  private buildDayDetail(
+    date: string,
+    rows: Record<string, unknown>[],
+    pendingLines: PendingLine[],
+    salesAvailable: boolean,
+    pendingAvailable: boolean,
+  ): ForecastSalesDayDetail {
     interface Bucket {
       kg: number;
       units: number;
@@ -806,13 +866,98 @@ export class ForecastService {
       })
       .sort((a, b) => b.kg - a.kg || a.productCode.localeCompare(b.productCode));
 
+    // ---------- Cartera pendiente del día (cartera local) ----------
+    const pendingCustomersMap = new Map<
+      string,
+      { customerCode: string; customerName: string; kg: number; orders: Set<string>; lines: ForecastSalesDayPendingLine[] }
+    >();
+    const pendingProductsMap = new Map<
+      string,
+      { productCode: string; description: string; uom: string; kg: number; orders: Set<string> }
+    >();
+    const pendingOrderSet = new Set<string>();
+    let pendingKg = 0;
+
+    for (const line of pendingLines) {
+      const customerCode = line.customerCode?.trim() || NO_CUSTOMER;
+      const customerName =
+        line.customerName?.trim() || (customerCode === NO_CUSTOMER ? NO_CUSTOMER_LABEL : customerCode);
+
+      pendingKg += line.kg;
+      pendingOrderSet.add(line.orderNumber);
+
+      const customer = pendingCustomersMap.get(customerCode) ?? {
+        customerCode,
+        customerName,
+        kg: 0,
+        orders: new Set<string>(),
+        lines: [] as ForecastSalesDayPendingLine[],
+      };
+      customer.kg += line.kg;
+      customer.orders.add(line.orderNumber);
+      customer.lines.push({
+        orderNumber: line.orderNumber,
+        lineNumber: line.lineNumber,
+        productCode: line.productCode,
+        description: line.description,
+        uom: line.uom,
+        kg: roundTo(line.kg),
+        pendingQty: roundTo(line.pendingQty),
+        requestedDate: isoDateOnly(line.requestedDate),
+        tentativeDate: isoDateOnly(line.tentativeDate),
+        authorized: line.authorized,
+      });
+      pendingCustomersMap.set(customerCode, customer);
+
+      const product = pendingProductsMap.get(line.productCode) ?? {
+        productCode: line.productCode,
+        description: line.description,
+        uom: line.uom,
+        kg: 0,
+        orders: new Set<string>(),
+      };
+      product.kg += line.kg;
+      product.orders.add(line.orderNumber);
+      pendingProductsMap.set(line.productCode, product);
+    }
+
+    // Porcentaje sobre el total pendiente del día (no sobre la venta).
+    const pendingShare = (kg: number) => (pendingKg > 0 ? roundTo((kg / pendingKg) * 100, 1) : null);
+
+    const pendingCustomerRows: ForecastSalesDayPendingCustomer[] = [...pendingCustomersMap.values()]
+      .map((customer) => ({
+        customerCode: customer.customerCode,
+        customerName: customer.customerName,
+        kg: roundTo(customer.kg),
+        orderCount: customer.orders.size,
+        sharePct: pendingShare(customer.kg),
+        lines: customer.lines.sort((a, b) => b.kg - a.kg || a.orderNumber.localeCompare(b.orderNumber)),
+      }))
+      .sort((a, b) => b.kg - a.kg || a.customerName.localeCompare(b.customerName));
+
+    const pendingProductRows: ForecastSalesDayPendingProduct[] = [...pendingProductsMap.values()]
+      .map((product) => ({
+        productCode: product.productCode,
+        description: product.description,
+        uom: product.uom,
+        kg: roundTo(product.kg),
+        orderCount: product.orders.size,
+        sharePct: pendingShare(product.kg),
+      }))
+      .sort((a, b) => b.kg - a.kg || a.productCode.localeCompare(b.productCode));
+
     return {
       date,
-      available: true,
+      available: salesAvailable,
       kg: roundTo(totalKg),
       units: roundTo(totalUnits),
       products: productRows,
       customers: customerRows,
+      pendingAvailable,
+      pendingKg: roundTo(pendingKg),
+      pendingOrders: pendingOrderSet.size,
+      pendingProducts: pendingProductRows,
+      pendingCustomers: pendingCustomerRows,
       truncated: rows.length >= DAY_DETAIL_QUERY_LIMIT,
       generatedAt: new Date().toISOString(),
     };
@@ -829,7 +974,7 @@ export class ForecastService {
   /**
    * Meta de la empresa del mes, en kg, con la MISMA resolución que el informe
    * de ventas (viva de `forecast` o snapshot local). La usa el módulo de
-   * vendedoras para repartir la meta sin duplicar la regla de captura/drift.
+   * vendedores para repartir la meta sin duplicar la regla de captura/drift.
    */
   async companyTarget(
     year: number,
@@ -1081,7 +1226,7 @@ export class ForecastService {
     const historyMonths = previousMonths(year, month, query.months);
     const targetMonths = [{ year, month }, ...historyMonths];
 
-    const [monthlyRows, dailyRows, dailyProductRows, forecastSeries, catalog] = await Promise.all([
+    const [monthlyRows, dailyRows, dailyProductRows, forecastSeries, catalog, pending] = await Promise.all([
       this.profit.selectQuery(PROFIT_SALES_MONTHLY_SQL, 20000, { desde: historyStart, hasta: monthlyHasta }),
       dailyHasta
         ? this.profit.selectQuery(PROFIT_SALES_DAILY_SQL, 3000, { desde: reportStart, hasta: dailyHasta })
@@ -1109,6 +1254,18 @@ export class ForecastService {
         where: { isProduction: true, isActive: true },
         select: { externalCode: true, description: true, uom: true, kgPerUom: true },
       }),
+      // Cartera comprometida del mes (pedidos locales + fecha tentativa). Si la
+      // lectura falla, el pronóstico queda en cero pero el informe sigue vivo.
+      calendar.status === 'FUTURE'
+        ? Promise.resolve(emptyPendingBuckets())
+        : this.pendingSalesBuckets(year, month).catch((error: unknown) => {
+            this.logger.warn(
+              `No se pudo leer la cartera de pedidos para el pronóstico: ${
+                error instanceof Error ? error.message : 'error desconocido'
+              }`,
+            );
+            return emptyPendingBuckets();
+          }),
     ]);
 
     const catalogMeta = new Map<
@@ -1332,11 +1489,13 @@ export class ForecastService {
         forecastKg: totalForecastKg,
         actualKg: totalActualKg,
         actualUnits: totalActualUnits,
+        pendingKg: pending.totalKg,
+        pendingOrders: pending.totalOrders,
         ...totals,
         invoiceCount,
         lastInvoiceDate,
       },
-      daily: this.buildDailySeries(calendar, dailyRows, dailyProductRows, totalForecastKg),
+      daily: this.buildDailySeries(calendar, dailyRows, dailyProductRows, totalForecastKg, pending.byDay),
       history,
       rows,
       generatedAt: new Date().toISOString(),
@@ -1350,6 +1509,7 @@ export class ForecastService {
     dailyRows: Record<string, unknown>[],
     dailyProductRows: Record<string, unknown>[],
     forecastKg: number,
+    pendingByDay: Map<number, { kg: number; orders: number }> = new Map(),
   ): ForecastSalesDaily[] {
     if (calendar.status === 'FUTURE') return [];
 
@@ -1423,11 +1583,15 @@ export class ForecastService {
         }))
         .sort((a, b) => b.kg - a.kg || a.productCode.localeCompare(b.productCode));
 
+      const dayPending = pendingByDay.get(day);
+
       series.push({
         date: isoDay(calendar.year, calendar.month, day),
         actualKg,
         actualUnits: roundTo(bucket?.units ?? 0),
         invoiceCount: Math.trunc(bucket?.invoices ?? 0),
+        pendingKg: roundTo(dayPending?.kg ?? 0),
+        pendingOrders: dayPending?.orders ?? 0,
         products: dayProducts,
         cumulativeKg: day <= cutDay ? roundTo(cumulativeActual) : null,
         projectedCumulativeKg: projected,
@@ -1462,6 +1626,8 @@ export class ForecastService {
         forecastKg: 0,
         actualKg: 0,
         actualUnits: 0,
+        pendingKg: 0,
+        pendingOrders: 0,
         ...emptyMetrics(),
         invoiceCount: 0,
         lastInvoiceDate: null,
@@ -1944,6 +2110,112 @@ export class ForecastService {
     }
     for (const bucket of map.values()) bucket.total = round3(bucket.total);
     return map;
+  }
+
+  // Renglones de pedidos activos con entrega efectiva dentro del rango. La
+  // fecha efectiva es la tentativa local cuando existe; si no, la que trae
+  // Profit (`requestedDate`). También lee los renglones de pedidos que fueron
+  // movidos al rango con fecha tentativa aunque su fecha original viva fuera.
+  private async pendingLines(from: Date, to: Date): Promise<PendingLine[]> {
+    const overrides = await this.prisma.deliveryDateOverride.findMany({
+      where: { tentativeDate: { gte: from, lt: to } },
+      select: { orderNumber: true, productCode: true, tentativeDate: true },
+    });
+    const overrideByKey = new Map(
+      overrides.map((override) => [
+        deliveryDateKey(override.orderNumber, override.productCode),
+        override.tentativeDate,
+      ]),
+    );
+    const overrideOrders = [...new Set(overrides.map((override) => override.orderNumber))];
+
+    const lines = await this.prisma.salesOrderLine.findMany({
+      where: {
+        order: {
+          isActive: true,
+          OR: [
+            { requestedDate: { gte: from, lt: to } },
+            ...(overrideOrders.length > 0 ? [{ externalNumber: { in: overrideOrders } }] : []),
+          ],
+        },
+      },
+      select: {
+        lineNumber: true,
+        productCode: true,
+        description: true,
+        uom: true,
+        pendingQty: true,
+        pendingKg: true,
+        order: {
+          select: {
+            externalNumber: true,
+            requestedDate: true,
+            customerCode: true,
+            customerName: true,
+            authorized: true,
+          },
+        },
+      },
+    });
+
+    const result: PendingLine[] = [];
+    for (const line of lines) {
+      const orderNumber = line.order.externalNumber;
+      const tentativeDate = overrideByKey.get(deliveryDateKey(orderNumber, line.productCode)) ?? null;
+      const effective = tentativeDate ?? line.order.requestedDate;
+      if (!effective || effective < from || effective >= to) continue;
+
+      const kg = Math.max(0, line.pendingKg === null || line.pendingKg === undefined ? 0 : num(line.pendingKg));
+      if (kg <= 0) continue;
+
+      result.push({
+        day: effective.getUTCDate(),
+        orderNumber,
+        lineNumber: line.lineNumber,
+        customerCode: line.order.customerCode,
+        customerName: line.order.customerName,
+        productCode: line.productCode,
+        description: line.description ?? line.productCode,
+        uom: line.uom ?? 'KG',
+        kg,
+        pendingQty: num(line.pendingQty),
+        requestedDate: line.order.requestedDate,
+        tentativeDate,
+        authorized: line.order.authorized,
+      });
+    }
+    return result;
+  }
+
+  // Cartera comprometida del mes: kg pendientes por día de entrega efectiva.
+  // Los pedidos atrasados se quedan en su día original y los de otros meses no
+  // entran (la tira sólo dibuja el mes del informe).
+  private async pendingSalesBuckets(year: number, month: number): Promise<PendingSalesBuckets> {
+    const from = new Date(Date.UTC(year, month - 1, 1));
+    const to = new Date(Date.UTC(year, month, 1));
+    const lines = await this.pendingLines(from, to);
+
+    const byDay = new Map<number, { kg: number; orders: Set<string> }>();
+    const monthOrders = new Set<string>();
+
+    for (const line of lines) {
+      const bucket = byDay.get(line.day) ?? { kg: 0, orders: new Set<string>() };
+      bucket.kg += line.kg;
+      bucket.orders.add(line.orderNumber);
+      byDay.set(line.day, bucket);
+      monthOrders.add(line.orderNumber);
+    }
+
+    return {
+      byDay: new Map(
+        [...byDay.entries()].map(([day, bucket]) => [
+          day,
+          { kg: roundTo(bucket.kg), orders: bucket.orders.size },
+        ]),
+      ),
+      totalKg: roundTo([...byDay.values()].reduce((acc, bucket) => acc + bucket.kg, 0)),
+      totalOrders: monthOrders.size,
+    };
   }
 
   // Demanda de pedidos ACTIVOS del mes: total por artículo y por semana.

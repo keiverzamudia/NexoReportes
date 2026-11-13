@@ -1,13 +1,13 @@
 'use client';
 
 // ============================================================
-// «Vendedoras vs Forecast» — informe ejecutivo de la fuerza de ventas.
+// «Vendedor vs Forecast» — informe ejecutivo de la fuerza de ventas.
 //
 //  �� Hero: cierre proyectado de la red, su cuota global y la franja de
-//    reparto de la venta del mes (qué representación tiene cada vendedora).
+//    reparto de la venta del mes (qué representación tiene cada vendedor).
 //  �� Acumulado de la red: real vs proyección vs ritmo de la cuota.
-//  �� Ranking: cada vendedora con su cuota, su meta y su cumplimiento.
-//  �� Expediente: clientes de la vendedora con la meta que a cada uno le toca.
+//  �� Ranking: cada vendedor con su cuota, su meta y su cumplimiento.
+//  �� Expediente: clientes del vendedor con la meta que a cada uno le toca.
 //  �� Tabla completa + CSV.
 //
 // Las cifras las calcula el API (`/forecast/sellers`); aquí solo se da formato.
@@ -48,6 +48,7 @@ import {
 import { SellerDetailDrawer } from './SellerDetailDrawer';
 import {
   AttainmentRing,
+  HERO_TONE,
   HeroStat,
   PctPill,
   QuotaBar,
@@ -81,11 +82,17 @@ export function SellerReport({
   isLoading,
   error,
   onRetry,
+  historyMonths,
+  onHistoryMonthsChange,
+  includeToday,
 }: {
   report?: ForecastSellersResponse;
   isLoading: boolean;
   error?: Error | null;
   onRetry: () => void;
+  historyMonths: number;
+  onHistoryMonthsChange: (months: number) => void;
+  includeToday: boolean;
 }) {
   const [search, setSearch] = useState('');
   const [onlyWithSales, setOnlyWithSales] = useState(false);
@@ -146,7 +153,7 @@ export function SellerReport({
       <Card className="flex flex-col items-start gap-space-sm p-space-lg">
         <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
           <AlertTriangle aria-hidden className="size-4" />
-          No se pudo cargar el informe de vendedoras: {error.message}
+          No se pudo cargar el informe de vendedores: {error.message}
         </p>
         <button
           type="button"
@@ -194,17 +201,18 @@ export function SellerReport({
 
   const columns: Column<ForecastSellerRow>[] = [
     {
-      key: 'vendedora',
-      header: 'Vendedora',
+      key: 'vendedor',
+      header: 'Vendedor',
       kind: 'id',
-      help: SELLER_COLUMN_HELP.vendedora,
+      help: SELLER_COLUMN_HELP.vendedor,
       sortValue: (row) => row.sellerName,
       render: (row) => (
         <div className="flex items-center gap-space-xs">
           <SellerAvatar name={row.sellerName} rank={1} />
           <div className="min-w-0">
-            <p className="truncate font-semibold text-on-surface" title={row.sellerName}>
+            <p className="flex flex-wrap items-center gap-1 truncate font-semibold text-on-surface" title={row.sellerName}>
               {row.sellerName}
+              {row.isInternal && <Badge tone="muted">Cuenta interna</Badge>}
             </p>
             <p className="text-label-sm tabular-nums text-outline">{row.sellerCode || 'sin código'}</p>
           </div>
@@ -221,7 +229,12 @@ export function SellerReport({
       render: (row) => (
         <div className="text-right">
           <p className="tabular-nums font-semibold text-on-surface">{fmtKg(row.clientCount, 0)}</p>
-          <p className="text-label-sm text-outline">{fmtKg(row.activeClientCount, 0)} con venta</p>
+          <p className="text-label-sm text-outline">
+            {fmtKg(row.activeClientCount, 0)} con venta
+            {row.assignedClientCount !== row.clientCount
+              ? ` · ${fmtKg(row.assignedClientCount, 0)} en cartera`
+              : ''}
+          </p>
         </div>
       ),
     },
@@ -254,7 +267,14 @@ export function SellerReport({
       kind: 'metric',
       help: SELLER_COLUMN_HELP.venta,
       sortValue: (row) => row.actualKg,
-      render: (row) => <span className="tabular-nums text-on-surface">{fmtKg(row.actualKg)}</span>,
+      render: (row) => (
+        <div className="text-right">
+          <p className="tabular-nums text-on-surface">{fmtKg(row.actualKg)}</p>
+          {row.executedKg !== row.actualKg && (
+            <p className="text-label-sm text-outline">nota {fmtKg(row.executedKg)}</p>
+          )}
+        </div>
+      ),
     },
     {
       key: 'cumplimiento',
@@ -344,7 +364,7 @@ export function SellerReport({
       {report.allocationBasis === 'EQUAL_FALLBACK' && (
         <p role="status" className="flex items-start gap-space-sm rounded-xl bg-primary-fixed/40 px-space-md py-space-sm text-body-md text-primary">
           <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
-          La ventana histórica no tiene meses cerrados: la meta se repartió en partes iguales entre las vendedoras.
+          La ventana histórica no tiene meses cerrados: la meta se repartió en partes iguales entre los vendedores.
           Cuando haya histórico, la cuota pasará a ser proporcional a la venta.
         </p>
       )}
@@ -384,13 +404,20 @@ export function SellerReport({
                   <span className="font-semibold normal-case tracking-normal text-white/60">· meta capturada</span>
                 )}
               </span>
+              <span className="rounded-pill bg-white/10 px-space-sm py-1 text-label-sm font-semibold normal-case tracking-normal text-white/75">
+                {report.attribution === 'PORTFOLIO' ? 'Cartera Profit' : 'Nota de entrega'}
+              </span>
               <span className="text-label-md text-white/65">
                 Corte {report.asOf ? dayLabel(report.asOf) : 'sin ventas'} · {report.days.workingElapsed}/
                 {report.days.workingInMonth} días hábiles
               </span>
               <span className="text-label-md text-white/45">·</span>
               <span className="text-label-md text-white/65">
-                {fmtKg(totals.sellerCount, 0)} vendedoras · {fmtKg(totals.clientCount, 0)} clientes
+                {fmtKg(totals.sellerCount, 0)} vendedores ·{' '}
+                {report.attribution === 'PORTFOLIO'
+                  ? `${fmtKg(totals.assignedClientCount, 0)} en cartera`
+                  : `${fmtKg(totals.clientCount, 0)} clientes`}{' '}
+                · {fmtKg(totals.activeClientCount, 0)} con venta este mes
               </span>
               <span className="text-label-md text-white/45">·</span>
               <span className="text-label-md text-white/65">
@@ -403,7 +430,10 @@ export function SellerReport({
                 {report.status === 'FUTURE' ? 'Meta del mes' : isOpen ? 'Proyección de cierre de la red' : 'Venta del mes'}
               </p>
               <div className="mt-space-2xs flex flex-wrap items-end gap-space-sm">
-                <span className="font-display tabular-nums text-[3.4rem] font-black leading-none tracking-tight text-secondary-container">
+                <span
+                  className="font-display tabular-nums text-[3.4rem] font-black leading-none tracking-tight"
+                  style={{ color: tone === 'none' ? 'rgb(255 255 255 / 0.75)' : HERO_TONE[tone] }}
+                >
                   {totals.projectedKg === null ? '—' : fmtKg(projectedTonnes, 1)}
                 </span>
                 <span className="pb-2 text-title-md font-semibold text-white/55">t</span>
@@ -470,7 +500,7 @@ export function SellerReport({
                   Reparto de la venta del mes
                 </p>
                 <p className="text-label-md text-white/55">
-                  Qué representación tiene cada vendedora en la venta de la red. Clic en un tramo para abrir su expediente.
+                  Qué representación tiene cada vendedor en la venta de la red. Clic en un tramo para abrir su expediente.
                 </p>
               </div>
               {leader && leader.quotaPct !== null && (
@@ -540,12 +570,12 @@ export function SellerReport({
               <div className="min-w-0">
                 <h2 className="flex items-center gap-1.5 text-title-md font-bold text-on-surface">
                   <ListFilter aria-hidden className="size-4 shrink-0 text-primary" />
-                  Desempeño por vendedora
+                  Desempeño por vendedor
                 </h2>
                 <p className="text-label-md text-on-surface-variant">
                   {hasFilters ? `${fmtKg(filtered.length, 0)} de ${fmtKg(report.sellers.length, 0)}` : fmtKg(report.sellers.length, 0)}{' '}
-                  vendedoras · cada barra se mide contra su cuota
-                  <span className="block text-outline">Haz clic en una vendedora para abrir su expediente.</span>
+                  vendedores · cada barra se mide contra su cuota
+                  <span className="block text-outline">Haz clic en un vendedor para abrir su expediente.</span>
                 </p>
               </div>
               <Badge tone="primary">{fmtKg(filtered.length, 0)}</Badge>
@@ -556,8 +586,8 @@ export function SellerReport({
                 icon={Search}
                 value={search}
                 onChange={setSearch}
-                placeholder="Buscar vendedora…"
-                ariaLabel="Buscar vendedora"
+                placeholder="Buscar vendedor…"
+                ariaLabel="Buscar vendedor"
                 className="min-w-[11rem] flex-1"
               />
               <button
@@ -622,7 +652,7 @@ export function SellerReport({
             {filtered.length === 0 ? (
               <EmptyState
                 icon={Users}
-                title="Sin vendedoras para el filtro"
+                title="Sin vendedores para el filtro"
                 description="Prueba con otro texto o desactiva los filtros."
               />
             ) : (
@@ -648,7 +678,10 @@ export function SellerReport({
                           <SellerAvatar name={seller.sellerName} rank={index + 1} />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-baseline justify-between gap-space-sm">
-                              <span className="truncate font-semibold text-on-surface">{seller.sellerName}</span>
+                              <span className="flex min-w-0 items-center gap-1">
+                                <span className="truncate font-semibold text-on-surface">{seller.sellerName}</span>
+                                {seller.isInternal && <Badge tone="muted">Interna</Badge>}
+                              </span>
                               <span className="flex shrink-0 flex-col items-end leading-tight">
                                 <span className={cx('tabular-nums text-label-md font-bold', TONE_TEXT[sellerTone])}>
                                   {geometry.hasMeta ? fmtAttainmentPct(pct) : 'Sin cuota'}
@@ -662,7 +695,10 @@ export function SellerReport({
                             </div>
                             <p className="truncate text-label-sm text-outline">
                               Cuota {seller.quotaPct === null ? '—' : fmtPct(seller.quotaPct)} ·{' '}
-                              {fmtKg(seller.clientCount, 0)} clientes · {fmtKg(seller.activeClientCount, 0)} con venta ·{' '}
+                              {report.attribution === 'PORTFOLIO'
+                                ? `${fmtKg(seller.assignedClientCount, 0)} en cartera`
+                                : `${fmtKg(seller.clientCount, 0)} clientes`}{' '}
+                              · {fmtKg(seller.activeClientCount, 0)} con venta ·{' '}
                               {seller.currentSharePct === null ? '—' : fmtPct(seller.currentSharePct)} del mes
                             </p>
                             <QuotaBar
@@ -679,6 +715,11 @@ export function SellerReport({
                               <span className="tabular-nums text-on-surface-variant">
                                 Venta <strong className="text-on-surface">{fmtKg(seller.actualKg)}</strong> kg
                               </span>
+                              {seller.executedKg !== seller.actualKg && (
+                                <span className="tabular-nums text-outline">
+                                  Nota <strong className="text-on-surface-variant">{fmtKg(seller.executedKg)}</strong> kg
+                                </span>
+                              )}
                               <span
                                 className={cx(
                                   'tabular-nums font-semibold',
@@ -719,12 +760,12 @@ export function SellerReport({
         <div className="flex flex-wrap items-center justify-between gap-space-md border-b border-surface-container px-space-md py-space-sm">
           <div className="flex flex-wrap items-center gap-space-sm text-label-md text-on-surface-variant">
             <span>
-              <strong className="tabular-nums text-on-surface">{fmtKg(report.sellers.length, 0)}</strong> vendedoras · Σ meta{' '}
+              <strong className="tabular-nums text-on-surface">{fmtKg(report.sellers.length, 0)}</strong> vendedores · Σ meta{' '}
               <strong className="tabular-nums text-on-surface">{fmtKg(totals.forecastKg)} kg</strong> · Σ venta{' '}
               <strong className="tabular-nums text-on-surface">{fmtKg(totals.actualKg)} kg</strong>
             </span>
             <span className="hidden text-outline md:inline">
-              La cuota de cada una se calcula con su participación histórica.
+              La cuota de cada uno se calcula con su participación histórica.
             </span>
             <button
               type="button"
@@ -748,7 +789,7 @@ export function SellerReport({
             </button>
             <ModuleHelp
               title={SELLERS_HELP_TITLE}
-              narrative="La venta se atribuye al vendedor de la nota. La meta de la empresa se reparte por participación histórica y cada vendedora reparte la suya entre sus clientes."
+              narrative="La venta se atribuye a la cartera asignada en Profit (o a la nota de entrega, según el criterio). La meta de la empresa se reparte por participación histórica y cada vendedor reparte la suya entre sus clientes."
               rules={SELLERS_HELP_RULES}
               terms={SELLERS_HELP_TERMS}
             />
@@ -762,7 +803,7 @@ export function SellerReport({
           empty={
             <EmptyState
               icon={Users}
-              title="Sin vendedoras para el filtro"
+              title="Sin vendedores para el filtro"
               description="Prueba con otro texto o desactiva los filtros."
             />
           }
@@ -772,16 +813,26 @@ export function SellerReport({
             {report.allocationBasis === 'HISTORY'
               ? 'Cuota = participación en los meses cerrados de la ventana histórica.'
               : report.allocationBasis === 'EQUAL_FALLBACK'
-                ? 'Sin histórico: cuota igualitaria entre vendedoras.'
+                ? 'Sin histórico: cuota igualitaria entre vendedores.'
                 : 'Sin meta: no hay cuota que repartir.'}
           </span>
           <span>
-            Σ cuotas = 100 % · Σ metas = meta de la empresa · fuente: notas de entrega ABA
+            Σ cuotas = 100 % · Σ metas = meta de la empresa · fuente:{' '}
+            {report.attribution === 'PORTFOLIO' ? 'cartera Profit (clientes.co_ven)' : 'notas de entrega ABA'}
           </span>
         </div>
       </Card>
 
-      {focusSeller && <SellerDetailDrawer seller={focusSeller} report={report} onClose={closeSeller} />}
+      {focusSeller && (
+        <SellerDetailDrawer
+          seller={focusSeller}
+          report={report}
+          onClose={closeSeller}
+          historyMonths={historyMonths}
+          onHistoryMonthsChange={onHistoryMonthsChange}
+          includeToday={includeToday}
+        />
+      )}
     </>
   );
 }

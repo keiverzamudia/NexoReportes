@@ -402,7 +402,7 @@ export function DispatchMobileView({
                                   ) : (
                                     <CheckCheck aria-hidden className="size-4" />
                                   )}
-                                  Cerrar carga
+                                  Cargar
                                 </button>
                                 <button
                                   type="button"

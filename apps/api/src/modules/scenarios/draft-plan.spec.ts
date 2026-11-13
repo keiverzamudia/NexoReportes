@@ -53,7 +53,7 @@ function ref(orderNumber: string, selectedAt: string): ScenarioLineRef {
 }
 
 describe('buildDraftPlan', () => {
-  it('tres vendedoras marcan 10 de 50: 30 comprometidos y 20 libres', async () => {
+  it('tres vendedores marcan 10 de 50: 30 comprometidos y 20 libres', async () => {
     const prisma = createFakePrisma({ A: 10, B: 10, C: 10 }, 50);
     const plan = await buildDraftPlan(prisma as never, [
       ref('A', '2026-11-02T10:00:00.000Z'),
