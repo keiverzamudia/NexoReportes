@@ -543,12 +543,16 @@ model DispatchSheet {
   // Correlativo legible: DSP-2026-0001.
   number       String  @unique
   title        String
-  // ENVIADO | RECIBIDO | EN_PROCESO | CON_NOVEDAD | DESPACHADO | CANCELADO
+  // ENVIADO | EN_PROCESO | DESPACHADO | CANCELADO
+  // (RECIBIDO y CON_NOVEDAD solo existen en hojas históricas)
   status       String  @default("ENVIADO")
   instructions String?
   // Origen: escenario del simulador (receta + foto para comparar).
   scenarioId   String?
   scenarioName String?
+  // Instante en que nació la simulación (escenario guardado o borrador del
+  // equipo). Es el punto de partida del tiempo total: simulación → factura.
+  scenarioCreatedAt DateTime?
   // Plan vivo del equipo: cuando la hoja nace del borrador compartido se
   // sincroniza sola mientras sus renglones no estén CARGADOS.
   draftId      String?
@@ -573,9 +577,6 @@ model DispatchSheet {
   createdByName String?
 
   sentAt          DateTime  @default(now())
-  receivedAt      DateTime?
-  receivedById    String?
-  receivedByName  String?
   startedAt       DateTime?
   completedAt     DateTime?
   completedById   String?

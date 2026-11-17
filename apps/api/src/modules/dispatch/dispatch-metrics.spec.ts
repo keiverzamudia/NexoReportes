@@ -25,6 +25,7 @@ function sheet(overrides: Partial<MetricSheet> = {}): MetricSheet {
     number: 'DSP-2026-0001',
     status: 'EN_PROCESO',
     sentAt: new Date('2026-11-01T13:00:00.000Z'),
+    scenarioCreatedAt: new Date('2026-11-01T12:00:00.000Z'),
     startedAt: new Date('2026-11-01T14:00:00.000Z'),
     completedAt: null,
     lines: [
@@ -88,16 +89,17 @@ describe('buildDispatchMetrics', () => {
     expect(result.summary.orders).toBe(2);
     expect(result.summary.lines).toBe(2);
     expect(result.summary.kg).toBe(300);
-    // Carga = envío (13:00) → último producto: C1 15:00 = 120; C2 día 2 16:00 = 1620.
-    expect(result.summary.load).toMatchObject({ groups: 2, avgMinutes: 870, medianMinutes: 870, p90Minutes: 1620 });
-    expect(result.summary.invoice).toMatchObject({ groups: 1, avgMinutes: 240, pending: 1 });
+    // T2 = «Iniciar carga» → último artículo: C1 14:00→15:00 = 60; C2 día 2 14:00→16:00 = 120.
+    expect(result.summary.load).toMatchObject({ groups: 2, avgMinutes: 90, medianMinutes: 90, p90Minutes: 120 });
+    // T3 = «Iniciar carga» → factura: C1 14:00→17:00 = 180.
+    expect(result.summary.invoice).toMatchObject({ groups: 1, avgMinutes: 180, pending: 1 });
     expect(result.summary.onTime).toMatchObject({ orders: 2, late: 0, pct: 100 });
 
     const one = result.customers.find((row) => row.customerCode === 'C1')!;
     expect(one.orders).toBe(1);
     expect(one.lines).toBe(1);
-    expect(one.loadAvgMinutes).toBe(120);
-    expect(one.invoiceAvgMinutes).toBe(240);
+    expect(one.loadAvgMinutes).toBe(60);
+    expect(one.invoiceAvgMinutes).toBe(180);
     expect(one.onTimePct).toBe(100);
     const two = result.customers.find((row) => row.customerCode === 'C2')!;
     expect(two.pendingInvoices).toBe(1);
@@ -125,9 +127,9 @@ describe('buildDispatchMetrics', () => {
     const daily = buildDispatchMetrics([sheet()], query());
     const dayOne = daily.series.find((point) => point.period === '2026-11-01')!;
     const dayTwo = daily.series.find((point) => point.period === '2026-11-02')!;
-    expect(dayOne.loadAvgMinutes).toBe(120);
-    expect(dayOne.invoiceAvgMinutes).toBe(240);
-    expect(dayTwo.loadAvgMinutes).toBe(1620);
+    expect(dayOne.loadAvgMinutes).toBe(60);
+    expect(dayOne.invoiceAvgMinutes).toBe(180);
+    expect(dayTwo.loadAvgMinutes).toBe(120);
     expect(dayTwo.invoiceAvgMinutes).toBeNull();
     expect(daily.series).toHaveLength(30);
 
@@ -162,8 +164,9 @@ describe('buildDispatchMetrics', () => {
     });
     const result = buildDispatchMetrics([legacy], query());
     expect(result.summary.load.groups).toBe(1);
-    // Envío 01/11 13:00 → último producto 03/11 15:30 = 50 h 30 min.
-    expect(result.summary.load.avgMinutes).toBe(3030);
+    // Sin «Iniciar carga» propio: arranca en el sello de la hoja 13:00 y
+    // termina en el último artículo 15:30 = 150 min.
+    expect(result.summary.load.avgMinutes).toBe(150);
     expect(result.summary.invoice.groups).toBe(0);
     expect(result.summary.invoice.pending).toBe(1);
   });
@@ -192,17 +195,20 @@ describe('buildDispatchMetrics', () => {
     expect(orderRows.some((row) => row.productCode === 'ABA' && row.customerCode === 'C1')).toBe(false);
   });
 
-  it('calcula respuesta, ventana de carga y ciclo desde el envío', () => {
+  it('mide T1 desde la publicación y T4 desde la simulación', () => {
     const result = buildDispatchMetrics([sheet()], query());
-    // Envío 13:00 → primer producto marcado 15:00 del mismo día = 120 min.
-    expect(result.summary.response.avgMinutes).toBe(120);
-    // Primer producto 15:00 (día 1) → último cierre 16:00 (día 2) = 1500 min.
-    expect(result.summary.loadWindow.avgMinutes).toBe(1500);
-    // Envío 13:00 (día 1) → último cierre 16:00 (día 2) = 1620 min.
-    expect(result.summary.dispatchCycle.avgMinutes).toBe(1620);
-    // C1 facturó a las 17:00 y cerró a las 15:00 = 120 min de espera.
-    expect(result.summary.invoiceWait.avgMinutes).toBe(120);
-    // El ciclo total no se inventa si falta una factura.
+    // T1: envío 13:00 → primer «Iniciar carga» 14:00 = 60 min.
+    expect(result.summary.response.avgMinutes).toBe(60);
+    // T4 no se inventa si falta una factura.
     expect(result.summary.totalCycle.groups).toBe(0);
+
+    // Con todas las facturas entregadas: simulación 12:00 → última factura.
+    const all = sheet();
+    all.customerProgress[1]!.invoiceDeliveredAt = new Date('2026-11-02T18:00:00.000Z');
+    const closed = buildDispatchMetrics([all], query());
+    // 01/11 12:00 → 02/11 18:00 = 1800 min.
+    expect(closed.summary.totalCycle).toMatchObject({ groups: 1, avgMinutes: 1800 });
+    // T3 de C2: inicio 02/11 14:00 → factura 18:00 = 240.
+    expect(closed.summary.invoice).toMatchObject({ groups: 2, pending: 0 });
   });
 });

@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AuthRequiredError, apiFetch } from '../lib/api';
-import { formatDateTime, formatMinutes, formatNumber, lineStatusMeta, minutesBetween } from '../lib/dispatch-sheet';
+import { formatDateTime, formatMinutes, formatNumber, lineStatusMeta } from '../lib/dispatch-sheet';
 import { Badge, Card, DataTable, EmptyState, Segmented, Select, Skeleton, cx, type Column } from './ui';
 import { EChart } from './EChart';
 
@@ -172,7 +172,7 @@ export function DispatchTimesReport({
       },
       series: [
         {
-          name: 'Carga',
+          name: 'T2 · Inicio → artículos',
           type: 'line',
           smooth: true,
           symbolSize: 5,
@@ -182,7 +182,7 @@ export function DispatchTimesReport({
           itemStyle: { color: '#5c7c2f' },
         },
         {
-          name: 'Total (envío → factura)',
+          name: 'T3 · Inicio → factura',
           type: 'line',
           smooth: true,
           symbolSize: 5,
@@ -242,7 +242,7 @@ export function DispatchTimesReport({
     },
     {
       key: 'load',
-      header: 'Carga (envío → último producto)',
+      header: 'T2 · Inicio → artículos',
       kind: 'metric',
       align: 'right',
       sortValue: (row) => row.loadAvgMinutes ?? -1,
@@ -250,7 +250,7 @@ export function DispatchTimesReport({
     },
     {
       key: 'invoice',
-      header: 'Total (envío → factura)',
+      header: 'T3 · Inicio → factura',
       kind: 'metric',
       align: 'right',
       sortValue: (row) => row.invoiceAvgMinutes ?? -1,
@@ -327,28 +327,15 @@ export function DispatchTimesReport({
     },
     {
       key: 'load',
-      header: 'Carga (envío → cierre)',
+      header: 'T2 · Inicio → artículo',
       kind: 'metric',
       align: 'right',
       sortValue: (row) => row.loadMinutes ?? -1,
       render: (row) => <MetricCell value={row.loadMinutes} hint={formatDateTime(row.loadClosedAt)} />,
     },
     {
-      key: 'invoiceWait',
-      header: 'Espera factura',
-      kind: 'metric',
-      align: 'right',
-      sortValue: (row) => minutesBetween(row.loadClosedAt, row.invoiceDeliveredAt) ?? -1,
-      render: (row) => (
-        <MetricCell
-          value={minutesBetween(row.loadClosedAt, row.invoiceDeliveredAt)}
-          hint={formatDateTime(row.invoiceDeliveredAt)}
-        />
-      ),
-    },
-    {
       key: 'invoice',
-      header: 'Total (envío → factura)',
+      header: 'T3 · Inicio → factura',
       kind: 'metric',
       align: 'right',
       sortValue: (row) => row.invoiceMinutes ?? -1,
@@ -403,22 +390,19 @@ export function DispatchTimesReport({
       ['Pedidos', data.summary.orders],
       ['Renglones', data.summary.lines],
       ['Kg', data.summary.kg],
-      ['Carga media: envío → último producto (min)', data.summary.load.avgMinutes ?? '—'],
-      ['Carga mediana (min)', data.summary.load.medianMinutes ?? '—'],
-      ['Carga P90 (min)', data.summary.load.p90Minutes ?? '—'],
-      ['Total medio: envío → factura (min)', data.summary.invoice.avgMinutes ?? '—'],
-      ['Total mediano (min)', data.summary.invoice.medianMinutes ?? '—'],
-      ['Total P90 (min)', data.summary.invoice.p90Minutes ?? '—'],
-      ['Tiempo total: envío → última factura (min)', data.summary.totalCycle.avgMinutes ?? '—'],
-      ['Solo despacho: primer inicio → último cierre (min)', data.summary.loadWindow.avgMinutes ?? '—'],
-      ['Respuesta del almacén: envío → primer inicio (min)', data.summary.response.avgMinutes ?? '—'],
-      ['Espera de factura: cierre → factura (min)', data.summary.invoiceWait.avgMinutes ?? '—'],
-      ['Envío → último cierre (min)', data.summary.dispatchCycle.avgMinutes ?? '—'],
+      ['T1 · Publicación → inicio de carga (min)', data.summary.response.avgMinutes ?? '—'],
+      ['T2 · Inicio de carga → último artículo (min)', data.summary.load.avgMinutes ?? '—'],
+      ['T2 mediana (min)', data.summary.load.medianMinutes ?? '—'],
+      ['T2 P90 (min)', data.summary.load.p90Minutes ?? '—'],
+      ['T3 · Inicio de carga → factura (min)', data.summary.invoice.avgMinutes ?? '—'],
+      ['T3 mediana (min)', data.summary.invoice.medianMinutes ?? '—'],
+      ['T3 P90 (min)', data.summary.invoice.p90Minutes ?? '—'],
+      ['T4 · Simulación → última factura (min)', data.summary.totalCycle.avgMinutes ?? '—'],
       ['Facturas pendientes', data.summary.invoice.pending],
       ['% a tiempo (carga)', data.summary.onTime.pct ?? '—'],
     ];
     const customers = [
-      ['Cliente', 'Código', 'Despachos', 'Pedidos', 'Renglones', 'Kg', 'Carga media (envío → último producto)', 'Carga P90', 'Total medio (envío → factura)', 'Total P90', 'Pendientes', '% a tiempo', 'Última factura'],
+      ['Cliente', 'Código', 'Despachos', 'Pedidos', 'Renglones', 'Kg', 'T2 media (inicio → artículo)', 'T2 P90', 'T3 media (inicio → factura)', 'T3 P90', 'Pendientes', '% a tiempo', 'Última factura'],
       ...data.customers.map((row) => [
         row.customerName,
         row.customerCode ?? '',
@@ -441,12 +425,11 @@ export function DispatchTimesReport({
         'Cliente',
         'Despacho',
         'Producto',
-        'Enviado',
-        'Último producto',
-        'Min envío → cierre',
-        'Espera factura (min)',
+        'Inicio de carga',
+        'Último artículo',
+        'Min inicio → artículo',
         'Factura entregada',
-        'Min total envío → factura',
+        'Min inicio → factura',
         'Entrega plan',
         'A tiempo',
         'Estado',
@@ -460,7 +443,6 @@ export function DispatchTimesReport({
         row.loadStartedAt ?? '',
         row.loadClosedAt ?? '',
         row.loadMinutes ?? '',
-        minutesBetween(row.loadClosedAt, row.invoiceDeliveredAt) ?? '',
         row.invoiceDeliveredAt ?? '',
         row.invoiceMinutes ?? '',
         row.effectiveDate ?? '',
@@ -592,59 +574,45 @@ export function DispatchTimesReport({
                   <span>
                     <span className="block font-bold text-primary">Cómo se miden los tiempos</span>
                     <span className="block text-label-sm normal-case text-on-surface-variant">
-                      Envío, primer producto, carga, factura y total, sin ambigüedad.
+                      T1 salida → inicio, T2 inicio → artículos, T3 inicio → factura y T4 simulación → factura.
                     </span>
                   </span>
                 </span>
                 <ChevronDown aria-hidden className="size-4 text-outline transition-transform group-open:rotate-180" />
               </summary>
-              <div className="mt-space-sm grid gap-space-sm md:grid-cols-2 xl:grid-cols-3">
-                <Definition title="Envío (T0)" text="Instante en que planificación publica la simulación como despacho. Es el punto de partida de todos los tiempos: no depende de «Iniciar carga»." />
-                <Definition title="Respuesta del almacén" text="Desde el envío hasta el primer producto marcado. Mide cuánto tarda el piso en registrar el primer movimiento." />
-                <Definition title="Carga por cliente" text="Desde el envío del despacho hasta el último producto cerrado del cliente. Es lo que tardó el pedido en quedar cargado desde que salió de la simulación." />
-                <Definition title="Solo despacho (ventana)" text="Del primer producto marcado al último cierre del despacho. No es suma ni promedio: es la ventana de marcado." />
-                <Definition title="Espera de factura" text="Desde el cierre de carga del cliente hasta que se marca su factura entregada. Es tiempo administrativo, no de almacén." />
-                <Definition title="Tiempo total" text="Desde el envío hasta que se entrega la factura del cliente. Ahí culmina el tiempo total del pedido. Si falta la factura no se inventa: se muestra en curso." />
+              <div className="mt-space-sm grid gap-space-sm md:grid-cols-2">
+                <Definition title="T1 · Salida → inicio de carga" text="Desde que el pedido sale de Pedidos (se publica el despacho) hasta que el almacén pulsa «Iniciar carga». Mide la espera del piso." />
+                <Definition title="T2 · Inicio → artículos" text="Desde «Iniciar carga» hasta que se marca cada artículo del cliente. En el detalle por renglón ves el tiempo de cada uno." />
+                <Definition title="T3 · Inicio → factura" text="Desde «Iniciar carga» hasta que se entrega la factura del cliente. Con la última factura el despacho se cierra solo." />
+                <Definition title="T4 · Simulación → factura" text="Desde que se creó la simulación hasta la última factura del despacho. Es el tiempo total del proceso." />
               </div>
             </details>
           </Card>
 
           <div className="grid grid-cols-2 gap-space-sm lg:grid-cols-4">
             <Kpi
-              icon={Timer}
-              label="Tiempo total"
-              value={formatMinutes(data.summary.totalCycle.avgMinutes)}
-              hint={`Envío → última factura · ${data.summary.totalCycle.groups} despacho(s)`}
+              icon={Clock}
+              label="T1 · Salida → inicio"
+              value={formatMinutes(data.summary.response.avgMinutes)}
+              hint={`Hasta «Iniciar carga» · ${data.summary.response.groups} despacho(s)`}
             />
             <Kpi
               icon={Truck}
-              label="Solo despacho"
-              value={formatMinutes(data.summary.loadWindow.avgMinutes)}
-              hint={`Primer producto → último cierre · ${data.summary.loadWindow.groups} despacho(s)`}
-            />
-            <Kpi
-              icon={Clock}
-              label="Respuesta almacén"
-              value={formatMinutes(data.summary.response.avgMinutes)}
-              hint={`Envío → primer producto · ${data.summary.response.groups} despacho(s)`}
-            />
-            <Kpi
-              icon={Clock}
-              label="Carga media"
+              label="T2 · Inicio → artículos"
               value={formatMinutes(data.summary.load.avgMinutes)}
               hint={`P90 ${formatMinutes(data.summary.load.p90Minutes)} · ${data.summary.load.groups} cliente(s)`}
             />
             <Kpi
               icon={Receipt}
-              label="Espera de factura"
-              value={formatMinutes(data.summary.invoiceWait.avgMinutes)}
-              hint={`Cierre → factura · ${data.summary.invoiceWait.groups} cliente(s)`}
+              label="T3 · Inicio → factura"
+              value={formatMinutes(data.summary.invoice.avgMinutes)}
+              hint={`P90 ${formatMinutes(data.summary.invoice.p90Minutes)} · ${data.summary.invoice.groups} cliente(s)`}
             />
             <Kpi
               icon={Timer}
-              label="Envío → cierre"
-              value={formatMinutes(data.summary.dispatchCycle.avgMinutes)}
-              hint={`Hasta cerrar la carga · ${data.summary.dispatchCycle.groups} despacho(s)`}
+              label="T4 · Simulación → factura"
+              value={formatMinutes(data.summary.totalCycle.avgMinutes)}
+              hint={`Ciclo completo · ${data.summary.totalCycle.groups} despacho(s)`}
             />
             <Kpi
               icon={Receipt}
@@ -667,7 +635,7 @@ export function DispatchTimesReport({
               <div>
                 <p className="font-bold text-primary">Evolución de tiempos</p>
                 <p className="text-label-sm normal-case text-on-surface-variant">
-                  Promedio por {granularity === 'day' ? 'día' : 'mes'} de cierre de carga. «Carga» va del envío del despacho al último producto; «Total», del envío a la entrega de la factura de la misma cohorte.
+                  Promedio por {granularity === 'day' ? 'día' : 'mes'} de cierre de carga. T2 va del inicio de carga al último artículo; T3, del inicio de carga a la factura de la misma cohorte.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-space-xs text-label-sm text-on-surface-variant">
@@ -724,7 +692,7 @@ export function DispatchTimesReport({
 
           <p className="text-label-sm normal-case text-on-surface-variant">
             <AlertTriangle aria-hidden className="mr-1 inline size-3.5" />
-            Tiempo total = envío → última factura. Solo despacho = primer inicio → último cierre. Los renglones anulados no entran en ningún cálculo.
+            T1 = salida de Pedidos → inicio de carga. T2 = inicio → cada artículo. T3 = inicio → factura. T4 = simulación → última factura. Los renglones anulados no entran en ningún cálculo.
           </p>
         </>
       )}

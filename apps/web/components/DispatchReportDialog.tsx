@@ -1,15 +1,15 @@
 'use client';
 
 // ============================================================
-// Reporte de cierre del despacho.
+// Reporte de la hoja de despacho (solo lectura).
 //
-// Se abre antes de cerrar (revisión + nota opcional) y después de cerrar
-// (solo lectura + exportación). Muestra TODOS los renglones agrupados por
-// cliente: es el «reporte de todo» que firma el almacén.
+// El proceso termina al entregar la última factura: la hoja se cierra sola y
+// este reporte queda como respaldo exportable. Muestra los renglones por
+// cliente y los cuatro tiempos del flujo.
 // ============================================================
 
 import type { DispatchSheetDetail } from '@nexo/contracts';
-import { CheckCheck, Clock, Download, Loader2, Receipt, X } from 'lucide-react';
+import { CheckCheck, Clock, Download, Play, Receipt, Timer, X } from 'lucide-react';
 import type { DispatchReport } from '../lib/dispatch-sheet';
 import { formatBusinessDate, formatDateTime, formatDurationBetween, formatNumber } from '../lib/dispatch-sheet';
 import { LineStatusBadge } from './DispatchSheetParts';
@@ -19,35 +19,12 @@ interface DispatchReportDialogProps {
   open: boolean;
   sheet: DispatchSheetDetail;
   report: DispatchReport;
-  readOnly: boolean;
-  note: string;
-  onNoteChange: (value: string) => void;
   onClose: () => void;
-  onConfirm: () => void;
   onExport: () => void;
-  busy: boolean;
 }
 
-export function DispatchReportDialog({
-  open,
-  sheet,
-  report,
-  readOnly,
-  note,
-  onNoteChange,
-  onClose,
-  onConfirm,
-  onExport,
-  busy,
-}: DispatchReportDialogProps) {
+export function DispatchReportDialog({ open, sheet, report, onClose, onExport }: DispatchReportDialogProps) {
   if (!open) return null;
-
-  const missingReasons = sheet.lines.filter(
-    (line) =>
-      (line.status === 'PARCIAL' || line.status === 'FALTANTE' || line.status === 'NOVEDAD') &&
-      !line.note?.trim(),
-  ).length;
-  const canClose = !readOnly && report.pending.lines === 0 && missingReasons === 0 && !busy;
 
   return (
     <div
@@ -62,9 +39,7 @@ export function DispatchReportDialog({
       >
         <div className="flex items-start justify-between gap-space-sm border-b border-outline-variant/30 bg-surface-container-low/60 p-space-md">
           <div className="min-w-0">
-            <p className="font-semibold uppercase tracking-wider text-label-md text-primary">
-              {readOnly ? 'Reporte de cierre' : 'Reporte de despacho'}
-            </p>
+            <p className="font-semibold uppercase tracking-wider text-label-md text-primary">Reporte de despacho</p>
             <h2 id="dispatch-report-title" className="truncate text-headline-md text-primary">
               {sheet.number} · {sheet.title}
             </h2>
@@ -116,47 +91,43 @@ export function DispatchReportDialog({
             />
           </div>
 
-          <div className="mt-space-md grid grid-cols-1 gap-space-sm rounded-xl border border-outline-variant/40 bg-surface-container-low/50 p-space-sm sm:grid-cols-3">
-            <div>
-              <p className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wider text-outline">
-                <Clock aria-hidden className="size-3.5" /> Enviado
-              </p>
-              <p className="font-semibold text-primary">{formatDateTime(sheet.sentAt)}</p>
-            </div>
-            <div>
-              <p className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wider text-outline">
-                <CheckCheck aria-hidden className="size-3.5" /> Último producto
-              </p>
-              <p className="font-semibold text-primary">{formatDateTime(sheet.loadClosedAt)}</p>
-              <p className="text-label-sm text-on-surface-variant">
-                {formatDurationBetween(sheet.sentAt, sheet.loadClosedAt)}
-              </p>
-            </div>
-            <div>
-              <p className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wider text-outline">
-                <Receipt aria-hidden className="size-3.5" /> Factura entregada
-              </p>
-              <p className="font-semibold text-primary">{formatDateTime(sheet.invoiceDeliveredAt)}</p>
-              <p className="text-label-sm text-on-surface-variant">
-                {formatDurationBetween(sheet.sentAt, sheet.invoiceDeliveredAt)}
-                {sheet.pendingInvoiceCustomers > 0
-                  ? ` · ${sheet.pendingInvoiceCustomers} cliente(s) pendiente(s)`
-                  : ''}
-              </p>
-            </div>
+          <div className="mt-space-md grid grid-cols-1 gap-space-sm rounded-xl border border-outline-variant/40 bg-surface-container-low/50 p-space-sm sm:grid-cols-2 lg:grid-cols-5">
+            <ReportTime icon={Clock} label="Enviado" at={sheet.sentAt} />
+            <ReportTime
+              icon={Play}
+              label="Inicio de carga"
+              at={sheet.loadStartedAt}
+              hint={
+                sheet.loadStartedAt ? `T1 ${formatDurationBetween(sheet.sentAt, sheet.loadStartedAt)}` : 'sin iniciar'
+              }
+            />
+            <ReportTime
+              icon={CheckCheck}
+              label="Último artículo"
+              at={sheet.loadClosedAt}
+              hint={sheet.loadClosedAt ? `T2 ${formatDurationBetween(sheet.loadStartedAt, sheet.loadClosedAt)}` : undefined}
+            />
+            <ReportTime
+              icon={Receipt}
+              label="Factura entregada"
+              at={sheet.invoiceDeliveredAt}
+              hint={
+                sheet.invoiceDeliveredAt
+                  ? `T3 ${formatDurationBetween(sheet.loadStartedAt, sheet.invoiceDeliveredAt)}`
+                  : 'pendiente'
+              }
+            />
+            <ReportTime
+              icon={Timer}
+              label="Total (T4)"
+              at={sheet.invoiceDeliveredAt}
+              hint={
+                sheet.invoiceDeliveredAt
+                  ? `desde la simulación: ${formatDurationBetween(sheet.scenarioCreatedAt, sheet.invoiceDeliveredAt)}`
+                  : undefined
+              }
+            />
           </div>
-
-          {!readOnly && report.pending.lines > 0 && (
-            <p className="mt-space-md rounded-xl border border-warning/40 bg-warning/10 px-space-sm py-2 text-label-md font-semibold text-on-warning-container">
-              Este reporte todavía tiene {report.pending.lines} renglón(es) sin resolver. Vuelve a la hoja y marca
-              cada uno como cargado, parcial o no cargado antes de cerrar.
-            </p>
-          )}
-          {!readOnly && report.pending.lines === 0 && missingReasons > 0 && (
-            <p className="mt-space-md rounded-xl border border-critical/40 bg-critical-container/30 px-space-sm py-2 text-label-md font-semibold text-on-critical-container">
-              Hay {missingReasons} renglón(es) con diferencia sin motivo. Agrega el motivo antes de cerrar.
-            </p>
-          )}
 
           <div className="mt-space-md flex flex-col gap-space-md">
             {report.groups.map((group) => (
@@ -230,22 +201,6 @@ export function DispatchReportDialog({
               </section>
             ))}
           </div>
-
-          {!readOnly && (
-            <label className="mt-space-md flex flex-col gap-1">
-              <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">
-                Nota de cierre (opcional)
-              </span>
-              <textarea
-                value={note}
-                onChange={(event) => onNoteChange(event.target.value)}
-                rows={2}
-                maxLength={500}
-                placeholder="Ej. Se cargó todo en la puerta 2…"
-                className="rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-sm py-1 text-body-md outline-none focus:border-transparent focus:ring-2 focus:ring-secondary-container/70"
-              />
-            </label>
-          )}
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-space-sm border-t border-outline-variant/30 bg-surface-container-low/60 px-space-lg py-space-sm">
@@ -254,7 +209,7 @@ export function DispatchReportDialog({
             onClick={onClose}
             className="h-9 rounded-pill border border-outline-variant/50 px-space-md font-semibold text-body-md text-on-surface-variant hover:bg-surface-container-low"
           >
-            {readOnly ? 'Cerrar' : 'Volver'}
+            Cerrar
           </button>
           <button
             type="button"
@@ -263,26 +218,30 @@ export function DispatchReportDialog({
           >
             <Download aria-hidden className="size-4" /> Exportar
           </button>
-          {!readOnly && (
-            <button
-              type="button"
-              onClick={onConfirm}
-              disabled={!canClose}
-              title={
-                report.pending.lines > 0
-                  ? 'Resuelve todos los renglones antes de cerrar'
-                  : missingReasons > 0
-                    ? 'Agrega el motivo de las diferencias antes de cerrar'
-                    : undefined
-              }
-              className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-lg font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-40"
-            >
-              {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <CheckCheck aria-hidden className="size-4" />}
-              Cerrar y generar reporte
-            </button>
-          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ReportTime({
+  icon: Icon,
+  label,
+  at,
+  hint,
+}: {
+  icon: typeof Clock;
+  label: string;
+  at: string | null;
+  hint?: string;
+}) {
+  return (
+    <div>
+      <p className="flex items-center gap-1 text-label-sm font-semibold uppercase tracking-wider text-outline">
+        <Icon aria-hidden className="size-3.5" /> {label}
+      </p>
+      <p className="font-semibold text-primary">{formatDateTime(at)}</p>
+      {hint && <p className="text-label-sm text-on-surface-variant">{hint}</p>}
     </div>
   );
 }
@@ -313,4 +272,3 @@ function ReportKpi({
     </div>
   );
 }
-

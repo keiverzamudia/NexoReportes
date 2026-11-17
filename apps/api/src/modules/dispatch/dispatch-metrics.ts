@@ -15,11 +15,12 @@ import type {
 // cliente; aquí se calculan los promedios, medianas, P90, series por día/mes
 // y el cumplimiento contra la fecha planificada. Se prueba sin Prisma.
 //
-// Regla de negocio (T0 = salida de la simulación):
-//   · carga   = envío del despacho → último producto cerrado del cliente
-//   · factura = envío del despacho → factura entregada (tiempo total)
-//   · espera  = último producto cerrado → factura entregada
-//   · a tiempo = la carga se cerró en la fecha planificada o antes
+// Regla de negocio (flujo: Pedidos → Iniciar carga → artículos → factura):
+//   · T1 respuesta   = publicación del despacho → primer «Iniciar carga»
+//   · T2 load        = «Iniciar carga» del cliente → cada artículo marcado
+//   · T3 invoice     = «Iniciar carga» → factura entregada
+//   · T4 totalCycle  = creación de la simulación → última factura
+//   · a tiempo       = la carga se cerró en la fecha planificada o antes
 // ============================================================
 
 export interface MetricLine {
@@ -51,6 +52,8 @@ export interface MetricSheet {
   number: string;
   status: string;
   sentAt: Date;
+  // Creación de la simulación de origen (base de T4).
+  scenarioCreatedAt: Date | null;
   startedAt: Date | null;
   completedAt: Date | null;
   lines: MetricLine[];
@@ -68,7 +71,6 @@ interface GroupMetric {
   invoiceAt: Date | null;
   loadMinutes: number | null;
   invoiceMinutes: number | null;
-  invoiceWaitMinutes: number | null;
   kg: number;
   loadInRange: boolean;
   invoiceInRange: boolean;
@@ -207,10 +209,10 @@ function buildGroups(sheets: MetricSheet[], query: DispatchMetricsQuery): GroupM
         .filter((value): value is Date => value instanceof Date)
         .sort((a, b) => a.getTime() - b.getTime());
       const lastChecked = checked.length > 0 ? checked[checked.length - 1] : null;
-      // T0 del modelo: la salida de la simulación. No depende de que alguien
-      // pulse «Iniciar carga», que en la práctica casi nunca se usa y dejaba
-      // «cargas» de 0 min. La factura marca el cierre del tiempo total.
-      const loadStart = sheet.sentAt;
+      // T2: arranca cuando el almacén pulsa «Iniciar carga» para ese cliente.
+      // En hojas históricas sin ese hito se usa el arranque de la hoja y, en
+      // último caso, el primer artículo marcado.
+      const loadStart = progress?.loadStartedAt ?? sheet.startedAt ?? checked[0] ?? null;
       const loadClose =
         progress?.loadClosedAt ?? (pending === 0 ? lastChecked ?? sheet.completedAt : null);
       const invoiceAt = progress?.invoiceDeliveredAt ?? null;
@@ -245,7 +247,6 @@ function buildGroups(sheets: MetricSheet[], query: DispatchMetricsQuery): GroupM
         invoiceAt,
         loadMinutes: minutesBetween(loadStart, loadClose),
         invoiceMinutes: minutesBetween(loadStart, invoiceAt),
-        invoiceWaitMinutes: minutesBetween(loadClose, invoiceAt),
         kg: round(
           lines.reduce((sum, line) => sum + toNumber(line.plannedKg), 0),
           2,
@@ -305,45 +306,31 @@ export function buildDispatchMetrics(
   }
 
   // Tiempos globales de la hoja (una observación por despacho):
-  //   respuesta = envío → primer producto marcado
-  //   ventana   = primer producto marcado → último cierre (marcado puro)
-  //   ciclo     = envío → último cierre
+  //   T1 respuesta = publicación → primer «Iniciar carga»
+  //   T4 total     = creación de la simulación → última factura
   const sheetIds = new Set(groups.map((group) => group.sheet.id));
   const responseValues: number[] = [];
-  const windowValues: number[] = [];
-  const cycleValues: number[] = [];
   const totalCycleValues: number[] = [];
-  const invoiceWaitValues = invoiceGroups
-    .map((group) => group.invoiceWaitMinutes)
-    .filter((value): value is number => value !== null);
   for (const sheet of sheets) {
     if (!sheetIds.has(sheet.id)) continue;
     const sheetGroups = groups.filter((group) => group.sheet.id === sheet.id);
-    const marks = sheet.lines
-      .filter((line) => line.status !== 'ANULADO')
-      .map((line) => line.checkedAt)
+    const starts = sheet.customerProgress
+      .map((row) => row.loadStartedAt)
       .filter((value): value is Date => value instanceof Date)
       .sort((a, b) => a.getTime() - b.getTime());
-    const closes = sheetGroups
-      .map((group) => group.loadClose)
-      .filter((value): value is Date => value instanceof Date)
-      .sort((a, b) => a.getTime() - b.getTime());
+    const firstStart = starts[0] ?? sheet.startedAt;
+    if (firstStart) {
+      responseValues.push(Math.max(0, Math.round((firstStart.getTime() - sheet.sentAt.getTime()) / 60_000)));
+    }
     const invoices = sheetGroups
       .map((group) => group.invoiceAt)
       .filter((value): value is Date => value instanceof Date)
       .sort((a, b) => a.getTime() - b.getTime());
-    const firstMovement = marks[0] ?? null;
-    const allClosed = sheetGroups.length > 0 && sheetGroups.every((group) => group.loadClose !== null);
-    const lastClose = allClosed ? closes[closes.length - 1] ?? null : null;
     const allInvoiced = sheetGroups.length > 0 && sheetGroups.every((group) => group.invoiceAt !== null);
     const lastInvoice = allInvoiced ? invoices[invoices.length - 1] ?? null : null;
-    if (firstMovement) responseValues.push(Math.max(0, Math.round((firstMovement.getTime() - sheet.sentAt.getTime()) / 60_000)));
-    if (firstMovement && lastClose) {
-      windowValues.push(Math.max(0, Math.round((lastClose.getTime() - firstMovement.getTime()) / 60_000)));
-      cycleValues.push(Math.max(0, Math.round((lastClose.getTime() - sheet.sentAt.getTime()) / 60_000)));
-    }
     if (lastInvoice) {
-      totalCycleValues.push(Math.max(0, Math.round((lastInvoice.getTime() - sheet.sentAt.getTime()) / 60_000)));
+      const origin = sheet.scenarioCreatedAt ?? sheet.sentAt;
+      totalCycleValues.push(Math.max(0, Math.round((lastInvoice.getTime() - origin.getTime()) / 60_000)));
     }
   }
 
@@ -364,10 +351,7 @@ export function buildDispatchMetrics(
       pending: pendingGroups.length,
     },
     response: stats(responseValues),
-    loadWindow: stats(windowValues),
-    dispatchCycle: stats(cycleValues),
     totalCycle: stats(totalCycleValues),
-    invoiceWait: stats(invoiceWaitValues),
     onTime: {
       orders: onTimeOrders,
       late: lateOrders,

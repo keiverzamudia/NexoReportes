@@ -2,7 +2,6 @@ import { Body, Controller, Get, Param, Patch, Post, Query, Req, UnauthorizedExce
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   DispatchCancelInput,
-  DispatchCompleteInput,
   DispatchCustomerInvoiceInput,
   DispatchCustomerKeyInput,
   DispatchCustomerReopenInput,
@@ -17,7 +16,6 @@ import {
   NotificationQuery,
   NotificationReadInput,
   zDispatchCancelInput,
-  zDispatchCompleteInput,
   zDispatchCustomerInvoiceInput,
   zDispatchCustomerKeyInput,
   zDispatchCustomerReopenInput,
@@ -174,17 +172,6 @@ export class DispatchController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.dispatch.deliverAllInvoices(this.viewer(request), id, body);
-  }
-
-  @Post(':id/complete')
-  @RequirePermission('despacho:update')
-  @ApiOperation({ summary: 'Cierra el despacho con los totales reales' })
-  complete(
-    @Param('id') id: string,
-    @Body(new ZodValidationPipe(zDispatchCompleteInput)) body: DispatchCompleteInput,
-    @Req() request: AuthenticatedRequest,
-  ) {
-    return this.dispatch.complete(this.viewer(request), id, body);
   }
 
   @Post(':id/cancel')

@@ -11,7 +11,6 @@ import {
   DispatchAckInput,
   DispatchAssigneesResponse,
   DispatchCancelInput,
-  DispatchCompleteInput,
   DispatchCustomerInvoiceInput,
   DispatchCustomerKeyInput,
   DispatchCustomerProgress,
@@ -67,15 +66,14 @@ import { buildDraftPlan, draftLineKey } from '../scenarios/draft-plan';
 // ============================================================
 // Despacho de almacén: hoja de trabajo + túnel de acuses.
 //
-// Un despacho nace de un escenario guardado del simulador. El planificador lo
-// publica, el almacén lo recibe, resuelve cada renglón (cargado, parcial con X
-// unidades o no cargado con motivo) y lo cierra. Cada paso deja: sello
-// temporal, evento en la bitácora y notificación al otro lado. Nada de esto
-// escribe en Profit.
+// Flujo único: el despacho sale de Pedidos, el almacén inicia la carga, marca
+// cada artículo y entrega la factura. Al entregar la ÚLTIMA factura la hoja se
+// cierra sola y pasa al historial con todos sus tiempos (T1–T4). Ya no existe
+// «Cerrar despacho» manual: la factura es el final del proceso.
 //
 // Máquina de estados (validada aquí, no en el controlador):
-//   ENVIADO → RECIBIDO → EN_PROCESO → { CON_NOVEDAD ⇄ EN_PROCESO } → DESPACHADO
-//   { ENVIADO | RECIBIDO | EN_PROCESO | CON_NOVEDAD } → CANCELADO
+//   ENVIADO → EN_PROCESO → DESPACHADO (cierre automático al facturar todo)
+//   { ENVIADO | EN_PROCESO } → CANCELADO
 // ============================================================
 
 export interface DispatchViewer {
@@ -172,7 +170,7 @@ interface CustomerGroupBucket {
 
 const SIN_CLIENTE = 'SIN_CLIENTE';
 
-const OPEN_STATUSES = ['ENVIADO', 'RECIBIDO', 'EN_PROCESO', 'CON_NOVEDAD'];
+const OPEN_STATUSES = ['ENVIADO', 'RECIBIDO', 'EN_PROCESO'];
 const OPERATOR_ROLES = ['ALMACEN', 'ADMIN'];
 const PLANNER_ROLES = ['PLANIFICADOR', 'GERENCIA', 'ADMIN'];
 // Estos roles ven toda la bandeja, incluido el historial cerrado por otros.
@@ -345,7 +343,7 @@ export class DispatchService {
 
     const counters = {
       pending: summaries.filter((item) => item.status === 'ENVIADO').length,
-      inProgress: summaries.filter((item) => ['RECIBIDO', 'EN_PROCESO', 'CON_NOVEDAD'].includes(item.status)).length,
+      inProgress: summaries.filter((item) => ['RECIBIDO', 'EN_PROCESO'].includes(item.status)).length,
       doneToday: summaries.filter(
         (item) => item.status === 'DESPACHADO' && item.completedAt !== null && new Date(item.completedAt) >= todayStart(),
       ).length,
@@ -557,6 +555,8 @@ export class DispatchService {
           instructions: input.instructions ?? null,
           scenarioId: scenario.id,
           scenarioName: scenario.name,
+          // T4 arranca cuando nació la simulación, no cuando se publicó.
+          scenarioCreatedAt: scenario.createdAt,
           recipeJson: JSON.stringify(payload.recipe),
           photoJson: JSON.stringify(snapshot),
           loadPlanJson: payload.loadPlan ? JSON.stringify(payload.loadPlan) : null,
@@ -691,6 +691,12 @@ export class DispatchService {
     );
     const plannedKg = round2(available.lines.reduce((sum, line) => sum + line.assignedKg, 0));
     const destination = assignee ? assignee.displayName : 'todo el almacén';
+    // La simulación viva del equipo no tiene escenario guardado: su origen es
+    // el borrador compartido, que sí conserva la fecha de creación.
+    const draft = await this.prisma.dispatchDraft.findUnique({
+      where: { id: 'GLOBAL' },
+      select: { createdAt: true },
+    });
     const arrivalLines: ArrivalSourceLine[] = available.lines.map((line) => ({
       orderNumber: line.orderNumber,
       customerCode: line.customerCode ?? null,
@@ -718,6 +724,7 @@ export class DispatchService {
           instructions: input.instructions ?? null,
           scenarioId: null,
           scenarioName: 'Simulación del equipo',
+          scenarioCreatedAt: draft?.createdAt ?? null,
           draftId: 'GLOBAL',
           source: 'DRAFT',
           draftRevision,
@@ -1391,11 +1398,9 @@ export class DispatchService {
     const { sheet: refreshed } = await this.recomputeProgress(sheet.id, actor, { notify: true });
     const starting = refreshed.status === 'ENVIADO' || refreshed.status === 'RECIBIDO';
     const hasNovedad = refreshed.lines.some((item) => NOVEDAD_LINE_STATUSES.includes(item.status));
-    const nextStatus = hasNovedad
-      ? 'CON_NOVEDAD'
-      : refreshed.status === 'CON_NOVEDAD' || starting
-        ? 'EN_PROCESO'
-        : refreshed.status;
+    // Las diferencias se registran por renglón; la hoja simplemente está en
+    // carga. Ya no existe el estado «con novedad».
+    const nextStatus = starting || refreshed.status === 'CON_NOVEDAD' ? 'EN_PROCESO' : refreshed.status;
     if (nextStatus !== refreshed.status) {
       const claimed = starting ? this.claimPatch(refreshed, actor) : {};
       await this.prisma.$transaction([
@@ -1832,6 +1837,7 @@ export class DispatchService {
         number: sheet.number,
         status: sheet.status,
         sentAt: sheet.sentAt,
+        scenarioCreatedAt: sheet.scenarioCreatedAt,
         startedAt: sheet.startedAt,
         completedAt: sheet.completedAt,
         lines: sheet.lines.map((line) => ({
@@ -1919,54 +1925,11 @@ export class DispatchService {
     return buildDispatchRemovals(rows);
   }
 
-  // ---------- Cerrar ----------
-
-  async complete(viewer: DispatchViewer, id: string, input: DispatchCompleteInput): Promise<DispatchSheetDetail> {
-    const sheet = await this.findSheet(id);
-    // Idempotente: cerrar dos veces devuelve el mismo estado.
-    if (sheet.status === 'DESPACHADO') return this.detail(viewer, id);
-    this.assertOperable(sheet, viewer);
-    if (!['RECIBIDO', 'EN_PROCESO', 'CON_NOVEDAD'].includes(sheet.status)) {
-      throw new ConflictException('Carga al menos un renglón antes de cerrarlo.');
-    }
-    const activeLines = sheet.lines.filter((line) => line.status !== 'ANULADO');
-    if (activeLines.length === 0) {
-      throw new ConflictException('El despacho no tiene renglones activos: anúlalo o vuelve a incluirlos en Pedidos.');
-    }
-    const pending = activeLines.filter((line) => line.status === 'PENDIENTE');
-    if (pending.length > 0) {
-      throw new BadRequestException(
-        `Faltan ${pending.length} renglón(es) por resolver. Marca cada uno como cargado, parcial o no cargado.`,
-      );
-    }
-    // Las diferencias exigen motivo: sin él, el cierre no deja rastro del porqué.
-    const sinMotivo = activeLines.filter(
-      (line) => NOVEDAD_LINE_STATUSES.includes(line.status) && !line.note?.trim(),
-    );
-    if (sinMotivo.length > 0) {
-      throw new BadRequestException(
-        `Hay ${sinMotivo.length} renglón(es) con diferencia sin motivo. Agrega el motivo antes de cerrar.`,
-      );
-    }
-
-    const actor = await this.viewerInfo(viewer);
-    // Cierra los relojes de los grupos que aún no tengan hora (hojas viejas o
-    // cargas hechas por API sin «Iniciar carga»).
-    const { sheet: refreshed } = await this.recomputeProgress(sheet.id, actor, { notify: false });
-    await this.closeSheet(refreshed, actor, {
-      body: input.note
-        ? `Despacho cerrado por ${actor.name ?? 'almacén'}. ${input.note}`
-        : `Despacho cerrado por ${actor.name ?? 'almacén'}.`,
-      note: input.note ?? null,
-    });
-
-    return this.detail(viewer, id);
-  }
+  // ---------- Cierre automático ----------
 
   /**
-   * Deja la hoja cerrada con los totales reales. Lo comparten «Cerrar despacho»
-   * y el cierre automático al entregar la última factura: el rastro (evento,
-   * notificación y auditoría) debe ser idéntico, cambia solo el texto.
+   * Deja la hoja cerrada con los totales reales al entregar la última factura:
+   * la factura es el final del proceso (no hay «Cerrar despacho» manual).
    */
   private async closeSheet(
     sheet: SheetWithLines,
@@ -2591,11 +2554,7 @@ export class DispatchService {
     if (viewer.role === 'PLANIFICADOR') return { createdById: viewer.id };
     if (viewer.role === 'ALMACEN') {
       return {
-        OR: [
-          this.operatorVisibility(viewer),
-          { claimedById: viewer.id },
-          { receivedById: viewer.id },
-        ],
+        OR: [this.operatorVisibility(viewer), { claimedById: viewer.id }],
       };
     }
     // CONSULTA y cualquier otro rol: sin bandeja.
@@ -2619,8 +2578,7 @@ export class DispatchService {
       return (
         sheet.assignedToId === viewer.id ||
         (sheet.assignedToId === null && sheet.assignedRole === 'ALMACEN') ||
-        sheet.claimedById === viewer.id ||
-        sheet.receivedById === viewer.id
+        sheet.claimedById === viewer.id
       );
     }
     return false;
@@ -2712,8 +2670,9 @@ export class DispatchService {
       if (pendingQty > 0 || pendingKg > 0) pendingOrderKeys.add(key);
     }
     const closed = ['DESPACHADO', 'CANCELADO'].includes(sheet.status);
-    // «Recibido» era el acuse anterior: se muestra como «en carga».
-    const status = sheet.status === 'RECIBIDO' ? 'EN_PROCESO' : sheet.status;
+    // Estados históricos: «Recibido» y «Con novedad» ya no se producen.
+    const status =
+      sheet.status === 'RECIBIDO' || sheet.status === 'CON_NOVEDAD' ? 'EN_PROCESO' : sheet.status;
     const customers = [...new Set(lines.map((line) => line.customerName).filter((name): name is string => Boolean(name)))];
     const pendingDates = lines
       .filter((line) => line.status === 'PENDIENTE' && line.effectiveDate)
@@ -2765,8 +2724,7 @@ export class DispatchService {
       createdByName: sheet.createdByName,
       createdByCode: sheet.createdByCode,
       sentAt: sheet.sentAt.toISOString(),
-      receivedAt: iso(sheet.receivedAt),
-      receivedByName: sheet.receivedByName,
+      scenarioCreatedAt: iso(sheet.scenarioCreatedAt),
       startedAt: iso(sheet.startedAt),
       completedAt: iso(sheet.completedAt),
       completedByName: sheet.completedByName,

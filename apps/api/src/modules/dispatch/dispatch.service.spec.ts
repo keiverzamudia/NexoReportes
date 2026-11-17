@@ -409,6 +409,25 @@ async function publish(prisma: ReturnType<typeof createFakePrisma>, assignedToId
   });
 }
 
+/**
+ * Cierra como en producción: resuelve los artículos, inicia la carga de cada
+ * cliente y entrega su factura. La última factura cierra el despacho sola.
+ */
+async function closeByInvoicing(service: DispatchService, sheetId: string) {
+  const current = await service.detail(operator1, sheetId);
+  for (const line of current.lines) {
+    if (line.status === 'PENDIENTE') {
+      await service.updateLine(operator1, sheetId, line.id, { status: 'CARGADO' });
+    }
+  }
+  const fresh = await service.detail(operator1, sheetId);
+  for (const row of fresh.customerProgress) {
+    await service.startLoad(operator1, sheetId, { customerKey: row.customerKey });
+    await service.deliverInvoice(operator1, sheetId, { customerKey: row.customerKey });
+  }
+  return service.detail(operator1, sheetId);
+}
+
 // Cartera mínima + plan vivo para probar la sincronización de renglones.
 function seedDraft(
   prisma: ReturnType<typeof createFakePrisma>,
@@ -809,7 +828,7 @@ describe('DispatchService — carga y cierre', () => {
     // 60 SAC = 2.400 kg → 24 SAC = 960 kg (kg por ratio de la unidad).
     expect(line.loadedKg).toBe(960);
     expect(line.note).toBe('Solo había 24 sacos en el lote');
-    expect(updated.status).toBe('CON_NOVEDAD');
+    expect(updated.status).toBe('EN_PROCESO');
     expect(updated.linesDone).toBe(1);
   });
 
@@ -886,7 +905,7 @@ describe('DispatchService — carga y cierre', () => {
       status: 'FALTANTE',
       note: 'El cliente no lo recibió',
     });
-    const closed = await service.complete(operator1, sheet.id, { note: 'Se despachó lo disponible' });
+    const closed = await closeByInvoicing(service, sheet.id);
 
     expect(closed.status).toBe('DESPACHADO');
     expect(closed.loadedSacks).toBe(24);
@@ -895,29 +914,16 @@ describe('DispatchService — carga y cierre', () => {
     expect(closed.differenceKg).toBe(-1840);
   });
 
-  it('no cierra si una diferencia quedó sin motivo', async () => {
-    const { prisma, service, sheet } = await inProgress();
-
-    await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, {
-      status: 'PARCIAL',
-      loadedQty: 24,
-      note: 'Solo había 24 sacos',
-    });
-    await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
-    // Simula una marca vieja sin motivo (antes el motivo no era obligatorio).
-    prisma.state.lines.find((line) => line.id === sheet.lines[0]!.id)!.note = null;
-
-    await expect(service.complete(operator1, sheet.id, {})).rejects.toThrow(/sin motivo/i);
-  });
-
-  it('no cierra con renglones incompletos y cierra con totales reales', async () => {
+  it('no factura con renglones incompletos y cierra al entregar la última factura', async () => {
     const { prisma, service, sheet } = await inProgress();
 
     await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
-    await expect(service.complete(operator1, sheet.id, {})).rejects.toThrow(/por resolver/i);
+    const fresh = await service.detail(operator1, sheet.id);
+    const customerKey = fresh.customerProgress[0]!.customerKey;
+    await service.startLoad(operator1, sheet.id, { customerKey });
+    await expect(service.deliverInvoice(operator1, sheet.id, { customerKey })).rejects.toThrow(/por cerrar/i);
 
-    await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
-    const closed = await service.complete(operator1, sheet.id, { note: 'Carga completa' });
+    const closed = await closeByInvoicing(service, sheet.id);
 
     expect(closed.status).toBe('DESPACHADO');
     expect(closed.completedAt).toBeTruthy();
@@ -925,10 +931,9 @@ describe('DispatchService — carga y cierre', () => {
     expect(closed.loadedSacks).toBe(70);
     expect(closed.loadedKg).toBe(2800);
     expect(closed.differenceKg).toBe(0);
-    expect(prisma.state.notifications.some((row) => row.type === 'DESPACHO_CERRADO' && row.recipientId === 'u-plan')).toBe(true);
-
-    // Cerrar dos veces no rompe.
-    await expect(service.complete(operator1, sheet.id, {})).resolves.toMatchObject({ status: 'DESPACHADO' });
+    expect(prisma.state.notifications.some((row) => row.type === 'DESPACHO_CERRADO' && row.recipientId === 'u-plan')).toBe(
+      true,
+    );
   });
 
   it('anular exige motivo y solo lo hace el creador o gerencia', async () => {
@@ -1025,9 +1030,9 @@ describe('DispatchService — bitácora y notificaciones', () => {
     expect(typesFor('u-plan')).toEqual([]);
 
     await service.updateLine(operator1, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' });
-    await service.complete(operator1, sheet.id, {});
-    // El último renglón cierra la carga del cliente y, al completar, el
-    // despacho: el planificador recibe ambos hitos.
+    await closeByInvoicing(service, sheet.id);
+    // El último renglón cierra la carga del cliente y la última factura cierra
+    // el despacho: el planificador recibe ambos hitos.
     expect(typesFor('u-plan')).toEqual(['DESPACHO_CARGA_CERRADA', 'DESPACHO_CERRADO']);
 
     // El aviso lleva a la hoja y firma a quien actuó.
@@ -1054,13 +1059,13 @@ describe('DispatchService — bitácora y notificaciones', () => {
     const second = await service.create(publisher, { scenarioId: 'sc-2', title: 'Cerrado' });
     await service.updateLine(operator1, second.id, second.lines[0]!.id, { status: 'CARGADO' });
     await service.updateLine(operator1, second.id, second.lines[1]!.id, { status: 'CARGADO' });
-    await service.complete(operator1, second.id, {});
+    await closeByInvoicing(service, second.id);
 
     // Otro usuario publica y cierra su propio despacho.
     const third = await service.create(almacenPublisher, { scenarioId: 'sc-3', title: 'Cerrado por almacén' });
     await service.updateLine(operator1, third.id, third.lines[0]!.id, { status: 'CARGADO' });
     await service.updateLine(operator1, third.id, third.lines[1]!.id, { status: 'CARGADO' });
-    await service.complete(operator1, third.id, {});
+    await closeByInvoicing(service, third.id);
 
     expect((await service.list(operator2, { scope: 'pending' })).items.map((row) => row.id)).toEqual([first.id]);
     expect((await service.list(planner, { scope: 'pending' })).items.map((row) => row.id)).toEqual([first.id]);

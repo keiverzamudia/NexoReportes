@@ -27,7 +27,7 @@ import { SheetStatusBadge } from '../../../components/DispatchSheetParts';
 import { AppNav, LoginScreen } from '../../../components/shell';
 import { Badge, Card, DataTable, EmptyState, PageHeader, Select, Skeleton, TextInput, type Column, cx } from '../../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../../lib/api';
-import { formatDateTime, formatNumber, relativeTime, sortSheets } from '../../../lib/dispatch-sheet';
+import { formatDateTime, formatMinutes, formatNumber, minutesBetween, relativeTime, sortSheets } from '../../../lib/dispatch-sheet';
 import { hasPermission } from '../../../lib/permissions';
 
 type HistoryPreset = '7d' | '30d' | '90d' | '12m' | 'custom';
@@ -49,6 +49,14 @@ function isoDate(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function TimeCell({ minutes }: { minutes: number | null }) {
+  return (
+    <span className="tabular-nums text-on-surface-variant">
+      {minutes === null ? '—' : formatMinutes(minutes)}
+    </span>
+  );
 }
 
 function rangeForPreset(preset: HistoryPreset): { from: string; to: string } {
@@ -192,9 +200,17 @@ export default function DispatchHistoryPage() {
       render: (row) => (
         <span className="flex flex-col items-start gap-0.5">
           <SheetStatusBadge status={row.status} />
-          {row.status === 'CANCELADO' && row.cancelReason && (
-            <span className="max-w-[16rem] truncate text-label-sm text-outline" title={row.cancelReason}>
-              {row.cancelReason}
+          {row.status === 'CANCELADO' ? (
+            row.cancelReason && (
+              <span className="max-w-[16rem] truncate text-label-sm text-outline" title={row.cancelReason}>
+                {row.cancelReason}
+              </span>
+            )
+          ) : (
+            <span className="text-label-sm text-on-surface-variant">
+              {row.pendingInvoiceCustomers > 0
+                ? `Factura ${row.invoicedCustomers}/${row.totalCustomers}`
+                : `Factura ${row.invoicedCustomers}/${row.totalCustomers} · completa`}
             </span>
           )}
         </span>
@@ -251,36 +267,35 @@ export default function DispatchHistoryPage() {
       ),
     },
     {
-      key: 'invoice',
-      header: 'Factura',
-      kind: 'field',
-      sortValue: (row) => row.invoiceDeliveredAt ?? '',
-      render: (row) => {
-        if (row.status === 'CANCELADO') return <span className="text-outline">—</span>;
-        if (row.invoiceDeliveredAt) {
-          return (
-            <span className="flex flex-col leading-tight">
-              <span className="font-semibold text-secondary">Entregada</span>
-              <span className="tabular-nums text-on-surface-variant">{formatDateTime(row.invoiceDeliveredAt)}</span>
-              {row.totalCustomers > 0 && (
-                <span className="text-label-sm text-outline">
-                  {row.invoicedCustomers}/{row.totalCustomers} clientes
-                </span>
-              )}
-            </span>
-          );
-        }
-        return (
-          <span className="flex flex-col leading-tight">
-            <span className="font-semibold text-on-surface-variant">Pendiente</span>
-            {row.pendingInvoiceCustomers > 0 && (
-              <span className="text-label-sm text-outline">
-                {row.pendingInvoiceCustomers} cliente{row.pendingInvoiceCustomers === 1 ? '' : 's'} por facturar
-              </span>
-            )}
-          </span>
-        );
-      },
+      key: 't1',
+      header: 'T1 · Salida → inicio',
+      kind: 'metric',
+      align: 'right',
+      sortValue: (row) => minutesBetween(row.sentAt, row.loadStartedAt) ?? -1,
+      render: (row) => <TimeCell minutes={minutesBetween(row.sentAt, row.loadStartedAt)} />,
+    },
+    {
+      key: 't3',
+      header: 'T3 · Inicio → factura',
+      kind: 'metric',
+      align: 'right',
+      sortValue: (row) => minutesBetween(row.loadStartedAt, row.invoiceDeliveredAt) ?? -1,
+      render: (row) => <TimeCell minutes={minutesBetween(row.loadStartedAt, row.invoiceDeliveredAt)} />,
+    },
+    {
+      key: 't4',
+      header: 'T4 · Simulación → factura',
+      kind: 'metric',
+      align: 'right',
+      sortValue: (row) => minutesBetween(row.scenarioCreatedAt, row.invoiceDeliveredAt) ?? -1,
+      render: (row) => (
+        <span
+          className="flex flex-col items-end leading-tight"
+          title={row.scenarioCreatedAt ? `Simulación creada ${formatDateTime(row.scenarioCreatedAt)}` : undefined}
+        >
+          <TimeCell minutes={minutesBetween(row.scenarioCreatedAt, row.invoiceDeliveredAt)} />
+        </span>
+      ),
     },
     {
       key: 'closed',
@@ -337,7 +352,7 @@ export default function DispatchHistoryPage() {
           eyebrow="Almacén · Despacho"
           icon={History}
           title="Historial de despachos"
-          subtitle="Despachos ya cerrados y su factura. Por defecto se ocultan los anulados: elígelos en «Estado» para verlos."
+          subtitle="Despachos ya cerrados con sus tiempos: T1 salida → inicio, T3 inicio → factura y T4 simulación → factura. Por defecto se ocultan los anulados: elígelos en «Estado» para verlos."
         />
 
         <DespachoSubNav permissions={permissions} />

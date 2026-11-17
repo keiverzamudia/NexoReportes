@@ -10,7 +10,6 @@
 
 import type { DispatchCustomerProgress, DispatchLineMark, DispatchSheetDetail, DispatchSheetLine } from '@nexo/contracts';
 import {
-  AlertTriangle,
   ArrowLeft,
   Ban,
   CheckCheck,
@@ -71,7 +70,7 @@ interface DispatchMobileViewProps {
   onOpenInvoice: (customerKey: string, customerName: string) => void;
   onReopenInvoice: (customerKey: string, customerName: string) => void;
   onOpenInvoiceAll: () => void;
-  onOpenReport: (readOnly: boolean) => void;
+  onOpenReport: () => void;
   onOpenBitacora: () => void;
   onOpenCancel: () => void;
   onExport: () => void;
@@ -441,13 +440,6 @@ export function DispatchMobileView({
         })}
       </div>
 
-      {sheet.status === 'CON_NOVEDAD' && (
-        <p className="flex items-start gap-2 rounded-xl bg-warning-container/30 p-space-sm text-label-md text-on-surface">
-          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-error" />
-          Hay diferencias registradas. Revisa los motivos antes de cerrar.
-        </p>
-      )}
-
       {closed && (
         <Card className="p-space-md">
           <p className="font-semibold text-primary">
@@ -476,7 +468,7 @@ export function DispatchMobileView({
             )}
             <button
               type="button"
-              onClick={() => onOpenReport(true)}
+              onClick={onOpenReport}
               className="inline-flex h-11 items-center justify-center gap-1 rounded-pill border border-outline-variant/50 px-space-md font-semibold text-label-md text-on-surface-variant"
             >
               <ClipboardCheck aria-hidden className="size-4" /> Reporte
@@ -509,16 +501,11 @@ export function DispatchMobileView({
             )}
             <button
               type="button"
-              disabled={report.pending.lines > 0 || busy !== null}
-              onClick={() => onOpenReport(false)}
-              className="inline-flex h-11 items-center gap-1 rounded-pill bg-primary-container px-space-md font-bold text-label-md text-on-primary disabled:opacity-40"
+              onClick={onOpenReport}
+              className="inline-flex h-11 items-center gap-1 rounded-pill bg-primary-container px-space-md font-bold text-label-md text-on-primary"
             >
-              {busy === 'complete' ? (
-                <Loader2 aria-hidden className="size-4 animate-spin" />
-              ) : (
-                <CheckCheck aria-hidden className="size-4" />
-              )}
-              Cerrar
+              <ClipboardCheck aria-hidden className="size-4" />
+              Reporte
             </button>
           </div>
         </div>

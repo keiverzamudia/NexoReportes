@@ -70,8 +70,7 @@ function summary(overrides: Partial<DispatchSheetSummary> = {}): DispatchSheetSu
     createdByName: 'KEIBER ZAMUDIA',
     createdByCode: 'KZ',
     sentAt: '2026-10-21T15:00:00.000Z',
-    receivedAt: null,
-    receivedByName: null,
+    scenarioCreatedAt: '2026-10-21T14:00:00.000Z',
     startedAt: null,
     completedAt: null,
     completedByName: null,
@@ -111,7 +110,7 @@ describe('estados y lenguaje de planta', () => {
   it('traduce los estados del servidor a etiquetas operativas', () => {
     expect(sheetStatusMeta('ENVIADO')).toMatchObject({ label: 'Pendiente', tone: 'warning' });
     expect(sheetStatusMeta('DESPACHADO')).toMatchObject({ label: 'Despachado', tone: 'success' });
-    expect(sheetStatusMeta('CON_NOVEDAD').tone).toBe('danger');
+    expect(sheetStatusMeta('EN_PROCESO').tone).toBe('primary');
   });
 
   it('nombra las marcas actuales de carga', () => {
@@ -323,7 +322,7 @@ describe('bandeja', () => {
 describe('hoja exportable', () => {
   it('arma el Excel con metadatos, renglones y totales', () => {
     const detail: DispatchSheetDetail = {
-      ...summary({ status: 'EN_PROCESO', receivedAt: '2026-10-21T15:02:00.000Z' }),
+      ...summary({ status: 'EN_PROCESO' }),
       loadPlan: null,
       lines: [
         line({ id: 'a', status: 'CARGADO', loadedQty: 60, loadedKg: 2400 }),

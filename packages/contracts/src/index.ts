@@ -1709,7 +1709,6 @@ export const DISPATCH_SHEET_STATUSES = [
   // Solo histórico: el flujo nuevo va de ENVIADO a EN_PROCESO al primer renglón.
   'RECIBIDO',
   'EN_PROCESO',
-  'CON_NOVEDAD',
   'DESPACHADO',
   'CANCELADO',
 ] as const;
@@ -1896,8 +1895,8 @@ export const zDispatchSheetSummary = z.object({
   createdByName: z.string().nullable(),
   createdByCode: z.string().nullable(),
   sentAt: z.string(),
-  receivedAt: z.string().nullable(),
-  receivedByName: z.string().nullable(),
+  // Creación de la simulación de origen: base del tiempo total (T4).
+  scenarioCreatedAt: z.string().nullable(),
   startedAt: z.string().nullable(),
   completedAt: z.string().nullable(),
   completedByName: z.string().nullable(),
@@ -2196,9 +2195,6 @@ export const zDispatchLineInput = z
   });
 export type DispatchLineInput = z.infer<typeof zDispatchLineInput>;
 
-export const zDispatchCompleteInput = z.object({ note: z.string().trim().max(500).optional() });
-export type DispatchCompleteInput = z.infer<typeof zDispatchCompleteInput>;
-
 export const zDispatchCancelInput = z.object({ reason: z.string().trim().min(3, 'Indica el motivo').max(240) });
 export type DispatchCancelInput = z.infer<typeof zDispatchCancelInput>;
 
@@ -2284,14 +2280,13 @@ export const zDispatchMetricsSummary = z.object({
   invoice: zDispatchDurationStats.extend({
     pending: z.number().int(),
   }),
-  // Tiempos globales de la hoja. `response` = envío → primer inicio de carga;
-  // `loadWindow` = primer inicio → último cierre (solo despachar);
-  // `dispatchCycle` = envío → último cierre; `invoiceWait` = cierre → factura.
+  // Tiempos globales de la hoja.
+  //   response    = T1: envío → primer «Iniciar carga»
+  //   load        = T2: inicio de carga → último artículo del cliente
+  //   invoice     = T3: inicio de carga → factura entregada
+  //   totalCycle  = T4: creación de la simulación → última factura
   response: zDispatchDurationStats,
-  loadWindow: zDispatchDurationStats,
-  dispatchCycle: zDispatchDurationStats,
   totalCycle: zDispatchDurationStats,
-  invoiceWait: zDispatchDurationStats,
   onTime: z.object({
     orders: z.number().int(),
     late: z.number().int(),

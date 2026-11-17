@@ -133,8 +133,6 @@ export default function DispatchSheetPage() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [reportOpen, setReportOpen] = useState(false);
-  const [reportReadOnly, setReportReadOnly] = useState(false);
-  const [completeNote, setCompleteNote] = useState('');
   const [bitacoraOpen, setBitacoraOpen] = useState(false);
 
   const { data: sessionUser } = useQuery({ queryKey: ['me'], queryFn: currentUser, staleTime: 60_000, retry: false });
@@ -419,26 +417,8 @@ export default function DispatchSheetPage() {
     });
   }
 
-  function openReport(readOnly: boolean) {
-    setReportReadOnly(readOnly);
+  function openReport() {
     setReportOpen(true);
-  }
-
-  function confirmClose() {
-    if (!sheet) return;
-    void runAction(
-      'complete',
-      () =>
-        apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${sheet.id}/complete`, {
-          method: 'POST',
-          body: JSON.stringify({ note: completeNote.trim() || undefined }),
-        }),
-      'Despacho cerrado. Planificación ya fue notificada.',
-    ).then((ok) => {
-      if (!ok) return;
-      setReportReadOnly(true);
-      setReportOpen(true);
-    });
   }
 
   async function exportSheet() {
@@ -600,11 +580,6 @@ export default function DispatchSheetPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-space-xs">
-            {sheet.status === 'CON_NOVEDAD' && (
-              <Badge tone="danger" dot>
-                marcas anteriores
-              </Badge>
-            )}
             {!closed && !sheet.claimedByName && (
               <Badge tone="muted" dot>
                 sin tomar
@@ -625,7 +600,7 @@ export default function DispatchSheetPage() {
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
                 {editable
-                  ? '«Iniciar carga» toma la hoja y avisa que empezaste. El tiempo se mide desde el envío de la simulación hasta tu último producto cerrado, y el total cierra con la factura. Digita la cantidad real y usa «Cargar» en cada producto.'
+                  ? '«Iniciar carga» toma la hoja y arranca T1. Digita la cantidad real y usa «Cargar» en cada artículo. Al entregar la última factura, el despacho se cierra solo y pasa al historial.'
                   : sheet.claimedByName && !closed
                     ? `Lo tomó ${sheet.claimedByName}: solo esa persona lo carga.${sheet.canInvoice ? ' Tú sí puedes entregar la factura.' : ''}`
                     : 'Solo lectura.'}
@@ -1036,14 +1011,16 @@ export default function DispatchSheetPage() {
               <p className="font-semibold text-primary">
                 {blockingLines > 0
                   ? `Faltan ${blockingLines} renglón(es) por resolver.`
-                  : 'Todo resuelto: revisa el reporte y cierra el despacho.'}
+                  : pendingInvoices > 0
+                    ? `Todo cargado: quedan ${pendingInvoices} factura(s) por entregar.`
+                    : 'Sin facturas pendientes.'}
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
                 {sheet.status === 'ENVIADO' && resolvedLines === 0
-                  ? 'Inicia la carga de un cliente para tomar el despacho. No hay paso de recibo.'
+                  ? 'Inicia la carga de un cliente para tomar el despacho.'
                   : pendingInvoices > 0
-                    ? `Carga cerrada. Quedan ${pendingInvoices} cliente(s) por marcar factura entregada.`
-                    : 'Cada producto debe quedar cargado, parcial o no cargado (con motivo) antes de cerrar.'}
+                    ? 'Al entregar la última factura el despacho se cierra solo y pasa al historial.'
+                    : 'Este despacho ya no tiene facturas por entregar.'}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-space-sm">
@@ -1052,19 +1029,17 @@ export default function DispatchSheetPage() {
                   type="button"
                   disabled={busy !== null}
                   onClick={openInvoiceAll}
-                  className="flex h-10 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-body-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                  className="flex h-10 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-body-md text-on-primary transition-colors hover:bg-primary disabled:opacity-40"
                 >
                   <Receipt aria-hidden className="size-4" /> Facturar todo ({pendingInvoices})
                 </button>
               )}
               <button
                 type="button"
-                disabled={blockingLines > 0 || busy !== null}
-                onClick={() => openReport(false)}
-                title={blockingLines > 0 ? 'Resuelve todos los renglones antes de cerrar' : undefined}
-                className="flex h-10 items-center gap-space-xs rounded-pill bg-primary-container px-space-lg font-bold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-40"
+                onClick={openReport}
+                className="flex h-10 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-body-md text-on-surface-variant transition-colors hover:bg-surface-container-low"
               >
-                <CheckCheck aria-hidden className="size-4" /> Cerrar despacho
+                Ver reporte
               </button>
             </div>
           </Card>
@@ -1105,7 +1080,7 @@ export default function DispatchSheetPage() {
               {sheet.status === 'DESPACHADO' && (
                 <button
                   type="button"
-                  onClick={() => openReport(true)}
+                  onClick={openReport}
                   className="flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-body-md text-on-surface-variant transition-colors hover:bg-surface-container-low"
                 >
                   <ClipboardCheck aria-hidden className="size-4" /> Ver reporte
@@ -1134,13 +1109,8 @@ export default function DispatchSheetPage() {
           open={reportOpen}
           sheet={sheet}
           report={report}
-          readOnly={reportReadOnly || closed}
-          note={completeNote}
-          onNoteChange={setCompleteNote}
           onClose={() => setReportOpen(false)}
-          onConfirm={confirmClose}
           onExport={() => void exportSheet()}
-          busy={busy === 'complete'}
         />
       )}
 
