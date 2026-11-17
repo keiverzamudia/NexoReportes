@@ -32,6 +32,10 @@ import { hasPermission } from '../../../lib/permissions';
 
 type HistoryPreset = '7d' | '30d' | '90d' | '12m' | 'custom';
 
+// Por defecto el historial muestra solo lo que salió de pendientes
+// (DESPACHADO). Las anuladas quedan disponibles en el selector de estado.
+const DEFAULT_HISTORY_STATUS: DispatchSheetStatus = 'DESPACHADO';
+
 const HISTORY_PRESETS: Array<{ value: HistoryPreset; label: string }> = [
   { value: '7d', label: 'Últimos 7 días' },
   { value: '30d', label: 'Últimos 30 días' },
@@ -71,7 +75,7 @@ function rangeForPreset(preset: HistoryPreset): { from: string; to: string } {
 
 export default function DispatchHistoryPage() {
   const queryClient = useQueryClient();
-  const [status, setStatus] = useState<DispatchSheetStatus | ''>('');
+  const [status, setStatus] = useState<DispatchSheetStatus | ''>(DEFAULT_HISTORY_STATUS);
   const [q, setQ] = useState('');
   const [historyPreset, setHistoryPreset] = useState<HistoryPreset>('30d');
   const [historyRange, setHistoryRange] = useState(() => rangeForPreset('30d'));
@@ -126,7 +130,9 @@ export default function DispatchHistoryPage() {
   });
 
   const sheets = useMemo(() => sortSheets(data?.items ?? []), [data]);
-  const hasFilters = Boolean(status || q);
+  // El estado por defecto (DESPACHADO) no cuenta como filtro activo: así el
+  // contador y el vacío no avisan «filtro» cuando se está en la vista normal.
+  const hasFilters = Boolean(q.trim() || (status && status !== DEFAULT_HISTORY_STATUS));
 
   if (sessionLoading) {
     return (
@@ -245,6 +251,38 @@ export default function DispatchHistoryPage() {
       ),
     },
     {
+      key: 'invoice',
+      header: 'Factura',
+      kind: 'field',
+      sortValue: (row) => row.invoiceDeliveredAt ?? '',
+      render: (row) => {
+        if (row.status === 'CANCELADO') return <span className="text-outline">—</span>;
+        if (row.invoiceDeliveredAt) {
+          return (
+            <span className="flex flex-col leading-tight">
+              <span className="font-semibold text-secondary">Entregada</span>
+              <span className="tabular-nums text-on-surface-variant">{formatDateTime(row.invoiceDeliveredAt)}</span>
+              {row.totalCustomers > 0 && (
+                <span className="text-label-sm text-outline">
+                  {row.invoicedCustomers}/{row.totalCustomers} clientes
+                </span>
+              )}
+            </span>
+          );
+        }
+        return (
+          <span className="flex flex-col leading-tight">
+            <span className="font-semibold text-on-surface-variant">Pendiente</span>
+            {row.pendingInvoiceCustomers > 0 && (
+              <span className="text-label-sm text-outline">
+                {row.pendingInvoiceCustomers} cliente{row.pendingInvoiceCustomers === 1 ? '' : 's'} por facturar
+              </span>
+            )}
+          </span>
+        );
+      },
+    },
+    {
       key: 'closed',
       header: 'Cerrado',
       kind: 'field',
@@ -286,7 +324,7 @@ export default function DispatchHistoryPage() {
   ];
 
   const statusOptions = [
-    { value: '', label: 'Estado: Todos' },
+    { value: '', label: 'Estado: Todos (incluye anulados)' },
     { value: 'DESPACHADO', label: 'Despachados' },
     { value: 'CANCELADO', label: 'Anulados' },
   ];
@@ -299,7 +337,7 @@ export default function DispatchHistoryPage() {
           eyebrow="Almacén · Despacho"
           icon={History}
           title="Historial de despachos"
-          subtitle="Hojas cerradas o anuladas. El resumen y las estadísticas usan la fecha de cierre; la tabla incluye las anuladas."
+          subtitle="Despachos ya cerrados y su factura. Por defecto se ocultan los anulados: elígelos en «Estado» para verlos."
         />
 
         <DespachoSubNav permissions={permissions} />
