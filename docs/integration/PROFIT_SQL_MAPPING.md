@@ -171,7 +171,7 @@ consulta de solo lectura (`ForecastService`). `kg_mensual` viene en la
 
 | Tabla | Columnas | Uso |
 |---|---|---|
-| `dbo.forecast` | `fecha` (datetime), `co_art` (char), `kg_mensual` (int), `kg_semanal` (int) | Forecast por artículo y **mes de vigencia**: `fecha` es el primer día del mes. `kg_mensual` viene en la presentación del artículo: **SAC × `uni_relac`** = kg; **KG se usa tal cual**. `kg_semanal` se ignora (las semanas se reparten en Nexo como kg mensual / 4). |
+| `dbo.forecast` | `fecha` (datetime), `co_art` (char), `kg_mensual` (int), `kg_semanal` (int) | Forecast por artículo y **mes de vigencia**: `fecha` es el primer día del mes. `kg_mensual` viene en la presentación del artículo: **SAC × `uni_relac`** = kg; **KG se usa tal cual**. `kg_semanal` se ignora: Nexo reparte el mensual entre los 4 bloques **por días del bloque** (7/7/7/9-10) y el Asignador puede ajustar cada semana. |
 | `dbo.art` | `co_art`, `uni_venta`, `uni_relac` | Presentación del artículo y kg por unidad. Solo se usa `LEFT JOIN` para convertir a kg; no se cruza por descripción. |
 
 ```sql
@@ -202,6 +202,34 @@ Notas:
   (`ForecastTarget`) cuando existe.
 - En Nexo solo se persisten las cantidades por semana (`ForecastWeek`); nunca
   se escribe en Profit.
+
+### Reporte → Plan de producción (`GET /api/forecast/plan`)
+
+Todo el cálculo va en **kilogramos**; los sacos se derivan con `art.uni_relac`
+solo para presentación (nunca se suman entre artículos). Por artículo y bloque:
+
+```text
+forecastKg   = ForecastWeek.qty (kg) · por defecto mensual × días del bloque ÷ días del mes
+demandKg     = Σ pendingKg de pedidos activos con entrega efectiva en la semana
+soldKg       = Σ notas de entrega (not_ent/reng_nde) de la semana
+stockKg      = existencia (uom × kg/saco en SAC) al inicio de la semana planificada
+objetivoKg   = max(forecastKg, demandKg)
+requeridoKg  = max(0, objetivoKg − soldKg)       la venta ya despachada de la semana no se produce dos veces
+despachable  = min(stockKg, requeridoKg)         excedente = max(0, stockKg − requeridoKg)
+aProducirKg  = semana cerrada ? 0 : max(0, requeridoKg − stockKg)
+stockSiguiente = max(0, stockKg + aProducirKg − requeridoKg)
+```
+
+- La entrega efectiva usa `DeliveryDateOverride.tentativeDate` cuando existe; es
+  la misma regla que «Ventas vs Forecast», así el pedido no cambia de semana
+  entre pestañas.
+- El stock **arrastra** lo producido y consumido de las semanas anteriores: el
+  mes no repite la misma brecha cuatro veces.
+- Corte (`asOf`) en America/Caracas: hoy en el mes en curso, último día en un
+  mes cerrado y `null` en un mes futuro. Una semana es `closed` si su último día
+  es anterior al corte; las cerradas no sugieren producción.
+- Si Profit no devuelve los despachos, `salesAvailable=false` y `soldKg=0`; la
+  UI avisa en vez de pintar ceros como venta real.
 
 ---
 
@@ -478,11 +506,13 @@ oficial mientras el mes está vigente en la tabla local `ForecastTarget`
 
 ---
 
-## Participación por cliente (`GET /api/forecast/sales/customers`)
+## Clientes vs meta histórica (`GET /api/forecast/sales/customers`)
 
-Vista de venta real del mes a la fecha. **No usa histórico ni meta por cliente**:
-el 100 % es la venta ABA acumulada hasta el corte. Sirve para responder qué
-porcentaje representa cada cliente y qué productos compra.
+Cada cliente se mide contra **su propio promedio** de los últimos 3 meses
+cerrados: esa es su meta de referencia del mes. La venta real del mes a la
+fecha se proyecta con el mismo run-rate que los productos. La meta es un
+**benchmark individual de cartera**: no sustituye ni se suma al `forecast`
+oficial de Profit.
 
 ### Fuentes
 
@@ -494,42 +524,59 @@ porcentaje representa cada cliente y qué productos compra.
 | `dbo.clientes` | `co_cli`, `cli_des` | Nombre del cliente en Profit. |
 | `Customer` (local) | `externalCode`, `name`, `customerType`, `vendor`, `isActive` | Catálogo activo para incluir clientes sin venta con 0 %. |
 
-Consulta `PROFIT_SALES_CUSTOMER_PRODUCT_SQL` (marcador `nexo:customer_products`):
-agrupa por mes, cliente y artículo **solo del mes del informe**, con los mismos
-filtros que el informe de ventas (nota no anulada, artículo vigente y línea
-`ABA`). No consulta meses anteriores.
+Dos consultas en paralelo:
+
+| Consulta | Marcador | Rango | Uso |
+|---|---|---|---|
+| `PROFIT_SALES_CUSTOMER_PRODUCT_SQL` | `nexo:customer_products` | Mes del informe | Venta por cliente y artículo (tabla y detalle expandido). |
+| `PROFIT_CUSTOMER_SALES_MONTHLY_SQL` | `nexo:customer_sales_monthly` | 3 meses cerrados anteriores | Kg por cliente y mes para la meta histórica. |
+
+La consulta histórica agrupa solo por cliente y mes (sin artículo): ~3 filas
+por cliente. Si falla, el informe sigue vivo con `historyAvailable=false` y los
+clientes quedan «sin meta» (nunca se inventan promedios).
 
 ### Cálculo
 
 ```text
-participación(cliente) = kg del cliente ÷ kg totales ABA del mes × 100
-% del cliente(producto) = kg del producto ÷ kg del cliente × 100
-% del producto(cliente) = kg del cliente en el producto ÷ kg totales del producto × 100
+meta(cliente)        = Σ kg de los meses CON COMPRA de los últimos 3 cerrados ÷ meses con compra (1–3)
+venta(cliente)       = kg del mes hasta el corte
+proyección(cliente)  = venta ÷ días hábiles transcurridos × días hábiles del mes   (mes en curso)
+                     = venta                                                     (mes cerrado)
+                     = null                                                      (mes futuro)
+% vs meta            = proyección ÷ meta × 100                                      (null sin meta)
+brecha               = proyección − meta
+ritmo necesario      = max(0, meta − venta) ÷ días hábiles restantes               (solo mes en curso)
+participación        = kg del cliente ÷ kg totales ABA del mes × 100
 ```
 
-- Los clientes activos del catálogo sin venta se incluyen con 0 % y quedan al
-  final de la tabla.
-- Un cliente con venta que no esté en la BD local se agrega con el nombre de
-  Profit para no perder su venta.
-- Si hay filas sin `co_cli` o `co_art`, se ignoran y se registra un aviso en el
-  log; no se inventa un cliente.
-- La suma de participantes con venta es 100 %.
+- Los meses sin compra **no** entran al promedio (decisión de negocio): un
+  cliente esporádico conserva como meta lo que compró cuando compró.
+- Orden: `meta ↓`, luego `venta ↓`, luego nombre. Arriba quedan los clientes
+  con más volumen histórico, incluidos los que se cayeron a 0 este mes.
+- Un cliente que compró en el histórico y no este mes se incluye con su meta y
+  0 venta; un cliente nuevo con venta y sin histórico queda «sin meta».
+- `lastInvoiceDate` cae a la última entrega de los 3 meses históricos cuando el
+  cliente no compró este mes.
+- La UI replica la geometría de «Desviación por producto» (`salesDeviationGeometry`):
+  azul = venta, verde = proyección, marcador = 100 % de la meta.
 
 ### Contrato y degradación
 
 `zForecastCustomerSalesResponse` en `@nexo/contracts`; permiso
-`forecast:read`. Cada cliente trae `actualKg`, `sharePct`, `productCount` y sus
-productos con `kg`, `units`, `sacks`, `shareOfCustomerPct` y
-`shareOfProductPct`. La consulta se cachea 5 minutos por
-`año|mes|includeToday|hoy`; si Profit falla se devuelve `salesAvailable=false`
-y no se cachea el error. Si se alcanza el límite de filas, `truncated=true` y la
-UI avisa.
+`forecast:read`. Cada cliente trae `history[]`, `targetKg`, `targetMonths`,
+`actualKg`, `sharePct`, `projectedKg`, `attainmentPct`,
+`projectedAttainmentPct`, `gapKg`, `requiredDailyKg` y sus productos con `kg`,
+`units`, `sacks`, `shareOfCustomerPct` y `shareOfProductPct`. La consulta se
+cachea 5 minutos por `año|mes|includeToday|basis|meses|hoy`; si la venta del mes
+falla se devuelve `salesAvailable=false` y no se cachea el error. Si se alcanza
+el límite de filas, `truncated=true` y la UI avisa.
 
 ### Fixtures
 
-`nexo:customer_products` reutiliza `SALES_DAILY` y la asignación determinista
-`fixtureSellerOf` para atribuir cada venta a un cliente, sin alterar los totales
-del informe de productos.
+`nexo:customer_products` y `nexo:customer_sales_monthly` reutilizan `SALES_DAILY`
+y la asignación determinista `fixtureSellerOf` para atribuir cada venta a un
+cliente, sin alterar los totales del informe de productos. `SALES_DAILY` cubre
+18 meses, así que la meta histórica se puede probar en dev sin Profit.
 
 ---
 

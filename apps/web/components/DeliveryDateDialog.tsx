@@ -1,40 +1,69 @@
 'use client';
 
 // ============================================================
-// Modal de entrega estimada para uno o varios renglones.
+// Editar la fecha de ENTREGA del pedido en Profit.
 //
-// Se abre encima del plan (no navega). Aplica la misma fecha a todos
-// los ítems o restaura la original de Profit. La fecha original nunca
-// se modifica; la capa estimada vive sólo en Nexo.
+// La fecha vive en el encabezado (dbo.cotiz_c.fec_venc): se aplica al pedido
+// completo, aunque se abra desde un renglón. Se escribe primero en Profit y
+// solo si Profit confirma se refleja en la cartera local.
 // ============================================================
 
-import type { DeliveryDateApplyResponse, DeliveryDateItem } from '@nexo/contracts';
+import type {
+  DeliveryChangeCause,
+  DeliveryChangeReason,
+  ProfitDeliveryDateApplyResponse,
+} from '@nexo/contracts';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CalendarRange, RotateCcw, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { AlertTriangle, CalendarCheck, ShieldAlert, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../lib/api';
-import { DateInput, TextInput, fmtDate } from './ui';
+import { DateInput, TextInput, cx, fmtDate } from './ui';
 
-export interface DeliveryDateTargetItem extends DeliveryDateItem {
-  description?: string | null;
+export interface DeliveryDateTargetItem {
+  orderNumber: string;
+  productCode: string;
+  orderDate: string | null;
   requestedDate: string | null;
-  tentativeDate: string | null;
 }
 
 export interface DeliveryDateTarget {
-  kind: 'cliente' | 'seleccion' | 'renglon';
   title: string;
   customerName: string;
   customerCode: string | null;
+  /** Renglones que abrieron el editor; el API deduplica por pedido. */
   items: DeliveryDateTargetItem[];
 }
 
-function uniqueIso(values: (string | null)[]): string[] {
-  return [...new Set(values.filter((value): value is string => Boolean(value)))].sort();
+export interface DeliveryDateOrderSummary {
+  orderNumber: string;
+  orderDate: string | null;
+  requestedDate: string | null;
+  firstProductCode: string;
+  lines: number;
 }
 
 function inputDate(value: string | null): string {
   return value ? value.slice(0, 10) : '';
+}
+
+/** Un pedido = una fecha: el editor trabaja sobre pedidos, no renglones. */
+export function summarizeOrders(items: DeliveryDateTargetItem[]): DeliveryDateOrderSummary[] {
+  const map = new Map<string, DeliveryDateOrderSummary>();
+  for (const item of items) {
+    const entry = map.get(item.orderNumber);
+    if (!entry) {
+      map.set(item.orderNumber, {
+        orderNumber: item.orderNumber,
+        orderDate: item.orderDate,
+        requestedDate: item.requestedDate,
+        firstProductCode: item.productCode,
+        lines: 1,
+      });
+    } else {
+      entry.lines += 1;
+    }
+  }
+  return [...map.values()].sort((a, b) => a.orderNumber.localeCompare(b.orderNumber, 'es'));
 }
 
 export function DeliveryDateDialog({
@@ -46,28 +75,28 @@ export function DeliveryDateDialog({
   open: boolean;
   target: DeliveryDateTarget | null;
   onClose: () => void;
-  onSaved: (result: DeliveryDateApplyResponse, mode: 'set' | 'restore') => void;
+  onSaved: (result: ProfitDeliveryDateApplyResponse) => void;
 }) {
   const queryClient = useQueryClient();
   const [date, setDate] = useState('');
+  const [cause, setCause] = useState<DeliveryChangeCause | null>(null);
+  const [reason, setReason] = useState<DeliveryChangeReason | null>(null);
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const items = target?.items ?? [];
-  const originals = uniqueIso(items.map((item) => item.requestedDate));
-  const tentatives = uniqueIso(items.map((item) => item.tentativeDate));
-  const hasTentative = tentatives.length > 0;
-  const originalLabel =
-    originals.length === 0
-      ? '—'
-      : originals.length === 1
-        ? fmtDate(originals[0]!)
-        : `${fmtDate(originals[0]!)} – ${fmtDate(originals[originals.length - 1]!)}`;
+  const orders = useMemo(() => summarizeOrders(target?.items ?? []), [target]);
+  const distinctDates = useMemo(
+    () => [...new Set(orders.map((order) => order.requestedDate).filter((value): value is string => Boolean(value)))],
+    [orders],
+  );
 
-  // Al abrir: si todos comparten la misma tentativa, se precarga.
+  // Al abrir: si todos los pedidos comparten fecha, se precarga.
   useEffect(() => {
     if (!open || !target) return;
-    setDate(tentatives.length === 1 ? inputDate(tentatives[0]!) : '');
+    setDate(distinctDates.length === 1 ? inputDate(distinctDates[0]!) : '');
+    // Sin preselección: obliga a decidir quién originó el cambio.
+    setCause(null);
+    setReason(null);
     setNote('');
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -88,39 +117,55 @@ export function DeliveryDateDialog({
   }, [open, onClose]);
 
   const mutation = useMutation({
-    mutationFn: ({ mode, value }: { mode: 'set' | 'restore'; value?: string }) => {
+    mutationFn: (value: {
+      date: string;
+      cause: DeliveryChangeCause;
+      reason: DeliveryChangeReason | null;
+      note?: string;
+    }) => {
       const payload: Record<string, unknown> = {
-        items: items.map(({ orderNumber, productCode }) => ({ orderNumber, productCode })),
+        // Un ítem por pedido: la entrega es del encabezado.
+        items: orders.map((order) => ({
+          orderNumber: order.orderNumber,
+          productCode: order.firstProductCode,
+        })),
+        date: value.date,
+        cause: value.cause,
       };
-      if (note.trim()) payload.note = note.trim();
-      if (mode === 'set' && value) payload.date = value;
-      return apiFetch<DeliveryDateApplyResponse>('/orders/delivery-date', {
-        method: mode === 'set' ? 'PUT' : 'DELETE',
+      if (value.cause === 'CUSTOMER' && value.reason) payload.reason = value.reason;
+      if (value.note) payload.note = value.note;
+      return apiFetch<ProfitDeliveryDateApplyResponse>('/orders/delivery-date/profit', {
+        method: 'PUT',
         body: JSON.stringify(payload),
       });
     },
-    onSuccess: (result, variables) => {
+    onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ['orders-grouped'] });
       void queryClient.invalidateQueries({ queryKey: ['customer-orders'] });
       void queryClient.invalidateQueries({ queryKey: ['order'] });
-      onSaved(result, variables.mode);
+      void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
+      void queryClient.invalidateQueries({ queryKey: ['customer-insights'] });
+      onSaved(result);
     },
-    onError: (cause) => {
-      setError(cause instanceof Error ? cause.message : 'No se pudo guardar la fecha.');
+    onError: (causeError) => {
+      setError(causeError instanceof Error ? causeError.message : 'No se pudo guardar la fecha en Profit.');
     },
   });
 
   if (!open || !target) return null;
 
   const pending = mutation.isPending;
+  // El motivo solo se exige cuando el cambio lo pidió el cliente.
+  const canSave = Boolean(date) && cause !== null && (cause === 'COMPANY' || reason !== null);
   const apply = () => {
-    if (!date) return;
+    if (!canSave || !cause) return;
     setError(null);
-    mutation.mutate({ mode: 'set', value: date });
-  };
-  const restore = () => {
-    setError(null);
-    mutation.mutate({ mode: 'restore' });
+    mutation.mutate({
+      date,
+      cause,
+      reason: cause === 'CUSTOMER' ? reason : null,
+      note: note.trim() || undefined,
+    });
   };
 
   return (
@@ -141,16 +186,16 @@ export function DeliveryDateDialog({
         <header className="flex shrink-0 items-start justify-between gap-space-sm border-b border-outline-variant/30 px-space-md py-space-sm sm:px-space-lg">
           <div className="flex min-w-0 items-start gap-space-sm">
             <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary-container text-secondary-container shadow-soft">
-              <CalendarRange aria-hidden className="size-5" />
+              <CalendarCheck aria-hidden className="size-5" />
             </span>
             <div className="min-w-0">
-              <p className="text-label-sm font-semibold uppercase tracking-[0.14em] text-outline">Entrega estimada</p>
+              <p className="text-label-sm font-semibold uppercase tracking-[0.14em] text-outline">Entrega en Profit</p>
               <h2 id="delivery-date-title" className="truncate text-title-md text-primary">
                 {target.title}
               </h2>
               <p className="text-label-md text-on-surface-variant">
                 {target.customerName}
-                {target.customerCode ? ` · ${target.customerCode}` : ''} · {items.length} renglón(es)
+                {target.customerCode ? ` · ${target.customerCode}` : ''} · {orders.length} pedido(s)
               </p>
             </div>
           </div>
@@ -167,57 +212,41 @@ export function DeliveryDateDialog({
 
         <div className="flex-1 overflow-y-auto p-space-md sm:p-space-lg">
           <div className="flex flex-col gap-space-md">
-            <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low/70 p-space-sm">
-              <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Fecha de entrega original de Profit</p>
-              <p className="mt-space-2xs text-title-md font-bold tabular-nums text-primary">{originalLabel}</p>
-              <p className="mt-space-2xs text-label-sm text-on-surface-variant">
-                No se modifica. La entrega estimada sólo vive en Corpoagro.
-              </p>
-            </div>
-
-            <label className="flex flex-col gap-space-2xs">
-              <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Nueva fecha de entrega</span>
-              <DateInput ariaLabel="Nueva fecha de entrega" value={date} onChange={setDate} className="w-full" autoFocus />
-              {tentatives.length > 1 && (
-                <span className="text-label-sm text-on-surface-variant">
-                  Los renglones tienen fechas distintas; se aplicará esta a todos.
-                </span>
-              )}
-            </label>
-
-            <label className="flex flex-col gap-space-2xs">
-              <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Motivo (opcional)</span>
-              <TextInput
-                value={note}
-                onChange={setNote}
-                placeholder="Ej. el cliente pidió mover la entrega"
-                ariaLabel="Motivo del cambio de fecha"
-                maxLength={240}
-              />
-            </label>
+            <p className="flex items-start gap-space-xs rounded-xl border border-warning/35 bg-warning/10 p-space-sm text-label-md text-on-surface-variant">
+              <ShieldAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
+              <span>
+                La fecha se guarda en <strong className="text-primary">Profit</strong> y aplica al pedido
+                completo (todos sus renglones), no solo al artículo seleccionado.
+              </span>
+            </p>
 
             <div>
               <div className="flex items-center justify-between gap-space-sm">
-                <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Renglones</span>
-                <span className="text-label-sm tabular-nums text-on-surface-variant">{items.length}</span>
+                <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">
+                  Pedidos afectados
+                </span>
+                <span className="text-label-sm tabular-nums text-on-surface-variant">{orders.length}</span>
               </div>
-              <ul className="mt-space-xs max-h-44 divide-y divide-outline-variant/20 overflow-y-auto rounded-xl border border-outline-variant/30">
-                {items.map((item) => (
-                  <li
-                    key={`${item.orderNumber}#${item.productCode}`}
-                    className="flex items-center gap-space-sm px-space-sm py-2"
-                  >
-                    <span className="w-12 shrink-0 text-label-sm tabular-nums text-outline">{item.orderNumber}</span>
+              <ul className="mt-space-xs max-h-52 divide-y divide-outline-variant/20 overflow-y-auto rounded-xl border border-outline-variant/30">
+                {orders.map((order) => (
+                  <li key={order.orderNumber} className="flex items-center gap-space-sm px-space-sm py-2">
+                    <span className="w-16 shrink-0 text-label-sm font-bold tabular-nums text-primary">
+                      {order.orderNumber}
+                    </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-label-md font-semibold text-primary">{item.productCode}</span>
-                      <span className="block truncate text-label-sm text-on-surface-variant">
-                        {item.description ?? '—'}
+                      <span className="block text-[10px] font-semibold uppercase tracking-wider text-outline">
+                        Emisión
+                      </span>
+                      <span className="block text-label-sm tabular-nums text-on-surface-variant">
+                        {fmtDate(order.orderDate)}
                       </span>
                     </span>
                     <span className="shrink-0 text-right">
-                      <span className="block text-[10px] font-semibold uppercase tracking-wider text-outline">Original</span>
-                      <span className="block text-label-sm tabular-nums text-on-surface-variant">
-                        {fmtDate(item.requestedDate)}
+                      <span className="block text-[10px] font-semibold uppercase tracking-wider text-outline">
+                        Entrega actual
+                      </span>
+                      <span className="block text-label-sm font-semibold tabular-nums text-primary">
+                        {fmtDate(order.requestedDate)}
                       </span>
                     </span>
                   </li>
@@ -225,10 +254,80 @@ export function DeliveryDateDialog({
               </ul>
             </div>
 
-            {hasTentative && (
-              <p className="rounded-xl border border-secondary/25 bg-secondary-container/10 p-space-sm text-label-sm text-on-surface-variant">
-                <strong className="text-secondary">Restaurar original</strong> quita la entrega estimada de los renglones
-                seleccionados. Los que no tengan estimada quedan igual.
+            <label className="flex flex-col gap-space-2xs">
+              <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Nueva entrega</span>
+              <DateInput ariaLabel="Nueva fecha de entrega" value={date} onChange={setDate} className="w-full" autoFocus />
+              {distinctDates.length > 1 && (
+                <span className="text-label-sm text-on-surface-variant">
+                  Los pedidos tienen fechas distintas; se aplicará esta a todos.
+                </span>
+              )}
+            </label>
+
+            {/* Causa y motivo alimentan la reputación de fechas del cliente. */}
+            <div className="flex flex-col gap-space-2xs">
+              <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">
+                ¿Quién origina el cambio?
+              </span>
+              <ChoiceRow
+                ariaLabel="Origen del cambio de fecha"
+                value={cause}
+                onChange={(value) => {
+                  setCause(value);
+                  // La empresa no lleva motivo: se limpia al cambiar de origen.
+                  if (value === 'COMPANY') setReason(null);
+                }}
+                options={[
+                  { value: 'COMPANY', label: 'Empresa' },
+                  { value: 'CUSTOMER', label: 'Cliente' },
+                ]}
+              />
+            </div>
+
+            {cause === 'CUSTOMER' && (
+              <div className="flex flex-col gap-space-2xs">
+                <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">
+                  Motivo del cliente
+                </span>
+                <ChoiceRow
+                  ariaLabel="Motivo del cliente"
+                  value={reason}
+                  onChange={setReason}
+                  options={[
+                    { value: 'FINANCIAL', label: 'Financiero' },
+                    { value: 'LOGISTIC', label: 'Logístico' },
+                  ]}
+                />
+                {!reason && (
+                  <span className="text-label-sm text-on-surface-variant">
+                    Indica si el cliente lo pidió por pago/crédito (financiero) o por transporte/agenda (logístico).
+                  </span>
+                )}
+              </div>
+            )}
+
+            {cause === 'COMPANY' && (
+              <p className="text-label-sm text-on-surface-variant">
+                La empresa asume el cambio; no se pide motivo.
+              </p>
+            )}
+
+            <label className="flex flex-col gap-space-2xs">
+              <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">
+                Detalle (opcional)
+              </span>
+              <TextInput
+                value={note}
+                onChange={setNote}
+                placeholder="Ej. el cliente pidió mover la entrega"
+                ariaLabel="Detalle del cambio de fecha"
+                maxLength={240}
+              />
+            </label>
+
+            {date && !canSave && (
+              <p className="text-label-sm text-on-surface-variant">
+                Falta indicar {cause === null ? 'quién origina el cambio' : 'el motivo del cliente'} para guardar.
               </p>
             )}
 
@@ -240,39 +339,63 @@ export function DeliveryDateDialog({
           </div>
         </div>
 
-        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-space-sm border-t border-outline-variant/30 bg-surface-container-low/40 px-space-md py-space-sm sm:px-space-lg">
-          <div>
-            {hasTentative && (
-              <button
-                type="button"
-                onClick={restore}
-                disabled={pending}
-                className="flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md text-label-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-primary disabled:opacity-40"
-              >
-                <RotateCcw aria-hidden className="size-4" /> Restaurar original
-              </button>
-            )}
-          </div>
-          <div className="flex items-center gap-space-xs">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={pending}
-              className="h-9 rounded-pill px-space-md font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
-            >
-              Cancelar
-            </button>
-            <button
-              type="button"
-              onClick={apply}
-              disabled={pending || !date}
-              className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-lg font-semibold text-label-md text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-40"
-            >
-              {pending ? 'Guardando…' : 'Aplicar fecha'}
-            </button>
-          </div>
+        <footer className="flex shrink-0 flex-wrap items-center justify-end gap-space-xs border-t border-outline-variant/30 bg-surface-container-low/40 px-space-md py-space-sm sm:px-space-lg">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={pending}
+            className="h-9 rounded-pill px-space-md font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={apply}
+            disabled={pending || !canSave}
+            className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-lg font-semibold text-label-md text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-40"
+          >
+            {pending ? 'Guardando en Profit…' : 'Guardar en Profit'}
+          </button>
         </footer>
       </div>
+    </div>
+  );
+}
+
+// Grupo de opciones sin preselección (a diferencia de `Segmented`, que
+// siempre pinta la primera como activa).
+function ChoiceRow<T extends string>({
+  value,
+  onChange,
+  options,
+  ariaLabel,
+}: {
+  value: T | null;
+  onChange: (value: T) => void;
+  options: { value: T; label: string }[];
+  ariaLabel: string;
+}) {
+  return (
+    <div role="group" aria-label={ariaLabel} className="flex flex-wrap gap-space-xs">
+      {options.map((option) => {
+        const active = value === option.value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(option.value)}
+            className={cx(
+              'h-9 rounded-pill border px-space-md text-label-md font-semibold transition-colors',
+              active
+                ? 'border-primary-container bg-primary-container text-on-primary shadow-soft'
+                : 'border-outline-variant/50 text-on-surface-variant hover:bg-surface-container-low hover:text-primary',
+            )}
+          >
+            {option.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

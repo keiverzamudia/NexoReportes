@@ -17,6 +17,7 @@ import {
   buildNarrative,
   buildSalesCsv,
   customerSalesCsvFileName,
+  customerTargetGeometry,
   dailySalesScale,
   dayLabel,
   dayPendingSharePct,
@@ -472,35 +473,28 @@ describe('barras diarias — tira bajo el acumulado', () => {
 });
 
 // ============================================================
-// Brecha del mes y del día.
+// Brecha del mes y del corte.
 // ============================================================
 
-describe('brecha del mes y del día', () => {
-  it('el mes mide la venta acumulada y el día el ritmo necesario menos la venta de hoy', () => {
+describe('brecha del mes y del corte', () => {
+  it('el mes resta la venta acumulada y el corte dice lo que falta para el forecast', () => {
     const gap = salesGap(report());
 
     expect(gap.monthGapKg).toBe(-70_000);
     expect(gap.monthPct).toBe(87.7);
-    expect(gap.dayGoalKg).toBeCloseTo(23_333.3, 1);
-    expect(gap.todayKg).toBe(80);
-    expect(gap.dayGapKg).toBeCloseTo(23_253.3, 1);
-    expect(gap.dayPct).toBeCloseTo(0.3, 1);
+    expect(gap.cutGapKg).toBe(70_000);
+    expect(gap.cutPct).toBeCloseTo(87.7, 1);
   });
 
-  it('si hoy ya superó el ritmo necesario el faltante queda negativo', () => {
-    const data = report();
-    const gap = salesGap(
-      report({
-        daily: data.daily.map((day) => (day.date === '2026-10-29' ? { ...day, actualKg: 30_000 } : day)),
-      }),
-    );
+  it('con el forecast ya cubierto el corte no muestra faltante negativo', () => {
+    const gap = salesGap(report({ totals: { ...report().totals, actualKg: 620_000 } }));
 
-    expect(gap.todayKg).toBe(30_000);
-    expect(gap.dayGapKg).toBeCloseTo(-6_666.7, 1);
-    expect(gap.dayPct).toBeCloseTo(128.6, 1);
+    expect(gap.cutGapKg).toBe(0);
+    expect(gap.cutPct).toBeCloseTo(108.8, 1);
+    expect(gap.monthGapKg).toBe(50_000);
   });
 
-  it('un mes cerrado no ofrece brecha del día', () => {
+  it('un mes cerrado conserva la brecha del corte con la venta real', () => {
     const gap = salesGap(
       report({
         status: 'CLOSED',
@@ -510,10 +504,8 @@ describe('brecha del mes y del día', () => {
     );
 
     expect(gap.monthGapKg).toBe(-70_000);
-    expect(gap.dayGoalKg).toBeNull();
-    expect(gap.todayKg).toBe(0);
-    expect(gap.dayGapKg).toBeNull();
-    expect(gap.dayPct).toBeNull();
+    expect(gap.cutGapKg).toBe(70_000);
+    expect(gap.cutPct).toBeCloseTo(87.7, 1);
   });
 
   it('sin meta no inventa brecha ni porcentajes', () => {
@@ -525,17 +517,15 @@ describe('brecha del mes y del día', () => {
 
     expect(gap.monthGapKg).toBeNull();
     expect(gap.monthPct).toBeNull();
-    expect(gap.dayGoalKg).toBeNull();
-    expect(gap.dayGapKg).toBeNull();
-    expect(gap.dayPct).toBeNull();
+    expect(gap.cutGapKg).toBeNull();
+    expect(gap.cutPct).toBeNull();
   });
 
-  it('con la meta del mes ya cubierta el día cuenta como cumplido', () => {
+  it('con la meta del mes ya cubierta el corte no pide nada', () => {
     const gap = salesGap(report({ totals: { ...report().totals, requiredDailyKg: 0 } }));
 
-    expect(gap.dayGoalKg).toBe(0);
-    expect(gap.dayGapKg).toBe(-80);
-    expect(gap.dayPct).toBe(100);
+    expect(gap.cutGapKg).toBe(70_000);
+    expect(gap.cutPct).toBeCloseTo(87.7, 1);
   });
 });
 
@@ -624,7 +614,7 @@ describe('CSV', () => {
 });
 
 // ============================================================
-// Participación por cliente.
+// Clientes vs meta histórica.
 // ============================================================
 
 function customerRow(overrides: Partial<ForecastCustomerSalesRow> = {}): ForecastCustomerSalesRow {
@@ -633,11 +623,24 @@ function customerRow(overrides: Partial<ForecastCustomerSalesRow> = {}): Forecas
     customerName: 'CLIENTE UNO',
     customerType: 'L1 EXCLUSIVOS',
     vendor: 'VENDEDORA 1',
+    history: [
+      { year: 2026, month: 7, kg: 200_000 },
+      { year: 2026, month: 8, kg: 220_000 },
+      { year: 2026, month: 9, kg: 240_000 },
+    ],
+    targetKg: 220_000,
+    targetMonths: 3,
     actualKg: 230_000,
     actualUnits: 5_750,
     sharePct: 46,
     productCount: 2,
     lastInvoiceDate: '2026-10-27',
+    dailyAvgKg: 9_583.3,
+    projectedKg: 258_750,
+    attainmentPct: 104.5,
+    projectedAttainmentPct: 117.6,
+    gapKg: 38_750,
+    requiredDailyKg: 0,
     products: [
       {
         productCode: 'ABAGP13',
@@ -673,6 +676,12 @@ function customerReport(overrides: Partial<ForecastCustomerSalesResponse> = {}):
     asOf: '2026-10-28',
     status: 'OPEN',
     salesAvailable: true,
+    historyMonths: [
+      { year: 2026, month: 7 },
+      { year: 2026, month: 8 },
+      { year: 2026, month: 9 },
+    ],
+    historyAvailable: true,
     days: {
       inMonth: 31,
       elapsed: 28,
@@ -686,8 +695,13 @@ function customerReport(overrides: Partial<ForecastCustomerSalesResponse> = {}):
     totals: {
       actualKg: 500_000,
       actualUnits: 13_214,
+      targetKg: 720_000,
+      projectedKg: 528_750,
+      attainmentPct: 69.4,
+      projectedAttainmentPct: 73.4,
       customerCount: 2,
       activeCustomerCount: 1,
+      targetCustomerCount: 2,
       productCount: 2,
       lastInvoiceDate: '2026-10-28',
     },
@@ -698,7 +712,7 @@ function customerReport(overrides: Partial<ForecastCustomerSalesResponse> = {}):
   };
 }
 
-describe('filtros de participación por cliente', () => {
+describe('filtros de clientes vs meta', () => {
   it('busca por código o nombre', () => {
     const rows = [customerRow(), customerRow({ customerCode: 'C2', customerName: 'AGRO INVERSIONES' })];
     expect(filterCustomerSalesRows(rows, { search: 'agro', onlyWithSales: false })).toHaveLength(1);
@@ -711,22 +725,52 @@ describe('filtros de participación por cliente', () => {
     expect(filterCustomerSalesRows(rows, { search: '', onlyWithSales: true })).toEqual([customerRow()]);
     expect(filterCustomerSalesRows(rows, { search: '', onlyWithSales: false })).toHaveLength(2);
   });
+
+  it('Con meta deja fuera el catálogo sin histórico ni venta', () => {
+    const catalogo = customerRow({ customerCode: 'C0', targetKg: 0, targetMonths: 0, actualKg: 0, products: [] });
+    const nuevo = customerRow({ customerCode: 'N1', targetKg: 0, targetMonths: 0, projectedAttainmentPct: null });
+    const rows = [customerRow(), catalogo, nuevo];
+
+    expect(filterCustomerSalesRows(rows, { search: '', onlyWithSales: false, onlyWithTarget: true })).toEqual([
+      customerRow(),
+      nuevo,
+    ]);
+  });
 });
 
-describe('CSV de participación por cliente', () => {
-  it('exporta filas de cliente y de producto con BOM', () => {
+describe('geometría de clientes vs meta', () => {
+  it('reutiliza la pista de productos con la meta histórica del cliente', () => {
+    const geo = customerTargetGeometry(customerRow());
+    expect(geo.hasMeta).toBe(true);
+    // 230.000 de 220.000 = 104,5 % de la meta.
+    expect(geo.actualPctOfMeta).toBeCloseTo(104.5, 1);
+    expect(geo.projectedPctOfMeta).toBeCloseTo(117.6, 1);
+    expect(geo.markerPct).toBe(META_MARKER_PCT);
+  });
+
+  it('sin meta no dibuja barras ni marcador', () => {
+    const geo = customerTargetGeometry(customerRow({ targetKg: 0, projectedKg: null }));
+    expect(geo.hasMeta).toBe(false);
+    expect(geo.actualWidthPct).toBe(0);
+    expect(geo.projectedPctOfMeta).toBeNull();
+  });
+});
+
+describe('CSV de clientes vs meta', () => {
+  it('exporta meta, venta, proyección e histórico con BOM', () => {
     const csv = buildCustomerSalesCsv(customerReport());
     expect(csv.startsWith('\uFEFF')).toBe(true);
     const lines = csv.replace('\uFEFF', '').trim().split('\r\n');
     expect(lines[0]).toBe(CUSTOMER_SALES_CSV_HEADERS.join(','));
     expect(lines[1]!.startsWith('CLIENTE,C1,')).toBe(true);
+    // Meta 220.000, 3 meses, venta 230.000, proyección 258.750.
+    expect(lines[1]).toContain(',220000,3,230000,258750,');
     expect(lines[2]!.startsWith('PRODUCTO,C1,')).toBe(true);
     expect(lines.some((line) => line.startsWith('TOTAL,'))).toBe(true);
-    expect(lines.some((line) => line.startsWith('SIN ASIGNAR,'))).toBe(false);
   });
 
   it('nombre de archivo estable por año y mes', () => {
-    expect(customerSalesCsvFileName(customerReport())).toBe('participacion-clientes-2026-10.csv');
+    expect(customerSalesCsvFileName(customerReport())).toBe('clientes-vs-meta-2026-10.csv');
   });
 });
 

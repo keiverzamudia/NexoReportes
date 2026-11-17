@@ -60,6 +60,7 @@ import {
 } from '../lib/customer-insights';
 import { statementUpdatedAt } from '../lib/statement';
 import { CustomerOrdersPanel } from './CustomerOrdersPanel';
+import { CustomerNotesPanel } from './CustomerNotesPanel';
 import { EChart } from './EChart';
 import type { Column } from './ui';
 import {
@@ -96,6 +97,47 @@ const TONE_TEXT: Record<string, string> = {
   muted: 'text-on-surface-variant',
   default: 'text-on-surface',
 };
+
+// Reputación de fechas: qué tanto reprograma el cliente sus entregas.
+const REPUTATION_META: Record<string, { label: string; className: string; hint: string }> = {
+  GOOD: {
+    label: 'Buena reputación',
+    className: 'bg-secondary/15 text-secondary',
+    hint: 'La mayoría de los cambios los originó la empresa.',
+  },
+  FAIR: {
+    label: 'Reputación regular',
+    className: 'bg-warning/15 text-warning',
+    hint: 'El cliente originó entre un cuarto y la mitad de los cambios.',
+  },
+  POOR: {
+    label: 'Mala reputación',
+    className: 'bg-error/15 text-error',
+    hint: 'El cliente originó más de la mitad de los cambios.',
+  },
+  UNKNOWN: {
+    label: 'Sin datos',
+    className: 'bg-surface-container text-on-surface-variant',
+    hint: 'Aún no hay cambios clasificados para este cliente.',
+  },
+};
+
+function changeCauseLabel(cause: string | null): string {
+  if (cause === 'COMPANY') return 'Empresa';
+  if (cause === 'CUSTOMER') return 'Cliente';
+  return 'Sin clasificar';
+}
+
+function changeReasonLabel(reason: string | null): string {
+  if (reason === 'FINANCIAL') return 'Financiero';
+  if (reason === 'LOGISTIC') return 'Logístico';
+  return '';
+}
+
+/** Marca de tiempo real (no fecha de negocio): se muestra en hora local. */
+function fmtTimestamp(iso: string): string {
+  return new Date(iso).toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
 
 function compactNumber(value: number): string {
   const abs = Math.abs(value);
@@ -770,7 +812,125 @@ function ResumenTab({
           </button>
         </section>
       </div>
+
+      <DeliveryChangesCard data={data} />
     </div>
+  );
+}
+
+// Reputación de fechas: cuántos cambios de entrega hizo el cliente vs la
+// empresa. Solo cuenta cambios reales escritos en Profit.
+function DeliveryChangesCard({ data }: { data: CustomerInsightResponse }) {
+  const changes = data.deliveryChanges;
+  const meta = REPUTATION_META[changes.reputation] ?? REPUTATION_META.UNKNOWN!;
+  const classified = changes.byCustomer + changes.byCompany;
+  const customerPct = classified > 0 ? (changes.byCustomer / classified) * 100 : 0;
+
+  return (
+    <section className="mt-space-md rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-md shadow-soft">
+      <div className="flex flex-wrap items-start justify-between gap-space-sm">
+        <div>
+          <p className="text-title-md font-semibold text-primary">Cambios de entrega</p>
+          <p className="text-label-sm text-on-surface-variant">
+            Reprogramaciones hechas en Profit (histórico completo).
+          </p>
+        </div>
+        <span
+          title={meta.hint}
+          className={cx(
+            'inline-flex items-center gap-space-2xs rounded-pill px-space-sm py-1 text-label-sm font-semibold',
+            meta.className,
+          )}
+        >
+          <CalendarClock aria-hidden className="size-3.5" /> {meta.label}
+        </span>
+      </div>
+
+      {changes.total === 0 ? (
+        <p className="mt-space-sm text-body-md text-on-surface-variant">
+          Sin cambios de entrega registrados para este cliente.
+        </p>
+      ) : (
+        <>
+          <div className="mt-space-sm grid grid-cols-3 gap-space-sm text-label-md">
+            <div>
+              <p className="text-outline">Cambios</p>
+              <p className="font-bold tabular-nums text-primary">{changes.total}</p>
+            </div>
+            <div>
+              <p className="text-outline">Pedidos</p>
+              <p className="font-bold tabular-nums text-primary">{changes.orders}</p>
+            </div>
+            <div>
+              <p className="text-outline">Causados por el cliente</p>
+              <p className="font-bold tabular-nums text-primary">
+                {changes.customerSharePct === null ? '—' : `${fmtQty(changes.customerSharePct, 1)}%`}
+              </p>
+            </div>
+          </div>
+
+          {classified > 0 && (
+            <div className="mt-space-sm">
+              <div className="flex h-2 overflow-hidden rounded-pill bg-surface-container">
+                <span
+                  aria-hidden
+                  className="bg-warning"
+                  style={{ width: `${Math.max(0, Math.min(100, customerPct))}%` }}
+                />
+                <span aria-hidden className="flex-1 bg-primary-container" />
+              </div>
+              <div className="mt-space-2xs flex flex-wrap justify-between gap-space-xs text-label-sm text-on-surface-variant">
+                <span>Cliente · {changes.byCustomer}</span>
+                <span>Empresa · {changes.byCompany}</span>
+              </div>
+            </div>
+          )}
+
+          <p className="mt-space-sm text-label-md text-on-surface-variant">
+            Motivos del cliente: <strong className="text-primary">Financiero {changes.financial}</strong>
+            {' · '}
+            <strong className="text-primary">Logístico {changes.logistic}</strong>
+            {changes.unclassified > 0 && ` · Sin clasificar ${changes.unclassified}`}
+            {changes.lastChangeAt && ` · Último cambio ${fmtTimestamp(changes.lastChangeAt)}`}
+          </p>
+
+          {changes.recent.length > 0 && (
+            <ul className="mt-space-sm divide-y divide-outline-variant/20 rounded-xl border border-outline-variant/30">
+              {changes.recent.slice(0, 5).map((row) => (
+                <li
+                  key={`${row.changedAt}-${row.orderNumber}`}
+                  className="flex flex-wrap items-center gap-x-space-sm gap-y-1 px-space-sm py-2 text-label-sm"
+                >
+                  <span className="w-16 shrink-0 tabular-nums text-outline">{fmtTimestamp(row.changedAt)}</span>
+                  <span className="shrink-0 font-bold tabular-nums text-primary">#{row.orderNumber}</span>
+                  <span className="min-w-0 flex-1 tabular-nums text-on-surface-variant">
+                    {fmtDate(row.previousDate)} → {fmtDate(row.newDate)}
+                  </span>
+                  <span
+                    className={cx(
+                      'shrink-0 rounded-pill px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
+                      row.cause === 'CUSTOMER'
+                        ? 'bg-warning/15 text-warning'
+                        : row.cause === 'COMPANY'
+                          ? 'bg-primary-container/15 text-primary'
+                          : 'bg-surface-container text-on-surface-variant',
+                    )}
+                  >
+                    {changeCauseLabel(row.cause)}
+                    {row.reason ? ` · ${changeReasonLabel(row.reason)}` : ''}
+                  </span>
+                  {row.note && (
+                    <span className="w-full truncate text-label-sm text-on-surface-variant" title={row.note}>
+                      {row.note}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -1421,7 +1581,7 @@ export function CustomerInsightsModal({
                   )}
                   {tab === 'oportunidades' && <OpportunitiesTab data={data} currency={data.currency} />}
                   {tab === 'pedidos' && (
-                    <div className="flex flex-col gap-space-sm">
+                    <div className="flex flex-col gap-space-md">
                       <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low/50 p-space-md">
                         <p className="text-title-md font-semibold text-primary">Cartera pendiente</p>
                         <p className="text-label-md normal-case text-on-surface-variant">
@@ -1431,6 +1591,17 @@ export function CustomerInsightsModal({
                         </p>
                       </div>
                       <CustomerOrdersPanel customer={customer} />
+
+                      <section className="mt-space-xs flex flex-col gap-space-sm">
+                        <div>
+                          <p className="text-title-md font-semibold text-primary">Notas de entrega (ventas)</p>
+                          <p className="text-label-md normal-case text-on-surface-variant">
+                            Cada nota con el pedido que la originó. El número de pedido es el mismo que ves en
+                            la pantalla Pedidos.
+                          </p>
+                        </div>
+                        <CustomerNotesPanel customer={customer} months={months} currency={currency} />
+                      </section>
                     </div>
                   )}
                 </div>

@@ -3,7 +3,8 @@
 // ============================================================
 // Despacho — bandeja de trabajo del almacén.
 //
-//   · Pendientes → todo lo abierto, sin importar quién lo publicó.
+//   · Pendientes → lo abierto que aún tiene trabajo (cargar o facturar).
+//     El cliente con factura entregada ya terminó: sale de la bandeja.
 //   · Publicados por mí → lo que envié desde el simulador (solo con permiso).
 //
 // La bandeja se lee POR CLIENTE: cada renglón de la tabla es un cliente del
@@ -131,13 +132,17 @@ export default function DespachoPage() {
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return clientRows.filter((row) => {
+      // La bandeja es de trabajo vivo: el cliente con factura entregada ya
+      // terminó y sale de «Pendientes». El filtro «Facturada» lo recupera para
+      // que un admin pueda abrir la hoja y reabrir la factura.
+      if (scope === 'pending' && status !== 'FACTURADA' && row.status === 'FACTURADA') return false;
       if (status && row.status !== status) return false;
       if (!needle) return true;
       return [row.customerName, row.customerCode ?? '', row.sheet.number, row.sheet.title].some((value) =>
         value.toLowerCase().includes(needle),
       );
     });
-  }, [clientRows, status, q]);
+  }, [clientRows, scope, status, q]);
   const hasFilters = Boolean(status || q);
 
   if (error instanceof AuthRequiredError) {
@@ -332,7 +337,7 @@ export default function DespachoPage() {
 
   const subtitle =
     scope === 'pending'
-      ? 'Todo lo que falta por cargar. El primer operador que inicia la carga toma el despacho.'
+      ? 'Todo lo que falta por cargar o facturar. El primer operador que inicia la carga toma el despacho.'
       : 'Las simulaciones que enviaste al almacén y su avance.';
 
   return (
@@ -430,14 +435,14 @@ export default function DespachoPage() {
                   hasFilters
                     ? 'Sin clientes para este filtro'
                     : scope === 'pending'
-                      ? 'No hay clientes por cargar'
+                      ? 'No hay clientes pendientes'
                       : 'Todavía no has enviado simulaciones'
                 }
                 description={
                   hasFilters
                     ? 'Prueba con otro estado o limpia la búsqueda.'
                     : scope === 'pending'
-                      ? 'Cuando envíes una simulación desde Pedidos, cada cliente aparecerá aquí para cargarlo.'
+                      ? 'Cuando envíes una simulación desde Pedidos, cada cliente aparecerá aquí para cargarlo y facturarlo.'
                       : 'Arma el plan en Pedidos y usa «Guardar y enviar a despacho».'
                 }
                 action={

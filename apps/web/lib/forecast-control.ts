@@ -30,7 +30,7 @@ function weekOf(row: ForecastPlanRow, weekIndex: number | null): ForecastPlanWee
 
 export function controlValues(row: ForecastPlanRow, weekIndex: number | null): ControlValues {
   const week = weekOf(row, weekIndex);
-  const forecastKg = week ? week.forecastQty : row.forecastMonthQty;
+  const forecastKg = week ? week.forecastKg : row.forecastMonthKg;
   const demandKg = week ? week.demandKg : row.demandMonthKg;
   const soldKg = week ? week.soldKg : row.soldMonthKg;
   return {

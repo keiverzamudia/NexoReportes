@@ -184,6 +184,8 @@ export interface CustomerSalesFilters {
   search: string;
   /** Oculta los clientes del catálogo que no vendieron en el mes. */
   onlyWithSales: boolean;
+  /** Oculta los clientes sin meta histórica (catálogo sin compras). */
+  onlyWithTarget?: boolean;
 }
 
 export function filterCustomerSalesRows(
@@ -194,6 +196,7 @@ export function filterCustomerSalesRows(
   return rows.filter(
     (row) =>
       (!filters.onlyWithSales || row.actualKg > 0) &&
+      (!filters.onlyWithTarget || row.targetKg > 0 || row.actualKg > 0) &&
       (!needle ||
         row.customerCode.toLowerCase().includes(needle) ||
         row.customerName.toLowerCase().includes(needle)),
@@ -347,7 +350,7 @@ export function dayPendingSharePct(bar: SalesDayBar): number | null {
   return (bar.pendingKg / total) * 100;
 }
 
-// ---------- Brecha del mes y del día ----------
+// ---------- Brecha del mes y del corte ----------
 
 export type SalesGapScope = 'month' | 'day';
 
@@ -356,37 +359,29 @@ export interface SalesGapSnapshot {
   monthGapKg: number | null;
   /** Avance del mes: venta acumulada ÷ forecast. */
   monthPct: number | null;
-  /** Objetivo del día: el ritmo necesario del hero (kg/día). */
-  dayGoalKg: number | null;
-  /** Venta registrada hoy (el día en curso entra parcial). */
-  todayKg: number;
-  /** Lo que falta hoy para el ritmo necesario; ≤ 0 si ya se cumplió. */
-  dayGapKg: number | null;
-  /** Avance del día: venta de hoy ÷ ritmo necesario. */
-  dayPct: number | null;
+  /** Lo que falta para el forecast si el mes cerrara hoy (0 = meta cubierta). */
+  cutGapKg: number | null;
+  /** Cumplimiento al corte: venta acumulada ÷ forecast. */
+  cutPct: number | null;
 }
 
 /**
  * Cifras de la tarjeta «Brecha». El mes compara la venta acumulada contra el
- * forecast; el día compara la venta de hoy contra el ritmo necesario que
- * publica el API (`totals.requiredDailyKg`), es decir, lo que hay que vender
- * por día para cerrar el mes en meta.
+ * forecast (con signo); el corte responde la pregunta del día: si el mes
+ * terminara hoy con la venta registrada, cuántos kg faltarían para el forecast
+ * y qué porcentaje de la meta se lleva.
  */
 export function salesGap(report: ForecastSalesResponse): SalesGapSnapshot {
   const forecastKg = report.totals.forecastKg;
   const actualKg = report.totals.actualKg;
-  const todayKg = report.daily.find((day) => day.date === report.days.today)?.actualKg ?? 0;
-  const dayGoalKg = report.status === 'OPEN' ? report.totals.requiredDailyKg : null;
+  const hasForecast = forecastKg > 0;
 
   return {
-    monthGapKg: forecastKg > 0 ? actualKg - forecastKg : null,
-    monthPct: forecastKg > 0 ? report.totals.attainmentPct : null,
-    dayGoalKg,
-    todayKg,
-    dayGapKg: dayGoalKg === null ? null : dayGoalKg - todayKg,
-    // Meta 0 = el mes ya está cubierto: el día cuenta como cumplido.
-    dayPct:
-      dayGoalKg === null ? null : dayGoalKg > 0 ? roundPct((todayKg / dayGoalKg) * 100) : 100,
+    monthGapKg: hasForecast ? actualKg - forecastKg : null,
+    monthPct: hasForecast ? report.totals.attainmentPct : null,
+    // Meta ya cubierta = 0: no se muestra un faltante negativo.
+    cutGapKg: hasForecast ? Math.max(0, forecastKg - actualKg) : null,
+    cutPct: hasForecast ? roundPct((actualKg / forecastKg) * 100) : null,
   };
 }
 
@@ -619,6 +614,23 @@ export function salesDeviationGeometry(
   };
 }
 
+// ---------- Barras de clientes vs meta histórica ----------
+
+/**
+ * Misma geometría que la desviación por producto, pero la meta del cliente es
+ * su promedio histórico de 3 meses. Reutilizarla garantiza que ambas listas se
+ * lean igual (marcador al 100 %, verde = proyección, azul = venta).
+ */
+export function customerTargetGeometry(
+  row: Pick<ForecastCustomerSalesRow, 'targetKg' | 'actualKg' | 'projectedKg'>,
+  markerPct: number = META_MARKER_PCT,
+): DeviationGeometry {
+  return salesDeviationGeometry(
+    { forecastKg: row.targetKg, actualKg: row.actualKg, projectedKg: row.projectedKg },
+    markerPct,
+  );
+}
+
 // ---------- CSV ----------
 
 export const SALES_CSV_HEADERS = [
@@ -716,11 +728,11 @@ export function salesCsvFileName(report: ForecastSalesResponse): string {
 }
 
 // ============================================================
-// CSV de participación por cliente.
+// CSV de clientes vs meta histórica.
 //
-// Dos niveles: una fila CLIENTE con su venta y participación total, y debajo
-// una fila PRODUCTO con kg, sacos y sus dos porcentajes. No hay metas ni
-// histórico: todo sale de la venta real del mes a la fecha.
+// Dos niveles: una fila CLIENTE con su meta (promedio de los meses con compra),
+// venta, proyección y brecha; y debajo una fila PRODUCTO con kg, sacos y sus
+// dos porcentajes. La meta es un benchmark individual, no el forecast oficial.
 // ============================================================
 
 export const CUSTOMER_SALES_CSV_HEADERS = [
@@ -732,19 +744,33 @@ export const CUSTOMER_SALES_CSV_HEADERS = [
   'Código producto',
   'Producto',
   'UOM',
+  'Meta kg (promedio histórico)',
+  'Meses con compra',
   'Venta kg',
+  'Proyección kg',
+  '% vs meta',
+  'Brecha kg',
   'Unidades',
   'Sacos',
   'Participación cliente %',
   '% del cliente',
   '% del producto',
   'Última entrega',
+  'Histórico M-3 kg',
+  'Histórico M-2 kg',
+  'Histórico M-1 kg',
 ] as const;
 
 export function buildCustomerSalesCsv(report: ForecastCustomerSalesResponse): string {
   const lines: string[] = [CUSTOMER_SALES_CSV_HEADERS.map(csvCell).join(',')];
 
   for (const customer of report.customers) {
+    const history = report.historyMonths.map(
+      (month, index) =>
+        customer.history.find((entry) => entry.year === month.year && entry.month === month.month)?.kg ??
+        customer.history[index]?.kg ??
+        0,
+    );
     lines.push(
       [
         'CLIENTE',
@@ -755,13 +781,19 @@ export function buildCustomerSalesCsv(report: ForecastCustomerSalesResponse): st
         '',
         '',
         '',
+        csvNumber(customer.targetKg),
+        csvNumber(customer.targetMonths, 0),
         csvNumber(customer.actualKg),
+        csvNumber(customer.projectedKg),
+        csvNumber(customer.projectedAttainmentPct),
+        csvNumber(customer.gapKg),
         csvNumber(customer.actualUnits),
         '',
         csvNumber(customer.sharePct),
         '',
         '',
         customer.lastInvoiceDate ?? '',
+        ...history.map((kg) => csvNumber(kg)),
       ]
         .map(csvCell)
         .join(','),
@@ -778,12 +810,20 @@ export function buildCustomerSalesCsv(report: ForecastCustomerSalesResponse): st
           product.productCode,
           product.description,
           product.uom,
+          '',
+          '',
           csvNumber(product.kg),
+          '',
+          '',
+          '',
           csvNumber(product.units),
           csvNumber(product.sacks),
           '',
           csvNumber(product.shareOfCustomerPct),
           csvNumber(product.shareOfProductPct),
+          '',
+          '',
+          '',
           '',
         ]
           .map(csvCell)
@@ -803,13 +843,21 @@ export function buildCustomerSalesCsv(report: ForecastCustomerSalesResponse): st
       '',
       '',
       '',
+      csvNumber(totals.targetKg),
+      '',
       csvNumber(totals.actualKg),
+      csvNumber(totals.projectedKg),
+      csvNumber(totals.projectedAttainmentPct),
+      csvNumber(totals.projectedKg === null ? null : totals.projectedKg - totals.targetKg),
       csvNumber(totals.actualUnits),
       '',
       '100',
       '',
       '',
       totals.lastInvoiceDate ?? '',
+      '',
+      '',
+      '',
     ]
       .map(csvCell)
       .join(','),
@@ -819,5 +867,5 @@ export function buildCustomerSalesCsv(report: ForecastCustomerSalesResponse): st
 }
 
 export function customerSalesCsvFileName(report: ForecastCustomerSalesResponse): string {
-  return `participacion-clientes-${report.year}-${String(report.month).padStart(2, '0')}.csv`;
+  return `clientes-vs-meta-${report.year}-${String(report.month).padStart(2, '0')}.csv`;
 }

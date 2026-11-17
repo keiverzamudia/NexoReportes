@@ -52,6 +52,9 @@ function createFakePrisma() {
     deliveryDateOverride: {
       findMany: async () => [],
     },
+    dispatchSheetLine: {
+      findMany: async () => [] as Row[],
+    },
     dispatchScenario: {
       findFirst: async ({ where }: Row) => {
         const row = state.scenarios.find((item) => matchesWhere(where, item));
@@ -159,7 +162,11 @@ function restoreInput(overrides: Row = {}) {
 }
 
 const audit = { record: async () => undefined } as never;
-const dispatch = { syncFromDraft: async () => undefined, createFromDraft: async () => ({}) } as never;
+const dispatch = {
+  syncFromDraft: async () => undefined,
+  createFromDraft: async () => ({}),
+  inDispatchOrders: async () => new Map<string, string>(),
+} as never;
 
 function snapshotLine(overrides: Row = {}) {
   return {

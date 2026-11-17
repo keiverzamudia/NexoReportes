@@ -5,6 +5,7 @@ import {
   ScenarioLineRef,
 } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
+import { loadOrderDispatchStates } from '../dispatch/dispatch-order-state';
 
 // ============================================================
 // Plan vivo compartido: resuelve los renglones marcados por el equipo contra
@@ -71,7 +72,7 @@ export async function buildDraftPlan(
   const orderNumbers = [...new Set(unique.map((ref) => ref.orderNumber))];
   const productCodes = [...new Set(unique.map((ref) => ref.productCode))];
 
-  const [rows, snapshot, overrides] = await Promise.all([
+  const [rows, snapshot, overrides, dispatchStates] = await Promise.all([
     prisma.salesOrderLine.findMany({
       where: {
         order: { externalNumber: { in: orderNumbers } },
@@ -97,6 +98,7 @@ export async function buildDraftPlan(
       },
       select: { orderNumber: true, productCode: true, tentativeDate: true },
     }),
+    loadOrderDispatchStates(prisma, orderNumbers),
   ]);
 
   const tentativeByKey = new Map<string, string>();
@@ -166,6 +168,8 @@ export async function buildDraftPlan(
       stock03: null,
       stock9999: null,
       stock68: null,
+      dispatchSheetNumber: dispatchStates.get(row.order.externalNumber)?.sheetNumber ?? null,
+      dispatchStarted: dispatchStates.get(row.order.externalNumber)?.started ?? false,
     });
 
     assignments.push({

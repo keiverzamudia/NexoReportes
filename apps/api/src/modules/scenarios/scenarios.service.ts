@@ -225,7 +225,15 @@ export class ScenariosService implements OnModuleInit {
     dispatchImpact: DraftDispatchImpact | null = null,
   ): Promise<ScenarioDraftResponse> {
     const payload = this.parseDraftPayload(row);
-    const plan = await buildDraftPlan(this.prisma, payload.selected);
+    // Los pedidos que ya viven en un despacho no consumen existencia del plan
+    // compartido: el envío los omite y aquí tampoco deben aparecer asignados.
+    const inDispatch = await this.dispatch.inDispatchOrders(
+      payload.selected.map((ref) => ref.orderNumber),
+    );
+    const plan = await buildDraftPlan(
+      this.prisma,
+      payload.selected.filter((ref) => !inDispatch.has(ref.orderNumber)),
+    );
     const activeSheet = await this.prisma.dispatchSheet.findFirst({
       where: { draftId: 'GLOBAL', status: { notIn: ['DESPACHADO', 'CANCELADO'] } },
       orderBy: { sentAt: 'desc' },
@@ -542,7 +550,26 @@ export class ScenariosService implements OnModuleInit {
       throw new ConflictException('Marca al menos un renglón antes de enviar la simulación.');
     }
 
-    const plan = await buildDraftPlan(this.prisma, payload.selected);
+    // Un pedido que ya vive en un despacho no se vuelve a enviar. Se filtra
+    // ANTES de repartir existencia para que no consuma stock del plan.
+    const inDispatch = await this.dispatch.inDispatchOrders(
+      payload.selected.map((ref) => ref.orderNumber),
+    );
+    if (inDispatch.size > 0) {
+      const availableSelected = payload.selected.filter((ref) => !inDispatch.has(ref.orderNumber));
+      if (availableSelected.length === 0) {
+        const list = [...inDispatch.entries()]
+          .slice(0, 5)
+          .map(([orderNumber, sheetNumber]) => `${orderNumber} (${sheetNumber})`)
+          .join(', ');
+        throw new ConflictException(
+          `Todos los pedidos marcados ya están en despacho: ${list}. Si necesitas cambiar su fecha, hazlo mientras la carga no haya iniciado.`,
+        );
+      }
+    }
+
+    const availableRefs = payload.selected.filter((ref) => !inDispatch.has(ref.orderNumber));
+    const plan = await buildDraftPlan(this.prisma, availableRefs);
     if (plan.lines.length === 0) {
       throw new ConflictException('Los renglones marcados ya no están en la cartera. Actualiza y vuelve a intentar.');
     }
@@ -591,7 +618,7 @@ export class ScenariosService implements OnModuleInit {
     };
 
     const payloadWithSnapshot: ScenarioPayload = { ...payload, snapshot };
-    return this.dispatch.createFromDraft(
+    const detail = await this.dispatch.createFromDraft(
       dispatchViewer,
       {
         title: input.title?.trim() || 'Simulación del equipo',
@@ -602,6 +629,19 @@ export class ScenariosService implements OnModuleInit {
       row.version,
       actor,
     );
+    // Los pedidos que ya estaban en despacho se informan a la pantalla.
+    const skippedOrders = [...inDispatch.entries()].map(([orderNumber, sheetNumber]) => ({
+      orderNumber,
+      sheetNumber,
+    }));
+    const detailSkipped = detail.skippedOrders ?? [];
+    const merged = new Map(
+      [...skippedOrders, ...detailSkipped].map((item) => [item.orderNumber, item.sheetNumber]),
+    );
+    return {
+      ...detail,
+      skippedOrders: [...merged.entries()].map(([orderNumber, sheetNumber]) => ({ orderNumber, sheetNumber })),
+    };
   }
 
   // El guardado nunca debe fallar porque el almacén no pudo sincronizarse.

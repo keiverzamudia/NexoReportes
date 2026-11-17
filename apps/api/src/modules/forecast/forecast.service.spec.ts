@@ -39,6 +39,7 @@ function adapterWith(options: {
   dailyProducts?: Record<string, unknown>[];
   dayCustomers?: Record<string, unknown>[];
   customerProducts?: Record<string, unknown>[];
+  customerHistory?: Record<string, unknown>[];
   weekly?: Record<string, unknown>[];
   forecast?: Record<string, unknown>[];
   fail?: boolean;
@@ -46,6 +47,7 @@ function adapterWith(options: {
   failDailyProducts?: boolean;
   failDayCustomers?: boolean;
   failCustomerProducts?: boolean;
+  failCustomerHistory?: boolean;
 }) {
   const calls = { total: 0, monthly: 0, daily: 0, weekly: 0, forecast: 0 };
   const adapter: ProfitAdapter = {
@@ -64,6 +66,11 @@ function adapterWith(options: {
         return (options.forecast ?? []).map((row) => ({ fecha: '2026-10-01', ...row }));
       }
       if (lower.includes('reng_nde')) {
+        // Meta por cliente: kg por cliente y mes de los 3 meses cerrados.
+        if (lower.includes('nexo:customer_sales_monthly')) {
+          if (options.fail || options.failCustomerHistory) throw new Error('Profit caído');
+          return options.customerHistory ?? [];
+        }
         // Desviación por cliente: su marcador es propio y va antes que el
         // resto de consultas sobre `reng_nde`.
         if (lower.includes('nexo:customer_products')) {
@@ -958,7 +965,7 @@ describe('ForecastService.salesDayDetail', () => {
 });
 
 // ============================================================
-// Participación por cliente: venta real del mes a la fecha.
+// Clientes vs meta histórica (3 meses cerrados anteriores).
 // ============================================================
 describe('ForecastService.customerSalesReport', () => {
   const CUSTOMER_ROWS = [
@@ -966,6 +973,15 @@ describe('ForecastService.customerSalesReport', () => {
     { anio: 2026, mes: 10, co_cli: 'C2', cli_des: 'CLIENTE DOS', co_art: 'ABAGP13', art_des: 'GALLINA', uni_venta: 'SAC', uni_relac: 40, unid: 3_000, kg: 120_000, ultima_factura: '2026-10-26' },
     { anio: 2026, mes: 10, co_cli: 'C1', cli_des: 'CLIENTE UNO', co_art: 'ABABOV67', art_des: 'MULTIESPECIE', uni_venta: 'SAC', uni_relac: 35, unid: 1_428, kg: 50_000, ultima_factura: '2026-10-25' },
     { anio: 2026, mes: 10, co_cli: 'C2', cli_des: 'CLIENTE DOS', co_art: 'ABABOV67', art_des: 'MULTIESPECIE', uni_venta: 'SAC', uni_relac: 35, unid: 4_285, kg: 150_000, ultima_factura: '2026-10-24' },
+  ];
+
+  // Ventana de octubre 2026: julio, agosto y septiembre (cerrados).
+  const CUSTOMER_HISTORY = [
+    { anio: 2026, mes: 7, co_cli: 'C1', cli_des: 'CLIENTE UNO', kg: 200_000, unid: 5_000, ultima_factura: '2026-07-30' },
+    { anio: 2026, mes: 8, co_cli: 'C1', cli_des: 'CLIENTE UNO', kg: 220_000, unid: 5_500, ultima_factura: '2026-08-29' },
+    { anio: 2026, mes: 9, co_cli: 'C1', cli_des: 'CLIENTE UNO', kg: 240_000, unid: 6_000, ultima_factura: '2026-09-28' },
+    // C2 solo compró en septiembre: esa compra es su meta (1 mes con compra).
+    { anio: 2026, mes: 9, co_cli: 'C2', cli_des: 'CLIENTE DOS', kg: 500_000, unid: 12_500, ultima_factura: '2026-09-30' },
   ];
 
   const CUSTOMERS = [
@@ -982,21 +998,36 @@ describe('ForecastService.customerSalesReport', () => {
     vi.useRealTimers();
   });
 
-  it('calcula la participación del cliente y de cada producto', async () => {
-    const { adapter } = adapterWith({ customerProducts: CUSTOMER_ROWS });
+  it('calcula la venta, la meta histórica y la proyección de cada cliente', async () => {
+    const { adapter } = adapterWith({ customerProducts: CUSTOMER_ROWS, customerHistory: CUSTOMER_HISTORY });
     const db = createFakePrisma([], [], CUSTOMERS);
 
     const report = await service(adapter, db).customerSalesReport({ ...QUERY, year: 2026, month: 10 });
 
     expect(report.salesAvailable).toBe(true);
+    expect(report.historyAvailable).toBe(true);
     expect(report.asOf).toBe('2026-10-28');
+    expect(report.historyMonths).toEqual([
+      { year: 2026, month: 7 },
+      { year: 2026, month: 8 },
+      { year: 2026, month: 9 },
+    ]);
     expect(report.totals.actualKg).toBe(500_000);
+    expect(report.totals.targetKg).toBe(720_000);
     expect(report.totals.customerCount).toBe(2);
     expect(report.totals.activeCustomerCount).toBe(2);
+    expect(report.totals.targetCustomerCount).toBe(2);
     expect(report.totals.productCount).toBe(2);
+
+    // Prioridad por promedio: C2 (500.000) va antes que C1 (220.000).
+    expect(report.customers.map((customer) => customer.customerCode)).toEqual(['C2', 'C1']);
 
     const uno = report.customers.find((customer) => customer.customerCode === 'C1')!;
     const dos = report.customers.find((customer) => customer.customerCode === 'C2')!;
+    expect(uno.targetKg).toBe(220_000);
+    expect(uno.targetMonths).toBe(3);
+    expect(dos.targetKg).toBe(500_000);
+    expect(dos.targetMonths).toBe(1);
     expect(uno.actualKg).toBe(230_000);
     expect(dos.actualKg).toBe(270_000);
     expect(uno.sharePct).toBe(46);
@@ -1005,6 +1036,9 @@ describe('ForecastService.customerSalesReport', () => {
     expect(uno.customerType).toBe('L1 EXCLUSIVOS');
     expect(uno.vendor).toBe('VENDEDORA 1');
     expect(uno.productCount).toBe(2);
+    expect(uno.attainmentPct).toBeCloseTo(104.5, 1);
+    expect(uno.projectedKg).toBeGreaterThan(uno.actualKg);
+    expect(uno.projectedAttainmentPct).toBeGreaterThan(100);
 
     const gallina = uno.products.find((product) => product.productCode === 'ABAGP13')!;
     const multi = uno.products.find((product) => product.productCode === 'ABABOV67')!;
@@ -1016,8 +1050,8 @@ describe('ForecastService.customerSalesReport', () => {
     expect(gallina.sacks).toBe(4_500);
   });
 
-  it('incluye clientes del catálogo sin venta con 0 %', async () => {
-    const { adapter } = adapterWith({ customerProducts: CUSTOMER_ROWS });
+  it('incluye clientes del catálogo sin venta con 0 % y sin meta', async () => {
+    const { adapter } = adapterWith({ customerProducts: CUSTOMER_ROWS, customerHistory: CUSTOMER_HISTORY });
     const db = createFakePrisma([], [], [
       ...CUSTOMERS,
       { externalCode: 'C0', name: 'CLIENTE SIN VENTA', customerType: null, vendor: null },
@@ -1028,9 +1062,36 @@ describe('ForecastService.customerSalesReport', () => {
 
     expect(sinVenta.actualKg).toBe(0);
     expect(sinVenta.sharePct).toBe(0);
+    expect(sinVenta.targetKg).toBe(0);
     expect(sinVenta.products).toEqual([]);
     expect(report.totals.customerCount).toBe(3);
     expect(report.totals.activeCustomerCount).toBe(2);
+    expect(report.totals.targetCustomerCount).toBe(2);
+  });
+
+  it('incluye un cliente con histórico que no compró este mes (a recuperar)', async () => {
+    const { adapter } = adapterWith({
+      customerProducts: CUSTOMER_ROWS,
+      customerHistory: [
+        ...CUSTOMER_HISTORY,
+        { anio: 2026, mes: 8, co_cli: 'C9', cli_des: 'CLIENTE AUSENTE', kg: 300_000, unid: 7_500, ultima_factura: '2026-08-20' },
+      ],
+    });
+
+    const report = await service(adapter, createFakePrisma([], [], CUSTOMERS)).customerSalesReport({
+      ...QUERY,
+      year: 2026,
+      month: 10,
+    });
+    const ausente = report.customers.find((customer) => customer.customerCode === 'C9')!;
+
+    expect(ausente.customerName).toBe('CLIENTE AUSENTE');
+    expect(ausente.targetKg).toBe(300_000);
+    expect(ausente.actualKg).toBe(0);
+    // La última entrega cae al histórico cuando no compró este mes.
+    expect(ausente.lastInvoiceDate).toBe('2026-08-20');
+    // Sin venta este mes, sigue priorizado por su promedio (500k, 300k, 220k).
+    expect(report.customers.map((customer) => customer.customerCode)).toEqual(['C2', 'C9', 'C1']);
   });
 
   it('incluye un cliente con venta que no está en el catálogo local', async () => {
@@ -1051,6 +1112,25 @@ describe('ForecastService.customerSalesReport', () => {
     expect(nuevo.customerName).toBe('CLIENTE NUEVO');
     expect(nuevo.actualKg).toBe(10_000);
     expect(nuevo.sharePct).toBe(2);
+    expect(nuevo.targetKg).toBe(0);
+    expect(nuevo.projectedAttainmentPct).toBeNull();
+  });
+
+  it('si el histórico falla, la venta se muestra igual y sin meta', async () => {
+    const { adapter } = adapterWith({ customerProducts: CUSTOMER_ROWS, failCustomerHistory: true });
+
+    const report = await service(adapter, createFakePrisma([], [], CUSTOMERS)).customerSalesReport({
+      ...QUERY,
+      year: 2026,
+      month: 10,
+    });
+
+    expect(report.salesAvailable).toBe(true);
+    expect(report.historyAvailable).toBe(false);
+    expect(report.totals.actualKg).toBe(500_000);
+    expect(report.totals.targetKg).toBe(0);
+    expect(report.customers.every((customer) => customer.targetKg === 0)).toBe(true);
+    expect(report.customers.every((customer) => customer.projectedAttainmentPct === null)).toBe(true);
   });
 
   it('si la consulta por cliente falla, no inventa ceros', async () => {
@@ -1063,12 +1143,13 @@ describe('ForecastService.customerSalesReport', () => {
     });
 
     expect(report.salesAvailable).toBe(false);
+    expect(report.historyAvailable).toBe(false);
     expect(report.customers).toEqual([]);
     expect(report.totals.actualKg).toBe(0);
   });
 
   it('cachea la respuesta y no vuelve a consultar Profit', async () => {
-    const { adapter, calls } = adapterWith({ customerProducts: CUSTOMER_ROWS });
+    const { adapter, calls } = adapterWith({ customerProducts: CUSTOMER_ROWS, customerHistory: CUSTOMER_HISTORY });
     const forecast = service(adapter, createFakePrisma([], [], CUSTOMERS));
     const first = await forecast.customerSalesReport({ ...QUERY, year: 2026, month: 10 });
     const afterFirst = calls.total;
@@ -1129,8 +1210,13 @@ describe('ForecastService.plan (despachos semanales)', () => {
     const report = await service(adapter, createFakePrisma([], [PRODUCT])).plan(2026, 9);
 
     const row = report.rows.find((entry) => entry.productCode === 'ABAGP13')!;
-    expect(row.forecastMonthQty).toBe(123_000);
+    expect(row.forecastMonthKg).toBe(123_000);
     expect(row.averageQty).toBe(30_750);
+    // Mes cerrado: todas las semanas son historia, no hay plan de producción.
+    expect(report.asOf).toBe('2026-09-30');
+    expect(report.currentWeekIndex).toBeNull();
+    expect(row.weeks.every((week) => week.closed)).toBe(true);
+    expect(row.productionMonthKg).toBe(0);
   });
 
   it('si la consulta semanal falla: salesAvailable=false y soldMonthKg=0', async () => {
@@ -1147,5 +1233,108 @@ describe('ForecastService.plan (despachos semanales)', () => {
     expect(row.weeks.every((week) => week.soldKg === 0)).toBe(true);
     // El plan sigue disponible: solo faltan los despachos.
     expect(report.rows.length).toBeGreaterThan(0);
+  });
+
+  it('trabaja en kg: el forecast en sacos no infla «a producir» y el stock arrastra', async () => {
+    const { adapter } = adapterWith({
+      forecast: [{ fecha: '2026-11-01', co_art: 'ABAGP13', forecast_mes: 12_000, uni_venta: 'SAC', uni_relac: 40 }],
+    });
+    const db = createFakePrisma([], [PRODUCT]);
+    db.inventorySnapshot.findFirst = (async () => ({
+      lines: [
+        {
+          productCode: 'ABAGP13',
+          warehouseCode: 'Stock 03',
+          qty: 10_000,
+          reservedQty: 0,
+          warehouse: { name: 'Stock 03' },
+        },
+      ],
+    })) as never;
+
+    const report = await service(adapter, db).plan(2026, 11);
+    const row = report.rows.find((entry) => entry.productCode === 'ABAGP13')!;
+
+    // 12.000 sacos × 40 kg = 480.000 kg; la existencia también se lleva a kg.
+    expect(row.forecastMonthKg).toBe(480_000);
+    expect(row.stockKg).toBe(400_000);
+    // Noviembre tiene 30 días: 7/7/7/9 → el reparto no es «mes ÷ 4».
+    expect(row.weeks.map((week) => week.forecastKg)).toEqual([112_000, 112_000, 112_000, 144_000]);
+    // 10.000 sacos cubren tres semanas; solo la cuarta pide producir 80.000 kg.
+    expect(row.weeks.map((week) => week.toProduceKg)).toEqual([0, 0, 0, 80_000]);
+    expect(row.weeks[3]!.toProduceSacks).toBe(2_000);
+    // El stock de cada semana es el arrastre real, no el stock de hoy repetido.
+    expect(row.weeks.map((week) => week.stockKg)).toEqual([400_000, 288_000, 176_000, 64_000]);
+    expect(row.productionMonthKg).toBe(80_000);
+    expect(report.totals.productionKg).toBe(80_000);
+    expect(report.asOf).toBeNull();
+    expect(report.currentWeekIndex).toBeNull();
+  });
+
+  it('una semana cerrada no sugiere producir y se lee con el vendido', async () => {
+    const { adapter } = adapterWith({
+      forecast: [{ fecha: '2026-10-01', co_art: 'ABAGP13', forecast_mes: 12_000, uni_venta: 'SAC', uni_relac: 40 }],
+      weekly: [
+        { co_art: 'ABAGP13', semana: 1, kg: 100_000 },
+        { co_art: 'ABAGP13', semana: 4, kg: 100_000 },
+      ],
+    });
+
+    const report = await service(adapter, createFakePrisma([], [PRODUCT])).plan(2026, 10);
+    const row = report.rows.find((entry) => entry.productCode === 'ABAGP13')!;
+    const first = row.weeks[0]!;
+
+    // Corte 29-oct: S1-S3 cerradas, S4 (22-31) en curso.
+    expect(first.closed).toBe(true);
+    expect(first.toProduceKg).toBe(0);
+    expect(first.soldKg).toBe(100_000);
+    expect(first.attainmentPct).toBeCloseTo(92.3, 1);
+    expect(report.asOf).toBe('2026-10-29');
+    expect(report.currentWeekIndex).toBe(4);
+    expect(row.weeks[3]!.closed).toBe(false);
+    // La semana en curso descuenta lo ya vendido: pidió 154.838,71 kg y vendió
+    // 100.000, así que solo faltan 54.838,71 (no se produce dos veces).
+    expect(row.weeks[3]!.toProduceKg).toBeCloseTo(54_838.71, 1);
+    expect(row.weeks[3]!.attainmentPct).toBeCloseTo(64.6, 1);
+  });
+
+  it('la demanda semanal usa la fecha de entrega efectiva (tentativa)', async () => {
+    const { adapter } = adapterWith({
+      forecast: [{ fecha: '2026-11-01', co_art: 'ABAGP13', forecast_mes: 0, uni_venta: 'SAC', uni_relac: 40 }],
+    });
+    const db = createFakePrisma([], [PRODUCT], [], {
+      overrides: [{ orderNumber: 'P-2', productCode: 'ABAGP13', tentativeDate: new Date('2026-11-10T00:00:00Z') }],
+      lines: [
+        {
+          productCode: 'ABAGP13',
+          pendingQty: 100,
+          pendingKg: 4_000,
+          order: { externalNumber: 'P-2', requestedDate: new Date('2026-11-20T00:00:00Z') },
+        },
+      ],
+    });
+
+    const report = await service(adapter, db).plan(2026, 11);
+    const row = report.rows.find((entry) => entry.productCode === 'ABAGP13')!;
+
+    // El pedido se movió al 10-nov: pesa en la semana 8-14, no en la del 20.
+    expect(row.weeks[1]!.demandKg).toBe(4_000);
+    expect(row.weeks[2]!.demandKg).toBe(0);
+    expect(row.demandMonthKg).toBe(4_000);
+  });
+
+  it('granel: planifica en kg y no inventa sacos', async () => {
+    const GRANEL = { externalCode: 'ABAGP13', description: 'GRANEL ABA', uom: 'KG', kgPerUom: null };
+    const { adapter } = adapterWith({
+      forecast: [{ fecha: '2026-11-01', co_art: 'ABAGP13', forecast_mes: 90_000, uni_venta: 'KG', uni_relac: 1 }],
+    });
+
+    const report = await service(adapter, createFakePrisma([], [GRANEL])).plan(2026, 11);
+    const row = report.rows.find((entry) => entry.productCode === 'ABAGP13')!;
+
+    expect(row.weeks[0]!.toProduceKg).toBe(21_000); // 90.000 × 7/30
+    expect(row.weeks[0]!.toProduceSacks).toBeNull();
+    expect(row.weeks[0]!.soldSacks).toBeNull();
+    expect(row.productionMonthSacks).toBeNull();
   });
 });

@@ -33,6 +33,7 @@ import {
   ListFilter,
   PackageSearch,
   RotateCw,
+  Target,
   Users,
   X,
 } from 'lucide-react';
@@ -74,6 +75,7 @@ import {
   buildNarrative,
   buildSalesCsv,
   customerSalesCsvFileName,
+  customerTargetGeometry,
   dailySalesScale,
   dayLabel,
   dayPendingSharePct,
@@ -184,8 +186,12 @@ function useCountUp(value: number | null): number {
   return display;
 }
 
-function PctPill({ pct }: { pct: number | null }) {
-  const tone = salesTone(pct);
+/**
+ * Píldora de porcentaje. El tono se puede imponer (`tone`): «Avance» muestra lo
+ * acumulado pero se colorea con el ritmo (cierre proyectado), no con el número.
+ */
+function PctPill({ pct, tone: forcedTone }: { pct: number | null; tone?: SalesTone }) {
+  const tone = forcedTone ?? salesTone(pct);
   return (
     <span
       className={cx(
@@ -255,17 +261,18 @@ const GAP_BAR_COLOR = HERO_TONE;
 
 /**
  * Tarjeta «Brecha»: alterna entre la brecha del mes (venta acumulada vs
- * forecast) y la del día en curso (ritmo necesario vs venta de hoy), y
- * acompaña la cifra con su barra de avance.
+ * forecast, con signo) y el corte de hoy (lo que faltaría para el forecast si
+ * el mes terminara con la venta registrada), y acompaña la cifra con su barra
+ * de avance.
  */
 function GapStat({ report }: { report: ForecastSalesResponse }) {
   const [scope, setScope] = useState<SalesGapScope>('month');
   const gap = useMemo(() => salesGap(report), [report]);
-  const canPickDay = report.status === 'OPEN' && gap.dayGoalKg !== null;
+  const canPickDay = report.status === 'OPEN' && gap.cutGapKg !== null;
   const isDay = canPickDay && scope === 'day';
 
-  const value = isDay ? gap.dayGapKg : gap.monthGapKg;
-  const pct = isDay ? gap.dayPct : gap.monthPct;
+  const value = isDay ? gap.cutGapKg : gap.monthGapKg;
+  const pct = isDay ? gap.cutPct : gap.monthPct;
   const tone = salesTone(pct);
   const filled = pct === null ? 0 : Math.max(0, Math.min(100, pct));
 
@@ -275,15 +282,13 @@ function GapStat({ report }: { report: ForecastSalesResponse }) {
       : isDay
         ? value > 0
           ? `faltan ${fmtKg(value)} kg`
-          : value === 0
-            ? '0 kg'
-            : `+${fmtKg(Math.abs(value))} kg`
+          : 'meta cubierta'
         : `${value > 0 ? '+' : ''}${fmtKg(value)} kg`;
 
   const hint = isDay
-    ? value !== null && value <= 0
-      ? 'objetivo del día cumplido'
-      : `objetivo ${fmtKg(gap.dayGoalKg)} kg/día · hoy ${fmtKg(gap.todayKg)} kg`
+    ? value === null
+      ? 'depende de la meta'
+      : `si el mes terminara hoy · ${fmtKg(report.totals.actualKg)} de ${fmtKg(report.totals.forecastKg)} kg`
     : value === null
       ? 'depende de la meta'
       : value >= 0
@@ -321,7 +326,7 @@ function GapStat({ report }: { report: ForecastSalesResponse }) {
       <p className="text-label-sm text-white/50">{hint}</p>
       <div
         role="progressbar"
-        aria-label={isDay ? 'Avance del objetivo del día' : 'Avance de la meta del mes'}
+        aria-label={isDay ? 'Avance del forecast al corte' : 'Avance de la meta del mes'}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(filled)}
@@ -335,7 +340,7 @@ function GapStat({ report }: { report: ForecastSalesResponse }) {
         />
       </div>
       <p className="mt-1 text-[0.6rem] text-white/45">
-        {isDay ? 'del objetivo del día' : 'de la meta del mes'} · {fmtPct(pct)}
+        {isDay ? 'del forecast al corte' : 'de la meta del mes'} · {fmtPct(pct)}
       </p>
     </div>
   );
@@ -389,8 +394,12 @@ export function SalesReport({
   const [onlyWithSales, setOnlyWithSales] = useState(false);
   const [onlyWithForecast, setOnlyWithForecast] = useState(false);
   const [onlyWithData, setOnlyWithData] = useState(false);
+  // Clientes: por defecto solo los que tienen meta histórica o venta del mes,
+  // para no abrir con 1.100 filas vacías del catálogo.
+  const [onlyWithTarget, setOnlyWithTarget] = useState(true);
   const [focusCode, setFocusCode] = useState<string | null>(null);
-  const [expandedCustomer, setExpandedCustomer] = useState<string | null>(null);
+  // Cliente abierto en el panel lateral (mismo patrón que el detalle de producto).
+  const [focusCustomer, setFocusCustomer] = useState<string | null>(null);
   const [pinnedDay, setPinnedDay] = useState<string | null>(null);
   const [hoverDay, setHoverDay] = useState<string | null>(null);
   // Día abierto en el modal de desglose (independiente del pin de la tira).
@@ -400,7 +409,6 @@ export function SalesReport({
   const [deviationExpanded, setDeviationExpanded] = useState(false);
   const detailRef = useRef<HTMLElement | null>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
-  const customerTableRef = useRef<HTMLDivElement | null>(null);
 
   // El input responde al instante; la lista se filtra cuando hay hueco.
   const deferredSearch = useDeferredValue(search);
@@ -430,9 +438,10 @@ export function SalesReport({
         ? filterCustomerSalesRows(customerReport.customers, {
             search: deferredSearch,
             onlyWithSales,
+            onlyWithTarget,
           })
         : [],
-    [customerReport, deferredSearch, onlyWithSales],
+    [customerReport, deferredSearch, onlyWithSales, onlyWithTarget],
   );
 
   const customerDeviationPreview = useMemo(
@@ -451,11 +460,10 @@ export function SalesReport({
   );
 
   const openCustomer = useCallback((code: string) => {
-    setExpandedCustomer((current) => (current === code ? null : code));
-    requestAnimationFrame(() => {
-      customerTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
+    previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setFocusCustomer((current) => (current === code ? null : code));
   }, []);
+  const closeCustomer = useCallback(() => setFocusCustomer(null), []);
 
   const openProduct = useCallback((code: string) => {
     previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -520,22 +528,27 @@ export function SalesReport({
     setPinnedDay(null);
     setHoverDay(null);
     setDetailDay(null);
-    setExpandedCustomer(null);
+    setFocusCustomer(null);
   }, [report?.year, report?.month]);
 
   // Al cambiar de producto a cliente (o al revés) no se arrastra el foco de la
   // vista anterior.
   useEffect(() => {
     setFocusCode(null);
-    setExpandedCustomer(null);
+    setFocusCustomer(null);
   }, [mode]);
 
-  // El detalle del producto es un diálogo: Esc cierra, el fondo no scrollea
-  // y el foco entra al panel para que el clic tenga respuesta inmediata.
+  // Los detalles (producto y cliente) son diálogos: Esc cierra, el fondo no
+  // scrollea y el foco entra al panel para que el clic tenga respuesta inmediata.
+  const detailOpen = Boolean(focusCode || focusCustomer);
+  const closeDetail = useCallback(() => {
+    setFocusCode(null);
+    setFocusCustomer(null);
+  }, []);
   useEffect(() => {
-    if (!focusCode) return;
+    if (!detailOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setFocusCode(null);
+      if (event.key === 'Escape') closeDetail();
     };
     document.addEventListener('keydown', onKeyDown);
     const previousOverflow = document.body.style.overflow;
@@ -547,12 +560,42 @@ export function SalesReport({
       cancelAnimationFrame(frame);
       previousFocus.current?.focus();
     };
-  }, [focusCode]);
+  }, [detailOpen, closeDetail]);
   const focusRow = useMemo(
     () => (report && focusCode ? report.rows.find((row) => row.productCode === focusCode) ?? null : null),
     [report, focusCode],
   );
+  const focusCustomerRow = useMemo(
+    () =>
+      customerReport && focusCustomer
+        ? customerReport.customers.find((row) => row.customerCode === focusCustomer) ?? null
+        : null,
+    [customerReport, focusCustomer],
+  );
   const focusOption = useMemo(() => (report && focusRow ? historyOption(report, focusRow) : {}), [report, focusRow]);
+  const focusCustomerOption = useMemo(
+    () => (customerReport && focusCustomerRow ? customerHistoryOption(customerReport, focusCustomerRow) : {}),
+    [customerReport, focusCustomerRow],
+  );
+  // Historial del cliente en el orden de la ventana (meses con cero incluidos).
+  const focusCustomerHistory = useMemo(() => {
+    if (!customerReport || !focusCustomerRow) return [];
+    return customerReport.historyMonths.map((month, index) => ({
+      year: month.year,
+      month: month.month,
+      kg:
+        focusCustomerRow.history.find((entry) => entry.year === month.year && entry.month === month.month)?.kg ??
+        focusCustomerRow.history[index]?.kg ??
+        0,
+    }));
+  }, [customerReport, focusCustomerRow]);
+  const focusCustomerWindowLabel = useMemo(() => {
+    const first = focusCustomerHistory[0];
+    const last = focusCustomerHistory[focusCustomerHistory.length - 1];
+    return first && last
+      ? `${monthLabel(first.year, first.month, true)} – ${monthLabel(last.year, last.month, true)}`
+      : null;
+  }, [focusCustomerHistory]);
 
   // Forecast del Asignador para el producto enfocado: mes + reparto semanal.
   const focusForecast = useMemo(() => {
@@ -589,12 +632,13 @@ export function SalesReport({
 
   const hasDeviationFilters =
     Boolean(search.trim()) || onlyWithSales || onlyWithForecast || onlyWithData;
-  const customerHasFilters = Boolean(search.trim()) || onlyWithSales;
+  const customerHasFilters = Boolean(search.trim()) || onlyWithSales || onlyWithTarget;
   const clearDeviationFilters = useCallback(() => {
     setSearch('');
     setOnlyWithSales(false);
     setOnlyWithForecast(false);
     setOnlyWithData(false);
+    setOnlyWithTarget(false);
   }, []);
 
   // Aceptar un cambio de Profit sobre la meta capturada (solo mes en curso).
@@ -661,6 +705,12 @@ export function SalesReport({
   const projectedAttainment = totals.projectedAttainmentPct;
   const tone = salesTone(projectedAttainment ?? attainment);
   const basisLabel = report.basis === 'WORKING' ? 'día hábil (lun–sáb)' : 'día calendario';
+
+  // Parte del mes ya transcurrida: la vara del ritmo con la que se pinta el
+  // «Avance» (en mes cerrado es 100 % y el color vuelve a leerse como cumplimiento).
+  const elapsedDays = report.basis === 'WORKING' ? report.days.workingElapsed : report.days.elapsed;
+  const monthDays = report.basis === 'WORKING' ? report.days.workingInMonth : report.days.inMonth;
+  const elapsedSharePct = monthDays > 0 ? Math.min(100, (elapsedDays / monthDays) * 100) : 0;
 
   // De dónde sale la meta del mes que se muestra en la ficha del producto.
   const focusForecastOrigin = !focusRow
@@ -795,7 +845,23 @@ export function SalesReport({
       align: 'right',
       kind: 'metric',
       sortValue: (row) => row.attainmentPct ?? -1,
-      render: (row) => <PctPill pct={row.attainmentPct} />,
+      render: (row) => {
+        // El número es lo vendido; el color, el ritmo (cierre al paso actual).
+        const tonePct = row.projectedAttainmentPct ?? row.attainmentPct;
+        const title =
+          row.attainmentPct === null || elapsedDays <= 0
+            ? undefined
+            : `Avance ${fmtPct(row.attainmentPct)} con ${fmtPct(elapsedSharePct)} del mes transcurrido${
+                row.projectedAttainmentPct === null
+                  ? ''
+                  : ` · cierre proyectado ${fmtPct(row.projectedAttainmentPct)} del forecast`
+              }`;
+        return (
+          <span title={title}>
+            <PctPill pct={row.attainmentPct} tone={salesTone(tonePct)} />
+          </span>
+        );
+      },
     },
     {
       key: 'promedio',
@@ -907,6 +973,27 @@ export function SalesReport({
       ),
     },
     {
+      key: 'meta',
+      header: 'Meta prom.',
+      help: CUSTOMER_SALES_COLUMN_HELP.meta,
+      align: 'right',
+      kind: 'metric',
+      sortValue: (row) => row.targetKg,
+      render: (row) =>
+        row.targetKg > 0 ? (
+          <span
+            className="font-semibold tabular-nums text-on-surface"
+            title={`Promedio de ${fmtKg(row.targetMonths, 0)} ${
+              row.targetMonths === 1 ? 'mes con compra' : 'meses con compra'
+            } en los últimos 3 meses cerrados`}
+          >
+            {fmtKg(row.targetKg)}
+          </span>
+        ) : (
+          <span className="text-outline">—</span>
+        ),
+    },
+    {
       key: 'venta',
       header: 'Venta kg',
       help: CUSTOMER_SALES_COLUMN_HELP.venta,
@@ -920,14 +1007,50 @@ export function SalesReport({
       ),
     },
     {
+      key: 'proyeccion',
+      header: 'Proyección kg',
+      help: CUSTOMER_SALES_COLUMN_HELP.proyeccion,
+      align: 'right',
+      kind: 'metric',
+      sortValue: (row) => row.projectedKg ?? -1,
+      render: (row) => (
+        <span className={cx('tabular-nums font-semibold', row.projectedKg === null ? 'text-outline' : 'text-on-surface')}>
+          {fmtKg(row.projectedKg)}
+        </span>
+      ),
+    },
+    {
+      key: 'vsMeta',
+      header: '% vs meta',
+      help: CUSTOMER_SALES_COLUMN_HELP.vsMeta,
+      align: 'right',
+      kind: 'metric',
+      sortValue: (row) => row.projectedAttainmentPct ?? -1,
+      render: (row) => <PctPill pct={row.projectedAttainmentPct ?? row.attainmentPct} />,
+    },
+    {
+      key: 'ritmo',
+      header: 'Ritmo nec.',
+      help: CUSTOMER_SALES_COLUMN_HELP.ritmo,
+      align: 'right',
+      kind: 'metric',
+      sortValue: (row) => row.requiredDailyKg ?? -1,
+      render: (row) =>
+        row.requiredDailyKg === null ? (
+          <span className="text-outline">—</span>
+        ) : (
+          <span className="tabular-nums text-warning">{fmtKg(row.requiredDailyKg)}</span>
+        ),
+    },
+    {
       key: 'participacion',
       header: 'Participación %',
       help: CUSTOMER_SALES_COLUMN_HELP.participacion,
       align: 'right',
-      kind: 'metric',
+      kind: 'detail',
       sortValue: (row) => row.sharePct,
       render: (row) => (
-        <span className={cx('tabular-nums font-bold', row.sharePct > 0 ? 'text-secondary' : 'text-outline')}>
+        <span className={cx('tabular-nums font-semibold', row.sharePct > 0 ? 'text-secondary' : 'text-outline')}>
           {fmtPct(row.sharePct)}
         </span>
       ),
@@ -937,7 +1060,7 @@ export function SalesReport({
       header: 'Productos',
       help: CUSTOMER_SALES_COLUMN_HELP.productos,
       align: 'center',
-      kind: 'metric',
+      kind: 'detail',
       sortValue: (row) => row.productCount,
       render: (row) => <Badge tone="muted">{fmtKg(row.productCount, 0)}</Badge>,
     },
@@ -959,16 +1082,12 @@ export function SalesReport({
       render: (row) => (
         <button
           type="button"
-          onClick={() => setExpandedCustomer((current) => (current === row.customerCode ? null : row.customerCode))}
-          aria-expanded={expandedCustomer === row.customerCode}
-          aria-label={`${expandedCustomer === row.customerCode ? 'Ocultar' : 'Ver'} productos de ${row.customerName}`}
-          title={expandedCustomer === row.customerCode ? 'Ocultar productos' : 'Ver productos'}
+          onClick={() => openCustomer(row.customerCode)}
+          aria-label={`Ver el detalle de ${row.customerName}`}
+          title="Ver detalle del cliente"
           className="grid size-8 place-items-center rounded-lg text-outline transition-colors hover:bg-surface-container hover:text-primary"
         >
-          <ChevronRight
-            aria-hidden
-            className={cx('size-4 transition-transform', expandedCustomer === row.customerCode && 'rotate-90')}
-          />
+          <ChevronRight aria-hidden className="size-4" />
         </button>
       ),
     },
@@ -976,6 +1095,7 @@ export function SalesReport({
 
   const customerTotals = customerReport?.totals;
   const filteredActiveCustomers = filteredCustomers.filter((customer) => customer.actualKg > 0).length;
+  const filteredTargetCustomers = filteredCustomers.filter((customer) => customer.targetKg > 0).length;
   const customerProductCount = filteredCustomers.reduce((acc, customer) => acc + customer.productCount, 0);
   const filteredShare = filteredCustomers.reduce((acc, customer) => acc + customer.sharePct, 0);
   const customerFooter = (
@@ -984,11 +1104,16 @@ export function SalesReport({
         <span className="flex flex-wrap items-center gap-space-sm uppercase text-label-sm text-outline">
           Totales {filteredCustomers.length !== (customerReport?.customers.length ?? 0) ? `(${filteredCustomers.length} filtrados)` : 'globales'}
           <Badge tone="primary" dot>
-            {fmtKg(filteredActiveCustomers, 0)} con venta
+            {fmtKg(filteredTargetCustomers, 0)} con meta
           </Badge>
+          <Badge tone="muted">{fmtKg(filteredActiveCustomers, 0)} con venta</Badge>
         </span>
       </td>
+      <td className="px-space-sm py-space-xs text-right tabular-nums text-on-surface">{fmtKg(customerTotals?.targetKg)}</td>
       <td className="px-space-sm py-space-xs text-right tabular-nums text-primary">{fmtKg(customerTotals?.actualKg)}</td>
+      <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtKg(customerTotals?.projectedKg)}</td>
+      <td className="px-space-sm py-space-xs text-right">{fmtPct(customerTotals?.projectedAttainmentPct)}</td>
+      <td className="px-space-sm py-space-xs text-right text-outline">—</td>
       <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtPct(filteredShare)}</td>
       <td className="px-space-sm py-space-xs text-center">{fmtKg(customerProductCount, 0)}</td>
       <td className="px-space-sm py-space-xs text-right text-label-sm text-on-surface-variant">
@@ -1000,10 +1125,16 @@ export function SalesReport({
 
   const customerMobileSummary = (
     <div className="grid grid-cols-2 gap-space-sm border-t border-surface-container px-space-lg py-space-md text-body-md">
+      <span className="text-outline">Meta prom. (Σ clientes)</span>
+      <span className="text-right font-bold tabular-nums">{fmtKg(customerTotals?.targetKg)}</span>
       <span className="text-outline">Venta kg</span>
       <span className="text-right font-bold tabular-nums">{fmtKg(customerTotals?.actualKg)}</span>
-      <span className="text-outline">Participación visible</span>
-      <span className="text-right font-bold tabular-nums">{fmtPct(filteredShare)}</span>
+      <span className="text-outline">Proyección kg</span>
+      <span className="text-right font-bold tabular-nums">{fmtKg(customerTotals?.projectedKg)}</span>
+      <span className="text-outline">% vs meta</span>
+      <span className="text-right font-bold tabular-nums">{fmtPct(customerTotals?.projectedAttainmentPct)}</span>
+      <span className="text-outline">Clientes con meta</span>
+      <span className="text-right font-bold tabular-nums">{fmtKg(filteredTargetCustomers, 0)}</span>
       <span className="text-outline">Clientes con venta</span>
       <span className="text-right font-bold tabular-nums">{fmtKg(filteredActiveCustomers, 0)}</span>
       <span className="text-outline">Productos</span>
@@ -1090,8 +1221,18 @@ export function SalesReport({
       {mode === 'customer' && (
         <p role="status" className="flex items-start gap-space-sm rounded-xl bg-primary-fixed/30 px-space-md py-space-sm text-body-md text-primary">
           <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
-          El acumulado y los KPIs superiores son de la empresa. La desviación y la tabla de abajo son por cliente, con la
-          meta de cada producto repartida según su histórico de compra.
+          Cada cliente se mide contra <strong>su propia meta histórica</strong>: el promedio de los kg de los meses con
+          compra de los últimos 3 meses cerrados. La barra azul es la venta del mes y la verde, su proyección de cierre.
+          Los KPIs superiores siguen siendo de la empresa: esta meta es un <strong>benchmark de cartera</strong> y no
+          reemplaza el forecast oficial de Profit.
+        </p>
+      )}
+
+      {mode === 'customer' && customerReport && !customerReport.historyAvailable && (
+        <p role="status" className="flex items-start gap-space-sm rounded-xl bg-warning-container/60 px-space-md py-space-sm text-body-md text-on-warning-container">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          No se pudo leer el histórico de los últimos 3 meses: la venta del mes se muestra igual, pero los clientes
+          quedan <strong>sin meta</strong> y no se calcula el % de cumplimiento.
         </p>
       )}
 
@@ -1271,7 +1412,7 @@ export function SalesReport({
                 <div className="flex flex-wrap items-center gap-space-sm">
                   <h2 className="flex items-center gap-1.5 text-title-md font-bold text-on-surface">
                     <ListFilter aria-hidden className="size-4 shrink-0 text-primary" />
-                    {mode === 'customer' ? 'Participación por cliente' : 'Desviación por producto'}
+                    {mode === 'customer' ? 'Meta histórica por cliente' : 'Desviación por producto'}
                   </h2>
                   <Segmented
                     ariaLabel="Ver el informe por"
@@ -1287,9 +1428,11 @@ export function SalesReport({
                   {mode === 'customer' ? (
                     <>
                       {customerHasFilters
-                        ? `${fmtKg(filteredCustomers.length, 0)} de ${fmtKg(customerReport?.customers.length ?? 0, 0)} clientes · % de la venta ABA del mes a la fecha`
-                        : `${fmtKg(customerReport?.customers.length ?? 0, 0)} clientes · % de la venta ABA del mes a la fecha`}
-                      <span className="block text-outline">Haz clic en un cliente para resaltarlo y expandir sus productos.</span>
+                        ? `${fmtKg(filteredCustomers.length, 0)} de ${fmtKg(customerReport?.customers.length ?? 0, 0)} clientes · meta = promedio de los meses con compra de los 3 meses cerrados`
+                        : `${fmtKg(customerReport?.customers.length ?? 0, 0)} clientes · meta = promedio de los meses con compra de los 3 meses cerrados`}
+                      <span className="block text-outline">
+                        Ordenados por mayor promedio histórico. Haz clic en un cliente para abrir su detalle.
+                      </span>
                     </>
                   ) : (
                     <>
@@ -1303,7 +1446,7 @@ export function SalesReport({
               </div>
               <Badge tone="primary">
                 {mode === 'customer'
-                  ? `${fmtKg(filteredActiveCustomers, 0)} con venta`
+                  ? `${fmtKg(filteredTargetCustomers, 0)} con meta`
                   : `${fmtKg(filtered.length, 0)} art.`}
               </Badge>
             </div>
@@ -1311,7 +1454,7 @@ export function SalesReport({
             <div
               className="mt-space-sm flex flex-wrap items-center gap-space-2xs"
               role="group"
-              aria-label={mode === 'customer' ? 'Filtros de participación por cliente' : 'Filtros de la desviación por producto'}
+              aria-label={mode === 'customer' ? 'Filtros de clientes vs meta' : 'Filtros de la desviación por producto'}
             >
               <TextInput
                 icon={PackageSearch}
@@ -1322,7 +1465,14 @@ export function SalesReport({
                 className="min-w-[12rem] flex-1"
               />
               {mode === 'customer' ? (
-                <FilterChip active={onlyWithSales} onClick={() => setOnlyWithSales((value) => !value)} label="Con venta" />
+                <>
+                  <FilterChip
+                    active={onlyWithTarget}
+                    onClick={() => setOnlyWithTarget((value) => !value)}
+                    label="Con meta"
+                  />
+                  <FilterChip active={onlyWithSales} onClick={() => setOnlyWithSales((value) => !value)} label="Con venta" />
+                </>
               ) : (
                 <>
                   <FilterChip active={onlyWithData} onClick={() => setOnlyWithData((value) => !value)} label="Con datos" />
@@ -1353,7 +1503,7 @@ export function SalesReport({
                   <div className="flex flex-col items-start gap-space-sm rounded-xl bg-critical-container/50 p-space-sm">
                     <p role="alert" className="flex items-center gap-space-sm text-body-md text-on-critical-container">
                       <AlertTriangle aria-hidden className="size-4" />
-                      No se pudo cargar la participación por cliente: {customerError.message}
+                      No se pudo cargar la venta por cliente: {customerError.message}
                     </p>
                     <button
                       type="button"
@@ -1381,9 +1531,11 @@ export function SalesReport({
                 )}
                 {customerReport?.salesAvailable && (
                   <>
-                    <CustomerShareBars
+                    <CustomerPortfolioStrip report={customerReport} />
+                    <CustomerMetaBars
                       rows={customerDeviationPreview}
-                      focus={expandedCustomer}
+                      focus={focusCustomer}
+                      showProjection={isOpen}
                       onFocus={openCustomer}
                     />
                     {customerReport.truncated && (
@@ -1578,7 +1730,7 @@ export function SalesReport({
 
                 <div className="flex flex-wrap items-baseline justify-between gap-space-2xs">
                   <h3 className="text-label-md font-bold text-on-surface">Forecast semanal</h3>
-                  <p className="text-label-sm text-outline">Semanas del Asignador · por defecto mes ÷ 4</p>
+                  <p className="text-label-sm text-outline">Semanas del Asignador · por defecto por días del bloque</p>
                 </div>
 
                 {focusForecast?.weekly.hasSplit ? (
@@ -1669,10 +1821,211 @@ export function SalesReport({
         </>
       )}
 
+      {mode === 'customer' && customerReport && focusCustomerRow && (
+        <>
+          <div
+            aria-hidden
+            className="animate-fade fixed inset-0 z-40 bg-[#081d2c]/45 backdrop-blur-[2px]"
+            onClick={closeCustomer}
+          />
+          <aside
+            ref={detailRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="focus-customer-title"
+            tabIndex={-1}
+            className="animate-slide-in fixed inset-y-0 right-0 z-50 flex w-full max-w-2xl flex-col overflow-y-auto overscroll-contain bg-surface-container-lowest shadow-2xl outline-none"
+          >
+            <header className="sticky top-0 z-10 flex items-start justify-between gap-space-md border-b border-surface-container bg-surface-container-lowest/95 px-space-md py-space-sm backdrop-blur">
+              <div className="min-w-0">
+                <p className="text-label-sm font-semibold uppercase tracking-[0.14em] text-outline">Detalle del cliente</p>
+                <h2
+                  id="focus-customer-title"
+                  className="flex flex-wrap items-baseline gap-space-sm text-title-md font-bold text-on-surface"
+                >
+                  <span className="tabular-nums text-primary">{focusCustomerRow.customerCode}</span>
+                  <span className="min-w-0 truncate text-body-md font-normal text-on-surface-variant">
+                    {focusCustomerRow.customerName}
+                  </span>
+                </h2>
+                <p className="text-label-md text-on-surface-variant">
+                  {focusCustomerRow.customerType ?? 'Sin tipo'}
+                  {focusCustomerRow.vendor ? ` · ${focusCustomerRow.vendor}` : ''}
+                  {focusCustomerRow.lastInvoiceDate
+                    ? ` · última entrega ${fmtDate(focusCustomerRow.lastInvoiceDate)}`
+                    : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeCustomer}
+                className="grid size-9 shrink-0 place-items-center rounded-full border border-outline-variant/40 text-on-surface-variant transition-colors hover:bg-surface-container-low"
+                aria-label="Cerrar detalle del cliente"
+              >
+                <X aria-hidden className="size-4" />
+              </button>
+            </header>
+
+            <div className="flex flex-col gap-space-md p-space-md">
+              <div>
+                <div className="mb-space-2xs flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
+                  <span className="inline-flex items-center gap-1">
+                    <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Venta real
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span aria-hidden className="size-2 rounded-full bg-[#1d5a96]" /> Mes en curso
+                  </span>
+                  {focusCustomerRow.targetKg > 0 && (
+                    <span className="inline-flex items-center gap-1">
+                      <span aria-hidden className="h-0 w-3 border-t-2 border-dashed border-[#95C800]" /> Meta promedio
+                    </span>
+                  )}
+                  {focusCustomerRow.history.some((entry) => entry.kg > 0) && (
+                    <span className="inline-flex items-center gap-1">
+                      <span aria-hidden className="h-0.5 w-3 rounded-pill bg-[#dc2626]" /> Crecimiento % (franja superior)
+                    </span>
+                  )}
+                </div>
+                <EChart
+                  option={focusCustomerOption}
+                  height={300}
+                  ariaLabel={`Histórico de ventas de ${focusCustomerRow.customerName}`}
+                />
+                <p className="mt-space-2xs text-label-sm text-outline">
+                  La línea verde punteada es la meta promedio del cliente ({fmtKg(focusCustomerRow.targetKg)} kg); la línea
+                  roja es la variación % contra el mes anterior y va en su propia franja para no cruzar las barras. El mes
+                  en curso va con su venta parcial, hasta el corte.
+                </p>
+              </div>
+
+              {/* Meta histórica y los meses que la componen. */}
+              <section className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest p-space-sm">
+                <header className="flex flex-wrap items-start justify-between gap-space-sm">
+                  <div className="min-w-0">
+                    <p className="flex items-center gap-1.5 text-label-sm font-semibold uppercase tracking-wide text-outline">
+                      <Target aria-hidden className="size-3.5 shrink-0 text-primary" /> Meta histórica
+                    </p>
+                    <p className="tabular-nums text-headline-md font-black text-primary">
+                      {focusCustomerRow.targetKg > 0 ? `${fmtKg(focusCustomerRow.targetKg)} kg` : 'Sin meta'}
+                    </p>
+                    <p className="text-label-sm text-on-surface-variant">
+                      {focusCustomerRow.targetKg > 0
+                        ? `Promedio de ${fmtKg(focusCustomerRow.targetMonths, 0)} ${
+                            focusCustomerRow.targetMonths === 1 ? 'mes con compra' : 'meses con compra'
+                          }${focusCustomerWindowLabel ? ` · ${focusCustomerWindowLabel}` : ''}`
+                        : 'Sin compras en los 3 meses cerrados: se mide solo por su venta'}
+                    </p>
+                  </div>
+                  <PctPill pct={focusCustomerRow.projectedAttainmentPct ?? focusCustomerRow.attainmentPct} />
+                </header>
+
+                <div className="my-space-sm h-px bg-surface-container" />
+
+                <div className="grid grid-cols-3 gap-space-2xs">
+                  {focusCustomerHistory.map((month) => (
+                    <div
+                      key={`${month.year}-${month.month}`}
+                      className={cx(
+                        'rounded-xl border p-space-2xs',
+                        month.kg > 0
+                          ? 'border-outline-variant/30 bg-surface'
+                          : 'border-dashed border-outline-variant/40 bg-surface-container-lowest',
+                      )}
+                    >
+                      <p className="text-label-sm font-semibold uppercase text-outline">
+                        {monthLabel(month.year, month.month, true)}
+                      </p>
+                      <p
+                        className={cx(
+                          'tabular-nums text-title-md font-black',
+                          month.kg > 0 ? 'text-on-surface' : 'text-outline',
+                        )}
+                      >
+                        {fmtKg(month.kg)} kg
+                      </p>
+                      <p className="text-label-sm text-outline">{month.kg > 0 ? 'con compra' : 'sin compra'}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-space-2xs text-label-sm text-outline">
+                  Los meses sin compra no entran al promedio; la meta es un benchmark de cartera y no reemplaza el forecast
+                  de Profit.
+                </p>
+              </section>
+
+              <div className="grid grid-cols-1 gap-space-sm sm:grid-cols-2">
+                <MiniStat
+                  label="Venta del mes"
+                  value={`${fmtKg(focusCustomerRow.actualKg)} kg`}
+                  hint={`${fmtKg(focusCustomerRow.actualUnits)} unid. · ${fmtPct(focusCustomerRow.sharePct)} de la venta ABA`}
+                />
+                <MiniStat
+                  label={isOpen ? 'Proyección' : 'Cierre real'}
+                  value={focusCustomerRow.projectedKg === null ? '—' : `${fmtKg(focusCustomerRow.projectedKg)} kg`}
+                  hint={
+                    focusCustomerRow.projectedAttainmentPct === null
+                      ? 'sin meta'
+                      : `${fmtPct(focusCustomerRow.projectedAttainmentPct)} de su meta histórica`
+                  }
+                  tone={salesTone(focusCustomerRow.projectedAttainmentPct)}
+                />
+                <MiniStat
+                  label="Promedio/día"
+                  value={`${fmtKg(focusCustomerRow.dailyAvgKg)} kg`}
+                  hint={`por ${basisLabel}`}
+                />
+                <MiniStat
+                  label={isOpen ? 'Ritmo necesario' : 'Brecha'}
+                  value={
+                    isOpen
+                      ? focusCustomerRow.requiredDailyKg === null
+                        ? '—'
+                        : `${fmtKg(focusCustomerRow.requiredDailyKg)} kg/día`
+                      : focusCustomerRow.gapKg === null
+                        ? '—'
+                        : `${focusCustomerRow.gapKg > 0 ? '+' : ''}${fmtKg(focusCustomerRow.gapKg)} kg`
+                  }
+                  hint={
+                    isOpen
+                      ? focusCustomerRow.requiredDailyKg === null
+                        ? 'sin meta'
+                        : 'para cerrar en su meta histórica'
+                      : focusCustomerRow.gapKg === null
+                        ? report.status === 'FUTURE'
+                          ? 'aún sin venta en el mes'
+                          : 'sin meta'
+                        : 'cierre real menos meta'
+                  }
+                  tone={
+                    isOpen
+                      ? 'warn'
+                      : focusCustomerRow.gapKg === null
+                        ? 'none'
+                        : focusCustomerRow.gapKg < 0
+                          ? 'bad'
+                          : 'good'
+                  }
+                />
+              </div>
+
+              <section className="rounded-2xl border border-outline-variant/30 bg-surface-container-lowest p-space-sm">
+                <header className="mb-space-2xs flex flex-wrap items-center justify-between gap-space-sm">
+                  <h3 className="text-label-md font-bold text-on-surface">Productos comprados</h3>
+                  <Badge tone="muted">
+                    {fmtKg(focusCustomerRow.productCount, 0)}{' '}
+                    {focusCustomerRow.productCount === 1 ? 'producto' : 'productos'}
+                  </Badge>
+                </header>
+                <CustomerProductsTable row={focusCustomerRow} />
+              </section>
+            </div>
+          </aside>
+        </>
+      )}
+
       {/* ---------- Tabla ---------- */}
       <Card className="overflow-hidden">
         <div
-          ref={customerTableRef}
           className="flex flex-wrap items-center justify-between gap-space-md border-b border-surface-container px-space-md py-space-sm"
         >
           <div className="flex flex-wrap items-center gap-space-sm text-label-md text-on-surface-variant">
@@ -1709,15 +2062,15 @@ export function SalesReport({
               </button>
             )}
             <span className="hidden text-outline md:inline">
-              Los filtros se aplican desde «{mode === 'customer' ? 'Participación por cliente' : 'Desviación por producto'}».
+              Los filtros se aplican desde «{mode === 'customer' ? 'Meta histórica por cliente' : 'Desviación por producto'}».
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-space-sm">
             <div className="w-full sm:w-64">
               {mode === 'customer' ? (
                 <CustomerPicker
-                  value={expandedCustomer}
-                  onChange={(code) => (code ? openCustomer(code) : setExpandedCustomer(null))}
+                  value={focusCustomer}
+                  onChange={(code) => (code ? openCustomer(code) : closeCustomer())}
                   options={customerPickerOptions}
                   allLabel={`Todos los clientes (${customerReport?.customers.length ?? 0})`}
                 />
@@ -1749,8 +2102,12 @@ export function SalesReport({
               narrative={
                 mode === 'customer'
                   ? customerReport
-                    ? `${fmtKg(customerReport.totals.actualKg)} kg vendidos en el mes a la fecha entre ${fmtKg(customerReport.totals.activeCustomerCount, 0)} clientes con venta. La participación se mide contra el total ABA.`
-                    : 'Cargando participación por cliente…'
+                    ? `${fmtKg(customerReport.totals.actualKg)} kg vendidos en el mes a la fecha contra una meta de cartera de ${fmtKg(
+                        customerReport.totals.targetKg,
+                      )} kg (promedio de los meses con compra de los últimos 3 meses cerrados). Proyección de cierre: ${fmtKg(
+                        customerReport.totals.projectedKg,
+                      )} kg.`
+                    : 'Cargando clientes vs meta histórica…'
                   : narrative
               }
               rules={mode === 'customer' ? SALES_CUSTOMER_HELP_RULES : SALES_HELP_RULES}
@@ -1772,12 +2129,11 @@ export function SalesReport({
             columns={customerColumns}
             rows={filteredCustomers}
             rowKey={(row) => row.customerCode}
-            expandedKey={expandedCustomer}
-            renderExpanded={(row) => <CustomerProductsTable row={row} />}
+            onRowClick={(row) => openCustomer(row.customerCode)}
             empty={
               <EmptyState
                 icon={Users}
-                title={customerError ? 'No se pudo cargar la participación por cliente' : 'Sin clientes registrados'}
+                title={customerError ? 'No se pudo cargar la venta por cliente' : 'Sin clientes registrados'}
                 description={
                   customerLoading
                     ? 'Consultando ventas por cliente en Profit…'
@@ -1850,14 +2206,17 @@ export function SalesReport({
         {mode === 'customer' ? (
           <>
             <span className="inline-flex items-center gap-1">
-              <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Venta real
+              <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Venta del mes
             </span>
             <span className="inline-flex items-center gap-1">
-              <span aria-hidden className="size-2 rounded-full bg-secondary" /> Participación sobre la venta ABA
+              <span aria-hidden className="size-2 rounded-full bg-secondary-container" /> Proyección de cierre
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span aria-hidden className="h-3 w-[2px] rounded-pill bg-secondary" /> 100 % de la meta histórica
             </span>
             <span className="text-outline">·</span>
-            El 100 % es la venta ABA del mes hasta el corte. La barra se compara con el cliente de mayor participación;
-            la etiqueta muestra el porcentaje real. Los sacos no se suman con kg.
+            La meta de cada cliente es el promedio de los meses con compra de los últimos 3 meses cerrados; no es el
+            forecast oficial de Profit. Orden: mayor promedio primero. Los sacos no se suman con kg.
           </>
         ) : (
           <>
@@ -1871,6 +2230,7 @@ export function SalesReport({
               <span aria-hidden className="size-2 rounded-full bg-critical" /> &lt; 85 %
             </span>
             <span className="text-outline">·</span>
+            El color de «Avance» y del semáforo lee el ritmo (cierre proyectado ÷ meta), no lo vendido a la fecha.
             Corte a ayer; el domingo no entra al denominador. Venta = nota de entrega no anulada, línea ABA (sin
             devoluciones). Los sacos no se suman con kg en los totales.
           </>
@@ -1884,36 +2244,55 @@ function CustomerProductsTable({ row }: { row: ForecastCustomerSalesRow }) {
   if (row.products.length === 0) {
     return <p className="px-space-xs py-2 text-label-md text-outline">El cliente no tiene venta de productos en el mes a la fecha.</p>;
   }
+  // Si el cliente solo compra granel no hay sacos que mostrar: la columna se
+  // omite para darle ancho al nombre del producto.
+  const hasSacks = row.products.some((product) => product.sacks !== null);
   return (
     <div className="overflow-x-auto">
-      <table className="w-full border-collapse text-label-md">
+      <table className="w-full min-w-[30rem] border-collapse text-label-md">
         <caption className="sr-only">Productos de {row.customerName}</caption>
         <thead>
-          <tr className="text-label-sm uppercase tracking-[0.1em] text-outline">
-            <th scope="col" className="py-1 text-left font-semibold">Producto</th>
-            <th scope="col" className="py-1 text-center font-semibold">UOM</th>
-            <th scope="col" className="py-1 text-right font-semibold">Venta kg</th>
-            <th scope="col" className="py-1 text-right font-semibold">Unidades</th>
-            <th scope="col" className="py-1 text-right font-semibold">Sacos</th>
-            <th scope="col" className="py-1 text-right font-semibold">% del cliente</th>
-            <th scope="col" className="py-1 text-right font-semibold">% del producto</th>
+          <tr className="text-label-sm uppercase tracking-[0.08em] text-outline">
+            <th scope="col" className="py-1 pr-3 text-left font-semibold">Producto</th>
+            <th scope="col" className="w-12 py-1 text-center font-semibold">UOM</th>
+            <th scope="col" className="w-20 py-1 text-right font-semibold">Venta kg</th>
+            <th scope="col" className="w-16 py-1 text-right font-semibold" title="Unidades">Unid.</th>
+            {hasSacks && (
+              <th scope="col" className="w-16 py-1 text-right font-semibold">Sacos</th>
+            )}
+            <th scope="col" className="w-20 py-1 text-right font-semibold" title="% del cliente">% cliente</th>
+            <th scope="col" className="w-20 py-1 text-right font-semibold" title="% del producto">% producto</th>
           </tr>
         </thead>
         <tbody>
           {row.products.map((product) => (
             <tr key={product.productCode} className="border-t border-surface-container/70">
-              <td className="py-1 pr-2">
-                <span className="block truncate text-on-surface">{product.description}</span>
-                <span className="text-label-sm text-outline">{product.productCode}</span>
+              <td className="py-1.5 pr-3">
+                <span className="block leading-snug text-on-surface" title={product.description}>
+                  {product.description}
+                </span>
+                <span className="mt-0.5 block text-label-sm tabular-nums text-outline">{product.productCode}</span>
               </td>
-              <td className="py-1 text-center text-on-surface-variant">{product.uom}</td>
-              <td className="py-1 text-right tabular-nums font-semibold text-primary">{fmtKg(product.kg)}</td>
-              <td className="py-1 text-right tabular-nums text-on-surface-variant">{fmtKg(product.units)}</td>
-              <td className="py-1 text-right tabular-nums text-on-surface-variant">
-                {product.sacks === null ? '—' : fmtKg(product.sacks, 1)}
+              <td className="py-1.5 text-center">
+                <Badge tone="muted">{product.uom}</Badge>
               </td>
-              <td className="py-1 text-right tabular-nums">{fmtPct(product.shareOfCustomerPct)}</td>
-              <td className="py-1 text-right tabular-nums text-secondary">{fmtPct(product.shareOfProductPct)}</td>
+              <td className="whitespace-nowrap py-1.5 text-right tabular-nums font-semibold text-primary">
+                {fmtKg(product.kg)}
+              </td>
+              <td className="whitespace-nowrap py-1.5 text-right tabular-nums text-on-surface-variant">
+                {fmtKg(product.units)}
+              </td>
+              {hasSacks && (
+                <td className="whitespace-nowrap py-1.5 text-right tabular-nums text-on-surface-variant">
+                  {product.sacks === null ? '—' : fmtKg(product.sacks, 1)}
+                </td>
+              )}
+              <td className="whitespace-nowrap py-1.5 text-right tabular-nums">
+                {fmtPct(product.shareOfCustomerPct)}
+              </td>
+              <td className="whitespace-nowrap py-1.5 text-right tabular-nums text-secondary">
+                {fmtPct(product.shareOfProductPct)}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -1938,13 +2317,58 @@ function CustomerDeviationSkeleton() {
   );
 }
 
-const CustomerShareBars = memo(function CustomerShareBars({
+function CustomerPortfolioStrip({ report }: { report: ForecastCustomerSalesResponse }) {
+  const totals = report.totals;
+  const first = report.historyMonths[0];
+  const last = report.historyMonths[report.historyMonths.length - 1];
+  const windowLabel =
+    first && last ? `${monthLabel(first.year, first.month, true)} – ${monthLabel(last.year, last.month, true)}` : null;
+  const tone = salesTone(totals.projectedAttainmentPct ?? totals.attainmentPct);
+
+  return (
+    <section
+      aria-label="Cartera de clientes"
+      className="mb-space-sm rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-sm"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-space-2xs">
+        <p className="flex items-center gap-1.5 text-label-sm font-bold uppercase tracking-[0.12em] text-outline">
+          <Target aria-hidden className="size-3.5 shrink-0 text-primary" />
+          Cartera de clientes
+        </p>
+        <span className="text-label-sm text-outline">
+          {windowLabel ? `Meta = promedio ${windowLabel}` : 'Meta histórica por cliente'}
+        </span>
+      </div>
+      <div className="mt-space-2xs grid grid-cols-3 gap-space-2xs">
+        <div className="rounded-lg bg-surface-container-low p-space-2xs">
+          <p className="text-label-sm font-semibold uppercase tracking-wide text-outline">Meta</p>
+          <p className="tabular-nums text-label-md font-black text-on-surface">{fmtKg(totals.targetKg)} kg</p>
+          <p className="text-label-sm text-outline">{fmtKg(totals.targetCustomerCount, 0)} con meta</p>
+        </div>
+        <div className="rounded-lg bg-surface-container-low p-space-2xs">
+          <p className="text-label-sm font-semibold uppercase tracking-wide text-outline">Venta</p>
+          <p className="tabular-nums text-label-md font-black text-primary">{fmtKg(totals.actualKg)} kg</p>
+          <p className="text-label-sm text-outline">{fmtPct(totals.attainmentPct)} de la meta</p>
+        </div>
+        <div className="rounded-lg bg-surface-container-low p-space-2xs">
+          <p className="text-label-sm font-semibold uppercase tracking-wide text-outline">Proyección</p>
+          <p className={cx('tabular-nums text-label-md font-black', TONE_TEXT[tone])}>{fmtKg(totals.projectedKg)} kg</p>
+          <p className="text-label-sm text-outline">{fmtPct(totals.projectedAttainmentPct)} al cierre</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+const CustomerMetaBars = memo(function CustomerMetaBars({
   rows,
   focus,
+  showProjection,
   onFocus,
 }: {
   rows: ForecastCustomerSalesRow[];
   focus: string | null;
+  showProjection: boolean;
   onFocus: (code: string) => void;
 }) {
   const [mounted, setMounted] = useState(false);
@@ -1955,62 +2379,115 @@ const CustomerShareBars = memo(function CustomerShareBars({
   }, []);
 
   if (rows.length === 0) {
-    return <p className="py-space-lg text-center text-body-md text-on-surface-variant">Sin clientes para graficar.</p>;
+    return <p className="py-space-lg text-center text-body-md text-on-surface-variant">Sin clientes para el filtro.</p>;
   }
-
-  const maxShare = Math.max(1, ...rows.map((row) => row.sharePct));
 
   return (
     <div className="flex flex-col gap-space-2xs">
       <div className="max-h-[520px] overflow-y-auto pr-1">
-        <div className="sticky top-0 z-10 border-b border-surface-container bg-surface-container-lowest pb-space-2xs text-label-sm text-outline">
-          <div className="flex items-center justify-between gap-space-sm px-space-xs py-1">
-            <span>Barra relativa al cliente líder</span>
-            <span className="font-semibold text-secondary">100 % = venta ABA del mes</span>
-          </div>
+        <div className="sticky top-0 z-10 border-b border-surface-container bg-surface-container-lowest pb-space-2xs">
+          <DeviationScale markerPct={META_MARKER_PCT} metaLabel="meta 100 %" />
         </div>
         <ul className="flex flex-col gap-space-2xs">
-          {rows.map((row) => (
-            <li key={row.customerCode}>
-              <button
-                type="button"
-                onClick={() => onFocus(row.customerCode)}
-                aria-pressed={focus === row.customerCode}
-                title={`Ver productos de ${row.customerName}`}
-                className={cx(
-                  'group w-full rounded-xl px-space-xs py-2 text-left transition-all duration-200 hover:bg-surface-container-low',
-                  focus === row.customerCode && 'bg-surface-container-low ring-1 ring-primary-container/25',
-                )}
-              >
-                <div className="flex items-start justify-between gap-space-sm">
-                  <span className="flex min-w-0 items-baseline gap-space-xs">
-                    <span className="shrink-0 tabular-nums text-label-md font-bold text-primary">{row.customerCode}</span>
-                    <span className="truncate text-label-sm text-on-surface-variant">{row.customerName}</span>
-                  </span>
-                  <span className="flex shrink-0 flex-col items-end leading-tight">
-                    <span className="tabular-nums text-label-md font-bold text-secondary">{fmtPct(row.sharePct)}</span>
-                    <span className="text-label-sm text-outline">{fmtKg(row.actualKg)} kg</span>
-                  </span>
-                </div>
-                <div className="mt-1.5 h-2.5 w-full rounded-pill bg-surface-container">
-                  <div
-                    className="h-full rounded-pill bg-secondary transition-[width] duration-700 ease-out"
-                    style={{ width: mounted ? `${(row.sharePct / maxShare) * 100}%` : '0%' }}
-                  />
-                </div>
-              </button>
-            </li>
-          ))}
+          {rows.map((row) => {
+            // El % que se lee es la proyección: si cruza el marcador, se dice cuánto.
+            const pct = row.projectedAttainmentPct ?? row.attainmentPct;
+            const tone = salesTone(pct);
+            const geo = customerTargetGeometry(row);
+            const overPct = pct !== null && Number.isFinite(pct) && pct > 100 ? pct - 100 : null;
+            const gapKg = row.projectedKg === null ? null : row.projectedKg - row.targetKg;
+            const monthsLabel = `${fmtKg(row.targetMonths, 0)} ${row.targetMonths === 1 ? 'mes' : 'meses'}`;
+
+            return (
+              <li key={row.customerCode}>
+                <button
+                  type="button"
+                  onClick={() => onFocus(row.customerCode)}
+                  aria-pressed={focus === row.customerCode}
+                  title={`${row.customerName} · meta ${fmtKg(row.targetKg)} kg (promedio de ${monthsLabel}) · venta ${fmtKg(
+                    row.actualKg,
+                  )} kg${showProjection && row.projectedKg !== null ? ` · proyección ${fmtKg(row.projectedKg)} kg` : ''}`}
+                  className={cx(
+                    'group w-full rounded-xl px-space-xs py-2 text-left transition-all duration-200 hover:bg-surface-container-low',
+                    focus === row.customerCode && 'bg-surface-container-low ring-1 ring-primary-container/25',
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-space-sm">
+                    <span className="flex min-w-0 items-baseline gap-space-xs">
+                      <span className="shrink-0 tabular-nums text-label-md font-bold text-primary">{row.customerCode}</span>
+                      <span className="truncate text-label-sm text-on-surface-variant">{row.customerName}</span>
+                    </span>
+                    <span className="flex shrink-0 flex-col items-end leading-tight">
+                      <span className={cx('tabular-nums text-label-md font-bold', TONE_TEXT[tone])}>
+                        {geo.hasMeta ? fmtPct(pct) : 'Sin meta'}
+                      </span>
+                      {overPct !== null ? (
+                        <span className="whitespace-nowrap text-label-sm font-semibold text-success">
+                          +{fmtPct(overPct)} sobre meta
+                        </span>
+                      ) : geo.hasMeta && gapKg !== null ? (
+                        <span className="whitespace-nowrap text-label-sm text-on-surface-variant">
+                          faltan {fmtKg(Math.abs(gapKg))} kg
+                        </span>
+                      ) : (
+                        <span className="whitespace-nowrap text-label-sm text-outline">{fmtKg(row.actualKg)} kg vendidos</span>
+                      )}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 truncate text-label-sm text-outline">
+                    meta {geo.hasMeta ? `${fmtKg(row.targetKg)} kg · ${monthsLabel}` : 'sin histórico'}
+                    {' · '}venta {fmtKg(row.actualKg)} kg
+                    {showProjection && row.projectedKg !== null ? ` · proyección ${fmtKg(row.projectedKg)} kg` : ''}
+                  </p>
+                  <div className="relative mt-1.5">
+                    <div
+                      className={cx(
+                        'h-2.5 w-full rounded-pill',
+                        geo.hasMeta ? 'bg-surface-container' : 'border border-dashed border-outline-variant/60',
+                      )}
+                    >
+                      {geo.hasMeta && (
+                        <div className="relative h-full w-full overflow-hidden rounded-pill">
+                          {showProjection && (
+                            <div
+                              className="absolute inset-y-0 left-0 rounded-pill bg-secondary-container/45 transition-[width] duration-700 ease-out"
+                              style={{ width: mounted ? `${geo.projectedWidthPct}%` : '0%' }}
+                            />
+                          )}
+                          <div
+                            className="absolute inset-y-0 left-0 rounded-pill bg-primary-container transition-[width] duration-700 ease-out"
+                            style={{ width: mounted ? `${geo.actualWidthPct}%` : '0%', transitionDelay: '80ms' }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                    {geo.hasMeta && (
+                      <span
+                        aria-hidden
+                        className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 rounded-pill bg-secondary shadow-[0_0_0_1px_white]"
+                        style={{ left: `calc(${geo.markerPct}% - 1px)` }}
+                      />
+                    )}
+                  </div>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       </div>
       <div className="mt-space-xs flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
         <span className="inline-flex items-center gap-1">
-          <span aria-hidden className="size-2 rounded-full bg-secondary" /> Participación sobre la venta ABA
+          <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Venta del mes
         </span>
+        {showProjection && (
+          <span className="inline-flex items-center gap-1">
+            <span aria-hidden className="size-2 rounded-full bg-secondary-container/60" /> Proyección
+          </span>
+        )}
         <span className="inline-flex items-center gap-1">
-          <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Código del cliente
+          <span aria-hidden className="h-3 w-[2px] rounded-pill bg-secondary" /> 100 % de la meta histórica
         </span>
-        <span className="text-outline">La etiqueta muestra el % real del total; la barra se compara con el líder.</span>
+        <span className="text-outline">La meta es el promedio de los meses con compra de los 3 meses cerrados.</span>
       </div>
     </div>
   );
@@ -2636,6 +3113,255 @@ interface CustomSeriesApi {
   size: (range: [number, number]) => [number, number];
 }
 
+/**
+ * Guion de meta por barra: si la barra la supera, el tramo de exceso se tiñe de
+ * verde sobre la barra en vez de alargar la línea. Lo comparten el detalle de
+ * producto (meta por mes) y el de cliente (meta promedio del cliente).
+ */
+function metaMarkerSeries(marks: Array<Array<number | undefined>>): Record<string, unknown> {
+  return {
+    name: 'Meta',
+    type: 'custom',
+    silent: true,
+    tooltip: { show: false },
+    data: marks,
+    z: 4,
+    renderItem: (_params: unknown, api: CustomSeriesApi) => {
+      const index = api.value(0);
+      const meta = api.value(1);
+      const actual = api.value(2);
+      if (!Number.isFinite(meta)) return null;
+      const [cx, cy] = api.coord([index, meta]);
+      const band = api.size([1, 0])[0] ?? 0;
+      // Misma geometría que la barra de ECharts: 69 % de la banda, tope
+      // `barMaxWidth` (38 px). Si cambia cualquiera de los dos, cambia aquí.
+      const barWidth = Math.min(band * 0.69, 38);
+      const half = Math.max(barWidth, 10) / 2 + 3;
+      const children: Array<Record<string, unknown>> = [];
+      if (Number.isFinite(actual) && actual > meta) {
+        const [topY] = api.coord([index, actual]);
+        children.push({
+          type: 'rect',
+          shape: {
+            x: cx - barWidth / 2,
+            y: topY,
+            width: barWidth,
+            height: Math.max(0, cy - topY),
+            r: 6,
+          },
+          style: { fill: 'rgba(149, 200, 0, 0.22)', stroke: 'rgba(149, 200, 0, 0.55)', lineWidth: 1 },
+        });
+      }
+      children.push({
+        type: 'line',
+        shape: { x1: cx - half, y1: cy, x2: cx + half, y2: cy },
+        style: { stroke: C.lime, lineWidth: 2, lineCap: 'round', lineDash: [5, 4] },
+      });
+      return { type: 'group', children };
+    },
+  };
+}
+
+/** Histórico de 3 meses + mes en curso de un cliente, contra su meta promedio. */
+function customerHistoryOption(
+  report: ForecastCustomerSalesResponse,
+  row: ForecastCustomerSalesRow,
+): Record<string, unknown> {
+  const categories = [
+    ...row.history.map((entry) => monthLabel(entry.year, entry.month, true)),
+    monthLabel(report.year, report.month, true),
+  ];
+  const values = [...row.history.map((entry) => entry.kg), row.actualKg];
+  const lastIndex = values.length - 1;
+  const meta = row.targetKg > 0 ? row.targetKg : null;
+  const growth = monthOverMonthPct(values);
+  const numericGrowth = growth.filter((value): value is number => value !== null);
+  // La banda superior solo existe si hay al menos dos meses comparables.
+  const withBand = numericGrowth.length > 0;
+  const growthSpan = withBand ? Math.max(...numericGrowth) - Math.min(...numericGrowth) : 0;
+  const growthPad = Math.max(6, growthSpan * 0.18);
+  const growthMin = withBand ? Math.min(0, ...numericGrowth) - growthPad : 0;
+  const growthMax = withBand ? Math.max(0, ...numericGrowth) + growthPad : 0;
+  const axisMax = Math.max(...values, meta ?? 0, 1) * 1.08;
+  // 0 = banda de crecimiento (arriba), 1 = barras. Sin banda, las barras usan
+  // el grid único y la serie apunta al índice 0.
+  const mainIndex = withBand ? 1 : 0;
+  // Misma franja horizontal en ambos grids para que meses y línea queden
+  // alineados: `containLabel` desplazaría cada grid de forma distinta.
+  const plot = { left: 54, right: 42 };
+
+  const tipRow = (name: string, value: string, color = '#fff') =>
+    `<div style="display:flex;justify-content:space-between;gap:18px;margin-top:4px;">
+      <span style="color:rgba(255,255,255,.72);">${name}</span>
+      <strong style="font-variant-numeric:tabular-nums;color:${color};">${value}</strong>
+    </div>`;
+
+  return {
+    animationDuration: 450,
+    grid: withBand
+      ? [
+          { ...plot, top: 6, height: 46 },
+          { ...plot, top: 74, bottom: 28 },
+        ]
+      : [{ ...plot, top: 26, bottom: 28 }],
+    axisPointer: withBand ? { link: [{ xAxisIndex: 'all' }] } : undefined,
+    tooltip: {
+      trigger: 'axis',
+      confine: true,
+      backgroundColor: 'rgba(8, 29, 44, 0.94)',
+      borderWidth: 0,
+      padding: [8, 10],
+      textStyle: { color: '#fff', fontSize: 12 },
+      extraCssText: 'border-radius:12px;box-shadow:0 18px 40px -28px rgba(8,29,44,.6);',
+      formatter: (params: Array<{ dataIndex?: number }>) => {
+        const index = params[0]?.dataIndex ?? 0;
+        const label =
+          index === lastIndex ? `${monthLabel(report.year, report.month)} (en curso)` : categories[index];
+        const actual = values[index] ?? 0;
+        const delta = meta !== null ? actual - meta : null;
+        const growthPct = growth[index] ?? null;
+        const lines = [tipRow('Venta real', `${fmtKg(actual)} kg`)];
+        if (delta !== null && meta !== null) {
+          lines.push(tipRow('Meta promedio', `${fmtKg(meta)} kg`, '#d9f99d'));
+          if (delta > 0) {
+            lines.push(
+              tipRow('Sobre su meta', `+${fmtKg(delta)} kg (${fmtSignedPct((delta / meta) * 100)})`, '#d9f99d'),
+            );
+          } else if (delta < 0) {
+            lines.push(
+              tipRow('Bajo su meta', `-${fmtKg(Math.abs(delta))} kg (${fmtSignedPct((delta / meta) * 100)})`, '#fca5a5'),
+            );
+          } else {
+            lines.push(tipRow('Meta', 'cumplida exacta', '#d9f99d'));
+          }
+        } else {
+          lines.push(tipRow('Meta promedio', 'sin meta', 'rgba(255,255,255,.6)'));
+        }
+        if (growthPct !== null && index > 0) {
+          lines.push(tipRow('Crecimiento', `${fmtSignedPct(growthPct)} vs ${categories[index - 1]}`, '#fca5a5'));
+        }
+        return `<div style="min-width:190px;"><strong>${label}</strong>${lines.join('')}</div>`;
+      },
+    },
+    xAxis: withBand
+      ? [
+          // Eje del la banda: oculto, solo comparte las categorías.
+          { type: 'category', gridIndex: 0, data: categories, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { show: false } },
+          {
+            type: 'category',
+            gridIndex: 1,
+            data: categories,
+            axisLine: { lineStyle: { color: '#d6ebff' } },
+            axisTick: { show: false },
+            axisLabel: { color: C.outline, fontSize: 10 },
+          },
+        ]
+      : [
+          {
+            type: 'category',
+            data: categories,
+            axisLine: { lineStyle: { color: '#d6ebff' } },
+            axisTick: { show: false },
+            axisLabel: { color: C.outline, fontSize: 10 },
+          },
+        ],
+    yAxis: [
+      ...(withBand
+        ? [
+            {
+              type: 'value',
+              gridIndex: 0,
+              position: 'right',
+              min: growthMin,
+              max: growthMax,
+              splitNumber: 2,
+              splitLine: { show: false },
+              axisLine: { show: false },
+              axisTick: { show: false },
+              axisLabel: {
+                color: '#b91c1c',
+                fontSize: 9,
+                formatter: (value: number) => `${Math.round(value)} %`,
+              },
+            },
+          ]
+        : []),
+      {
+        type: 'value',
+        gridIndex: mainIndex,
+        max: axisMax,
+        splitLine: { lineStyle: { color: C.grid } },
+        axisLabel: { color: C.outline, fontSize: 10, formatter: (value: number) => compact(value) },
+      },
+    ],
+    series: [
+      {
+        name: 'Venta real',
+        type: 'bar',
+        xAxisIndex: mainIndex,
+        yAxisIndex: mainIndex,
+        barMaxWidth: 38,
+        data: values.map((value, index) => ({
+          value,
+          itemStyle: {
+            color: index === lastIndex ? C.navyLight : C.navy,
+            borderRadius: [6, 6, 0, 0],
+          },
+        })),
+        // Meta promedio: una sola referencia continua, porque es la misma para
+        // todos los meses (a diferencia de la meta mensual de producto).
+        markLine:
+          meta === null
+            ? undefined
+            : {
+                symbol: 'none',
+                silent: true,
+                lineStyle: { color: C.lime, type: 'dashed', width: 2 },
+                label: {
+                  position: 'insideEndTop',
+                  formatter: `meta ${fmtKg(meta)} kg`,
+                  color: '#3f6212',
+                  fontSize: 9,
+                  fontWeight: 'bold',
+                },
+                data: [{ yAxis: meta }],
+              },
+      },
+      ...(withBand
+        ? [
+            {
+              name: 'Crecimiento',
+              type: 'line',
+              xAxisIndex: 0,
+              yAxisIndex: 0,
+              data: growth,
+              smooth: 0.25,
+              symbol: 'circle',
+              symbolSize: 5,
+              connectNulls: false,
+              lineStyle: { width: 2, color: C.red },
+              itemStyle: { color: C.red, borderColor: '#fff', borderWidth: 1 },
+              z: 5,
+              // 0 % como referencia tenue dentro de la banda.
+              markLine: {
+                symbol: 'none',
+                silent: true,
+                lineStyle: { color: 'rgba(220, 38, 38, 0.3)', type: 'dashed', width: 1 },
+                label: {
+                  position: 'insideEndTop',
+                  formatter: '0 %',
+                  color: 'rgba(185, 28, 28, 0.75)',
+                  fontSize: 8,
+                },
+                data: [{ yAxis: 0 }],
+              },
+            },
+          ]
+        : []),
+    ],
+  };
+}
+
 function historyOption(report: ForecastSalesResponse, row: ForecastSalesRow): Record<string, unknown> {
   const categories = [
     ...row.history.map((entry) => monthLabel(entry.year, entry.month, true)),
@@ -2756,49 +3482,7 @@ function historyOption(report: ForecastSalesResponse, row: ForecastSalesRow): Re
           },
         })),
       },
-      {
-        // Guion de meta por barra: si la barra la supera, el tramo de exceso
-        // se tiñe de verde sobre la barra en vez de alargar la línea.
-        name: 'Meta',
-        type: 'custom',
-        silent: true,
-        tooltip: { show: false },
-        data: metaMarks,
-        z: 4,
-        renderItem: (_params: unknown, api: CustomSeriesApi) => {
-          const index = api.value(0);
-          const meta = api.value(1);
-          const actual = api.value(2);
-          if (!Number.isFinite(meta)) return null;
-          const [cx, cy] = api.coord([index, meta]);
-          const band = api.size([1, 0])[0] ?? 0;
-          // Misma geometría que la barra de ECharts: 69 % de la banda, tope
-          // `barMaxWidth` (38 px). Si cambia cualquiera de los dos, cambia aquí.
-          const barWidth = Math.min(band * 0.69, 38);
-          const half = Math.max(barWidth, 10) / 2 + 3;
-          const children: Array<Record<string, unknown>> = [];
-          if (Number.isFinite(actual) && actual > meta) {
-            const [topY] = api.coord([index, actual]);
-            children.push({
-              type: 'rect',
-              shape: {
-                x: cx - barWidth / 2,
-                y: topY,
-                width: barWidth,
-                height: Math.max(0, cy - topY),
-                r: 6,
-              },
-              style: { fill: 'rgba(149, 200, 0, 0.22)', stroke: 'rgba(149, 200, 0, 0.55)', lineWidth: 1 },
-            });
-          }
-          children.push({
-            type: 'line',
-            shape: { x1: cx - half, y1: cy, x2: cx + half, y2: cy },
-            style: { stroke: C.lime, lineWidth: 2, lineCap: 'round', lineDash: [5, 4] },
-          });
-          return { type: 'group', children };
-        },
-      },
+      metaMarkerSeries(metaMarks),
       ...(hasGrowth
         ? [
             {

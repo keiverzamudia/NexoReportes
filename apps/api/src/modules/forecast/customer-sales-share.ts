@@ -1,14 +1,19 @@
-import type { ForecastCustomerSalesRow } from '@nexo/contracts';
+import type { ForecastCustomerSalesHistoryMonth, ForecastCustomerSalesRow } from '@nexo/contracts';
+import { CUSTOMER_TARGET_HISTORY_MONTHS, customerTargetMetrics } from './customer-targets';
+import { MonthCalendar } from './sales-run-rate';
 
 // ============================================================
-// Participación de clientes en la venta del mes a la fecha.
+// Clientes vs meta histórica.
 //
-// Sin histórico ni meta: se suman los kg reales del mes por cliente y por
-// producto, y se calculan dos porcentajes:
-//  · producto dentro del cliente,
-//  · cliente dentro de la venta total del producto.
+// Cada cliente se mide contra su PROPIO promedio de los últimos 3 meses
+// cerrados (solo meses con compra). La venta del mes a la fecha y su
+// proyección de cierre salen de `customerTargetMetrics`.
 //
-// La función es pura para poder probar los porcentajes sin Prisma ni Profit.
+// Además de la meta, se conservan las dos lecturas de participación:
+//  · shareOfCustomerPct: peso del producto dentro de la compra del cliente.
+//  · shareOfProductPct: peso del cliente dentro de la venta total del producto.
+//
+// Función PURA para poder probar la meta y el orden sin Prisma ni Profit.
 // ============================================================
 
 export interface CustomerProductSale {
@@ -34,8 +39,15 @@ export interface ProductInfo {
 export interface CustomerShareTotals {
   actualKg: number;
   actualUnits: number;
+  /** Suma de las metas históricas de los clientes. */
+  targetKg: number;
+  /** Suma de las proyecciones de cierre (null si el mes aún no tiene venta). */
+  projectedKg: number | null;
+  attainmentPct: number | null;
+  projectedAttainmentPct: number | null;
   customerCount: number;
   activeCustomerCount: number;
+  targetCustomerCount: number;
   productCount: number;
   lastInvoiceDate: string | null;
 }
@@ -43,6 +55,19 @@ export interface CustomerShareTotals {
 export interface CustomerShareResult {
   customers: ForecastCustomerSalesRow[];
   totals: CustomerShareTotals;
+}
+
+export interface BuildCustomerShareInput {
+  sales: CustomerProductSale[];
+  catalog: CustomerInfo[];
+  products: Map<string, ProductInfo>;
+  lastInvoiceByCustomer?: Map<string, string>;
+  /** Meses cerrados de la ventana histórica, en orden cronológico. */
+  historyWindow?: { year: number; month: number }[];
+  /** Kg por cliente en el MISMO orden que `historyWindow` (ceros incluidos). */
+  history?: Map<string, number[]>;
+  /** Calendario del mes del informe: base del run-rate y de la proyección. */
+  calendar: MonthCalendar;
 }
 
 function round3(value: number): number {
@@ -61,12 +86,13 @@ function pct(part: number, total: number): number {
   return total > 0 ? round1((part / total) * 100) : 0;
 }
 
-export function buildCustomerShare(input: {
-  sales: CustomerProductSale[];
-  catalog: CustomerInfo[];
-  products: Map<string, ProductInfo>;
-  lastInvoiceByCustomer?: Map<string, string>;
-}): CustomerShareResult {
+/** Porcentaje que admite «sin meta» (null), a diferencia de `pct`. */
+function ratioPct(part: number | null, total: number): number | null {
+  if (part === null || total <= 0) return null;
+  return round1((part / total) * 100);
+}
+
+export function buildCustomerShare(input: BuildCustomerShareInput): CustomerShareResult {
   const productTotals = new Map<string, { kg: number; units: number }>();
   const byCustomer = new Map<string, Map<string, { kg: number; units: number }>>();
   const salesCustomerCodes = new Set<string>();
@@ -97,14 +123,34 @@ export function buildCustomerShare(input: {
     byCustomer.set(customerCode, perCustomer);
   }
 
+  const historyWindow = (input.historyWindow ?? []).slice(0, CUSTOMER_TARGET_HISTORY_MONTHS);
+
+  // Los clientes del histórico también entran: si compraron en los últimos
+  // meses y este mes no, deben aparecer con su meta y 0 venta (a recuperar).
   const catalogByCode = new Map(input.catalog.map((customer) => [customer.code, customer]));
-  const codes = new Set<string>([...catalogByCode.keys(), ...salesCustomerCodes]);
+  const codes = new Set<string>([
+    ...catalogByCode.keys(),
+    ...salesCustomerCodes,
+    ...(input.history?.keys() ?? []),
+  ]);
 
   const customers: ForecastCustomerSalesRow[] = [...codes].map((customerCode) => {
     const info = catalogByCode.get(customerCode);
     const perCustomer = byCustomer.get(customerCode) ?? new Map<string, { kg: number; units: number }>();
     const customerKg = [...perCustomer.values()].reduce((acc, item) => acc + item.kg, 0);
     const customerUnits = [...perCustomer.values()].reduce((acc, item) => acc + item.units, 0);
+
+    const historyValues = input.history?.get(customerCode) ?? [];
+    const history: ForecastCustomerSalesHistoryMonth[] = historyWindow.map((month, index) => ({
+      year: month.year,
+      month: month.month,
+      kg: positive(historyValues[index] ?? 0),
+    }));
+    const target = customerTargetMetrics({
+      actualKg: customerKg,
+      history,
+      calendar: input.calendar,
+    });
 
     const products = [...perCustomer.entries()]
       .map(([productCode, item]) => {
@@ -139,17 +185,30 @@ export function buildCustomerShare(input: {
       customerName: info?.name?.trim() || customerCode,
       customerType: info?.customerType ?? null,
       vendor: info?.vendor ?? null,
+      history,
+      targetKg: target.targetKg,
+      targetMonths: target.targetMonths,
       actualKg: round3(customerKg),
       actualUnits: round3(customerUnits),
       sharePct: pct(customerKg, totalKg),
       productCount: products.length,
       lastInvoiceDate: input.lastInvoiceByCustomer?.get(customerCode) ?? null,
+      dailyAvgKg: target.dailyAvgKg,
+      projectedKg: target.projectedKg,
+      attainmentPct: target.attainmentPct,
+      projectedAttainmentPct: target.projectedAttainmentPct,
+      gapKg: target.gapKg,
+      requiredDailyKg: target.requiredDailyKg,
       products,
     };
   });
 
+  // Prioridad comercial: primero el mayor promedio histórico (volumen que el
+  // cliente venía comprando) y después la venta del mes. Los clientes sin meta
+  // ni venta quedan al final.
   customers.sort(
     (a, b) =>
+      b.targetKg - a.targetKg ||
       b.actualKg - a.actualKg ||
       a.customerName.localeCompare(b.customerName, 'es') ||
       a.customerCode.localeCompare(b.customerCode, 'es'),
@@ -160,13 +219,23 @@ export function buildCustomerShare(input: {
     .filter((value): value is string => Boolean(value))
     .sort();
 
+  const targetKg = round3(customers.reduce((acc, customer) => acc + customer.targetKg, 0));
+  const projectedKg = customers.every((customer) => customer.projectedKg === null)
+    ? null
+    : round3(customers.reduce((acc, customer) => acc + (customer.projectedKg ?? 0), 0));
+
   return {
     customers,
     totals: {
       actualKg: round3(totalKg),
       actualUnits: round3(totalUnits),
+      targetKg,
+      projectedKg,
+      attainmentPct: ratioPct(round3(totalKg), targetKg),
+      projectedAttainmentPct: ratioPct(projectedKg, targetKg),
       customerCount: customers.length,
       activeCustomerCount: customers.filter((customer) => customer.actualKg > 0).length,
+      targetCustomerCount: customers.filter((customer) => customer.targetKg > 0).length,
       productCount: productTotals.size,
       lastInvoiceDate: lastInvoiceDates.at(-1) ?? null,
     },

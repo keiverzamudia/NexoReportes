@@ -7,13 +7,12 @@
 //    (`forecast.kg_mensual`, convertido a kg según la presentación del
 //    artículo; solo lectura) + CANTIDAD por cada una de las 4 semanas.
 //    `forecast.fecha` indica el mes de vigencia. Por defecto las semanas se
-//    llenan con el PROMEDIO (forecast mensual / 4) y es lo único que se ajusta
-//    en Nexo.
-//  · Pestaña «Reporte»: se elige la SEMANA a evaluar (o «Todas»). Para una
-//    semana se muestra, por artículo, el forecast y además los mismos campos de
-//    la tabla de Disponibilidad (Stock 03/9999/68, Existencia, Solicitado,
-//    Despachable, A producir, kg, Neto, Estado), calculados con el motor de
-//    disponibilidad sobre el solicitado objetivo = max(forecast, solicitado).
+//    llenan con el reparto por días del bloque (kg mensual × días ÷ días del
+//    mes) y es lo único que se ajusta en Nexo.
+//  · Pestaña «Reporte»: se elige la SEMANA a evaluar (o «Todas»). Todo se
+//    calcula en kg: forecast, vendido (notas de entrega), cartera pendiente y
+//    a producir con el stock arrastrado de la semana anterior. Los sacos se
+//    derivan solo para presentación.
 //
 //  Forecast mensual: Profit. Semanas: Nexo. NUNCA se escribe en Profit.
 // ============================================================
@@ -58,6 +57,7 @@ import { hasPermission } from '../../lib/permissions';
 const C = {
   navy: '#003366',
   navyLight: '#1d5a96',
+  navySoft: '#7aa8d4',
   red: '#dc2626',
   redLight: '#f87171',
   lime: '#95C800',
@@ -112,17 +112,13 @@ function currentMonthValue(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
-// Bloque semanal al que pertenece un día (1-7 / 8-14 / 15-21 / 22-fin).
-function weekIndexOf(day: number): number {
-  if (day <= 7) return 1;
-  if (day <= 14) return 2;
-  if (day <= 21) return 3;
-  return 4;
-}
-
 function parseNumber(value: string): number {
   const n = Number(value.replace(',', '.'));
   return Number.isFinite(n) ? n : 0;
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 // Formato compacto para ejes y etiquetas de barra: 950 · 12,4 k · 1,9 M.
@@ -252,14 +248,14 @@ export default function ForecastPage() {
           title="Forecast"
           subtitle={
             isCustomerView
-              ? 'Participación real de cada cliente en la venta ABA del mes a la fecha.'
+              ? 'Meta histórica de cada cliente (promedio de los últimos 3 meses) contra su venta y proyección.'
               : 'Forecast mensual por artículo y ventas reales de Profit contra la meta.'
           }
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
               <Kpi
-                label={isCustomerView ? 'Clientes con venta' : 'Artículos'}
-                value={String(headerArticles)}
+                label={isCustomerView ? 'Clientes con meta' : 'Artículos'}
+                value={String(isCustomerView ? (customerSales.data?.totals.targetCustomerCount ?? 0) : headerArticles)}
                 icon={CalendarRange}
               />
               <Kpi
@@ -373,9 +369,10 @@ export default function ForecastPage() {
                 />
                 <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
                   Semanas del mes: {weeks.map((w) => w.label).join(' · ')}. Las cantidades de cada semana se llenan por
-                  defecto con el <strong>promedio = forecast mes / 4</strong> y son libremente editables. El forecast mensual se
-                  administra en Profit (<code>forecast</code>) y se muestra en <strong>kilogramos</strong>: los artículos SAC se
-                  multiplican por su kg por saco y el granel se mantiene en kg. Aquí no se modifica.
+                  defecto con el <strong>reparto por días del bloque</strong> (kg mensual × días ÷ días del mes) y son
+                  libremente editables. El forecast mensual se administra en Profit (<code>forecast</code>) y se muestra en{' '}
+                  <strong>kilogramos</strong>: los artículos SAC se multiplican por su kg por saco y el granel se mantiene
+                  en kg. Aquí no se modifica.
                 </div>
               </Card>
             )}
@@ -534,7 +531,7 @@ function ForecastAsignador({
     },
     {
       key: 'promedio',
-      header: 'Promedio (kg)',
+      header: 'Mes ÷ 4 (kg)',
       align: 'right',
       render: (r) => <span className="text-on-surface-variant">{fmtQty(r.averageQty, 0)}</span>,
     },
@@ -546,14 +543,16 @@ function ForecastAsignador({
         const edit = editOf(r);
         const pos = r.weeks.findIndex((x) => x.weekIndex === w.weekIndex);
         const value = edit.qtys[pos] ?? '';
+        const suggested = r.weeks.find((x) => x.weekIndex === w.weekIndex)?.suggestedQty ?? 0;
         return (
           <input
             value={value}
             onChange={(ev) => patch(r, { qtys: edit.qtys.map((q, idx) => (idx === pos ? ev.target.value : q)) })}
             inputMode="decimal"
             disabled={!canEdit}
+            title={`Sugerido por días del bloque: ${fmtQty(suggested, 0)} kg`}
             className={`h-8 w-[4.5rem] rounded-md px-space-2xs text-right tabular-nums text-label-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container disabled:cursor-not-allowed disabled:opacity-60 ${
-              parseNumber(value) !== r.averageQty ? 'bg-amber-50 font-semibold' : 'bg-surface'
+              parseNumber(value) !== suggested ? 'bg-amber-50 font-semibold' : 'bg-surface'
             }`}
             aria-label={`Semana ${w.weekIndex} de ${r.productCode}`}
           />
@@ -669,9 +668,9 @@ function ReporteBlock({ data, unit }: { data: ForecastPlanResponse; unit: UnitFi
 function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilter }) {
   const weeks = data.weekRanges;
   const allRows = useMemo(() => data.rows.filter((r) => unit === 'ALL' || r.uom === unit), [data, unit]);
-  const today = new Date();
-  const isCurrentMonth = today.getFullYear() === data.year && today.getMonth() + 1 === data.month;
-  const defaultWeek = isCurrentMonth ? String(weekIndexOf(today.getDate())) : '1';
+  // Mes en curso: se abre en su semana; mes cerrado o futuro: vista del mes
+  // (matriz semanal con vendido), que es la lectura útil del histórico.
+  const defaultWeek = data.currentWeekIndex !== null ? String(data.currentWeekIndex) : 'all';
   const [selected, setSelected] = useState<string>(defaultWeek);
   const [productCode, setProductCode] = useState<string | null>(null);
 
@@ -699,21 +698,24 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
   const selectedProduct = productCode ? (allRows.find((row) => row.productCode === productCode) ?? null) : null;
   const rows = useMemo(() => (selectedProduct ? [selectedProduct] : allRows), [allRows, selectedProduct]);
 
-  // Serie semanal (agregada al alcance elegido).
+  // Serie semanal (agregada al alcance elegido). Todo en kg: mezclar sacos de
+  // 40 kg con sacos de 10 kg y con granel no significa nada.
   const chartData = useMemo(
     () =>
       weeks.map((week) => {
         let demand = 0;
+        let sold = 0;
         let toProduce = 0;
         let forecast = 0;
         for (const row of rows) {
           const weekRow = row.weeks.find((entry) => entry.weekIndex === week.weekIndex);
           if (!weekRow) continue;
-          demand += weekRow.demandQty;
-          toProduce += weekRow.toProduceQty;
-          forecast += weekRow.forecastQty;
+          demand += weekRow.demandKg;
+          sold += weekRow.soldKg;
+          toProduce += weekRow.toProduceKg;
+          forecast += weekRow.forecastKg;
         }
-        return { week, demand, toProduce, forecast };
+        return { week, demand, sold, toProduce, forecast };
       }),
     [rows, weeks],
   );
@@ -723,7 +725,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
   const chart = useMemo(() => {
     // Barras de la semana evaluada a plena opacidad + borde lima; el resto se
     // atenúa para que la lectura sea inmediata sin perder el contexto del mes.
-    const barData = (key: 'demand' | 'toProduce') =>
+    const barData = (key: 'sold' | 'demand' | 'toProduce') =>
       chartData.map((entry, index) => {
         const isSelected = weekIndex !== null && weeks[index]?.weekIndex === weekIndex;
         return {
@@ -738,9 +740,9 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
     const barLabel = {
       show: true,
       position: 'top',
-      distance: 10,
+      distance: 8,
       color: '#43474f',
-      fontSize: 10,
+      fontSize: 9,
       fontWeight: 600,
       formatter: (params: { value?: unknown }) => {
         const value = Number(params.value);
@@ -751,7 +753,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
     return {
       animationDuration: 450,
       animationDurationUpdate: 300,
-      grid: { left: 4, right: 16, top: 40, bottom: 8, containLabel: true },
+      grid: { left: 4, right: 16, top: 44, bottom: 8, containLabel: true },
       tooltip: {
         trigger: 'axis',
         confine: true,
@@ -766,20 +768,21 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           const first = params[0];
           const entry = first ? chartData[first.dataIndex] : undefined;
           if (!entry) return '';
-          const line = (label: string, value: number, color: string, unit = 'unid.') =>
+          const line = (label: string, value: number, color: string) =>
             `<div style="display:flex;justify-content:space-between;gap:20px;margin-top:5px;">
               <span style="display:inline-flex;align-items:center;gap:6px;color:#43474f;">
                 <span style="width:8px;height:8px;border-radius:2px;background:${color};"></span>${label}
               </span>
-              <strong style="font-variant-numeric:tabular-nums;color:${C.ink};">${fmtQty(value, 0)} ${unit}</strong>
+              <strong style="font-variant-numeric:tabular-nums;color:${C.ink};">${fmtQty(value, 0)} kg</strong>
             </div>`;
-          return `<div style="min-width:210px;">
+          return `<div style="min-width:230px;">
             <div style="font-weight:700;color:#001e40;margin-bottom:2px;">Semana ${entry.week.weekIndex}
               <span style="font-weight:400;color:${C.outline};font-size:11px;">(${entry.week.from.slice(8)}-${entry.week.to.slice(8)})</span>
             </div>
-            ${line('Solicitado', entry.demand, C.navy)}
+            ${line('Vendido', entry.sold, C.navy)}
+            ${line('Solicitado (cartera)', entry.demand, C.navySoft)}
             ${line('A producir', entry.toProduce, C.red)}
-            ${hasForecast ? line('Forecast', entry.forecast, C.limeDark, 'kg') : ''}
+            ${hasForecast ? line('Forecast', entry.forecast, C.limeDark) : ''}
           </div>`;
         },
       },
@@ -789,7 +792,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         icon: 'roundRect',
         itemWidth: 10,
         itemHeight: 10,
-        itemGap: 14,
+        itemGap: 12,
         textStyle: { color: C.outline, fontSize: 11 },
       },
       xAxis: {
@@ -808,20 +811,22 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
       },
       yAxis: {
         type: 'value',
+        name: 'kg',
+        nameTextStyle: { color: C.outline, fontSize: 10, align: 'right' },
         axisLabel: { color: C.outline, fontSize: 10, formatter: (value: number) => compactQty(value) },
         splitLine: { lineStyle: { color: C.grid, type: [4, 4] } },
         splitNumber: 4,
       },
       series: [
         {
-          name: 'Solicitado',
+          name: 'Vendido',
           type: 'bar',
-          data: barData('demand'),
-          barMaxWidth: 30,
-          barGap: '18%',
+          data: barData('sold'),
+          barMaxWidth: 20,
+          barGap: '12%',
           barCategoryGap: '42%',
           itemStyle: {
-            borderRadius: [7, 7, 0, 0],
+            borderRadius: [5, 5, 0, 0],
             color: {
               type: 'linear',
               x: 0,
@@ -839,12 +844,20 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           labelLayout: { hideOverlap: true },
         },
         {
+          name: 'Solicitado',
+          type: 'bar',
+          data: barData('demand'),
+          barMaxWidth: 20,
+          itemStyle: { borderRadius: [5, 5, 0, 0], color: C.navySoft },
+          emphasis: { focus: 'series' },
+        },
+        {
           name: 'A producir',
           type: 'bar',
           data: barData('toProduce'),
-          barMaxWidth: 30,
+          barMaxWidth: 20,
           itemStyle: {
-            borderRadius: [7, 7, 0, 0],
+            borderRadius: [5, 5, 0, 0],
             color: {
               type: 'linear',
               x: 0,
@@ -872,7 +885,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
                 showSymbol: false,
                 lineStyle: { width: 2, type: 'dashed', color: C.limeDark },
                 itemStyle: { color: C.limeDark },
-                z: 1,
+                z: 3,
               },
             ]
           : []),
@@ -880,40 +893,45 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
     };
   }, [chartData, hasForecast, weekIndex, weeks]);
 
-  // Totales de la semana elegida (o del mes si se ven todas), ya filtrados.
+  // Totales del alcance elegido, en kg (la semana o el mes completo).
   const totals = useMemo(() => {
     if (weekIndex === null) {
       return {
-        forecast: rows.reduce((a, r) => a + r.forecastMonthQty, 0),
-        demand: rows.reduce((a, r) => a + r.demandMonthQty, 0),
-        toProduce: rows.reduce((a, r) => a + r.productionMonthQty, 0),
-        toProduceKg: rows.reduce((a, r) => a + r.productionMonthKg, 0),
+        forecast: rows.reduce((a, r) => a + r.forecastMonthKg, 0),
+        sold: rows.reduce((a, r) => a + r.soldMonthKg, 0),
+        demand: rows.reduce((a, r) => a + r.demandMonthKg, 0),
+        toProduce: rows.reduce((a, r) => a + r.productionMonthKg, 0),
+        toProduceSacks: rows.reduce((a, r) => a + (r.productionMonthSacks ?? 0), 0),
         objective: 0,
         available: 0,
-        // El excedente es stock, no se acumula semana a semana: se mide contra
-        // el objetivo más alto del mes.
-        excedente: rows.reduce(
-          (a, r) => a + Math.max(0, r.stockTotal - r.weeks.reduce((m, w) => Math.max(m, w.objectiveQty), 0)),
-          0,
-        ),
+        excess: 0,
+        attainment: null as number | null,
       };
     }
     const ws = rows
       .map((r) => ({ row: r, week: r.weeks.find((w) => w.weekIndex === weekIndex) }))
       .filter((x): x is { row: ForecastPlanRow; week: ForecastPlanWeek } => Boolean(x.week));
+    const forecast = ws.reduce((a, x) => a + x.week.forecastKg, 0);
+    const sold = ws.reduce((a, x) => a + x.week.soldKg, 0);
     return {
-      forecast: ws.reduce((a, x) => a + x.week.forecastQty, 0),
-      demand: ws.reduce((a, x) => a + x.week.demandQty, 0),
-      toProduce: ws.reduce((a, x) => a + x.week.toProduceQty, 0),
-      toProduceKg: ws.reduce((a, x) => a + (x.week.toProduceKg ?? 0), 0),
-      objective: ws.reduce((a, x) => a + x.week.objectiveQty, 0),
-      available: ws.reduce((a, x) => a + x.week.availableQty, 0),
-      excedente: ws.reduce((a, x) => a + Math.max(0, x.row.stockTotal - x.week.objectiveQty), 0),
+      forecast,
+      sold,
+      demand: ws.reduce((a, x) => a + x.week.demandKg, 0),
+      toProduce: ws.reduce((a, x) => a + x.week.toProduceKg, 0),
+      toProduceSacks: ws.reduce((a, x) => a + (x.week.toProduceSacks ?? 0), 0),
+      objective: ws.reduce((a, x) => a + x.week.objectiveKg, 0),
+      available: ws.reduce((a, x) => a + x.week.availableKg, 0),
+      excess: ws.reduce((a, x) => a + x.week.excessKg, 0),
+      attainment: forecast > 0 && sold > 0 ? round1((sold / forecast) * 100) : null,
     };
   }, [rows, weekIndex]);
 
-  // Cobertura de la semana evaluada: despachable sobre objetivo.
-  const coverage = weekIndex !== null && totals.objective > 0 ? Math.min(1, totals.available / totals.objective) : 0;
+  // Cobertura de la semana evaluada: lo ya vendido + lo despachable contra el
+  // objetivo. En una semana futura, vendido = 0.
+  const coverage =
+    weekIndex !== null && totals.objective > 0
+      ? Math.min(1, (totals.available + totals.sold) / totals.objective)
+      : 0;
 
   // Filas con la semana elegida (las que no la tienen se omiten, como antes).
   const weekEntries = useMemo(
@@ -923,6 +941,9 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         .filter((e): e is { row: ForecastPlanRow; week: ForecastPlanWeek } => Boolean(e.week)),
     [rows, weekIndex],
   );
+
+  // La semana elegida ya terminó: el reporte se lee como resultado (vendido).
+  const selectedClosed = weekEntries.length > 0 && weekEntries.every((e) => e.week.closed);
 
   const empty = (
     <EmptyState
@@ -990,29 +1011,50 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             header: `S${w.weekIndex} Forecast`,
             align: 'right' as const,
             className: 'border-l border-surface-container',
-            sortValue: (r: ForecastPlanRow) => weekOf(r)?.forecastQty ?? 0,
+            sortValue: (r: ForecastPlanRow) => weekOf(r)?.forecastKg ?? 0,
             render: (r: ForecastPlanRow) => (
-              <span className="text-on-surface-variant" title={w.label}>
-                {fmtQty(weekOf(r)?.forecastQty ?? 0, 0)}
+              <span className="text-on-surface-variant" title={`${w.label} · kg`}>
+                {fmtQty(weekOf(r)?.forecastKg ?? 0, 0)}
               </span>
             ),
           },
           {
-            key: `s${w.weekIndex}dem`,
-            header: `S${w.weekIndex} Solic.`,
+            key: `s${w.weekIndex}sold`,
+            header: `S${w.weekIndex} Vendido`,
             align: 'right' as const,
-            sortValue: (r: ForecastPlanRow) => weekOf(r)?.demandQty ?? 0,
-            render: (r: ForecastPlanRow) => <span title={w.label}>{fmtQty(weekOf(r)?.demandQty ?? 0, 0)}</span>,
+            sortValue: (r: ForecastPlanRow) => weekOf(r)?.soldKg ?? 0,
+            render: (r: ForecastPlanRow) => {
+              const sold = weekOf(r)?.soldKg ?? 0;
+              return (
+                <span
+                  className={sold > 0 ? 'font-semibold text-primary' : 'text-outline'}
+                  title={`${w.label} · kg despachados`}
+                >
+                  {fmtQty(sold, 0)}
+                </span>
+              );
+            },
           },
           {
             key: `s${w.weekIndex}prod`,
-            header: `S${w.weekIndex} Prod.`,
+            header: `S${w.weekIndex} A prod.`,
             align: 'right' as const,
-            sortValue: (r: ForecastPlanRow) => weekOf(r)?.toProduceQty ?? 0,
+            sortValue: (r: ForecastPlanRow) => weekOf(r)?.toProduceKg ?? 0,
             render: (r: ForecastPlanRow) => {
-              const qty = weekOf(r)?.toProduceQty ?? 0;
+              const qty = weekOf(r)?.toProduceKg ?? 0;
+              const week = weekOf(r);
               return (
-                <span className={qty > 0 ? 'font-bold text-error' : 'text-outline'} title={w.label}>
+                <span
+                  className={qty > 0 ? 'font-bold text-error' : 'text-outline'}
+                  title={
+                    week?.closed
+                      ? `${w.label} cerrada · kg`
+                      : `${w.label} · objetivo ${fmtQty(week?.objectiveKg ?? 0, 0)} − stock ${fmtQty(
+                          week?.stockKg ?? 0,
+                          0,
+                        )} kg`
+                  }
+                >
                   {fmtQty(qty, 0)}
                 </span>
               );
@@ -1022,18 +1064,18 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
       }),
       {
         key: 'prodMes',
-        header: 'Prod. mes',
+        header: 'Prod. mes (kg)',
         align: 'right',
         kind: 'metric',
         className: 'border-l border-surface-container',
-        sortValue: (r) => r.productionMonthQty,
-        render: (r) => <span className="font-bold text-primary">{fmtQty(r.productionMonthQty, 0)}</span>,
+        sortValue: (r) => r.productionMonthKg,
+        render: (r) => <span className="font-bold text-primary">{fmtQty(r.productionMonthKg, 0)}</span>,
       },
     ],
     [weeks, productCode],
   );
 
-  // Reporte de una semana: los mismos campos de la vista de Disponibilidad.
+  // Reporte de una semana: todos los campos en kg, con los sacos derivados.
   const weekColumns = useMemo<Column<{ row: ForecastPlanRow; week: ForecastPlanWeek }>[]>(
     () => [
       {
@@ -1070,91 +1112,129 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         align: 'right',
         kind: 'metric',
         sortValue: (e) => e.row.stockTotal,
-        render: (e) => <span className="font-bold">{fmtQty(e.row.stockTotal, 0)}</span>,
+        render: (e) => (
+          <span className="font-bold" title={`${fmtQty(e.row.stockTotal, 0)} ${e.row.uom} · ${fmtQty(e.row.stockKg, 0)} kg`}>
+            {fmtQty(e.row.stockTotal, 0)}
+          </span>
+        ),
       },
       {
         key: 'solicitado',
-        header: 'Solicitado',
+        header: 'Solicitado (kg)',
         align: 'right',
         kind: 'metric',
-        sortValue: (e) => e.week.demandQty,
-        render: (e) => fmtQty(e.week.demandQty, 0),
+        sortValue: (e) => e.week.demandKg,
+        render: (e) => (
+          <span className="tabular-nums text-on-surface-variant" title="Cartera pendiente con entrega efectiva en la semana">
+            {fmtQty(e.week.demandKg, 0)}
+          </span>
+        ),
       },
       {
         key: 'forecastSem',
-        header: 'Forecast sem.',
+        header: 'Forecast sem. (kg)',
         align: 'right',
-        sortValue: (e) => e.week.forecastQty,
-        render: (e) => <span className="font-semibold text-on-surface">{fmtQty(e.week.forecastQty, 0)}</span>,
+        kind: 'metric',
+        sortValue: (e) => e.week.forecastKg,
+        render: (e) => <span className="font-semibold text-on-surface">{fmtQty(e.week.forecastKg, 0)}</span>,
+      },
+      {
+        key: 'vendido',
+        header: 'Vendido (kg)',
+        align: 'right',
+        kind: 'metric',
+        sortValue: (e) => e.week.soldKg,
+        render: (e) => (
+          <span className={e.week.soldKg > 0 ? 'font-bold text-primary' : 'text-outline'}>
+            {fmtQty(e.week.soldKg, 0)}
+          </span>
+        ),
+      },
+      {
+        key: 'cumplimiento',
+        header: 'Cumpl.',
+        align: 'right',
+        sortValue: (e) => e.week.attainmentPct ?? -1,
+        render: (e) => {
+          const pct = e.week.attainmentPct;
+          if (pct === null) return <span className="text-outline">—</span>;
+          return (
+            <span className={pct >= 100 ? 'font-semibold text-success' : pct >= 80 ? 'text-warning' : 'font-semibold text-error'}>
+              {fmtQty(pct, 0)}%
+            </span>
+          );
+        },
       },
       {
         key: 'despachable',
-        header: 'Despachable',
+        header: 'Despachable (kg)',
         align: 'right',
         kind: 'metric',
-        sortValue: (e) => e.week.availableQty,
-        render: (e) => <span className="font-bold text-secondary">{fmtQty(e.week.availableQty, 0)}</span>,
+        sortValue: (e) => e.week.availableKg,
+        render: (e) => (
+          <span className="font-bold text-secondary" title={e.week.closed ? 'Semana cerrada' : `Stock al inicio de la semana: ${fmtQty(e.week.stockKg, 0)} kg`}>
+            {e.week.closed ? '—' : fmtQty(e.week.availableKg, 0)}
+          </span>
+        ),
       },
       {
         key: 'aProducir',
-        header: 'A producir (SAC)',
+        header: 'A producir (kg)',
         align: 'right',
-        sortValue: (e) => e.week.toProduceQty,
+        sortValue: (e) => e.week.toProduceKg,
         render: (e) => {
-          // SOLO los artículos a granel (KG) muestran 0 tachado: no se producen
-          // en sacos. Los artículos SAC conservan su 0 real.
-          if (e.row.uom !== 'SAC') {
+          const week = e.week;
+          return (
+            <span
+              className={week.toProduceKg > 0 ? 'font-bold text-error' : 'text-outline'}
+              title={
+                week.closed
+                  ? 'Semana cerrada: no se sugiere producción; compara Vendido vs Forecast'
+                  : `Objetivo ${fmtQty(week.objectiveKg, 0)} kg − stock al inicio ${fmtQty(week.stockKg, 0)} kg`
+              }
+            >
+              {fmtQty(week.toProduceKg, 0)}
+            </span>
+          );
+        },
+      },
+      {
+        key: 'aProducirSacos',
+        header: 'A producir (sacos)',
+        align: 'right',
+        sortValue: (e) => e.week.toProduceSacks ?? -1,
+        render: (e) => {
+          if (e.week.toProduceSacks === null) {
             return (
-              <span
-                className="text-outline line-through decoration-1"
-                title="No aplica: el artículo se produce a granel (kg)"
-              >
-                0
+              <span className="text-outline" title="El artículo se produce a granel: se planifica en kg">
+                —
               </span>
             );
           }
           return (
-            <span
-              className={e.week.toProduceQty > 0 ? 'font-bold text-error' : 'text-outline'}
-              title={`Objetivo ${fmtQty(e.week.objectiveQty, 0)} − existencia ${fmtQty(e.row.stockTotal, 0)} → ${
-                e.week.toProduceQty > 0 ? `faltan ${fmtQty(e.week.toProduceQty, 0)}` : 'la existencia cubre el objetivo'
-              }`}
-            >
-              {fmtQty(e.week.toProduceQty, 0)}
+            <span className={e.week.toProduceSacks > 0 ? 'font-semibold text-error' : 'text-outline'}>
+              {fmtQty(e.week.toProduceSacks, 0)}
             </span>
           );
         },
-      },
-      {
-        key: 'aProducirKg',
-        header: 'A producir (kg)',
-        align: 'right',
-        kind: 'metric',
-        sortValue: (e) => e.week.toProduceKg ?? 0,
-        render: (e) => (
-          <span className={(e.week.toProduceKg ?? 0) > 0 ? 'text-error' : 'text-outline'}>{fmtQty(e.week.toProduceKg, 0)}</span>
-        ),
       },
       {
         key: 'excedente',
-        header: 'Excedente',
+        header: 'Excedente (kg)',
         align: 'right',
-        sortValue: (e) => Math.max(0, e.row.stockTotal - e.week.objectiveQty),
-        render: (e) => {
-          // Sobrante de existencia sobre el objetivo: complementario de
-          // «A producir», nunca hay los dos a la vez.
-          const excedente = Math.max(0, e.row.stockTotal - e.week.objectiveQty);
-          return (
-            <span
-              className={excedente > 0 ? 'font-semibold text-success' : 'text-outline'}
-              title={`Existencia ${fmtQty(e.row.stockTotal, 0)} − objetivo ${fmtQty(e.week.objectiveQty, 0)} → ${
-                excedente > 0 ? `sobran ${fmtQty(excedente, 0)}` : 'sin excedente'
-              }`}
-            >
-              {fmtQty(excedente, 0)}
-            </span>
-          );
-        },
+        sortValue: (e) => e.week.excessKg,
+        render: (e) => (
+          <span
+            className={e.week.excessKg > 0 ? 'font-semibold text-success' : 'text-outline'}
+            title={
+              e.week.closed
+                ? 'Semana cerrada: el stock de hoy no representa el de esa semana'
+                : `Stock al inicio ${fmtQty(e.week.stockKg, 0)} − objetivo ${fmtQty(e.week.objectiveKg, 0)} kg`
+            }
+          >
+            {e.week.closed ? '—' : fmtQty(e.week.excessKg, 0)}
+          </span>
+        ),
       },
       {
         key: 'estado',
@@ -1169,43 +1249,56 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
   );
 
   function exportCsv() {
-    const header = ['Codigo', 'Descripcion', 'Unid', 'Stock 03', 'Stock 9999', 'Stock 68', 'Existencia'];
+    const header = ['Codigo', 'Descripcion', 'Unid', 'Stock 03', 'Stock 9999', 'Stock 68', 'Existencia (unid)', 'Existencia (kg)'];
     if (weekIndex === null) {
-      for (const w of weeks) header.push(`${w.label} Forecast`, `${w.label} Solicitado`, `${w.label} A producir`);
+      for (const w of weeks) header.push(`${w.label} Forecast (kg)`, `${w.label} Vendido (kg)`, `${w.label} A producir (kg)`);
     } else {
       header.push(
-        `S${weekIndex} Forecast`,
-        `S${weekIndex} Solicitado`,
-        'Objetivo',
-        'Despachable',
-        'A producir (SAC)',
+        `S${weekIndex} Forecast (kg)`,
+        `S${weekIndex} Solicitado (kg)`,
+        `S${weekIndex} Vendido (kg)`,
+        'Objetivo (kg)',
+        'Despachable (kg)',
         'A producir (kg)',
-        'Excedente',
+        'A producir (sacos)',
+        'Excedente (kg)',
+        'Cumpl. %',
         'Estado',
       );
     }
-    header.push('Prod mes (unid)', 'Prod mes (kg)');
+    header.push('Prod mes (kg)', 'Prod mes (sacos)');
     const body = rows.map((r) => {
-      const out: string[] = [r.productCode, r.description, r.uom, String(r.stock03), String(r.stock9999), String(r.stock68), String(r.stockTotal)];
+      const out: string[] = [
+        r.productCode,
+        r.description,
+        r.uom,
+        String(r.stock03),
+        String(r.stock9999),
+        String(r.stock68),
+        String(r.stockTotal),
+        String(r.stockKg),
+      ];
       if (weekIndex === null) {
         for (const w of weeks) {
           const wk = r.weeks.find((x) => x.weekIndex === w.weekIndex);
-          out.push(String(wk?.forecastQty ?? 0), String(wk?.demandQty ?? 0), String(wk?.toProduceQty ?? 0));
+          out.push(String(wk?.forecastKg ?? 0), String(wk?.soldKg ?? 0), String(wk?.toProduceKg ?? 0));
         }
       } else {
         const wk = r.weeks.find((x) => x.weekIndex === weekIndex);
         out.push(
-          String(wk?.forecastQty ?? 0),
-          String(wk?.demandQty ?? 0),
-          String(wk?.objectiveQty ?? 0),
-          String(wk?.availableQty ?? 0),
-          String(wk?.toProduceQty ?? 0),
-          String(wk?.toProduceKg ?? ''),
-          String(Math.max(0, r.stockTotal - (wk?.objectiveQty ?? 0))),
+          String(wk?.forecastKg ?? 0),
+          String(wk?.demandKg ?? 0),
+          String(wk?.soldKg ?? 0),
+          String(wk?.objectiveKg ?? 0),
+          String(wk?.availableKg ?? 0),
+          String(wk?.toProduceKg ?? 0),
+          String(wk?.toProduceSacks ?? ''),
+          String(wk?.excessKg ?? 0),
+          String(wk?.attainmentPct ?? ''),
           wk ? STATUS_LABEL[wk.status] : '',
         );
       }
-      out.push(String(r.productionMonthQty), String(r.productionMonthKg));
+      out.push(String(r.productionMonthKg), String(r.productionMonthSacks ?? ''));
       return out;
     });
     const csv = [header, ...body].map((line) => line.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -1227,7 +1320,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           <div className="flex flex-wrap items-start justify-between gap-space-sm">
             <div className="min-w-0">
               <div className="font-semibold uppercase text-label-sm text-outline">
-                Solicitado vs a producir por semana (unidades)
+                Vendido, solicitado y a producir por semana (kg)
               </div>
               <p className="mt-space-2xs text-label-sm text-on-surface-variant">
                 {selectedProduct ? (
@@ -1274,8 +1367,8 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             height={selectedProduct ? 320 : 300}
             ariaLabel={
               selectedProduct
-                ? `Solicitado versus producción por semana de ${selectedProduct.productCode}`
-                : 'Solicitado versus producción por semana (todos los artículos)'
+                ? `Vendido, solicitado y producción por semana de ${selectedProduct.productCode}`
+                : 'Vendido, solicitado y producción por semana (todos los artículos)'
             }
             className="mt-space-sm"
           />
@@ -1314,12 +1407,33 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
 
           <div className="grid grid-cols-1 gap-space-sm sm:grid-cols-2">
             <Kpi label={weekIndex === null ? 'Forecast del mes' : 'Forecast de la semana'} value={fmtQty(totals.forecast, 0)} suffix="kg" tone="primary" />
-            <Kpi label={weekIndex === null ? 'Solicitado del mes' : 'Solicitado de la semana'} value={fmtQty(totals.demand, 0)} suffix="unid." />
-            <Kpi label="A producir" value={fmtQty(totals.toProduce, 0)} suffix="unid." tone="danger" />
-            <Kpi label="A producir en kg" value={fmtQty(totals.toProduceKg, 0)} suffix="kg" tone="danger" />
+            <Kpi label={weekIndex === null ? 'Vendido del mes' : 'Vendido de la semana'} value={fmtQty(totals.sold, 0)} suffix="kg" />
+            <Kpi label={weekIndex === null ? 'Solicitado del mes' : 'Solicitado de la semana'} value={fmtQty(totals.demand, 0)} suffix="kg" />
+            <Kpi label="A producir" value={fmtQty(totals.toProduce, 0)} suffix="kg" tone="danger" />
           </div>
 
-          {weekIndex !== null && (
+          {(totals.toProduceSacks > 0 || (weekIndex !== null && totals.attainment !== null)) && (
+            <div className="flex flex-wrap items-baseline justify-between gap-space-sm text-label-sm text-on-surface-variant">
+              <span>{totals.toProduceSacks > 0 ? `≈ ${fmtQty(totals.toProduceSacks, 0)} sacos (solo SAC)` : ''}</span>
+              {weekIndex !== null && totals.attainment !== null && (
+                <span>
+                  Cumplimiento:{' '}
+                  <strong className={totals.attainment >= 100 ? 'text-success' : 'text-error'}>
+                    {fmtQty(totals.attainment, 0)}%
+                  </strong>{' '}
+                  (vendido ÷ forecast)
+                </span>
+              )}
+            </div>
+          )}
+
+          {selectedClosed && (
+            <p className="rounded-xl bg-surface-container-low px-space-sm py-space-xs text-label-sm text-on-surface-variant">
+              Semana cerrada: se lee como resultado (vendido vs forecast) y no sugiere producción.
+            </p>
+          )}
+
+          {weekIndex !== null && !selectedClosed && (
             <div className="rounded-xl border border-outline-variant/35 bg-surface/70 p-space-sm">
               <div className="flex items-baseline justify-between gap-space-sm">
                 <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">
@@ -1335,7 +1449,9 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
               </div>
               <CoverageBar ratio={coverage} className="mt-space-xs" />
               <div className="mt-space-2xs flex items-center justify-between gap-space-sm text-label-sm text-on-surface-variant">
-                <span>Despachable {fmtQty(totals.available, 0)}</span>
+                <span>
+                  Vendido {fmtQty(totals.sold, 0)} + despachable {fmtQty(totals.available, 0)}
+                </span>
                 <span>Objetivo {fmtQty(totals.objective, 0)}</span>
               </div>
             </div>
@@ -1349,8 +1465,9 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             <Download aria-hidden className="size-4" /> Exportar plan (CSV)
           </button>
           <p className="text-label-sm text-on-surface-variant">
-            <strong>Objetivo = el mayor entre el forecast y el solicitado.</strong> A producir = max(0, objetivo −
-            existencia); si sobra stock se muestra como <strong>Excedente</strong>.
+            <strong>Objetivo = el mayor entre el forecast y el solicitado de la semana.</strong> A producir = max(0,
+            objetivo − stock al inicio); el stock arrastra lo producido y lo vendido en las semanas anteriores, así que
+            el mes no repite la misma brecha. Si sobra stock se muestra como <strong>Excedente</strong>.
           </p>
         </Card>
       </div>
@@ -1367,16 +1484,22 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
                 <td className="px-space-sm py-space-xs uppercase text-label-sm text-outline">Totales</td>
                 <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtQty(rows.reduce((a, r) => a + r.stockTotal, 0), 0)}</td>
                 {weeks.map((w) => {
-                  const f = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.forecastQty ?? 0), 0);
-                  const dem = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.demandQty ?? 0), 0);
-                  const prod = rows.reduce((a, r) => a + (r.weeks.find((x) => x.weekIndex === w.weekIndex)?.toProduceQty ?? 0), 0);
+                  const of = (pick: (x: ForecastPlanWeek) => number) =>
+                    rows.reduce((a, r) => {
+                      const week = r.weeks.find((x) => x.weekIndex === w.weekIndex);
+                      return a + (week ? pick(week) : 0);
+                    }, 0);
                   return (
                     <Fragment key={w.weekIndex}>
                       <td className="border-l border-surface-container px-space-sm py-space-xs text-right tabular-nums text-on-surface-variant">
-                        {fmtQty(f, 0)}
+                        {fmtQty(of((x) => x.forecastKg), 0)}
                       </td>
-                      <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtQty(dem, 0)}</td>
-                      <td className="px-space-sm py-space-xs text-right tabular-nums text-error">{fmtQty(prod, 0)}</td>
+                      <td className="px-space-sm py-space-xs text-right tabular-nums text-primary">
+                        {fmtQty(of((x) => x.soldKg), 0)}
+                      </td>
+                      <td className="px-space-sm py-space-xs text-right tabular-nums text-error">
+                        {fmtQty(of((x) => x.toProduceKg), 0)}
+                      </td>
                     </Fragment>
                   );
                 })}
@@ -1406,22 +1529,27 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
                 </td>
                 <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtQty(totals.demand, 0)}</td>
                 <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtQty(totals.forecast, 0)}</td>
-                <td />
+                <td className="px-space-sm py-space-xs text-right tabular-nums text-primary">{fmtQty(totals.sold, 0)}</td>
+                <td className="px-space-sm py-space-xs text-right tabular-nums">
+                  {totals.attainment === null ? '—' : `${fmtQty(totals.attainment, 0)}%`}
+                </td>
+                <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtQty(totals.available, 0)}</td>
                 <td className="px-space-sm py-space-xs text-right tabular-nums text-error">{fmtQty(totals.toProduce, 0)}</td>
-                <td className="px-space-sm py-space-xs text-right tabular-nums text-error">{fmtQty(totals.toProduceKg, 0)}</td>
-                <td className="px-space-sm py-space-xs text-right tabular-nums text-success">{fmtQty(totals.excedente, 0)}</td>
+                <td className="px-space-sm py-space-xs text-right tabular-nums text-error">
+                  {totals.toProduceSacks > 0 ? fmtQty(totals.toProduceSacks, 0) : ''}
+                </td>
+                <td className="px-space-sm py-space-xs text-right tabular-nums text-success">{fmtQty(totals.excess, 0)}</td>
                 <td />
               </tr>
             }
           />
           <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
+            Todo en <strong>kg</strong>; los sacos se derivan con el kg por saco y solo aplican a artículos SAC.{' '}
             <span className="font-semibold text-error">Rojo</span> = falta producir ·{' '}
-            <span className="font-semibold text-success">Verde</span> = sobra stock. «A producir» = max(0, objetivo −
-            existencia) y «Excedente» = max(0, existencia − objetivo): <strong>nunca hay los dos a la vez</strong>. El
-            objetivo de la semana es el <strong>mayor entre el forecast semanal y el solicitado</strong>. Un 0 en «A producir»
-            significa que la existencia ya cubre el objetivo (mira el «Excedente»). En «A producir (SAC)», el{' '}
-            <span className="line-through decoration-1">0</span> tachado corresponde a artículos a granel (KG), que no se
-            producen en sacos.
+            <span className="font-semibold text-success">Verde</span> = sobra stock. El objetivo de la semana es el{' '}
+            <strong>mayor entre el forecast y el solicitado</strong>, y el stock es el que queda tras producir y consumir
+            las semanas anteriores. <strong>Vendido</strong> son las notas de entrega de esa semana y <strong>Cumpl.</strong>{' '}
+            es vendido ÷ forecast. En las semanas cerradas no se sugiere producción.
           </div>
         </Card>
       )}

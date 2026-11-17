@@ -139,12 +139,32 @@ function createDeliveryDates() {
   } as never;
 }
 
+function createReputation(overrides: Record<string, unknown> = {}) {
+  return {
+    summarize: async () => ({
+      total: 3,
+      orders: 2,
+      byCompany: 2,
+      byCustomer: 1,
+      unclassified: 0,
+      financial: 1,
+      logistic: 0,
+      customerSharePct: 33.3,
+      reputation: 'FAIR',
+      lastChangeAt: '2026-11-10T14:30:00.000Z',
+      recent: [],
+      ...overrides,
+    }),
+  } as never;
+}
+
 function createService(profit: unknown, statements: unknown = createStatements()) {
   return new CustomerInsightsService(
     createPrisma(),
     profit as never,
     statements as never,
     createDeliveryDates(),
+    createReputation(),
   );
 }
 
@@ -166,6 +186,7 @@ describe('CustomerInsightsService', () => {
     expect(result.orders.pendingQty).toBe(5);
     expect(result.orders.nextDeliveryDate).toBe('2026-11-12');
     expect(result.account?.saldoVencido).toBe(50);
+    expect(result.deliveryChanges).toMatchObject({ total: 3, reputation: 'FAIR', customerSharePct: 33.3 });
     expect(result.source).toBe('fixtures');
     expect(result.productBillingEstimated).toBe(true);
   });
@@ -251,6 +272,7 @@ describe('CustomerInsightsService', () => {
       new FixturesProfitAdapter(),
       createStatements() as never,
       createDeliveryDates() as never,
+      createReputation(),
     );
 
     const result = await service.get('153064128', { months: 24, currency: 'USD' });

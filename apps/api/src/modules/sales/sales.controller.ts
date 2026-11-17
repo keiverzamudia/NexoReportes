@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  Delete,
   ForbiddenException,
   Get,
   Param,
@@ -22,17 +21,17 @@ import {
   OrderQuery,
   OrderReconcileInput,
   OrderReopenInput,
+  ProfitDeliveryDateSetInput,
   zCustomerInsightQuery,
   zCustomerQuery,
   zCustomerStatementQuery,
   zCustomerStatementSummaryQuery,
-  zDeliveryDateRestoreInput,
-  zDeliveryDateSetInput,
   zOrderGroupQuery,
   zOrderLifecycleQuery,
   zOrderQuery,
   zOrderReconcileInput,
   zOrderReopenInput,
+  zProfitDeliveryDateSetInput,
 } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -40,8 +39,9 @@ import { RequireAnyPermission, RequirePermission } from '../permissions/permissi
 import { PermissionsGuard } from '../permissions/permissions.guard';
 import { CustomerStatementService } from './customer-statement.service';
 import { CustomerInsightsService } from './customer-insights.service';
-import { DeliveryDatesService } from './delivery-dates.service';
+import { CustomerNotesService } from './customer-notes.service';
 import { OrderLifecycleService } from './order-lifecycle.service';
+import { ProfitDeliveryDatesService } from './profit-delivery-dates.service';
 import { SalesService } from './sales.service';
 
 // Pedidos y clientes (Fase 4): consulta de lo sincronizado desde Profit y
@@ -53,9 +53,10 @@ import { SalesService } from './sales.service';
 export class SalesController {
   constructor(
     private readonly sales: SalesService,
-    private readonly deliveryDates: DeliveryDatesService,
+    private readonly profitDeliveryDates: ProfitDeliveryDatesService,
     private readonly customerStatements: CustomerStatementService,
     private readonly customerInsights: CustomerInsightsService,
+    private readonly customerNotes: CustomerNotesService,
     private readonly lifecycle: OrderLifecycleService,
   ) {}
 
@@ -92,6 +93,16 @@ export class SalesController {
     @Query(new ZodValidationPipe(zCustomerInsightQuery)) query: CustomerInsightQuery,
   ) {
     return this.customerInsights.get(code, query);
+  }
+
+  // Notas de entrega del cliente con el pedido que las originó (pestaña Pedidos).
+  @Get('customers/:code/notes')
+  @RequirePermission('clientes:read')
+  customerNotesList(
+    @Param('code') code: string,
+    @Query(new ZodValidationPipe(zCustomerInsightQuery)) query: CustomerInsightQuery,
+  ) {
+    return this.customerNotes.get(code, query);
   }
 
   @Get('orders')
@@ -149,27 +160,20 @@ export class SalesController {
     return this.sales.orderDetail(id);
   }
 
-  // Asigna/actualiza la fecha tentativa de uno o varios renglones.
-  @Put('orders/delivery-date')
-  @RequirePermission('pedidos:update')
-  setDeliveryDates(
-    @Body(new ZodValidationPipe(zDeliveryDateSetInput)) body: { items: { orderNumber: string; productCode: string }[]; date: string; note?: string },
-    @Req() request: AuthenticatedRequest,
-  ) {
-    return this.deliveryDates.setDates(body.items, body.date, body.note, {
-      id: request.user?.sub,
-      code: request.user?.code,
-    });
-  }
+  // La entrega es UNA sola: se edita en Profit (`/orders/delivery-date/profit`)
+  // y la hoja de despacho abierta se mueve con ella. La capa tentativa local
+  // ya no se escribe desde la API (solo se lee para datos históricos).
 
-  // Restaura la fecha original de Profit en los renglones seleccionados.
-  @Delete('orders/delivery-date')
-  @RequirePermission('pedidos:update')
-  restoreDeliveryDates(
-    @Body(new ZodValidationPipe(zDeliveryDateRestoreInput)) body: { items: { orderNumber: string; productCode: string }[]; note?: string },
+  // Cambia la fecha de ENTREGA real del pedido en Profit (fec_venc).
+  // Permiso independiente: es la única operación que escribe en Profit.
+  @Put('orders/delivery-date/profit')
+  @RequirePermission('pedidos:change_date')
+  setProfitDeliveryDates(
+    @Body(new ZodValidationPipe(zProfitDeliveryDateSetInput))
+    body: ProfitDeliveryDateSetInput,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.deliveryDates.restoreDates(body.items, body.note, {
+    return this.profitDeliveryDates.setDates(body, {
       id: request.user?.sub,
       code: request.user?.code,
     });

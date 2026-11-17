@@ -13,8 +13,8 @@ export const CONTROL_HELP_RULES = [
   'Diferencias con signo: positivo = excedente, negativo = falta por cubrir.',
   'Forecast = meta de Profit (forecast); venta = notas de entrega del mes.',
   'El forecast se lleva a kg: sacos × kg por saco; el granel se mantiene en kg.',
-  'Solicitado = saldo pendiente de pedidos activos en la fecha de entrega.',
-  'En «Semanal» se usa el bloque 1-7, 8-14, 15-21 y 22-fin del mes.',
+  'Solicitado = saldo pendiente de pedidos activos en la fecha de entrega efectiva.',
+  'En «Semanal» se usa el bloque 1-7, 8-14, 15-21 y 22-fin del mes; el forecast se reparte por días del bloque.',
   'El mes en curso se compara contra la venta a la fecha de corte.',
 ];
 
@@ -73,7 +73,7 @@ export const CONTROL_COLUMN_HELP = {
     short: 'Meta del periodo',
     what:
       'Meta mensual o de la semana, en kilogramos. Si Profit la trae en sacos, se multiplica por los kg por saco del artículo; el granel se mantiene en kg.',
-    formula: 'mensual: kg_mensual × uni_relac (SAC) · semanal: kg ÷ 4',
+    formula: 'mensual: kg_mensual × uni_relac (SAC) · semanal: kg mensual × días del bloque ÷ días del mes',
     source: 'dbo.forecast (fecha = mes de vigencia) · dbo.art',
   },
   solicitado: {

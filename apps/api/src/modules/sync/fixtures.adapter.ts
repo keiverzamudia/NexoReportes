@@ -513,6 +513,52 @@ function customerProductSales(params: Record<string, unknown>, limit: number): R
     .slice(0, limit);
 }
 
+// Kg por cliente y mes de la ventana histórica (meta de 3 meses). Misma
+// asignación determinista de cliente que `customerProductSales`, pero agrupada
+// solo por cliente y mes para que el informe pueda promediar la meta.
+function customerSalesMonthly(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const buckets = new Map<
+    string,
+    { anio: number; mes: number; co_cli: string; cli_des: string; kg: number; unid: number; ultima: string }
+  >();
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const { client } = fixtureSellerOf(day, String(row.co_art));
+    const [year, month] = day.split('-');
+    const key = `${year}-${month}-${client.code}`;
+    const bucket = buckets.get(key) ?? {
+      anio: Number(year),
+      mes: Number(month),
+      co_cli: client.code,
+      cli_des: client.name,
+      kg: 0,
+      unid: 0,
+      ultima: day,
+    };
+    bucket.kg += Number(row.kg);
+    bucket.unid += Number(row.unid);
+    if (day > bucket.ultima) bucket.ultima = day;
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => ({
+      anio: bucket.anio,
+      mes: bucket.mes,
+      co_cli: bucket.co_cli,
+      cli_des: bucket.cli_des,
+      kg: bucket.kg,
+      unid: bucket.unid,
+      ultima_factura: bucket.ultima,
+    }))
+    .slice(0, limit);
+}
+
 function sellerSalesDaily(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
   const from = paramDay(params.desde);
   const to = paramDay(params.hasta);
@@ -873,6 +919,64 @@ function customerInsightSimilar(
   });
 }
 
+// Notas de entrega de la ficha 360: se derivan de las filas sintéticas de
+// volumen para que el detalle cuadre con los KPIs. El pedido de origen es
+// determinista (mismo número en cada consulta); alguna nota trae dos pedidos
+// para probar los chips múltiples.
+function customerNoteRows(
+  params: Record<string, unknown>,
+  limit: number,
+): Record<string, unknown>[] {
+  const rows = customerInsightRows(params, 20000);
+  const byNote = new Map<
+    string,
+    { fecha: string; sacos: number; kg: number; monto: number; lineas: number }
+  >();
+
+  for (const row of rows) {
+    const nota = String(row.nota ?? '');
+    if (!nota) continue;
+    const kg = Number(row.kg ?? 0);
+    const bucket = byNote.get(nota) ?? { fecha: String(row.fecha ?? ''), sacos: 0, kg: 0, monto: 0, lineas: 0 };
+    if (String(row.uni_venta ?? '').toUpperCase() === 'SAC') bucket.sacos += Number(row.unid ?? 0);
+    bucket.kg += kg;
+    bucket.monto += kg * Number(row.precio_kg ?? 0.45);
+    bucket.lineas += 1;
+    byNote.set(nota, bucket);
+  }
+
+  const moneda = String(params.moneda ?? 'USD').toUpperCase();
+  return [...byNote.entries()]
+    .sort((a, b) => b[1].fecha.localeCompare(a[1].fecha) || b[0].localeCompare(a[0]))
+    .slice(0, limit)
+    .map(([nota, bucket]) => ({
+      nota,
+      fecha: bucket.fecha,
+      monto: round2(moneda === 'USD' ? bucket.monto : bucket.monto * 900),
+      sacos: round2(bucket.sacos),
+      kg: round2(bucket.kg),
+      lineas: bucket.lineas,
+    }));
+}
+
+function customerNoteOrders(
+  params: Record<string, unknown>,
+  limit: number,
+): Record<string, unknown>[] {
+  const notes = customerNoteRows({ ...params, moneda: 'USD' }, 20000);
+  const rows: Record<string, unknown>[] = [];
+  for (const note of notes) {
+    const number = Number(note.nota ?? 0);
+    const pedido = 5000 + (number % 1800);
+    const pedidoProfit = 8000 + (number % 1000);
+    rows.push({ nota: note.nota, pedido: String(pedido), pedido_profit: String(pedidoProfit) });
+    if (number % 5 === 0) {
+      rows.push({ nota: note.nota, pedido: String(pedido + 47), pedido_profit: String(pedidoProfit) });
+    }
+  }
+  return rows.slice(0, limit);
+}
+
 // Filas de `forecast` para todos los meses del rango [desde, hasta): una fila
 // por artículo y mes, con `fecha` en el primer día del mes de vigencia.
 function forecastRows(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
@@ -1157,12 +1261,17 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     if (lower.includes('nexo:customer_insights_products')) return customerInsightRows(params, limit);
     if (lower.includes('nexo:customer_insights_billing')) return customerInsightBilling(params, limit);
     if (lower.includes('nexo:customer_insights_similar')) return customerInsightSimilar(params, limit);
+    // Detalle de notas de entrega con su pedido de origen (ficha 360).
+    if (lower.includes('nexo:customer_notes_totals')) return customerNoteRows(params, limit);
+    if (lower.includes('nexo:customer_notes_orders')) return customerNoteOrders(params, limit);
     // Catálogo completo de clientes y ventas por cliente (módulo Clientes).
     // Van antes de `reng_nde` porque la consulta de ventas usa esa tabla.
     if (lower.includes('nexo:customer_catalog')) return customerCatalog(limit);
     if (lower.includes('nexo:customer_sales')) return customerSales(params, limit);
     // Desviación por cliente: producto × cliente × mes.
     if (lower.includes('nexo:customer_products')) return customerProductSales(params, limit);
+    // Meta por cliente: kg por cliente y mes de los 3 meses cerrados.
+    if (lower.includes('nexo:customer_sales_monthly')) return customerSalesMonthly(params, limit);
     // Vendedor vs Forecast: se detecta por el marcador del SELECT y va antes
     // del bloque genérico de `reng_nde`.
     if (lower.includes('nexo:seller_name')) return sellerNameFixture(params, limit);
@@ -1202,3 +1311,40 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     return FIXTURE_USERS;
   }
 }
+
+// Escritura en fixtures: mueve la entrega del pedido en memoria para que el
+// flujo completo (endpoint → Profit → sync local) sea verificable sin Profit.
+// Devuelve las mismas piezas que el adaptador real (anterior/nueva).
+// Se comparte el registro de bloqueos (`aux01`) entre llamadas.
+const LOCKED_ORDERS = new Set<number>();
+
+export function fixtureUpdateOrderDateLock(
+  orderNumber: string,
+  locked: boolean,
+): { affected: number } {
+  const number = Number(orderNumber);
+  const exists = SOLICITUDES.some((row) => Number(row.nro_solicitud) === number);
+  if (!exists) return { affected: 0 };
+  if (locked) LOCKED_ORDERS.add(number);
+  else LOCKED_ORDERS.delete(number);
+  return { affected: 1 };
+}
+
+export function fixtureIsOrderLocked(orderNumber: string): boolean {
+  return LOCKED_ORDERS.has(Number(orderNumber));
+}
+
+export function fixtureUpdateOrderDeliveryDate(
+  orderNumber: string,
+  date: string,
+): { affected: number; previousDate: string | null; nextDate: string | null } {
+  const number = Number(orderNumber);
+  // Un pedido bloqueado en Profit no acepta cambios de fecha.
+  if (LOCKED_ORDERS.has(number)) return { affected: 0, previousDate: null, nextDate: null };
+  const rows = SOLICITUDES.filter((row) => Number(row.nro_solicitud) === number);
+  if (rows.length === 0) return { affected: 0, previousDate: null, nextDate: null };
+  const previousDate = rows[0]?.entrega ? String(rows[0].entrega).slice(0, 10) : null;
+  for (const row of rows) row.entrega = date;
+  return { affected: 1, previousDate, nextDate: date };
+}
+

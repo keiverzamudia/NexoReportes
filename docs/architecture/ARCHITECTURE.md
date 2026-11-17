@@ -22,6 +22,7 @@ Monorepo TypeScript (pnpm workspaces + Turborepo) con tres aplicaciones y un paq
 ## Principios
 
 1. **Profit es externo y de solo lectura.** Todas las consultas pasan por `ProfitAdapter` (`apps/api/src/modules/sync/profit.adapter.ts`). Prohibido INSERT/UPDATE/DELETE sobre Profit. El nombre de vista se valida contra una allowlist de identificadores y los valores viajan como parámetros.
+   - **Excepciones acotadas:** `ProfitWriter` (`profit-writer.adapter.ts`) escribe únicamente `dbo.cotiz_c.fec_venc` (fecha de entrega) y `dbo.cotiz_c.aux01` (bloqueo de la fecha al iniciar la carga en despacho). Usa credenciales SQL distintas (`PROFIT_WRITE_*`, con fallback a `PROFIT_DB_*`), sentencias fijas parametrizadas, permisos propios (`pedidos:change_date` para la fecha; `despacho:update` para el bloqueo), flag `PROFIT_WRITE_ENABLED`, modo `PROFIT_WRITE_DRY_RUN` y auditoría (`PROFIT_DELIVERY_DATE_SET`). El bloqueo se encola (`ProfitLockJob`) y un scheduler lo reintenta si Profit no responde. El encabezado queda firmado en Profit con `co_us_mo`/`fe_us_mo` = código Profit de la sesión.
 2. **Configuración por variables de entorno.** Servidor, base, usuario y nombres de vistas de Profit son configurables (`PROFIT_DB_*`, `PROFIT_VIEW_*`); nada está hardcodeado.
 3. **Simulación ≠ operación.** Los escenarios y asignaciones del simulador se guardan en la base interna como datos del escenario; nunca generan movimientos en Profit.
 4. **Lógica de negocio en servicios de dominio**, no en controladores ni en el navegador. Los controladores solo validan y delegan.

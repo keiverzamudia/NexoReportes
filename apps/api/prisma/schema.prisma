@@ -313,7 +313,8 @@ model DeliveryDateOverride {
   @@index([tentativeDate])
 }
 
-// Historial de cada asignación/restauración de fecha tentativa.
+// Historial de cada asignación/restauración de fecha tentativa y de los
+// cambios reales de entrega en Profit.
 // `batchId` agrupa los cambios hechos en una misma acción masiva.
 model DeliveryDateChange {
   id            String    @id @default(cuid())
@@ -323,8 +324,12 @@ model DeliveryDateChange {
   customerCode  String?
   previousDate  DateTime?
   newDate       DateTime?
-  // SET | UPDATE | RESTORE
+  // SET | UPDATE | RESTORE | PROFIT_UPDATE
   action        String
+  // Solo en PROFIT_UPDATE: COMPANY = lo originó la empresa; CUSTOMER = el cliente.
+  cause         String?
+  // Solo cuando cause = CUSTOMER: FINANCIAL | LOGISTIC.
+  reason        String?
   note          String?
   changedById   String?
   changedByCode String?
@@ -709,6 +714,33 @@ model DispatchCustomerProgress {
   @@index([loadStartedAt])
   @@index([loadClosedAt])
   @@index([invoiceDeliveredAt])
+}
+
+// ============================================================
+// Cola de bloqueo de la entrega en Profit (`dbo.cotiz_c.aux01`).
+//
+// Al iniciar la carga de un pedido se marca `aux01 = 1` en Profit para que
+// allá tampoco puedan mover la fecha. La escritura se encola aquí y el
+// scheduler la reintenta hasta confirmar: si Profit no responde, el sistema
+// sigue operando con el bloqueo local (nuestras hojas ya no aceptan cambios).
+// ============================================================
+model ProfitLockJob {
+  id          String @id @default(cuid())
+  orderNumber String
+  // true = aux01 = 1 (bloqueado); false = aux01 = 0 (liberado).
+  locked      Boolean
+  // Código Profit de quien originó el movimiento (se sella en co_us_mo).
+  actorCode   String?
+  // PENDIENTE | ENVIADO | ERROR
+  status      String    @default("PENDIENTE")
+  attempts    Int       @default(0)
+  lastError   String?
+  sentAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([orderNumber, locked])
+  @@index([status, createdAt])
 }
 
 // ============================================================

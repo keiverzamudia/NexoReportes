@@ -21,7 +21,6 @@ import type {
   Customer,
   CustomerStatementSummary,
   CustomerStatementSummaryResponse,
-  DeliveryDateApplyResponse,
   OrderDetail,
   OrderGroup,
   OrderGroupBy,
@@ -30,6 +29,7 @@ import type {
   OrderStatus,
   LoadPlan,
   DispatchSheetDetail,
+  ProfitDeliveryDateApplyResponse,
   ScenarioDetail,
   ScenarioDraftInput,
   ScenarioDraftResponse,
@@ -48,7 +48,7 @@ import { CoverageOthersDialog } from '../../components/CoverageOthersDialog';
 import { CustomerStatementDialog } from '../../components/CustomerStatementDialog';
 import { DeliveryDateButton } from '../../components/DeliveryDate';
 import { DeliveryDateDialog } from '../../components/DeliveryDateDialog';
-import type { DeliveryDateTarget, DeliveryDateTargetItem } from '../../components/DeliveryDateDialog';
+import type { DeliveryDateTarget } from '../../components/DeliveryDateDialog';
 import { EChart } from '../../components/EChart';
 import { RestorePreviewDialog, ScenariosDialog } from '../../components/ScenariosDialog';
 import type { RestorePreviewState, ScenarioSaveOptions } from '../../components/ScenariosDialog';
@@ -214,7 +214,7 @@ export default function PedidosPage() {
     typeof window === 'undefined' ? '' : (new URLSearchParams(window.location.search).get('cliente') ?? ''),
   );
 
-  // Fechas tentativas: selección por grupo del plan + modal de asignación.
+  // Entrega en Profit: selección por grupo del plan + modal de edición.
   const [dateSelection, setDateSelection] = useState<{ groupKey: string; keys: string[] } | null>(null);
   const [dateTarget, setDateTarget] = useState<DeliveryDateTarget | null>(null);
   // Comentarios por renglón (viajan al despacho) y guía de carga del camión.
@@ -249,8 +249,9 @@ export default function PedidosPage() {
     staleTime: 60_000,
     retry: false,
   });
-  // La acción «Editar fechas» de la matriz de permisos gobierna el modal.
-  const canEditDates = hasPermission(sessionUser?.permissions, 'pedidos', 'update');
+  // La acción «Cambiar fecha de entrega» es un permiso independiente porque
+  // esta operación escribe en Profit.
+  const canEditDates = hasPermission(sessionUser?.permissions, 'pedidos', 'change_date');
   // «Guardar simulación» requiere el permiso de Pedidos.
   const canSaveSimulation = hasPermission(sessionUser?.permissions, 'pedidos', 'create');
   // «Armar y enviar simulación» es un permiso propio de Despacho.
@@ -842,7 +843,7 @@ export default function PedidosPage() {
     setCommentDraft('');
   }
 
-  // --- Fecha tentativa: selección y modal ---------------------------------
+  // --- Entrega en Profit: selección y modal --------------------------------
   // La selección es por grupo para no mezclar clientes en una misma fecha.
   // Si se libera un renglón del plan, la selección se poda automáticamente.
   useEffect(() => {
@@ -876,26 +877,24 @@ export default function PedidosPage() {
     });
   }
 
-  function targetFromLines(lines: OrderGroupLine[], kind: DeliveryDateTarget['kind'], title: string): DeliveryDateTarget | null {
+  function targetFromLines(lines: OrderGroupLine[], title: string): DeliveryDateTarget | null {
     if (lines.length === 0) return null;
     const first = lines[0]!;
-    // La API identifica el renglón por pedido + artículo; se deduplica igual.
-    const items: DeliveryDateTargetItem[] = [
+    // La entrega es del encabezado: el API deduplica por número de pedido.
+    const items = [
       ...new Map(
         lines.map((line) => [
           `${line.orderNumber}#${line.productCode}`,
           {
             orderNumber: line.orderNumber,
             productCode: line.productCode,
-            description: line.description,
+            orderDate: line.orderDate,
             requestedDate: line.requestedDate,
-            tentativeDate: line.tentativeDate,
-          } satisfies DeliveryDateTargetItem,
+          },
         ]),
       ).values(),
     ];
     return {
-      kind,
       title,
       customerName: first.customerName ?? '—',
       customerCode: first.customerCode,
@@ -903,27 +902,61 @@ export default function PedidosPage() {
     };
   }
 
-  function openDateEditor(lines: OrderGroupLine[], kind: DeliveryDateTarget['kind'], title: string) {
+  function openDateEditor(lines: OrderGroupLine[], title: string) {
     if (!canEditDates) return;
-    const target = targetFromLines(lines, kind, title);
+    const editable = lines.filter((line) => !line.dispatchStarted);
+    if (editable.length === 0) {
+      setToast('La carga ya inició en despacho: la fecha de este pedido no se puede cambiar.');
+      return;
+    }
+    const target = targetFromLines(editable, title);
     if (target) setDateTarget(target);
   }
 
-  function handleDateSaved(result: DeliveryDateApplyResponse, mode: 'set' | 'restore') {
-    const changed = result.updated + result.restored;
-    let message: string;
-    if (changed === 0) {
-      message = 'Sin cambios: la fecha ya estaba así.';
-    } else if (mode === 'restore') {
-      message = `Fecha original restaurada en ${result.restored} renglón(es).`;
-    } else if (result.updated > 0 && result.restored > 0) {
-      message = `Fecha actualizada en ${result.updated} renglón(es) y restaurada en ${result.restored}.`;
-    } else if (result.updated > 0) {
-      message = `Fecha tentativa actualizada en ${result.updated} renglón(es).`;
-    } else {
-      message = `Fecha original restaurada en ${result.restored} renglón(es).`;
+  // Abre el editor desde el modal de detalle: el pedido no tiene los campos
+  // agrupados, así que se arman con su encabezado y sus renglones.
+  function openOrderDateEditor(order: OrderDetail) {
+    if (!canEditDates) return;
+    const items = order.lines.map((line) => ({
+      orderNumber: order.order.externalNumber,
+      productCode: line.productCode,
+      orderDate: order.order.orderDate,
+      requestedDate: order.order.requestedDate,
+    }));
+    if (items.length === 0) return;
+    setDateTarget({
+      title: `Entrega del pedido ${order.order.externalNumber}`,
+      customerName: order.order.customerName ?? '—',
+      customerCode: order.order.customerCode,
+      items,
+    });
+  }
+
+  function handleDateSaved(result: ProfitDeliveryDateApplyResponse) {
+    const parts: string[] = [];
+    if (result.dryRun) {
+      parts.push('Simulación: no se escribió en Profit.');
+    } else if (result.applied > 0) {
+      parts.push(`Entrega actualizada en Profit en ${result.applied} pedido(s).`);
     }
-    setToast(message);
+    if (result.unchanged > 0) parts.push(`${result.unchanged} sin cambios.`);
+    if (result.skipped > 0) {
+      const detail = result.orders
+        .filter((order) => order.status === 'SKIPPED' && order.message)
+        .slice(0, 2)
+        .map((order) => order.message)
+        .join(' · ');
+      parts.push(`${result.skipped} omitido(s)${detail ? `: ${detail}` : ' por estar cerrados'}.`);
+    }
+    if (result.failed > 0) {
+      const detail = result.orders
+        .filter((order) => order.status === 'FAILED' && order.message)
+        .slice(0, 2)
+        .map((order) => `${order.orderNumber}: ${order.message}`)
+        .join(' · ');
+      parts.push(`${result.failed} con error${detail ? ` (${detail})` : ''}.`);
+    }
+    setToast(parts.join(' ') || 'Sin cambios.');
     setDateSelection(null);
     setDateTarget(null);
   }
@@ -1194,8 +1227,14 @@ export default function PedidosPage() {
           body: JSON.stringify({ title: 'Simulación del equipo' }),
         }),
       );
-      setToast(`Despacho ${sheet.number} enviado. Los cambios se actualizan solos.`);
+      const notice = skippedDispatchNotice(sheet.skippedOrders);
+      setToast(
+        [`Despacho ${sheet.number} enviado. Los cambios se actualizan solos.`, notice]
+          .filter(Boolean)
+          .join(' '),
+      );
       void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
+      void queryClient.invalidateQueries({ queryKey: ['orders-grouped'] });
       void queryClient.invalidateQueries({ queryKey: ['dispatch-sheets'] });
     } catch (error) {
       setToast(error instanceof Error ? error.message : 'No se pudo enviar la simulación.');
@@ -1253,8 +1292,14 @@ export default function PedidosPage() {
           assignedToId: options.assignedToId ?? null,
         }),
       });
-      setToast(`Simulación «${name}» enviada a despacho ${sheet.number}. Los cambios se actualizan solos.`);
+      const notice = skippedDispatchNotice(sheet.skippedOrders);
+      setToast(
+        [`Simulación «${name}» enviada a despacho ${sheet.number}. Los cambios se actualizan solos.`, notice]
+          .filter(Boolean)
+          .join(' '),
+      );
       void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
+      void queryClient.invalidateQueries({ queryKey: ['orders-grouped'] });
       void queryClient.invalidateQueries({ queryKey: ['dispatch-sheets'] });
       return;
     }
@@ -1367,6 +1412,10 @@ export default function PedidosPage() {
   function toggleLine(line: OrderGroupLine) {
     if (!canEditSimulation) {
       setToast('No tienes permiso para modificar la simulación.');
+      return;
+    }
+    if (line.dispatchSheetNumber) {
+      setToast(`El pedido ${line.orderNumber} ya está en el despacho ${line.dispatchSheetNumber}.`);
       return;
     }
     const key = lineKey(line);
@@ -1951,8 +2000,8 @@ export default function PedidosPage() {
                                 <div className="mb-space-xs flex flex-wrap items-center justify-between gap-space-xs">
                                   <p className="text-label-sm text-on-surface-variant">
                                     {selectedCount > 0
-                                      ? `${selectedCount} renglón(es) seleccionado(s) para fecha tentativa.`
-                                      : 'Selecciona renglones para asignarles una fecha tentativa.'}
+                                      ? `${selectedCount} renglón(es) seleccionado(s) para cambiar la entrega en Profit.`
+                                      : 'Selecciona renglones cuyos pedidos quieras mover de entrega.'}
                                   </p>
                                   <div className="flex items-center gap-space-xs">
                                     {selectedCount > 0 && (
@@ -1967,10 +2016,10 @@ export default function PedidosPage() {
                                     <button
                                       type="button"
                                       disabled={selectedCount === 0}
-                                      onClick={() => openDateEditor(selectedDateLines, 'seleccion', 'Fecha de los seleccionados')}
+                                      onClick={() => openDateEditor(selectedDateLines, 'Entrega de los seleccionados')}
                                       className="flex h-8 items-center gap-space-xs rounded-pill bg-primary-container px-space-sm font-semibold text-label-md text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-40"
                                     >
-                                      <CalendarRange aria-hidden className="size-3.5" /> Asignar fecha
+                                      <CalendarRange aria-hidden className="size-3.5" /> Cambiar entrega
                                     </button>
                                     <button
                                       type="button"
@@ -1993,7 +2042,7 @@ export default function PedidosPage() {
                                             type="checkbox"
                                             checked={allSelected}
                                             onChange={() => toggleDateGroup(g.key, groupKeys)}
-                                            aria-label="Seleccionar todos los renglones del grupo para fecha tentativa"
+                                            aria-label="Seleccionar todos los renglones del grupo para cambiar la entrega"
                                             className="size-4 accent-[var(--color-primary-container)]"
                                           />
                                         )}
@@ -2001,6 +2050,7 @@ export default function PedidosPage() {
                                       <Th align="right" className="w-14">Turno</Th>
                                       <Th>Pedido</Th>
                                       <Th>Emisión</Th>
+                                      <Th>Entrega Profit</Th>
                                       <Th>{by === 'producto' ? 'Cliente' : 'Artículo'}</Th>
                                       <Th align="right">Pend.</Th>
                                       <Th align="right">Asignado</Th>
@@ -2019,7 +2069,6 @@ export default function PedidosPage() {
                                       const editLines = editKeys
                                         .map((key) => allLineByKey.get(key)?.line)
                                         .filter((line): line is OrderGroupLine => Boolean(line));
-                                      const editMode: DeliveryDateTarget['kind'] = checked && selectedDateLines.length > 0 ? 'seleccion' : 'renglon';
                                       return (
                                         <tr
                                           key={e.key}
@@ -2033,8 +2082,8 @@ export default function PedidosPage() {
                                                 type="checkbox"
                                                 checked={checked}
                                                 onChange={() => toggleDateLine(g.key, e.key)}
-                                                aria-label={`Seleccionar ${ref.line.productCode} para fecha tentativa`}
-                                                title="Seleccionar para asignar fecha tentativa"
+                                                aria-label={`Seleccionar ${ref.line.productCode} para cambiar la entrega`}
+                                                title="Seleccionar para cambiar la entrega en Profit"
                                                 className="size-4 accent-[var(--color-primary-container)]"
                                               />
                                             )}
@@ -2055,14 +2104,29 @@ export default function PedidosPage() {
                                               </span>
                                             )}
                                           </Td>
+                                          <Td className="tabular-nums text-on-surface-variant">
+                                            {fmtDate(ref.line.orderDate)}
+                                          </Td>
                                           <Td>
                                             <DeliveryDateButton
-                                              tentativeDate={ref.line.tentativeDate}
-                                              originalDate={ref.line.orderDate ?? ref.line.requestedDate}
-                                              onEdit={() => openDateEditor(editLines, editMode, editMode === 'seleccion' ? 'Fecha de los seleccionados' : 'Fecha del producto')}
+                                              date={ref.line.requestedDate}
+                                              onEdit={() =>
+                                                openDateEditor(
+                                                  editLines,
+                                                  editKeys.length > 1 ? 'Entrega de los seleccionados' : 'Entrega del pedido',
+                                                )
+                                              }
                                               canEdit={canEditDates}
-                                              label={`Fecha de emisión de ${ref.line.productCode}`}
+                                              label={`Entrega en Profit de ${ref.line.productCode}`}
                                             />
+                                            {ref.line.tentativeDate && (
+                                              <span
+                                                className="ml-1 text-label-sm font-semibold text-secondary"
+                                                title="Fecha estimada local anterior (se retira al cambiar la entrega en Profit)"
+                                              >
+                                                est. {fmtDate(ref.line.tentativeDate)}
+                                              </span>
+                                            )}
                                           </Td>
                                           <Td>
                                             {by === 'producto' ? (
@@ -2248,8 +2312,8 @@ export default function PedidosPage() {
                         onToggleLine={toggleLine}
                         onToggleOpen={() => setExpanded(isOpen ? null : group.key)}
                         onOpenOrder={(id, number) => setSelectedOrder({ id, number })}
-                        onEditGroupDate={() => openDateEditor(group.lines, 'cliente', 'Fecha del cliente')}
-                        onEditLineDate={(line) => openDateEditor([line], 'renglon', 'Fecha del producto')}
+                        onEditGroupDate={() => openDateEditor(group.lines, 'Entrega del cliente')}
+                        onEditLineDate={(line) => openDateEditor([line], 'Entrega del pedido')}
                         onOpenStatement={
                           canViewStatement && by === 'cliente' && group.code
                             ? () => setStatementCustomer(customerForStatement(group))
@@ -2354,8 +2418,19 @@ export default function PedidosPage() {
                       <p className="mt-space-2xs text-title-md font-bold text-primary">{fmtDate(orderDetail.order.orderDate)}</p>
                     </div>
                     <div className="rounded-xl bg-surface-container-low/70 p-space-sm">
-                      <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Entrega comprometida</p>
-                      <p className="mt-space-2xs text-title-md font-bold text-primary">{fmtDate(orderDetail.order.requestedDate)}</p>
+                      <p className="font-semibold uppercase tracking-wider text-label-sm text-outline">Entrega en Profit</p>
+                      <div className="mt-space-2xs flex flex-wrap items-center gap-space-xs">
+                        <p className="text-title-md font-bold text-primary">{fmtDate(orderDetail.order.requestedDate)}</p>
+                        {canEditDates && (
+                          <button
+                            type="button"
+                            onClick={() => openOrderDateEditor(orderDetail)}
+                            className="rounded-pill border border-outline-variant/50 px-2 py-0.5 font-semibold text-label-sm text-primary-container transition-colors hover:bg-surface-container-lowest"
+                          >
+                            Cambiar
+                          </button>
+                        )}
+                      </div>
                       {(() => {
                         const dates = [
                           ...new Set(
@@ -2366,8 +2441,11 @@ export default function PedidosPage() {
                         ].sort();
                         if (dates.length === 0) return null;
                         return (
-                          <p className="mt-space-2xs text-label-sm font-semibold text-secondary">
-                            Tentativa: {dates.length === 1 ? fmtDate(dates[0]!) : `${dates.length} fechas`}
+                          <p
+                            className="mt-space-2xs text-label-sm font-semibold text-secondary"
+                            title="Entrega estimada local anterior (se retira al cambiar en Profit)"
+                          >
+                            Estimada: {dates.length === 1 ? fmtDate(dates[0]!) : `${dates.length} fechas`}
                           </p>
                         );
                       })()}
@@ -2672,6 +2750,18 @@ function PortfolioBalance({ summary, loading }: { summary?: CustomerStatementSum
   );
 }
 
+// Aviso de los pedidos que no se enviaron porque ya viven en un despacho.
+function skippedDispatchNotice(skipped?: { orderNumber: string; sheetNumber: string }[]): string | null {
+  if (!skipped || skipped.length === 0) return null;
+  const list = skipped
+    .slice(0, 4)
+    .map((item) => `${item.orderNumber} (${item.sheetNumber})`)
+    .join(', ');
+  return `${skipped.length} pedido(s) ya estaban en despacho y se omitieron: ${list}${
+    skipped.length > 4 ? '…' : ''
+  }. Puedes cambiar su fecha mientras la carga no haya iniciado.`;
+}
+
 function GroupRow({
   group,
   by,
@@ -2757,37 +2847,27 @@ function GroupRow({
       // real es la reserva, no la existencia.
       return mode === 'total' || (queueByKey.get(lineKey(line))?.dispatchable ?? false);
     });
-  // Resumen de fecha del grupo: la emisión de Profit siempre va visible y,
-  // si hay tentativas, se muestra la más próxima al lado en verde. En la
-  // vista por cliente el botón conserva el rango de emisión en el tooltip.
-  const tentativeCount = group.lines.filter((line) => line.tentativeDate).length;
-  const tentativeDates = [
-    ...new Set(group.lines.map((line) => line.tentativeDate).filter((value): value is string => Boolean(value))),
+  // Fechas del grupo: se muestran SIEMPRE las dos de Profit (emisión y
+  // entrega). La entrega se edita por pedido; si hay varias, el rango y el
+  // tooltip avisan cuántos pedidos difieren.
+  const emissionDates = [
+    ...new Set(group.lines.map((line) => line.orderDate).filter((value): value is string => Boolean(value))),
   ].sort();
-  const distinctTentativeDates = tentativeDates.length;
-  // Fecha tentativa del grupo: la más próxima (la primera del arreglo ordenado).
-  const earliestTentative = tentativeDates[0] ?? null;
-  const originalDates = [...new Set(group.lines.map((line) => line.orderDate ?? line.requestedDate).filter((value): value is string => Boolean(value)))].sort();
-  // La fecha del grupo es la PRÓXIMA entrega efectiva (tentativa u original).
-  // Si esa próxima entrega es tentativa, va en verde; si no, queda normal y
-  // el tooltip avisa cuántos renglones tienen fecha tentativa.
-  const effectiveDates = group.lines
-    .map((line) => line.tentativeDate ?? line.requestedDate)
-    .filter((value): value is string => Boolean(value))
-    .sort();
-  const earliestEffective = effectiveDates[0] ?? null;
-  const earliestLine = earliestEffective
-    ? group.lines.find((line) => (line.tentativeDate ?? line.requestedDate) === earliestEffective)
-    : undefined;
-  const earliestIsTentative = Boolean(earliestLine?.tentativeDate);
-  const earliestOriginal = originalDates[0] ?? null;
-  const latestOriginal = originalDates.length > 0 ? originalDates[originalDates.length - 1]! : null;
-  const dateHint =
-    tentativeCount > 0 && tentativeCount < group.lines.length
-      ? `${tentativeCount} de ${group.lines.length} con fecha tentativa`
-      : distinctTentativeDates > 1
-        ? `${distinctTentativeDates} fechas tentativas`
+  const deliveryDates = [
+    ...new Set(group.lines.map((line) => line.requestedDate).filter((value): value is string => Boolean(value))),
+  ].sort();
+  const earliestEmission = emissionDates[0] ?? null;
+  const latestEmission = emissionDates.length > 0 ? emissionDates[emissionDates.length - 1]! : null;
+  // La entrega del grupo es la más próxima (primera del arreglo ordenado).
+  const earliestDelivery = deliveryDates[0] ?? null;
+  const tentativeCount = group.lines.filter((line) => line.tentativeDate).length;
+  const deliveryHint =
+    deliveryDates.length > 1
+      ? `${deliveryDates.length} fechas de entrega distintas en el grupo`
+      : tentativeCount > 0
+        ? `${tentativeCount} renglón(es) con entrega estimada local (se retira al cambiar en Profit)`
         : undefined;
+  const orderCount = new Set(group.lines.map((line) => line.orderNumber)).size;
   return (
     <>
       <tr className={`transition-colors ${selectedCount > 0 ? 'bg-secondary-container/15' : 'hover:bg-surface-container-low/70'}`}>
@@ -2848,27 +2928,34 @@ function GroupRow({
                   <span aria-hidden className="text-outline">·</span>
                 </>
               )}
-              {by === 'cliente' ? (
+              {/* Ambas fechas de Profit, siempre visibles. */}
+              <span className="inline-flex flex-wrap items-center gap-x-1 tabular-nums">
+                <span className="text-outline">Emisión</span>
+                <span className="font-semibold text-on-surface-variant">{fmtDate(earliestEmission)}</span>
+                {latestEmission && latestEmission !== earliestEmission && (
+                  <span className="text-outline">– {fmtDate(latestEmission)}</span>
+                )}
+              </span>
+              <span aria-hidden className="text-outline">·</span>
+              <span className="inline-flex flex-wrap items-center gap-x-1 tabular-nums">
+                <span className="text-outline">Entrega</span>
                 <DeliveryDateButton
-                  tentativeDate={earliestIsTentative ? earliestEffective : null}
-                  originalDate={earliestOriginal}
-                  originalTo={latestOriginal}
+                  date={earliestDelivery}
                   onEdit={onEditGroupDate}
-                  canEdit={canEditDates}
-                  label={`Fecha de emisión de ${group.label}`}
-                  hint={dateHint}
+                  canEdit={canEditDates && !group.lines.every((line) => line.dispatchStarted)}
+                  label={`Entrega en Profit de ${group.label}`}
+                  hint={
+                    group.lines.every((line) => line.dispatchStarted)
+                      ? 'La carga ya inició: fecha bloqueada'
+                      : deliveryHint ?? `${orderCount} pedido(s)`
+                  }
                 />
-              ) : (
-                <span className="inline-flex flex-wrap items-center gap-x-1 tabular-nums" title={dateHint}>
-                  <span className="text-outline">{fmtDate(earliestOriginal)}</span>
-                  {earliestTentative && (
-                    <>
-                      <span aria-hidden className="text-outline">→</span>
-                      <span className="font-semibold text-secondary">{fmtDate(earliestTentative)}</span>
-                    </>
-                  )}
-                </span>
-              )}
+                {deliveryDates.length > 1 && (
+                  <span className="text-outline" title={deliveryHint}>
+                    – {fmtDate(deliveryDates[deliveryDates.length - 1]!)}
+                  </span>
+                )}
+              </span>
               {!selectable &&
                 (lockedByReservation ? (
                   <span
@@ -2920,6 +3007,7 @@ function GroupRow({
                     <Th className="w-8" />
                     <Th>Pedido</Th>
                     <Th>Emisión</Th>
+                    <Th>Entrega Profit</Th>
                     <Th>{by === 'producto' ? 'Cliente' : 'Artículo'}</Th>
                     <Th align="right">Pend.</Th>
                     <Th align="right">Kg</Th>
@@ -2943,27 +3031,45 @@ function GroupRow({
                     const takenByOther = Boolean(owner && owner.id !== currentUserId);
                     const blockedByOwner = takenByOther && !canOverride;
                     const blocked = (mode === 'disponible' && !selected && !dispatchable) || blockedByOwner;
+                    // Ya vive en un despacho: no se puede volver a marcar.
+                    const inDispatch = Boolean(line.dispatchSheetNumber);
+                    const dateLocked = line.dispatchStarted;
                     return (
-                      <tr key={key} className={`transition-colors ${selected ? 'bg-success-container' : blocked ? 'opacity-55' : 'hover:bg-surface-container-low'}`}>
+                      <tr
+                        key={key}
+                        className={`transition-colors ${
+                          selected ? 'bg-success-container' : blocked || inDispatch ? 'opacity-55' : 'hover:bg-surface-container-low'
+                        }`}
+                      >
                         <Td>
                           <input
                             type="checkbox"
                             checked={selected}
-                            disabled={blocked}
+                            disabled={blocked || inDispatch}
                             onChange={() => onToggleLine(line)}
                             aria-label="Seleccionar renglón para despacho"
                             title={
-                              blockedByOwner
-                                ? `Lo reservó ${owner?.name ?? 'otro vendedor'}`
-                                : blocked
-                                  ? 'Sin existencia para despachar'
-                                  : undefined
+                              inDispatch
+                                ? `Ya está en el despacho ${line.dispatchSheetNumber}`
+                                : blockedByOwner
+                                  ? `Lo reservó ${owner?.name ?? 'otro vendedor'}`
+                                  : blocked
+                                    ? 'Sin existencia para despachar'
+                                    : undefined
                             }
                             className="size-4 accent-[var(--color-primary-container)] disabled:cursor-not-allowed"
                           />
                         </Td>
                         <Td className="font-bold tabular-nums text-primary">
                           {line.orderNumber}
+                          {inDispatch && (
+                            <span
+                              className="ml-1 rounded-pill bg-surface-container-high px-1.5 py-0.5 text-[10px] font-bold uppercase text-on-surface-variant"
+                              title={`Pedido en el despacho ${line.dispatchSheetNumber}`}
+                            >
+                              {line.dispatchSheetNumber}
+                            </span>
+                          )}
                           {by === 'producto' && owner && (
                             <span
                               className={`ml-1 rounded-pill px-1.5 py-0.5 text-[10px] font-bold ${
@@ -2977,14 +3083,23 @@ function GroupRow({
                             </span>
                           )}
                         </Td>
+                        <Td className="tabular-nums text-on-surface-variant">{fmtDate(line.orderDate)}</Td>
                         <Td>
                           <DeliveryDateButton
-                            tentativeDate={line.tentativeDate}
-                            originalDate={line.orderDate ?? line.requestedDate}
+                            date={line.requestedDate}
                             onEdit={() => onEditLineDate(line)}
-                            canEdit={canEditDates}
-                            label={`Fecha de emisión de ${line.productCode}`}
+                            canEdit={canEditDates && !dateLocked}
+                            label={`Entrega en Profit de ${line.productCode}`}
+                            hint={dateLocked ? 'La carga ya inició: fecha bloqueada' : undefined}
                           />
+                          {line.tentativeDate && (
+                            <span
+                              className="ml-1 text-label-sm font-semibold text-secondary"
+                              title="Fecha estimada local anterior (se retira al cambiar la entrega en Profit)"
+                            >
+                              est. {fmtDate(line.tentativeDate)}
+                            </span>
+                          )}
                         </Td>
                         {by === 'producto' ? (
                           <Td>
@@ -3019,7 +3134,7 @@ function GroupRow({
                             if (live === undefined || live === total) return null;
                             return <span className="ml-space-xs text-label-sm font-semibold text-primary">· quedan {fmtQty(live, 0)}</span>;
                           })()}
-                          {blocked && <span className="ml-space-xs font-bold uppercase text-label-sm text-critical">sin existencia</span>}
+                          {blocked && !inDispatch && <span className="ml-space-xs font-bold uppercase text-label-sm text-critical">sin existencia</span>}
                         </Td>
                         <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(r?.assignedQty ?? 0, 0)}</Td>
                         <Td align="right" className={`tabular-nums ${(r?.missingQty ?? 0) > 0 ? 'font-bold text-error' : 'text-outline'}`}>{fmtQty(r?.missingQty ?? 0, 0)}</Td>

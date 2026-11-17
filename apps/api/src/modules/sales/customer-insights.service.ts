@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
+  CustomerDeliveryChangeSummary,
   CustomerInsightAccount,
   CustomerInsightOrders,
   CustomerInsightQuery,
@@ -22,6 +23,7 @@ import {
 import { normalizeCustomerCode } from './customer-code';
 import { CustomerStatementService } from './customer-statement.service';
 import { DeliveryDatesService, deliveryDateKey } from './delivery-dates.service';
+import { DeliveryDateReputationService } from './delivery-date-reputation.service';
 
 // ============================================================
 // Ficha 360 de clientes (solo lectura).
@@ -157,6 +159,22 @@ function emptyOrders(): CustomerInsightOrders {
   return { activeCount: 0, pendingQty: 0, pendingKg: 0, nextDeliveryDate: null };
 }
 
+function emptyDeliveryChanges(): CustomerDeliveryChangeSummary {
+  return {
+    total: 0,
+    orders: 0,
+    byCompany: 0,
+    byCustomer: 0,
+    unclassified: 0,
+    financial: 0,
+    logistic: 0,
+    customerSharePct: null,
+    reputation: 'UNKNOWN',
+    lastChangeAt: null,
+    recent: [],
+  };
+}
+
 @Injectable()
 export class CustomerInsightsService {
   private readonly logger = new Logger(CustomerInsightsService.name);
@@ -167,6 +185,7 @@ export class CustomerInsightsService {
     @Inject(PROFIT_ADAPTER) private readonly profit: ProfitAdapter,
     private readonly statements: CustomerStatementService,
     private readonly deliveryDates: DeliveryDatesService,
+    private readonly reputation: DeliveryDateReputationService,
   ) {}
 
   async get(codeRaw: string, query: CustomerInsightQuery): Promise<CustomerInsightResponse> {
@@ -197,7 +216,8 @@ export class CustomerInsightsService {
 
     const customerType = local?.customerType?.trim() || null;
 
-    const [volumeRes, billingRes, similarRes, ordersRes, accountRes] = await Promise.allSettled([
+    const [volumeRes, billingRes, similarRes, ordersRes, accountRes, reputationRes] =
+      await Promise.allSettled([
       this.profit.selectQuery(CUSTOMER_INSIGHTS_VOLUME_SQL, VOLUME_QUERY_LIMIT, {
         co_cli: code,
         desde: windows.from,
@@ -218,6 +238,7 @@ export class CustomerInsightsService {
         : Promise.resolve([] as Record<string, unknown>[]),
       this.loadOrders(code),
       this.loadAccount(code, currency),
+      this.reputation.summarize(code),
     ]);
 
     const volumeRows = volumeRes.status === 'fulfilled' ? volumeRes.value : [];
@@ -263,6 +284,16 @@ export class CustomerInsightsService {
       this.logger.warn(
         `No se pudo leer la cartera de ${code}: ${
           accountRes.reason instanceof Error ? accountRes.reason.message : String(accountRes.reason)
+        }`,
+      );
+    }
+
+    const deliveryChanges =
+      reputationRes.status === 'fulfilled' ? reputationRes.value : emptyDeliveryChanges();
+    if (reputationRes.status === 'rejected') {
+      this.logger.warn(
+        `No se pudo leer el historial de entregas de ${code}: ${
+          reputationRes.reason instanceof Error ? reputationRes.reason.message : String(reputationRes.reason)
         }`,
       );
     }
@@ -318,6 +349,7 @@ export class CustomerInsightsService {
       cadence: built.cadence,
       account,
       orders,
+      deliveryChanges,
       alerts: built.alerts,
       available: volumeOk,
       billingAvailable: billingOk,

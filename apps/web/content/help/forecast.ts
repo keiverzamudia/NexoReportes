@@ -22,6 +22,8 @@ export const SALES_HELP_RULES = [
   'El desglose del día trae dos vistas: productos (kg, sacos y % del día) y clientes (kg, sacos y % del día). Al expandir una fila se ven los clientes del producto o los productos del cliente, con su presentación en sacos cuando el artículo es SAC.',
   'Los porcentajes del desglose se calculan sobre el total vendido del día; las notas sin cliente se agrupan como «Sin cliente» para que sumen 100 %.',
   'La línea punteada de la tira diaria es la meta por día (forecast ÷ días del mes).',
+  'La tarjeta «Brecha» alterna dos lecturas: Mes = venta acumulada contra el forecast (con signo); Día = lo que faltaría para el forecast si el mes terminara hoy, con el % de la meta ya vendido.',
+  'El color de «Avance» y del semáforo mide el ritmo: compara el cierre proyectado con la meta, no lo vendido a la fecha. Un 25 % de avance a mitad de mes puede ir perfectamente en ritmo.',
   'La meta se captura una vez al mes y se conserva para el histórico.',
   'El mes en curso muestra la meta viva de Profit; si allá la cambian, se avisa.',
   'Sin días hábiles contados, la proyección es 0 y el % es 0: el mes aún no empieza a contar.',
@@ -90,8 +92,10 @@ export const SALES_COLUMN_HELP = {
     id: 'avance',
     title: 'Avance',
     short: 'Venta real ÷ meta',
-    what: 'Porcentaje de la meta que ya se vendió; mide lo acumulado, no proyecta.',
-    formula: 'venta kg ÷ forecast kg × 100',
+    what:
+      'Porcentaje de la meta que ya se vendió: el número es lo acumulado, no proyecta. El color sí: lee el cierre proyectado al ritmo actual, así que verde significa «va en ritmo para cumplir», no «ya cumplió».',
+    formula:
+      'avance = venta kg ÷ forecast kg × 100 · color = (venta ÷ días transcurridos × días del mes) ÷ forecast × 100',
     source: 'Cálculo del API',
   },
   promedio: {
@@ -158,22 +162,25 @@ export type SalesHelpKey = keyof typeof SALES_COLUMN_HELP;
 export const SALES_HELP_TERMS: HelpTerm[] = Object.values(SALES_COLUMN_HELP);
 
 // ============================================================
-// Participación por cliente.
+// Clientes vs meta histórica.
 //
-// No hay histórico ni meta: todo se mide contra la venta ABA real del mes
-// hasta el corte. La ayuda debe dejar claro qué significa el 100 %.
+// Cada cliente se mide contra SU promedio de los 3 meses cerrados anteriores
+// (solo meses con compra). La barra azul es la venta del mes y la verde, la
+// proyección de cierre. No es el forecast oficial de Profit.
 // ============================================================
 
-export const SALES_CUSTOMER_HELP_TITLE = 'Cómo leer la participación por cliente';
+export const SALES_CUSTOMER_HELP_TITLE = 'Cómo leer los clientes contra su meta histórica';
 
 export const SALES_CUSTOMER_HELP_RULES = [
-  'El 100 % es la venta ABA del mes hasta el corte, no una meta ni un histórico.',
-  'Participación del cliente = kg vendidos al cliente ÷ kg vendidos de ABA × 100.',
-  'Los clientes del catálogo sin venta se muestran con 0 % al final de la tabla.',
-  'Dentro de cada cliente, «% del cliente» indica cuánto pesa ese producto en su compra.',
-  'Dentro de cada producto, «% del producto» indica cuánto pesa ese cliente en la venta total del artículo.',
-  'Venta = nota de entrega no anulada, línea ABA y artículo activo. Corte a ayer.',
-  'Si Profit no responde, el informe avisa y no inventa ceros.',
+  'La meta de cada cliente es el promedio de los kg de los meses CON COMPRA de los últimos 3 meses cerrados.',
+  'No es el forecast oficial de Profit: es un benchmark individual de cartera y no se suma a la meta de la empresa.',
+  'La barra azul es la venta del mes hasta el corte; la verde, la proyección de cierre al ritmo actual.',
+  'El marcador verde es el 100 % de la meta histórica: si la barra lo cruza, el cliente va por encima de su promedio.',
+  'La proyección solo aplica al mes en curso; en un mes cerrado manda la venta real y en uno futuro solo se muestra la meta.',
+  'La lista se ordena por mayor promedio: primero los clientes que más volumen venían comprando.',
+  'Un cliente que no compró este mes aparece con su meta y 0 venta: es la lista de prioridades a recuperar.',
+  'Venta = nota de entrega no anulada, línea ABA y artículo activo. Corte a ayer; días hábiles de lunes a sábado.',
+  'Si Profit no responde, el informe avisa y no inventa ceros ni promedios.',
 ];
 
 export const CUSTOMER_SALES_COLUMN_HELP = {
@@ -201,6 +208,15 @@ export const CUSTOMER_SALES_COLUMN_HELP = {
     formula: 'Customer.customerType · Customer.vendor',
     source: 'Customer',
   },
+  meta: {
+    id: 'customer_meta',
+    title: 'Meta prom.',
+    short: 'Promedio histórico del cliente',
+    what:
+      'Promedio de los kg de los meses con compra de los últimos 3 meses cerrados. Si compró los 3 meses divide entre 3; si compró uno, esa compra es su meta. No incluye el mes en curso.',
+    formula: 'Σ kg de los meses con compra ÷ cantidad de meses con compra (1–3)',
+    source: 'not_ent · reng_nde · solo ABA',
+  },
   venta: {
     id: 'customer_venta',
     title: 'Venta kg',
@@ -208,6 +224,32 @@ export const CUSTOMER_SALES_COLUMN_HELP = {
     what: 'Kilogramos despachados al cliente en el mes hasta el corte.',
     formula: 'Σ (unidades × kg por unidad)',
     source: 'not_ent · reng_nde · solo ABA',
+  },
+  proyeccion: {
+    id: 'customer_proyeccion',
+    title: 'Proyección kg',
+    short: 'Cierre estimado del mes',
+    what:
+      'Kg que cerraría el cliente al ritmo actual. En un mes cerrado coincide con la venta real; en un mes futuro queda vacía.',
+    formula: '(venta ÷ días hábiles transcurridos) × días hábiles del mes',
+    source: 'Cálculo del API',
+  },
+  vsMeta: {
+    id: 'customer_vs_meta',
+    title: '% vs meta',
+    short: 'Cumplimiento proyectado',
+    what:
+      'Proyección de cierre contra la meta histórica del cliente. Sin meta (cliente nuevo) se muestra «Sin meta» en lugar de un porcentaje.',
+    formula: 'proyección ÷ meta histórica × 100',
+    source: 'Cálculo del API',
+  },
+  ritmo: {
+    id: 'customer_ritmo',
+    title: 'Ritmo nec.',
+    short: 'Kg por día hábil',
+    what: 'Kilogramos por día hábil que necesita vender el cliente para cerrar el mes en su meta. Solo en el mes en curso.',
+    formula: 'max(0, meta − venta) ÷ días hábiles restantes',
+    source: 'Cálculo del API',
   },
   participacion: {
     id: 'customer_participacion',
@@ -222,7 +264,7 @@ export const CUSTOMER_SALES_COLUMN_HELP = {
     id: 'customer_productos',
     title: 'Productos',
     short: 'Artículos con venta',
-    what: 'Cantidad de productos que el cliente compró en el mes. Al expandir la fila se ve el detalle.',
+    what: 'Cantidad de productos que el cliente compró en el mes. Al expandir la fila se ve el detalle junto a su historial.',
     formula: 'Conteo de productos con venta del cliente',
     source: 'Cálculo del API',
   },
@@ -230,7 +272,7 @@ export const CUSTOMER_SALES_COLUMN_HELP = {
     id: 'customer_ultima',
     title: 'Última entrega',
     short: 'Fecha de la última nota',
-    what: 'Fecha de la última nota de entrega del cliente dentro del periodo consultado.',
+    what: 'Fecha de la última entrega del cliente en el mes; si no compró este mes, la última de los 3 meses históricos.',
     formula: 'MAX(not_ent.fec_emis)',
     source: 'not_ent',
   },

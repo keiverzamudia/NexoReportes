@@ -7,6 +7,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
+  AvailabilityStatus,
   FORECAST_WEEK_INDEXES,
   ForecastCustomerSalesResponse,
   ForecastPlanResponse,
@@ -34,10 +35,10 @@ import {
 } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
-import { computeAvailability } from '../availability/availability.engine';
 import { ProfitAdapter, PROFIT_ADAPTER } from '../sync/profit.adapter';
 import { deliveryDateKey } from '../sales/delivery-dates.service';
 import { resolveForecastTargets } from './forecast-targets';
+import { CUSTOMER_TARGET_HISTORY_MONTHS } from './customer-targets';
 import {
   buildCustomerShare,
   CustomerInfo,
@@ -60,18 +61,21 @@ import {
 // ============================================================
 // Forecast (pronóstico de producción).
 //
-//  · El FORECAST MENSUAL por artículo se lee de Profit (`dbo.forecast`). La
-//    columna `kg_mensual` viene en la presentación del artículo: los SAC se
-//    multiplican por `art.uni_relac` para llevarlos a KILOGRAMOS y el granel
-//    (KG) se usa tal cual. Es solo lectura; Nexo nunca lo escribe.
+//  · El FORECAST MENSUAL por artículo se lee de Profit (`dbo.forecast`) y TODO
+//    el módulo trabaja en KILOGRAMOS. La columna `kg_mensual` viene en la
+//    presentación del artículo: los SAC se multiplican por `art.uni_relac` para
+//    llevarlos a kilogramos y el granel (KG) se usa tal cual. Es solo lectura;
+//    Nexo nunca lo escribe.
 //  · `forecast.fecha` es el mes de vigencia (primer día del mes) y `co_art` el
 //    código del artículo, así que cada mes se consulta directamente y no hace
 //    falta cruzar por descripción.
-//  · Cada semana (4 bloques) tiene una CANTIDAD editable. Por defecto se
-//    llena con el PROMEDIO = forecast mensual / 4; aquí solo se ajustan semanas.
-//  · El Reporte reutiliza el MISMO motor de disponibilidad que la vista
-//    «Disponibilidad por Producto», con la demanda OBJETIVO de la semana
-//    (max(forecast de la semana, demanda de la semana)).
+//  · Cada semana (4 bloques) tiene una CANTIDAD editable en kg. Por defecto se
+//    llena con el reparto por DÍAS del bloque (kg mensual × días ÷ días del
+//    mes), para que la semana larga (22-fin) no quede subestimada.
+//  · El Reporte compara, semana a semana, forecast vs VENDIDO vs cartera
+//    pendiente, y calcula «a producir» en kg con el stock ARRASTRADO de la
+//    semana anterior (nunca repite la misma brecha 4 veces). Los sacos se
+//    derivan solo para presentación.
 // ============================================================
 
 function round3(value: number): number {
@@ -135,9 +139,9 @@ WHERE f.fecha >= @desde
 // La venta se mide por NOTA DE ENTREGA (despacho), no por factura: encabezado
 // `dbo.not_ent` + renglones `dbo.reng_nde`. En este Profit ambas tablas usan
 // `fact_num` como llave (NO `not_num`): es el número de documento del módulo,
-// por eso el JOIN es `r.fact_num = f.fact_num`. `kg_mensual` de `forecast` está
-// en KILOGRAMOS, por eso la comparación global es en kg/t y la de producto añade
-// sacos cuando `uni_venta = 'SAC'`.
+// por eso el JOIN es `r.fact_num = f.fact_num`. La comparación es en kg/t: la
+// venta se lleva a kg con `ISNULL(uni_relac, 1)` y el forecast ya viene
+// normalizado a kg (ver `profitForecastSeries`).
 //
 // Filtro de negocio: nota no anulada, artículo no anulado y línea ABA
 // (alimentos balanceados). En 2026 no hay renglones `reng_nde` anulados ni
@@ -235,8 +239,7 @@ GROUP BY CAST(f.fec_emis AS date), RTRIM(f.co_cli), RTRIM(ISNULL(c.cli_des, ''))
 // Kg despachados por cliente y artículo en el mes del informe. Es la base de
 // la participación por cliente: no consulta meses históricos. Misma fuente y
 // filtros que el informe de ventas.
-export const PROFIT_SALES_CUSTOMER_PRODUCT_SQL = `
-SELECT /* nexo:customer_products */
+export const PROFIT_SALES_CUSTOMER_PRODUCT_SQL = `SELECT /* nexo:customer_products */
   YEAR(f.fec_emis) AS anio,
   MONTH(f.fec_emis) AS mes,
   RTRIM(f.co_cli) AS co_cli,
@@ -259,6 +262,31 @@ WHERE f.anulada = 0
   AND f.fec_emis < @hasta
 GROUP BY YEAR(f.fec_emis), MONTH(f.fec_emis), RTRIM(f.co_cli), RTRIM(ISNULL(c.cli_des, '')),
          RTRIM(r.co_art), RTRIM(a.art_des), RTRIM(ISNULL(a.uni_venta, '')), a.uni_relac
+`;
+
+// Kg por cliente y MES de la ventana histórica (3 meses cerrados). Alimenta la
+// meta de cada cliente: promedio de los meses con compra. Se agrupa solo por
+// cliente y mes (sin artículo) para que la consulta sea barata: ~3 filas por
+// cliente. Misma fuente y filtros que el informe de ventas.
+export const PROFIT_CUSTOMER_SALES_MONTHLY_SQL = `
+SELECT /* nexo:customer_sales_monthly */
+  YEAR(f.fec_emis) AS anio,
+  MONTH(f.fec_emis) AS mes,
+  RTRIM(f.co_cli) AS co_cli,
+  RTRIM(ISNULL(c.cli_des, '')) AS cli_des,
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg,
+  SUM(r.total_art) AS unid,
+  MAX(f.fec_emis) AS ultima_factura
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+LEFT JOIN dbo.clientes AS c ON c.co_cli = f.co_cli
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND a.co_lin = 'ABA'
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+GROUP BY YEAR(f.fec_emis), MONTH(f.fec_emis), RTRIM(f.co_cli), RTRIM(ISNULL(c.cli_des, ''))
 `;
 
 // Kg despachados por artículo y BLOQUE DE SEMANA del mes (1: 1-7, 2: 8-14,
@@ -304,6 +332,10 @@ const SALES_CACHE_MAX_ENTRIES = 40;
 // La consulta cliente × artículo del mes puede ser grande. El límite es
 // defensivo: si se alcanza, la respuesta marca `truncated` y la UI lo avisa.
 const CUSTOMER_PRODUCTS_QUERY_LIMIT = 200_000;
+
+// Histórico por cliente × mes: 3 filas por cliente. El tope solo protege de un
+// catálogo anómalo; si se alcanza, la respuesta también se marca `truncated`.
+const CUSTOMER_HISTORY_QUERY_LIMIT = 20_000;
 
 // Un solo día no debería acercarse a este tope, pero la consulta es defensiva:
 // si se alcanza, el modal marca `truncated` y no presume de porcentajes.
@@ -362,6 +394,12 @@ interface SalesProductMeta {
 interface WeeklySalesIndex {
   byCode: Map<string, { weeks: number[]; monthKg: number }>;
   available: boolean;
+}
+
+// Demanda de pedidos activos del mes, por artículo y por bloque de semana.
+interface DemandBuckets {
+  byProduct: Map<string, { qty: number; kg: number }>;
+  byProductWeek: Map<string, { qty: number; kg: number }>;
 }
 
 // Forecast de Profit agrupado por mes (`yyyy-mm` → código → kg).
@@ -433,6 +471,38 @@ function weekRanges(year: number, month: number): ForecastWeekRange[] {
   });
 }
 
+// Días del calendario que abarca un bloque semanal (S4 suele tener 9-10).
+function daysInRange(range: ForecastWeekRange): number {
+  const from = Number(range.from.slice(8, 10));
+  const to = Number(range.to.slice(8, 10));
+  return Number.isFinite(from) && Number.isFinite(to) ? Math.max(0, to - from + 1) : 0;
+}
+
+/**
+ * Reparto sugerido del forecast mensual entre los bloques, en kg: cada semana
+ * recibe la parte proporcional a sus días. Reemplaza al viejo «mensual ÷ 4»,
+ * que sobrestimaba S1-S3 y subestimaba la última semana (22-fin).
+ */
+export function suggestedWeekQtys(monthlyQty: number, ranges: ForecastWeekRange[]): number[] {
+  const days = ranges.map(daysInRange);
+  const total = days.reduce((acc, value) => acc + value, 0);
+  if (total <= 0) {
+    const share = ranges.length > 0 ? monthlyQty / ranges.length : 0;
+    return ranges.map(() => round3(share));
+  }
+  return days.map((count) => round3((monthlyQty * count) / total));
+}
+
+// Corte del plan en la zona del negocio: hoy en el mes en curso, último día en
+// un mes cerrado y null en un mes futuro (no hay nada que cortar).
+export function planCut(year: number, month: number, today: string): string | null {
+  const key = monthKey(year, month);
+  const current = today.slice(0, 7);
+  if (current > key) return isoDate(year, month, new Date(Date.UTC(year, month, 0)).getUTCDate());
+  if (current < key) return null;
+  return today;
+}
+
 function warehouseQty(list: InventoryByWarehouse[], code: string): number {
   return round3(list.find((w) => w.warehouseCode === code)?.qty ?? 0);
 }
@@ -495,6 +565,21 @@ export class ForecastService {
   ) {}
 
   async list(year: number, month: number): Promise<ForecastResponse> {
+    const { response } = await this.buildList(year, month);
+    return response;
+  }
+
+  // `list()` y `plan()` comparten esta lectura: stock, demanda y forecast de
+  // Profit se consultan UNA sola vez por carga del reporte. `demand` se devuelve
+  // aparte porque el plan necesita su desglose semanal.
+  private async buildList(
+    year: number,
+    month: number,
+  ): Promise<{
+    response: ForecastResponse;
+    demand: DemandBuckets;
+    stock: Map<string, { total: number; byWarehouse: InventoryByWarehouse[] }>;
+  }> {
     const products = await this.prisma.product.findMany({
       where: { isProduction: true, isActive: true },
       orderBy: { externalCode: 'asc' },
@@ -516,7 +601,7 @@ export class ForecastService {
       const monthlyQty = forecast.byCode.get(p.externalCode) ?? 0;
       const storedMonthly = f ? num(f.monthlyQty) : null;
       const useStoredWeeks = f !== undefined && storedMonthly === monthlyQty;
-      const weeks = this.computeWeeks(monthlyQty, f?.weeks ?? [], useStoredWeeks);
+      const weeks = this.computeWeeks(monthlyQty, f?.weeks ?? [], useStoredWeeks, ranges);
       const demandMonth = demand.byProduct.get(p.externalCode) ?? { qty: 0, kg: 0 };
       return {
         productCode: p.externalCode,
@@ -534,7 +619,11 @@ export class ForecastService {
       };
     });
 
-    return { year, month, weekRanges: ranges, rows, profitForecastAvailable: forecast.available };
+    return {
+      response: { year, month, weekRanges: ranges, rows, profitForecastAvailable: forecast.available },
+      demand,
+      stock,
+    };
   }
 
   // Cambia SOLO las cantidades por semana. El forecast mensual no se edita aquí:
@@ -545,6 +634,7 @@ export class ForecastService {
       throw new ServiceUnavailableException('No se pudo leer el forecast de Profit (forecast). Intenta de nuevo.');
     }
     const monthlyQty = forecast.byCode.get(productCode) ?? 0;
+    const ranges = weekRanges(dto.year, dto.month);
     const forecastRow = await this.prisma.forecast.upsert({
       where: { productCode_year_month: { productCode, year: dto.year, month: dto.month } },
       update: { monthlyQty, locked: false, lockedAt: null },
@@ -557,62 +647,129 @@ export class ForecastService {
         create: { forecastId: forecastRow.id, weekIndex: w.weekIndex, qty: w.qty },
       });
     }
-    // Crea las semanas que falten con el promedio (no pisa las recién guardadas).
-    await this.ensureWeeks(forecastRow.id, monthlyQty, false);
+    // Crea las semanas que falten con el reparto sugerido (no pisa las recién
+    // guardadas).
+    await this.ensureWeeks(forecastRow.id, monthlyQty, false, ranges);
     await this.audit.record({
       action: 'FORECAST_SET_WEEKS',
       entityType: 'Forecast',
       entityId: forecastRow.id,
       context: { productCode, year: dto.year, month: dto.month, monthlyQty, weeks: dto.weeks },
     });
-    const weeks = await this.weeksOf(forecastRow.id, monthlyQty);
+    const weeks = await this.weeksOf(forecastRow.id, monthlyQty, ranges);
     return { ok: true, productCode, year: dto.year, month: dto.month, weeks };
   }
 
-  // Reporte: plan de producción semanal por artículo, con los campos de la
-  // tabla de Disponibilidad por Producto calculados sobre la demanda objetivo
-  // de cada semana (max(forecast, demanda)).
+  // Reporte: plan de producción semanal por artículo. TODO en kg; los sacos se
+  // derivan solo para presentación. El stock se arrastra de una semana a la
+  // siguiente (lo producido en S1 cubre S2), así el mes no repite la misma
+  // brecha cuatro veces. Las semanas cerradas se leen como resultado: muestran
+  // vendido y desviación, sin sugerencia de producción.
   async plan(year: number, month: number): Promise<ForecastPlanResponse> {
-    const [list, stock, demand, sold] = await Promise.all([
-      this.list(year, month),
-      this.stockIndex(),
-      this.demandBuckets(year, month),
+    const today = todayInTimeZone(BUSINESS_TIME_ZONE);
+    const asOf = planCut(year, month, today);
+    const [{ response: list, demand, stock }, sold] = await Promise.all([
+      this.buildList(year, month),
       this.weeklySalesIndex(year, month),
     ]);
+    // Un mes pasado está cerrado entero: el último bloque termina el mismo día
+    // del corte, así que no basta comparar `range.to < asOf`.
+    const monthClosed = today.slice(0, 7) > monthKey(year, month);
+    const currentWeekIndex =
+      !monthClosed && asOf !== null && asOf.slice(0, 7) === monthKey(year, month)
+        ? (list.weekRanges.find((range) => range.from <= asOf && asOf <= range.to)?.weekIndex ?? null)
+        : null;
 
     const rows: ForecastPlanRow[] = list.rows.map((r) => {
       const stockInfo = stock.get(r.productCode) ?? { total: 0, byWarehouse: [] };
       const demandMonth = demand.byProduct.get(r.productCode) ?? { qty: 0, kg: 0 };
       const soldInfo = sold.byCode.get(r.productCode);
+      const sacks = r.uom === 'SAC';
+      // kg por unidad de venta: el kg del saco en SAC; el granel ya está en kg.
+      const kgPerUom = sacks ? (r.kgPerUom !== null && r.kgPerUom > 0 ? r.kgPerUom : null) : 1;
+      const stockKgTotal = round3(r.stockTotal * (kgPerUom ?? 1));
+      // Existencia disponible al inicio de cada semana (arrastre).
+      let availableKg = stockKgTotal;
+
       const weeks: ForecastPlanWeek[] = list.weekRanges.map((range) => {
-        const forecastQty = r.weeks.find((w) => w.weekIndex === range.weekIndex)?.qty ?? 0;
+        const forecastKg = round3(r.weeks.find((w) => w.weekIndex === range.weekIndex)?.qty ?? 0);
         const dem = demand.byProductWeek.get(`${r.productCode}#${range.weekIndex}`) ?? { qty: 0, kg: 0 };
-        const objectiveQty = round3(Math.max(forecastQty, dem.qty));
-        // Mismo motor que la vista «Disponibilidad por Producto».
-        const availability = computeAvailability({
-          productCode: r.productCode,
-          description: r.description,
-          uom: r.uom,
-          kgPerUom: r.kgPerUom,
-          stockByWarehouse: stockInfo.byWarehouse,
-          demandQty: objectiveQty,
-          demandKg: dem.kg,
-        });
+        const soldKg = round3(soldInfo?.weeks[range.weekIndex - 1] ?? 0);
+        const closed = monthClosed || (asOf !== null && range.to < asOf);
+        const objectiveKg = round3(Math.max(forecastKg, dem.kg));
+        const attainmentPct =
+          forecastKg > 0 && soldKg > 0 ? roundTo((soldKg / forecastKg) * 100, 1) : null;
+
+        // Semana cerrada: es historia. El snapshot de inventario es de HOY, así
+        // que descontarle lo vendido de semanas pasadas lo contaría dos veces.
+        // Se lee como resultado (vendido vs forecast), sin stock ni producción.
+        if (closed) {
+          const status: AvailabilityStatus =
+            forecastKg <= 0
+              ? 'SIN_DEMANDA'
+              : soldKg >= forecastKg
+                ? 'DISPONIBLE'
+                : soldKg > 0
+                  ? 'PARCIAL'
+                  : 'FALTANTE';
+          return {
+            weekIndex: range.weekIndex,
+            closed,
+            forecastKg,
+            demandKg: round3(dem.kg),
+            demandQty: round3(dem.qty),
+            soldKg,
+            soldSacks: sacks && kgPerUom !== null ? roundTo(soldKg / kgPerUom, 1) : null,
+            stockKg: 0,
+            objectiveKg,
+            availableKg: 0,
+            toProduceKg: 0,
+            toProduceSacks: sacks && kgPerUom !== null ? 0 : null,
+            excessKg: 0,
+            attainmentPct,
+            status,
+          };
+        }
+
+        const stockStartKg = availableKg;
+        // Lo ya vendido en la semana en curso no se vuelve a producir: el
+        // snapshot de stock es de hoy y esa venta ya salió de él.
+        const requiredKg = round3(Math.max(0, objectiveKg - soldKg));
+        const availableWeekKg = round3(Math.min(stockStartKg, requiredKg));
+        const excessKg = round3(Math.max(0, stockStartKg - requiredKg));
+        const toProduceKg = round3(Math.max(0, requiredKg - stockStartKg));
+        // Venta esperada restante de la semana: descuenta el stock para la
+        // siguiente.
+        availableKg = round3(Math.max(0, stockStartKg + toProduceKg - requiredKg));
+        const status: AvailabilityStatus =
+          objectiveKg <= 0
+            ? 'SIN_DEMANDA'
+            : requiredKg <= 0 || availableWeekKg >= requiredKg
+              ? 'DISPONIBLE'
+              : availableWeekKg > 0
+                ? 'PARCIAL'
+                : 'FALTANTE';
+
         return {
           weekIndex: range.weekIndex,
-          forecastQty: round3(forecastQty),
-          demandQty: round3(dem.qty),
+          closed,
+          forecastKg,
           demandKg: round3(dem.kg),
-          // Kg despachados en la semana (0 si Profit no respondió).
-          soldKg: round3(soldInfo?.weeks[range.weekIndex - 1] ?? 0),
-          objectiveQty,
-          availableQty: availability.availableQty,
-          toProduceQty: availability.toProduceQty,
-          toProduceKg: availability.toProduceKg,
-          netQty: availability.netQty,
-          status: availability.status,
+          demandQty: round3(dem.qty),
+          soldKg,
+          soldSacks: sacks && kgPerUom !== null ? roundTo(soldKg / kgPerUom, 1) : null,
+          stockKg: round3(stockStartKg),
+          objectiveKg,
+          availableKg: availableWeekKg,
+          toProduceKg,
+          toProduceSacks: sacks && kgPerUom !== null ? roundTo(toProduceKg / kgPerUom, 1) : null,
+          excessKg,
+          attainmentPct,
+          status,
         };
       });
+
+      const productionMonthKg = round3(weeks.reduce((acc, w) => acc + w.toProduceKg, 0));
       return {
         productCode: r.productCode,
         description: r.description,
@@ -623,14 +780,16 @@ export class ForecastService {
         stock03: warehouseQty(stockInfo.byWarehouse, WAREHOUSE_03),
         stock9999: warehouseQty(stockInfo.byWarehouse, WAREHOUSE_9999),
         stock68: warehouseQty(stockInfo.byWarehouse, WAREHOUSE_68),
-        forecastMonthQty: r.monthlyQty,
+        stockKg: stockKgTotal,
+        forecastMonthKg: r.monthlyQty,
         averageQty: r.averageQty,
         demandMonthQty: r.demandMonthQty,
         // Ventas del mes: demanda de pedidos y despachos reales, ambos en kg.
         demandMonthKg: round3(demandMonth.kg),
         soldMonthKg: round3(soldInfo?.monthKg ?? 0),
-        productionMonthQty: round3(weeks.reduce((acc, w) => acc + w.toProduceQty, 0)),
-        productionMonthKg: round3(weeks.reduce((acc, w) => acc + (w.toProduceKg ?? 0), 0)),
+        productionMonthKg,
+        productionMonthSacks:
+          sacks && kgPerUom !== null ? roundTo(productionMonthKg / kgPerUom, 1) : null,
         weeks,
       };
     });
@@ -639,12 +798,14 @@ export class ForecastService {
       year,
       month,
       weekRanges: list.weekRanges,
+      asOf,
+      currentWeekIndex,
       salesAvailable: sold.available,
       rows,
       totals: {
-        forecastQty: round3(rows.reduce((acc, r) => acc + r.forecastMonthQty, 0)),
-        demandQty: round3(rows.reduce((acc, r) => acc + r.demandMonthQty, 0)),
-        productionQty: round3(rows.reduce((acc, r) => acc + r.productionMonthQty, 0)),
+        forecastKg: round3(rows.reduce((acc, r) => acc + r.forecastMonthKg, 0)),
+        soldKg: round3(rows.reduce((acc, r) => acc + r.soldMonthKg, 0)),
+        demandKg: round3(rows.reduce((acc, r) => acc + r.demandMonthKg, 0)),
         productionKg: round3(rows.reduce((acc, r) => acc + r.productionMonthKg, 0)),
       },
     };
@@ -993,13 +1154,17 @@ export class ForecastService {
   }
 
   // ============================================================
-  // Participación por cliente.
+  // Clientes vs meta histórica.
   //
-  // Sin histórico ni meta: se lee la venta ABA del mes hasta el corte y se
-  // calcula qué porcentaje representa cada cliente sobre el total. Cada
-  // producto del cliente lleva su peso dentro del cliente y dentro de la venta
-  // total de ese producto. Los clientes del catálogo sin venta se incluyen con
-  // 0 % para que la tabla sea completa.
+  // Cada cliente se mide contra SU promedio de los últimos 3 meses cerrados
+  // (solo meses con compra): esa es su meta de referencia. La venta del mes
+  // hasta el corte se proyecta con el mismo run-rate que los productos, y los
+  // clientes se ordenan por meta para priorizar a los de mayor volumen.
+  //
+  // La meta es un benchmark individual de cartera: NO sustituye ni se suma al
+  // forecast oficial de Profit. Los clientes del catálogo sin venta se
+  // incluyen al final; los que compraron en el histórico pero no este mes
+  // aparecen con su meta y 0 venta.
   // ============================================================
   async customerSalesReport(query: ForecastSalesQuery): Promise<ForecastCustomerSalesResponse> {
     const today = todayInTimeZone(BUSINESS_TIME_ZONE);
@@ -1013,7 +1178,16 @@ export class ForecastService {
       today,
     });
 
-    const cacheKey = [year, month, query.includeToday ? 1 : 0, today].join('|');
+    // `basis` cambia la proyección y la ventana histórica, así que entra a la
+    // clave: dos lecturas con distinta base no comparten caché.
+    const cacheKey = [
+      year,
+      month,
+      query.includeToday ? 1 : 0,
+      query.basis,
+      CUSTOMER_TARGET_HISTORY_MONTHS,
+      today,
+    ].join('|');
     const cached = this.customerSalesCache.get(cacheKey);
     if (cached && Date.now() - cached.at < SALES_CACHE_TTL_MS) return cached.data;
 
@@ -1023,7 +1197,7 @@ export class ForecastService {
       return data;
     } catch (error) {
       this.logger.warn(
-        `No se pudo leer la participación por cliente (not_ent/reng_nde): ${
+        `No se pudo leer la venta por cliente (not_ent/reng_nde): ${
           error instanceof Error ? error.message : 'error desconocido'
         }`,
       );
@@ -1047,17 +1221,71 @@ export class ForecastService {
       monthlyHasta = reportStart;
     }
 
-    const rows = await this.profit.selectQuery(
-      PROFIT_SALES_CUSTOMER_PRODUCT_SQL,
-      CUSTOMER_PRODUCTS_QUERY_LIMIT,
-      { desde: reportStart, hasta: monthlyHasta },
-    );
+    // Ventana de la meta: los 3 meses cerrados anteriores al mes del informe.
+    // En un mes futuro el ancla es el mes en curso: así el promedio nunca
+    // incluye el mes parcial que todavía se está vendiendo.
+    const windowAnchor =
+      calendar.status === 'FUTURE' ? { year: todayYear, month: todayMonth } : { year, month };
+    const historyWindow = previousMonths(windowAnchor.year, windowAnchor.month, CUSTOMER_TARGET_HISTORY_MONTHS);
+    const historyStart = new Date(Date.UTC(historyWindow[0]!.year, historyWindow[0]!.month - 1, 1));
+
+    // El histórico es complementario: si falla, la venta del mes se muestra
+    // igual y los clientes quedan «sin meta» (nunca se inventan promedios).
+    const historyPromise = this.profit
+      .selectQuery(PROFIT_CUSTOMER_SALES_MONTHLY_SQL, CUSTOMER_HISTORY_QUERY_LIMIT, {
+        desde: historyStart,
+        hasta: reportStart,
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          `No se pudo leer el histórico por cliente (meta de 3 meses): ${
+            error instanceof Error ? error.message : 'error desconocido'
+          }`,
+        );
+        return null;
+      });
+
+    const [rows, historyRaw] = await Promise.all([
+      this.profit.selectQuery(PROFIT_SALES_CUSTOMER_PRODUCT_SQL, CUSTOMER_PRODUCTS_QUERY_LIMIT, {
+        desde: reportStart,
+        hasta: monthlyHasta,
+      }),
+      historyPromise,
+    ]);
+    const historyAvailable = historyRaw !== null;
 
     const productMeta = new Map<string, { description: string; uom: string; kgPerUom: number | null }>();
     const salesNames = new Map<string, string>();
+    const historyNames = new Map<string, string>();
     const lastInvoiceByCustomer = new Map<string, string>();
+    const historyKg = new Map<string, number[]>();
     const sales: CustomerProductSale[] = [];
     let skipped = 0;
+
+    // Histórico: kg por cliente en el orden de `historyWindow` (ceros incluidos).
+    const rememberInvoice = (customerCode: string, rawDate: unknown) => {
+      const lastInvoice = isoDayOf(rawDate);
+      if (!lastInvoice) return;
+      const previous = lastInvoiceByCustomer.get(customerCode);
+      if (!previous || lastInvoice > previous) lastInvoiceByCustomer.set(customerCode, lastInvoice);
+    };
+
+    for (const raw of historyRaw ?? []) {
+      const customerCode = String(raw.co_cli ?? '').trim();
+      if (!customerCode) continue;
+      const rowYear = num(raw.anio);
+      const rowMonth = num(raw.mes);
+      const index = historyWindow.findIndex((entry) => entry.year === rowYear && entry.month === rowMonth);
+      if (index < 0) continue;
+
+      const values = historyKg.get(customerCode) ?? historyWindow.map(() => 0);
+      values[index] = (values[index] ?? 0) + Math.max(0, num(raw.kg));
+      historyKg.set(customerCode, values);
+
+      const name = String(raw.cli_des ?? '').trim();
+      if (name) historyNames.set(customerCode, name);
+      rememberInvoice(customerCode, raw.ultima_factura);
+    }
 
     for (const raw of rows) {
       const customerCode = String(raw.co_cli ?? '').trim();
@@ -1081,17 +1309,12 @@ export class ForecastService {
         kgPerUom: uom === 'SAC' && relation !== null && relation > 0 ? relation : (meta?.kgPerUom ?? null),
       });
 
-      const lastInvoice = isoDayOf(raw.ultima_factura);
-      if (lastInvoice) {
-        const previous = lastInvoiceByCustomer.get(customerCode);
-        if (!previous || lastInvoice > previous) lastInvoiceByCustomer.set(customerCode, lastInvoice);
-      }
-
+      rememberInvoice(customerCode, raw.ultima_factura);
       sales.push({ customerCode, productCode, kg, units });
     }
 
     if (skipped > 0) {
-      this.logger.warn(`Participación por cliente: ${skipped} filas sin cliente o artículo fueron ignoradas.`);
+      this.logger.warn(`Venta por cliente: ${skipped} filas sin cliente o artículo fueron ignoradas.`);
     }
 
     // El catálogo activo permite incluir clientes sin venta con 0 %.
@@ -1117,13 +1340,14 @@ export class ForecastService {
       );
     }
 
-    // Un cliente con venta que no esté en la BD local se agrega con el nombre
-    // que trae Profit, para que la tabla y el total no pierdan esa venta.
-    for (const customerCode of new Set(sales.map((sale) => sale.customerCode))) {
+    // Un cliente con venta o con histórico que no esté en la BD local se agrega
+    // con el nombre que trae Profit, para no perderlo.
+    const fallbackNames = new Map([...historyNames, ...salesNames]);
+    for (const customerCode of new Set([...sales.map((sale) => sale.customerCode), ...historyKg.keys()])) {
       if (catalogByCode.has(customerCode)) continue;
       catalogByCode.set(customerCode, {
         code: customerCode,
-        name: salesNames.get(customerCode) || customerCode,
+        name: fallbackNames.get(customerCode) || customerCode,
         customerType: null,
         vendor: null,
       });
@@ -1134,6 +1358,9 @@ export class ForecastService {
       catalog: [...catalogByCode.values()],
       products: productMeta,
       lastInvoiceByCustomer,
+      historyWindow,
+      history: historyKg,
+      calendar,
     });
 
     return {
@@ -1142,6 +1369,8 @@ export class ForecastService {
       asOf: calendar.cut,
       status: calendar.status,
       salesAvailable: true,
+      historyMonths: historyWindow,
+      historyAvailable,
       days: {
         inMonth: calendar.inMonth,
         elapsed: calendar.elapsed,
@@ -1154,18 +1383,27 @@ export class ForecastService {
       },
       totals: result.totals,
       customers: result.customers,
-      truncated: rows.length >= CUSTOMER_PRODUCTS_QUERY_LIMIT,
+      truncated:
+        rows.length >= CUSTOMER_PRODUCTS_QUERY_LIMIT ||
+        (historyRaw?.length ?? 0) >= CUSTOMER_HISTORY_QUERY_LIMIT,
       generatedAt: new Date().toISOString(),
     };
   }
 
   private emptyCustomerSalesReport(calendar: MonthCalendar): ForecastCustomerSalesResponse {
+    const [todayYear, todayMonth] = calendar.today.split('-').map(Number) as [number, number];
+    const windowAnchor =
+      calendar.status === 'FUTURE'
+        ? { year: todayYear, month: todayMonth }
+        : { year: calendar.year, month: calendar.month };
     return {
       year: calendar.year,
       month: calendar.month,
       asOf: calendar.cut,
       status: calendar.status,
       salesAvailable: false,
+      historyMonths: previousMonths(windowAnchor.year, windowAnchor.month, CUSTOMER_TARGET_HISTORY_MONTHS),
+      historyAvailable: false,
       days: {
         inMonth: calendar.inMonth,
         elapsed: calendar.elapsed,
@@ -1179,8 +1417,13 @@ export class ForecastService {
       totals: {
         actualKg: 0,
         actualUnits: 0,
+        targetKg: 0,
+        projectedKg: null,
+        attainmentPct: null,
+        projectedAttainmentPct: null,
         customerCount: 0,
         activeCustomerCount: 0,
+        targetCustomerCount: 0,
         productCount: 0,
         lastInvoiceDate: null,
       },
@@ -1985,19 +2228,36 @@ export class ForecastService {
 
   // ---------- auxiliares ----------
 
-  // Cantidades por semana. `useStored=false` (el forecast de Profit cambió o no
-  // hay fila local) devuelve el PROMEDIO del mes; si es true respeta lo editado.
-  private computeWeeks(monthlyQty: number, stored: { weekIndex: number; qty: unknown }[], useStored: boolean): ForecastWeekRow[] {
-    const average = monthlyQty / WEEK_BOUNDS.length;
+  // Cantidades por semana en kg. `useStored=false` (el forecast de Profit cambió
+  // o no hay fila local) devuelve el reparto sugerido por días; si es true
+  // respeta lo editado. `suggestedQty` siempre viaja para que la UI marque solo
+  // las semanas que se desviaron del sugerido.
+  private computeWeeks(
+    monthlyQty: number,
+    stored: { weekIndex: number; qty: unknown }[],
+    useStored: boolean,
+    ranges: ForecastWeekRange[],
+  ): ForecastWeekRow[] {
+    const suggested = suggestedWeekQtys(monthlyQty, ranges);
+    const suggestedByIndex = new Map(ranges.map((range, i) => [range.weekIndex, suggested[i] ?? 0]));
     return FORECAST_WEEK_INDEXES.map((weekIndex) => {
       const found = stored.find((w) => w.weekIndex === weekIndex);
-      return { weekIndex, qty: round3(useStored && found ? num(found.qty) : average) };
+      const fallback = suggestedByIndex.get(weekIndex) ?? round3(monthlyQty / WEEK_BOUNDS.length);
+      return {
+        weekIndex,
+        qty: round3(useStored && found ? num(found.qty) : fallback),
+        suggestedQty: round3(fallback),
+      };
     });
   }
 
-  private async weeksOf(forecastId: string, monthlyQty: number): Promise<ForecastWeekRow[]> {
+  private async weeksOf(
+    forecastId: string,
+    monthlyQty: number,
+    ranges: ForecastWeekRange[],
+  ): Promise<ForecastWeekRow[]> {
     const stored = await this.prisma.forecastWeek.findMany({ where: { forecastId } });
-    return this.computeWeeks(monthlyQty, stored, true);
+    return this.computeWeeks(monthlyQty, stored, true, ranges);
   }
 
   // Se compara contra la fecha del NEGOCIO (America/Caracas), no la del
@@ -2076,15 +2336,22 @@ export class ForecastService {
     }
   }
 
-  // Crea las 4 semanas. `reset=true` reescribe el promedio; `false` sólo crea
-  // las que falten (sin pisar ajustes manuales del usuario).
-  private async ensureWeeks(forecastId: string, monthlyQty: number, reset: boolean) {
-    const average = round3(monthlyQty / WEEK_BOUNDS.length);
+  // Crea las 4 semanas con el reparto sugerido por días. `reset=true` lo
+  // reescribe; `false` sólo crea las que falten (sin pisar ajustes manuales).
+  private async ensureWeeks(
+    forecastId: string,
+    monthlyQty: number,
+    reset: boolean,
+    ranges: ForecastWeekRange[],
+  ) {
+    const suggested = suggestedWeekQtys(monthlyQty, ranges);
+    const suggestedByIndex = new Map(ranges.map((range, i) => [range.weekIndex, suggested[i] ?? 0]));
     for (const weekIndex of FORECAST_WEEK_INDEXES) {
+      const qty = round3(suggestedByIndex.get(weekIndex) ?? monthlyQty / WEEK_BOUNDS.length);
       await this.prisma.forecastWeek.upsert({
         where: { forecastId_weekIndex: { forecastId, weekIndex } },
-        update: reset ? { qty: average } : {},
-        create: { forecastId, weekIndex, qty: average },
+        update: reset ? { qty } : {},
+        create: { forecastId, weekIndex, qty },
       });
     }
   }
@@ -2218,30 +2485,39 @@ export class ForecastService {
     };
   }
 
-  // Demanda de pedidos ACTIVOS del mes: total por artículo y por semana.
-  private async demandBuckets(year: number, month: number) {
+  // Demanda de pedidos ACTIVOS del mes: total por artículo y por semana, con la
+  // MISMA fecha de entrega efectiva que el informe de ventas (tentativa local si
+  // existe; si no, la de Profit). Antes se agrupaba por `requestedDate`, así que
+  // el plan y «Ventas vs Forecast» podían situar el mismo pedido en semanas
+  // distintas. Si la cartera local falla, devuelve ceros para no tumbar el plan.
+  private async demandBuckets(year: number, month: number): Promise<DemandBuckets> {
     const from = new Date(Date.UTC(year, month - 1, 1));
     const to = new Date(Date.UTC(year, month, 1));
-    const lines = await this.prisma.salesOrderLine.findMany({
-      where: { order: { isActive: true, requestedDate: { gte: from, lt: to } } },
-      include: { order: { select: { requestedDate: true } } },
-    });
     const byProduct = new Map<string, { qty: number; kg: number }>();
     const byProductWeek = new Map<string, { qty: number; kg: number }>();
-    for (const l of lines) {
-      const qty = num(l.pendingQty);
-      const kg = l.pendingKg === null || l.pendingKg === undefined ? 0 : num(l.pendingKg);
-      const total = byProduct.get(l.productCode) ?? { qty: 0, kg: 0 };
-      total.qty += qty;
-      total.kg += kg;
-      byProduct.set(l.productCode, total);
 
-      const date = l.order.requestedDate;
-      const day = date ? date.getUTCDate() : 1;
-      const key = `${l.productCode}#${weekIndexOf(day)}`;
+    let lines: PendingLine[];
+    try {
+      lines = await this.pendingLines(from, to);
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo leer la demanda de pedidos activos: ${
+          error instanceof Error ? error.message : 'error desconocido'
+        }`,
+      );
+      return { byProduct, byProductWeek };
+    }
+
+    for (const line of lines) {
+      const total = byProduct.get(line.productCode) ?? { qty: 0, kg: 0 };
+      total.qty += line.pendingQty;
+      total.kg += line.kg;
+      byProduct.set(line.productCode, total);
+
+      const key = `${line.productCode}#${weekIndexOf(line.day)}`;
       const bucket = byProductWeek.get(key) ?? { qty: 0, kg: 0 };
-      bucket.qty += qty;
-      bucket.kg += kg;
+      bucket.qty += line.pendingQty;
+      bucket.kg += line.kg;
       byProductWeek.set(key, bucket);
     }
     return { byProduct, byProductWeek };

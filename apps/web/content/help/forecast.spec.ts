@@ -65,12 +65,16 @@ describe('ayuda de Ventas vs Forecast', () => {
     expect(rules).toContain('aba');
   });
 
-  it('cubre las columnas de la desviación por cliente', () => {
+  it('cubre las columnas de clientes vs meta histórica', () => {
     const expected = [
       'codigo',
       'cliente',
       'tipo',
+      'meta',
       'venta',
+      'proyeccion',
+      'vsMeta',
+      'ritmo',
       'participacion',
       'productos',
       'ultimaFactura',
@@ -83,10 +87,11 @@ describe('ayuda de Ventas vs Forecast', () => {
     }
   });
 
-  it('explica que la participación se mide contra la venta real, no contra una meta', () => {
+  it('explica que la meta del cliente es su promedio de 3 meses, no el forecast', () => {
     const rules = SALES_CUSTOMER_HELP_RULES.join(' ').toLowerCase();
-    expect(rules).toContain('venta aba del mes');
-    expect(rules).toContain('no una meta ni un histórico');
-    expect(rules).toContain('participación del cliente');
+    expect(rules).toContain('meses con compra');
+    expect(rules).toContain('no es el forecast oficial');
+    expect(rules).toContain('100 % de la meta histórica');
+    expect(rules).toContain('proyección');
   });
 });

@@ -3,13 +3,15 @@
 Sistema inteligente de planificación de producción alimenticia, inventarios, pedidos, simulación y reportes. Obtiene datos de **Profit Plus (SQL Server) mediante vistas SQL de solo lectura**, los normaliza en una base interna y permite responder: ¿qué pedidos se pueden cumplir?, ¿qué hay que producir? y ¿a quién atender primero?
 
 > **Regla de oro:** ninguna simulación modifica Profit. El adaptador SQL Server es de solo lectura y las asignaciones del simulador viven únicamente en la base interna del sistema.
+>
+> **Excepciones acotadas:** «Cambiar fecha de entrega» escribe `dbo.cotiz_c.fec_venc` (permiso `pedidos:change_date`) y, al iniciar la carga de un pedido en Despacho, se marca `dbo.cotiz_c.aux01 = 1` para que Profit tampoco permita moverla (se reintenta en cola si Profit no responde). Ambas usan credenciales SQL aparte, flag `PROFIT_WRITE_ENABLED` y auditoría de quién lo hizo.
 
 ## Monorepo
 
 ```
 apps/
   web/       Next.js (App Router) + Tailwind 4 + TanStack Query/Table + ECharts
-  api/       NestJS + Prisma + JWT/RBAC + adaptador Profit (solo lectura)
+  api/       NestJS + Prisma + JWT/RBAC + adaptador Profit (solo lectura, salvo la entrega)
   worker/    Sincronización periódica y trabajos pesados (Fase 2+)
 packages/
   contracts/ Contratos Zod compartidos entre api, web y worker

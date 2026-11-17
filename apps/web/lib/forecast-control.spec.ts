@@ -2,6 +2,27 @@ import { describe, expect, it } from 'vitest';
 import type { ForecastPlanRow } from '@nexo/contracts';
 import { controlValues, toDisplayUnit } from './forecast-control';
 
+function week(weekIndex: number, overrides: Partial<ForecastPlanRow['weeks'][number]> = {}) {
+  return {
+    weekIndex,
+    closed: false,
+    forecastKg: 30_000,
+    demandKg: 0,
+    demandQty: 0,
+    soldKg: 0,
+    soldSacks: null,
+    stockKg: 400_000,
+    objectiveKg: 30_000,
+    availableKg: 30_000,
+    toProduceKg: 0,
+    toProduceSacks: null,
+    excessKg: 370_000,
+    attainmentPct: null,
+    status: 'DISPONIBLE' as const,
+    ...overrides,
+  };
+}
+
 function row(overrides: Partial<ForecastPlanRow> = {}): ForecastPlanRow {
   return {
     productCode: 'ABAGP13',
@@ -13,16 +34,27 @@ function row(overrides: Partial<ForecastPlanRow> = {}): ForecastPlanRow {
     stock03: 10_000,
     stock9999: 0,
     stock68: 0,
-    forecastMonthQty: 120_000,
+    stockKg: 400_000,
+    forecastMonthKg: 120_000,
     averageQty: 30_000,
     demandMonthQty: 500,
     demandMonthKg: 20_000,
     soldMonthKg: 100_000,
-    productionMonthQty: 0,
     productionMonthKg: 0,
+    productionMonthSacks: null,
     weeks: [
-      { weekIndex: 1, forecastQty: 30_000, demandQty: 125, demandKg: 5_000, soldKg: 28_000, objectiveQty: 30_000, availableQty: 10_000, toProduceQty: 20_000, toProduceKg: 800_000, netQty: -20_000, status: 'FALTANTE' },
-      { weekIndex: 2, forecastQty: 30_000, demandQty: 0, demandKg: 0, soldKg: 0, objectiveQty: 30_000, availableQty: 10_000, toProduceQty: 20_000, toProduceKg: 800_000, netQty: -20_000, status: 'FALTANTE' },
+      week(1, {
+        demandKg: 5_000,
+        demandQty: 125,
+        soldKg: 28_000,
+        objectiveKg: 30_000,
+        availableKg: 30_000,
+        toProduceKg: 0,
+        excessKg: 370_000,
+        attainmentPct: 93.3,
+        status: 'DISPONIBLE',
+      }),
+      week(2),
     ],
     ...overrides,
   };

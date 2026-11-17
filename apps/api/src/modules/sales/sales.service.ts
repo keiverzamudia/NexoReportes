@@ -13,6 +13,7 @@ import {
   OrderSummary,
 } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
+import { loadOrderDispatchStates } from '../dispatch/dispatch-order-state';
 import { CustomerSalesService } from './customer-sales.service';
 import { DeliveryDatesService, deliveryDateKey } from './delivery-dates.service';
 
@@ -323,6 +324,11 @@ export class SalesService {
     const tentativeByLine = await this.deliveryDates.resolveForLines(
       rawLines.map((line) => ({ orderNumber: line.order.externalNumber, productCode: line.productCode })),
     );
+    // Despacho donde ya vive cada pedido: el simulador lo muestra y lo bloquea.
+    const dispatchStates = await loadOrderDispatchStates(
+      this.prisma,
+      rawLines.map((line) => line.order.externalNumber),
+    );
     const lines = rawLines.filter((line) =>
       inDateRange(
         tentativeByLine.get(deliveryDateKey(line.order.externalNumber, line.productCode)) ??
@@ -392,6 +398,8 @@ export class SalesService {
         stock03: stock.get(line.productCode)?.s03 ?? null,
         stock9999: stock.get(line.productCode)?.s9999 ?? null,
         stock68: stock.get(line.productCode)?.s68 ?? null,
+        dispatchSheetNumber: dispatchStates.get(line.order.externalNumber)?.sheetNumber ?? null,
+        dispatchStarted: dispatchStates.get(line.order.externalNumber)?.started ?? false,
       });
     }
 

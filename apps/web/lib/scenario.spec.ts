@@ -40,6 +40,8 @@ function line(overrides: Partial<OrderGroupLine> = {}): OrderGroupLine {
     stock03: 500,
     stock9999: 0,
     stock68: 0,
+    dispatchSheetNumber: null,
+    dispatchStarted: false,
     ...overrides,
   };
 }

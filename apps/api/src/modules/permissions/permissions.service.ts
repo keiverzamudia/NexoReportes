@@ -105,6 +105,11 @@ export class PermissionsService implements OnModuleInit {
     // resucitar permisos que un administrador haya quitado a mano.
     await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'llegadas');
     await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'vendedor');
+
+    // «Cambiar fecha de entrega» nace como permiso independiente de
+    // «Editar» (ahora escribe en Profit). Los roles y excepciones que ya
+    // tenían «Editar» conservan la capacidad sin intervención manual.
+    await this.inheritPermission('pedidos', 'update', 'change_date');
   }
 
   /**
@@ -164,6 +169,41 @@ export class PermissionsService implements OnModuleInit {
           this.prisma.rolePermission.create({ data: { roleCode: role, module, action } }),
         ),
       );
+    }
+  }
+
+  /**
+   * Hereda una acción nueva desde otra existente (roles y excepciones de
+   * usuario). Sirve para partir un permiso sin dejar a nadie sin acceso:
+   * `pedidos:update` → `pedidos:change_date`. Idempotente.
+   */
+  private async inheritPermission(module: string, fromAction: string, toAction: string): Promise<void> {
+    const roleRows = await this.prisma.rolePermission.findMany({
+      where: { module, action: fromAction },
+    });
+    for (const row of roleRows) {
+      const exists = await this.prisma.rolePermission.findUnique({
+        where: { roleCode_module_action: { roleCode: row.roleCode, module, action: toAction } },
+      });
+      if (!exists) {
+        await this.prisma.rolePermission.create({
+          data: { roleCode: row.roleCode, module, action: toAction },
+        });
+      }
+    }
+
+    const overrides = await this.prisma.userPermission.findMany({
+      where: { module, action: fromAction },
+    });
+    for (const row of overrides) {
+      const exists = await this.prisma.userPermission.findUnique({
+        where: { userId_module_action: { userId: row.userId, module, action: toAction } },
+      });
+      if (!exists) {
+        await this.prisma.userPermission.create({
+          data: { userId: row.userId, module, action: toAction, allowed: row.allowed },
+        });
+      }
     }
   }
 

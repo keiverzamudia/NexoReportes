@@ -45,6 +45,9 @@ function createFakePrisma(quantities: Record<string, number>, stock = 50) {
     deliveryDateOverride: {
       findMany: async () => [],
     },
+    dispatchSheetLine: {
+      findMany: async () => [] as Row[],
+    },
   };
 }
 

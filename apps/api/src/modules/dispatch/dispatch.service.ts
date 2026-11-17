@@ -1,4 +1,12 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import {
   DispatchAckInput,
   DispatchAssigneesResponse,
@@ -48,6 +56,9 @@ import {
 import { buildDispatchMetrics } from './dispatch-metrics';
 import { buildDispatchPulse } from './dispatch-pulse';
 import { buildDispatchRemovals } from './dispatch-removals';
+import { loadOrderDispatchStates, loadOrdersInDispatch } from './dispatch-order-state';
+import { ProfitLockService } from '../sync/profit-lock.service';
+import { enqueueProfitLock } from '../sync/profit-lock-queue';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
 import { ArrivalsService, ArrivalSourceLine } from '../arrivals/arrivals.service';
@@ -181,6 +192,11 @@ function iso(value: Date | null | undefined): string | null {
   return value ? value.toISOString() : null;
 }
 
+/** Fecha de negocio `yyyy-MM-dd` (acepta ISO completo y lo recorta). */
+function dateOnly(value: string | null | undefined): string | null {
+  return value ? value.slice(0, 10) : null;
+}
+
 function todayStart(): Date {
   const now = new Date();
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -236,12 +252,72 @@ function parseEventMeta(raw: string | null | undefined): DispatchEventMeta | nul
 
 @Injectable()
 export class DispatchService {
+  private readonly logger = new Logger(DispatchService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     // Las llegadas de PCP nacen con el despacho: sin botón ni paso extra.
     private readonly arrivals: ArrivalsService,
+    // Empuja la cola de bloqueo a Profit en el acto (el scheduler reintenta).
+    @Optional() private readonly profitLocks?: ProfitLockService,
   ) {}
+
+  /**
+   * Pedidos que ya viven en un despacho (hoja no anulada). Se usan para
+   * excluirlos del simulador y avisar antes de publicar.
+   */
+  async inDispatchOrders(orderNumbers: string[]): Promise<Map<string, string>> {
+    return loadOrdersInDispatch(this.prisma, orderNumbers);
+  }
+
+  /**
+   * Deja solo los renglones que pueden entrar a un despacho nuevo. Si un
+   * pedido ya está en otro despacho, se omiten TODOS sus renglones (la fecha
+   * y el bloqueo viven en el encabezado, no en el artículo).
+   */
+  private async availableForDispatch<T extends { orderNumber: string }>(
+    lines: T[],
+  ): Promise<{ lines: T[]; skipped: Array<{ orderNumber: string; sheetNumber: string }> }> {
+    const states = await loadOrderDispatchStates(
+      this.prisma,
+      lines.map((line) => line.orderNumber),
+    );
+    const skipped = new Map<string, string>();
+    for (const [orderNumber, state] of states) {
+      if (state.inDispatch) skipped.set(orderNumber, state.sheetNumber);
+    }
+    if (skipped.size === 0) return { lines, skipped: [] };
+    return {
+      lines: lines.filter((line) => !skipped.has(line.orderNumber)),
+      skipped: [...skipped.entries()].map(([orderNumber, sheetNumber]) => ({ orderNumber, sheetNumber })),
+    };
+  }
+
+  private skippedMessage(skipped: Array<{ orderNumber: string; sheetNumber: string }>): string {
+    const list = skipped
+      .slice(0, 5)
+      .map((item) => `${item.orderNumber} (${item.sheetNumber})`)
+      .join(', ');
+    return `Estos pedidos ya están en despacho y no se enviaron: ${list}${
+      skipped.length > 5 ? '…' : ''
+    }. Si necesitas cambiar su fecha, hazlo mientras la carga no haya iniciado.`;
+  }
+
+  /** Encola el bloqueo/desbloqueo de fecha en Profit sin frenar la operación. */
+  private async queueDateLock(orderNumbers: string[], locked: boolean, actorCode: string | null): Promise<void> {
+    try {
+      await enqueueProfitLock(this.prisma, orderNumbers, locked, actorCode);
+      // Intento inmediato; si Profit no responde, el scheduler reintenta.
+      if (this.profitLocks) void this.profitLocks.processPending();
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo encolar el bloqueo de fecha en Profit: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
 
   // ---------- Bandeja ----------
 
@@ -440,16 +516,24 @@ export class DispatchService {
     }
 
     const lines = [...snapshot.lines].sort((a, b) => a.priority - b.priority);
-    const plannedSacks = round2(lines.reduce((sum, line) => sum + (line.uom === 'SAC' ? line.assignedQty : 0), 0));
-    const plannedKg = round2(lines.reduce((sum, line) => sum + line.assignedKg, 0));
+    const available = await this.availableForDispatch(lines);
+    if (available.lines.length === 0) {
+      throw new ConflictException(
+        `Todos los pedidos del plan ya están en despacho. ${this.skippedMessage(available.skipped)}`,
+      );
+    }
+    const plannedSacks = round2(
+      available.lines.reduce((sum, line) => sum + (line.uom === 'SAC' ? line.assignedQty : 0), 0),
+    );
+    const plannedKg = round2(available.lines.reduce((sum, line) => sum + line.assignedKg, 0));
     const destination = assignee ? assignee.displayName : 'todo el almacén';
 
-    const arrivalLines: ArrivalSourceLine[] = lines.map((line) => ({
+    const arrivalLines: ArrivalSourceLine[] = available.lines.map((line) => ({
       orderNumber: line.orderNumber,
       customerCode: line.customerCode ?? null,
       customerName: line.customerName ?? null,
       uom: line.uom ?? null,
-      effectiveDate: line.effectiveDate ?? null,
+      effectiveDate: dateOnly(line.effectiveDate),
       plannedQty: line.assignedQty,
       plannedKg: line.assignedKg,
     }));
@@ -482,11 +566,11 @@ export class DispatchService {
           createdByCode: actor.code,
           createdByName: actor.name,
           sentAt: new Date(),
-          plannedLines: lines.length,
+          plannedLines: available.lines.length,
           plannedSacks,
           plannedKg,
           lines: {
-            create: lines.map((line, index) => ({
+            create: available.lines.map((line, index) => ({
               position: index + 1,
               orderNumber: line.orderNumber,
               productCode: line.productCode,
@@ -495,7 +579,7 @@ export class DispatchService {
               customerCode: line.customerCode,
               customerName: line.customerName,
               warehouseCode: null,
-              effectiveDate: line.effectiveDate,
+              effectiveDate: dateOnly(line.effectiveDate),
               plannedQty: line.assignedQty,
               plannedKg: line.assignedKg,
               // El comentario de la simulación viaja al renglón del almacén.
@@ -514,7 +598,7 @@ export class DispatchService {
             },
           },
           arrivals: { create: arrivalRows },
-          customerProgress: { create: this.progressSeed(lines) },
+          customerProgress: { create: this.progressSeed(available.lines) },
         },
         include: {
           lines: { orderBy: { position: 'asc' } },
@@ -528,7 +612,7 @@ export class DispatchService {
     await this.notify(await this.operatorRecipients(sheet), {
       type: 'DESPACHO_ENVIADO',
       title: `Nuevo despacho ${sheet.number}`,
-      body: `${sheet.title} · ${lines.length} renglón(es) · ${plannedSacks} sacos · ${plannedKg} kg`,
+      body: `${sheet.title} · ${available.lines.length} renglón(es) · ${plannedSacks} sacos · ${plannedKg} kg`,
       entityId: sheet.id,
       actorId: actor.id,
       actorName: actor.name,
@@ -544,7 +628,13 @@ export class DispatchService {
       action: 'DISPATCH_SEND',
       entityType: 'DispatchSheet',
       entityId: sheet.id,
-      context: { number: sheet.number, lines: lines.length, plannedKg, assignedTo: assignee?.id ?? 'ALMACEN' },
+      context: {
+        number: sheet.number,
+        lines: available.lines.length,
+        plannedKg,
+        assignedTo: assignee?.id ?? 'ALMACEN',
+        skippedOrders: available.skipped,
+      },
     });
 
     return {
@@ -553,6 +643,7 @@ export class DispatchService {
       events: this.eventsFor(sheet, viewer),
       loadPlan: this.parseLoadPlan(sheet.loadPlanJson),
       customerProgress: this.toProgressList(sheet),
+      skippedOrders: available.skipped,
     };
   }
 
@@ -580,6 +671,12 @@ export class DispatchService {
     if (lines.length === 0) {
       throw new BadRequestException('Ningún renglón seleccionado tiene existencia para despachar.');
     }
+    const available = await this.availableForDispatch(lines);
+    if (available.lines.length === 0) {
+      throw new ConflictException(
+        `Todos los pedidos de la simulación ya están en despacho. ${this.skippedMessage(available.skipped)}`,
+      );
+    }
 
     const candidates = await this.operatorCandidates();
     let assignee: { id: string; displayName: string } | null = null;
@@ -589,15 +686,17 @@ export class DispatchService {
       assignee = { id: user.id, displayName: user.displayName };
     }
 
-    const plannedSacks = round2(lines.reduce((sum, line) => sum + (line.uom === 'SAC' ? line.assignedQty : 0), 0));
-    const plannedKg = round2(lines.reduce((sum, line) => sum + line.assignedKg, 0));
+    const plannedSacks = round2(
+      available.lines.reduce((sum, line) => sum + (line.uom === 'SAC' ? line.assignedQty : 0), 0),
+    );
+    const plannedKg = round2(available.lines.reduce((sum, line) => sum + line.assignedKg, 0));
     const destination = assignee ? assignee.displayName : 'todo el almacén';
-    const arrivalLines: ArrivalSourceLine[] = lines.map((line) => ({
+    const arrivalLines: ArrivalSourceLine[] = available.lines.map((line) => ({
       orderNumber: line.orderNumber,
       customerCode: line.customerCode ?? null,
       customerName: line.customerName ?? null,
       uom: line.uom ?? null,
-      effectiveDate: line.effectiveDate ?? null,
+      effectiveDate: dateOnly(line.effectiveDate),
       plannedQty: line.assignedQty,
       plannedKg: line.assignedKg,
     }));
@@ -631,11 +730,11 @@ export class DispatchService {
           createdByCode: actor.code,
           createdByName: actor.name,
           sentAt: new Date(),
-          plannedLines: lines.length,
+          plannedLines: available.lines.length,
           plannedSacks,
           plannedKg,
           lines: {
-            create: lines.map((line, index) => ({
+            create: available.lines.map((line, index) => ({
               position: index + 1,
               orderNumber: line.orderNumber,
               productCode: line.productCode,
@@ -644,7 +743,7 @@ export class DispatchService {
               customerCode: line.customerCode,
               customerName: line.customerName,
               warehouseCode: null,
-              effectiveDate: line.effectiveDate,
+              effectiveDate: dateOnly(line.effectiveDate),
               plannedQty: line.assignedQty,
               plannedKg: line.assignedKg,
               note: line.comment ?? null,
@@ -662,7 +761,7 @@ export class DispatchService {
             },
           },
           arrivals: { create: arrivalRows },
-          customerProgress: { create: this.progressSeed(lines) },
+          customerProgress: { create: this.progressSeed(available.lines) },
         },
         include: {
           lines: { orderBy: { position: 'asc' } },
@@ -676,7 +775,7 @@ export class DispatchService {
     await this.notify(await this.operatorRecipients(sheet), {
       type: 'DESPACHO_ENVIADO',
       title: `Nuevo despacho ${sheet.number}`,
-      body: `${sheet.title} · ${lines.length} renglón(es) · ${plannedSacks} sacos · ${plannedKg} kg`,
+      body: `${sheet.title} · ${available.lines.length} renglón(es) · ${plannedSacks} sacos · ${plannedKg} kg`,
       entityId: sheet.id,
       actorId: actor.id,
       actorName: actor.name,
@@ -689,7 +788,14 @@ export class DispatchService {
       action: 'DISPATCH_SEND',
       entityType: 'DispatchSheet',
       entityId: sheet.id,
-      context: { number: sheet.number, lines: lines.length, plannedKg, source: 'DRAFT', assignedTo: assignee?.id ?? 'ALMACEN' },
+      context: {
+        number: sheet.number,
+        lines: available.lines.length,
+        plannedKg,
+        source: 'DRAFT',
+        assignedTo: assignee?.id ?? 'ALMACEN',
+        skippedOrders: available.skipped,
+      },
     });
 
     return {
@@ -698,6 +804,7 @@ export class DispatchService {
       events: this.eventsFor(sheet, viewer),
       loadPlan: this.parseLoadPlan(sheet.loadPlanJson),
       customerProgress: this.toProgressList(sheet),
+      skippedOrders: available.skipped,
     };
   }
 
@@ -731,7 +838,7 @@ export class DispatchService {
               line,
               assignment,
               priority: index + 1,
-              effectiveDate: line.tentativeDate ?? line.requestedDate,
+              effectiveDate: dateOnly(line.tentativeDate ?? line.requestedDate),
             }
           : null;
       })
@@ -794,22 +901,29 @@ export class DispatchService {
       }
       const qtyChanged = round2(toNumber(row.plannedQty)) !== round2(plan.assignment.assignedQty);
       const kgChanged = round2(toNumber(row.plannedKg)) !== round2(plan.assignment.assignedKg);
-      if (qtyChanged || kgChanged) toUpdate.push({ row, plan });
+      // La fecha también mueve el renglón: si solo cambia la entrega en
+      // Profit, la hoja abierta debe seguirla (no crear otra).
+      const dateChanged = dateOnly(row.effectiveDate) !== dateOnly(plan.effectiveDate);
+      if (qtyChanged || kgChanged || dateChanged) toUpdate.push({ row, plan });
     }
 
     const toCreate: Array<(typeof planLines)[number]> = [];
     const toRevive: Array<{ row: LineRow; plan: (typeof planLines)[number] }> = [];
+    // Un pedido que ya vive en OTRA hoja no se agrega/reactiva aquí: la
+    // duplicación se evita en el origen y la limpieza la hace el script.
+    const inOtherSheet = (item: (typeof planLines)[number]) =>
+      Boolean(item.line.dispatchSheetNumber) && item.line.dispatchSheetNumber !== sheet.number;
     for (const item of planLines) {
       if (item.assignment.assignedQty <= 0) continue;
       const key = draftLineKey(item.line);
       const existing = existingByKey.get(key);
       if (!existing) {
-        if (!lockedKeys.has(key)) toCreate.push(item);
+        if (!lockedKeys.has(key) && !inOtherSheet(item)) toCreate.push(item);
         continue;
       }
       // Un renglón anulado que vuelve al plan se reactiva en la misma fila
       // (la restricción sheet+pedido+artículo es única).
-      if (existing.status === 'ANULADO') toRevive.push({ row: existing, plan: item });
+      if (existing.status === 'ANULADO' && !inOtherSheet(item)) toRevive.push({ row: existing, plan: item });
     }
 
     const loadPlanJson = payload.loadPlan ? JSON.stringify(payload.loadPlan) : null;
@@ -822,17 +936,17 @@ export class DispatchService {
 
     const rowSignature = (row: LineRow) =>
       row.status === 'PENDIENTE'
-        ? `${draftLineKey(row)}|PENDIENTE|${round2(toNumber(row.plannedQty))}|${round2(toNumber(row.plannedKg))}|${row.note ?? ''}`
+        ? `${draftLineKey(row)}|PENDIENTE|${round2(toNumber(row.plannedQty))}|${round2(toNumber(row.plannedKg))}|${dateOnly(row.effectiveDate) ?? ''}|${row.note ?? ''}`
         : `${draftLineKey(row)}|${row.status}|${round2(toNumber(row.plannedQty))}|${round2(toNumber(row.plannedKg))}|${round2(
             toNumber(row.loadedQty),
-          )}|${row.note ?? ''}`;
+          )}|${dateOnly(row.effectiveDate) ?? ''}|${row.note ?? ''}`;
     const signature = [
       ...lockedRows.map(rowSignature),
       ...desiredPending.map(
         (item) =>
           `${draftLineKey(item.line)}|PENDIENTE|${round2(item.assignment.assignedQty)}|${round2(
             item.assignment.assignedKg,
-          )}|${payload.comments?.[draftLineKey(item.line)] ?? ''}`,
+          )}|${dateOnly(item.effectiveDate) ?? ''}|${payload.comments?.[draftLineKey(item.line)] ?? ''}`,
       ),
       ...retainedAnnulled.map((row) => `${draftLineKey(row)}|ANULADO`),
     ]
@@ -874,7 +988,7 @@ export class DispatchService {
         missingQty: 0,
         missingKg: 0,
         stockTotal: 0,
-        effectiveDate: row.effectiveDate,
+        effectiveDate: dateOnly(row.effectiveDate),
         priority: row.position,
         comment: row.note,
       })),
@@ -895,7 +1009,7 @@ export class DispatchService {
         missingQty: item.assignment.missingQty,
         missingKg: item.assignment.missingKg,
         stockTotal: item.assignment.stockTotal,
-        effectiveDate: item.effectiveDate,
+        effectiveDate: dateOnly(item.effectiveDate),
         priority: item.priority,
         comment: payload.comments?.[draftLineKey(item.line)] ?? null,
       })),
@@ -1022,7 +1136,7 @@ export class DispatchService {
           data: {
             plannedQty: plan.assignment.assignedQty,
             plannedKg: plan.assignment.assignedKg,
-            effectiveDate: plan.effectiveDate,
+            effectiveDate: dateOnly(plan.effectiveDate),
             note: payload.comments?.[draftLineKey(plan.line)] ?? row.note ?? null,
             status: 'PENDIENTE',
           },
@@ -1034,7 +1148,7 @@ export class DispatchService {
           data: {
             plannedQty: plan.assignment.assignedQty,
             plannedKg: plan.assignment.assignedKg,
-            effectiveDate: plan.effectiveDate,
+            effectiveDate: dateOnly(plan.effectiveDate),
             note: payload.comments?.[draftLineKey(plan.line)] ?? null,
             status: 'PENDIENTE',
             loadedQty: null,
@@ -1063,7 +1177,7 @@ export class DispatchService {
             customerCode: item.line.customerCode,
             customerName: item.line.customerName,
             warehouseCode: null,
-            effectiveDate: item.effectiveDate,
+            effectiveDate: dateOnly(item.effectiveDate),
             plannedQty: item.assignment.assignedQty,
             plannedKg: item.assignment.assignedKg,
             note: payload.comments?.[draftLineKey(item.line)] ?? null,
@@ -1146,6 +1260,11 @@ export class DispatchService {
         sheet.id,
         { id: actor?.id ?? 'SYSTEM', code: removalCode, name: removalName },
         cancelReason,
+      );
+      await this.queueDateLock(
+        [...new Set(sheet.lines.filter((line) => line.status !== 'ANULADO').map((line) => line.orderNumber))],
+        false,
+        actor?.code ?? null,
       );
       await this.notify([sheet.createdById, ...(await this.operatorRecipients(sheet))], {
         type: 'DESPACHO_CANCELADO',
@@ -1264,6 +1383,11 @@ export class DispatchService {
     // Al marcar el primer renglón la hoja arranca sola: ya no hay acuse previo.
     // `recomputeProgress` cierra el grupo cuando ya no queda PENDIENTE y
     // registra los hitos de carga en la bitácora.
+    // Marcar un renglón también cuenta como inicio de carga: su pedido queda
+    // bloqueado para cambios de fecha (Profit incluido).
+    if (input.status !== 'PENDIENTE') {
+      await this.queueDateLock([line.orderNumber], true, actor.code);
+    }
     const { sheet: refreshed } = await this.recomputeProgress(sheet.id, actor, { notify: true });
     const starting = refreshed.status === 'ENVIADO' || refreshed.status === 'RECIBIDO';
     const hasNovedad = refreshed.lines.some((item) => NOVEDAD_LINE_STATUSES.includes(item.status));
@@ -1397,6 +1521,13 @@ export class DispatchService {
         authorName: actor.name,
       },
     });
+    // La fecha de entrega queda bloqueada en nuestro sistema y en Profit
+    // (`cotiz_c.aux01 = 1`). Se encola por si Profit no responde ahora.
+    await this.queueDateLock(
+      [...new Set(bucket.lines.map((line) => line.orderNumber))],
+      true,
+      actor.code,
+    );
     await this.audit.record({
       actorId: actor.id,
       actorEmail: actor.code,
@@ -1442,7 +1573,6 @@ export class DispatchService {
       throw new BadRequestException('Cierra la carga completa del cliente antes de entregar la factura.');
     }
 
-    const beforeInvoiced = this.toProgressList(refreshed).every((row) => row.invoiceDeliveredAt !== null);
     const now = new Date();
     await this.prisma.dispatchCustomerProgress.update({
       where: { id: progress.id },
@@ -1455,6 +1585,11 @@ export class DispatchService {
       },
     });
     const invoiceMinutes = minutesBetween(progress.loadStartedAt, now);
+    await this.queueDateLock(
+      [...new Set(bucket.lines.map((line) => line.orderNumber))],
+      true,
+      actor.code,
+    );
     await this.prisma.dispatchSheetEvent.create({
       data: {
         sheetId: sheet.id,
@@ -1485,10 +1620,13 @@ export class DispatchService {
       },
     });
 
-    if (!beforeInvoiced) {
-      const after = await this.findSheet(id);
-      const allInvoiced = this.toProgressList(after).every((row) => row.invoiceDeliveredAt !== null);
-      if (allInvoiced) {
+    // Última factura: la hoja se cierra sola y pasa al historial. Si ya estaba
+    // cerrada (factura registrada después del cierre), solo se avisa.
+    const after = await this.findSheet(id);
+    const progressAfter = this.toProgressList(after);
+    if (progressAfter.length > 0 && progressAfter.every((row) => row.invoiceDeliveredAt !== null)) {
+      const closed = await this.closeIfFullyInvoiced(after, actor);
+      if (!closed) {
         await this.notify([refreshed.createdById], {
           type: 'DESPACHO_FACTURADO',
           title: `${refreshed.number}: facturación entregada`,
@@ -1526,7 +1664,11 @@ export class DispatchService {
     if (progress.some((row) => !row.loadClosedAt)) {
       throw new BadRequestException('Cierra la carga de todos los clientes antes de facturar.');
     }
-    if (progress.every((row) => row.invoiceDeliveredAt)) return this.detail(viewer, id);
+    if (progress.length > 0 && progress.every((row) => row.invoiceDeliveredAt)) {
+      // Hoja histórica que quedó abierta con todo facturado: se cierra al pasar.
+      await this.closeIfFullyInvoiced(refreshed, actor);
+      return this.detail(viewer, id);
+    }
 
     const now = new Date();
     await this.prisma.dispatchCustomerProgress.updateMany({
@@ -1540,6 +1682,11 @@ export class DispatchService {
       },
     });
     const allLines = refreshed.lines.filter((line) => line.status !== 'ANULADO');
+    await this.queueDateLock(
+      [...new Set(allLines.map((line) => line.orderNumber))],
+      true,
+      actor.code,
+    );
     const allProducts = this.eventProducts(allLines);
     await this.prisma.dispatchSheetEvent.create({
       data: {
@@ -1565,15 +1712,21 @@ export class DispatchService {
       entityId: sheet.id,
       context: { number: sheet.number, customers: progress.length, invoiceRef: input.invoiceRef ?? null, scope: 'ALL' },
     });
-    await this.notify([refreshed.createdById], {
-      type: 'DESPACHO_FACTURADO',
-      title: `${refreshed.number}: facturación entregada`,
-      body: `Todos los clientes del despacho tienen la factura marcada como entregada.`,
-      entityId: refreshed.id,
-      actorId: actor.id,
-      actorName: actor.name,
-      linkPath: `/despacho/${refreshed.id}`,
-    });
+    // La facturación completa cierra la hoja: sale de la bandeja y entra al
+    // historial sin exigir un clic extra en «Cerrar despacho».
+    const after = await this.findSheet(id);
+    const closed = await this.closeIfFullyInvoiced(after, actor);
+    if (!closed) {
+      await this.notify([refreshed.createdById], {
+        type: 'DESPACHO_FACTURADO',
+        title: `${refreshed.number}: facturación entregada`,
+        body: `Todos los clientes del despacho tienen la factura marcada como entregada.`,
+        entityId: refreshed.id,
+        actorId: actor.id,
+        actorName: actor.name,
+        linkPath: `/despacho/${refreshed.id}`,
+      });
+    }
 
     return this.detail(viewer, id);
   }
@@ -1630,6 +1783,14 @@ export class DispatchService {
       context: { number: sheet.number, customer: progress.customerName, scope: 'INVOICE', reason: input.reason },
     });
 
+    // Reabrir la factura devuelve el pedido a la cartera: la fecha vuelve a
+    // poder cambiarse (también en Profit).
+    await this.queueDateLock(
+      [...new Set((bucket?.lines ?? []).map((line) => line.orderNumber))],
+      false,
+      actor.code,
+    );
+
     return this.detail(viewer, id);
   }
 
@@ -1678,7 +1839,7 @@ export class DispatchService {
           productCode: line.productCode,
           description: line.description,
           status: line.status,
-          effectiveDate: line.effectiveDate,
+          effectiveDate: dateOnly(line.effectiveDate),
           plannedKg: toNumber(line.plannedKg),
           customerCode: line.customerCode,
           customerName: line.customerName,
@@ -1792,10 +1953,30 @@ export class DispatchService {
     // Cierra los relojes de los grupos que aún no tengan hora (hojas viejas o
     // cargas hechas por API sin «Iniciar carga»).
     const { sheet: refreshed } = await this.recomputeProgress(sheet.id, actor, { notify: false });
-    const totals = this.liveTotals(refreshed.lines);
+    await this.closeSheet(refreshed, actor, {
+      body: input.note
+        ? `Despacho cerrado por ${actor.name ?? 'almacén'}. ${input.note}`
+        : `Despacho cerrado por ${actor.name ?? 'almacén'}.`,
+      note: input.note ?? null,
+    });
+
+    return this.detail(viewer, id);
+  }
+
+  /**
+   * Deja la hoja cerrada con los totales reales. Lo comparten «Cerrar despacho»
+   * y el cierre automático al entregar la última factura: el rastro (evento,
+   * notificación y auditoría) debe ser idéntico, cambia solo el texto.
+   */
+  private async closeSheet(
+    sheet: SheetWithLines,
+    actor: ViewerInfo,
+    options: { body: string; note?: string | null; automatic?: boolean },
+  ): Promise<void> {
+    const totals = this.liveTotals(sheet.lines);
     await this.prisma.$transaction([
       this.prisma.dispatchSheet.update({
-        where: { id: refreshed.id },
+        where: { id: sheet.id },
         data: {
           status: 'DESPACHADO',
           completedAt: new Date(),
@@ -1811,9 +1992,7 @@ export class DispatchService {
           sheetId: sheet.id,
           kind: 'SYSTEM',
           type: 'DESPACHADO',
-          body: input.note
-            ? `Despacho cerrado por ${actor.name ?? 'almacén'}. ${input.note}`
-            : `Despacho cerrado por ${actor.name ?? 'almacén'}.`,
+          body: options.body,
           authorId: actor.id,
           authorCode: actor.code,
           authorName: actor.name,
@@ -1824,7 +2003,9 @@ export class DispatchService {
     await this.notify([sheet.createdById], {
       type: 'DESPACHO_CERRADO',
       title: `${sheet.number}: despachado`,
-      body: `${actor.name ?? 'Almacén'} cerró la carga: ${totals.loadedSacks} sacos · ${totals.loadedKg} kg · diferencia ${totals.differenceKg} kg.`,
+      body: options.automatic
+        ? `Cierre automático al entregar la última factura: ${totals.loadedSacks} sacos · ${totals.loadedKg} kg · diferencia ${totals.differenceKg} kg.`
+        : `${actor.name ?? 'Almacén'} cerró la carga: ${totals.loadedSacks} sacos · ${totals.loadedKg} kg · diferencia ${totals.differenceKg} kg.`,
       entityId: sheet.id,
       actorId: actor.id,
       actorName: actor.name,
@@ -1837,10 +2018,32 @@ export class DispatchService {
       action: 'DISPATCH_COMPLETE',
       entityType: 'DispatchSheet',
       entityId: sheet.id,
-      context: { number: sheet.number, ...totals, note: input.note ?? null },
+      context: {
+        number: sheet.number,
+        ...totals,
+        note: options.note ?? null,
+        ...(options.automatic ? { automatic: true } : {}),
+      },
     });
+  }
 
-    return this.detail(viewer, id);
+  /**
+   * La última factura entregada cierra la hoja sola: ese cliente ya terminó y
+   * el despacho no debe quedarse en la bandeja esperando «Cerrar despacho».
+   * Devuelve true si cerró; false si ya estaba cerrada o aún falta trabajo.
+   */
+  private async closeIfFullyInvoiced(sheet: SheetWithLines, actor: ViewerInfo): Promise<boolean> {
+    if (!OPEN_STATUSES.includes(sheet.status)) return false;
+    const activeLines = sheet.lines.filter((line) => line.status !== 'ANULADO');
+    if (activeLines.length === 0) return false;
+    if (activeLines.some((line) => line.status === 'PENDIENTE')) return false;
+    const progress = this.toProgressList(sheet);
+    if (progress.length === 0 || progress.some((row) => !row.invoiceDeliveredAt)) return false;
+    await this.closeSheet(sheet, actor, {
+      body: 'Cerrado automáticamente al entregar la última factura del despacho.',
+      automatic: true,
+    });
+    return true;
   }
 
   async cancel(viewer: DispatchViewer, id: string, input: DispatchCancelInput): Promise<DispatchSheetDetail> {
@@ -1894,6 +2097,13 @@ export class DispatchService {
 
     // Las llegadas que aún no ocurrieron se cancelan; las que sí, se conservan.
     await this.arrivals.cancelForSheet(sheet.id, actor, input.reason);
+
+    // Un despacho anulado libera la fecha de sus pedidos (Profit incluido).
+    await this.queueDateLock(
+      [...new Set(sheet.lines.filter((line) => line.status !== 'ANULADO').map((line) => line.orderNumber))],
+      false,
+      actor.code,
+    );
 
     await this.audit.record({
       actorId: actor.id,
@@ -2711,7 +2921,7 @@ export class DispatchService {
       customerCode: line.customerCode,
       customerName: line.customerName,
       warehouseCode: line.warehouseCode,
-      effectiveDate: line.effectiveDate,
+      effectiveDate: dateOnly(line.effectiveDate),
       plannedQty: toNumber(line.plannedQty),
       plannedKg: toNumber(line.plannedKg),
       loadedQty: line.loadedQty === null ? null : toNumber(line.loadedQty),

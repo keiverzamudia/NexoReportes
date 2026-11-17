@@ -26,6 +26,7 @@ export const PERMISSION_ACTIONS = [
   'read',
   'create',
   'update',
+  'change_date',
   'delete',
   'view_all',
   'override',
@@ -80,7 +81,9 @@ export const APP_MODULES: AppModuleDefinition[] = [
     actions: [
       { action: 'read', label: 'Ver' },
       { action: 'create', label: 'Guardar simulación' },
-      { action: 'update', label: 'Editar fechas' },
+      { action: 'update', label: 'Editar' },
+      // Permiso independiente: mover la entrega escribe en Profit (fec_venc).
+      { action: 'change_date', label: 'Cambiar fecha de entrega (Profit)' },
       { action: 'delete', label: 'Eliminar simulación' },
       { action: 'override', label: 'Quitar selecciones de otros' },
     ],
@@ -179,6 +182,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['pedidos', 'read'],
     ['pedidos', 'create'],
     ['pedidos', 'update'],
+    ['pedidos', 'change_date'],
     ['pedidos', 'delete'],
     ['clientes', 'read'],
     ['despacho', 'read'],
@@ -195,6 +199,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['pedidos', 'read'],
     ['pedidos', 'create'],
     ['pedidos', 'update'],
+    ['pedidos', 'change_date'],
     ['pedidos', 'delete'],
     ['clientes', 'read'],
     ['despacho', 'read'],
@@ -809,6 +814,53 @@ export const zCustomerInsightAccount = z.object({
 });
 export type CustomerInsightAccount = z.infer<typeof zCustomerInsightAccount>;
 
+// ---------- Cambios de fecha de entrega y reputación del cliente ----------
+// Quién originó el cambio: la empresa (nosotros) o el cliente.
+export const DELIVERY_CHANGE_CAUSES = ['COMPANY', 'CUSTOMER'] as const;
+export const zDeliveryChangeCause = z.enum(DELIVERY_CHANGE_CAUSES);
+export type DeliveryChangeCause = z.infer<typeof zDeliveryChangeCause>;
+
+// Motivo del cambio. Solo aplica cuando la causa es el cliente:
+//   FINANCIAL = pago/crédito; LOGISTIC = transporte/agenda/stock.
+export const DELIVERY_CHANGE_REASONS = ['FINANCIAL', 'LOGISTIC'] as const;
+export const zDeliveryChangeReason = z.enum(DELIVERY_CHANGE_REASONS);
+export type DeliveryChangeReason = z.infer<typeof zDeliveryChangeReason>;
+
+// Cuenta solo cambios REALES en Profit (`action = 'PROFIT_UPDATE'`), todo el
+// histórico. Los cambios anteriores a la causa/motivo quedan «sin clasificar».
+export const DELIVERY_CHANGE_REPUTATIONS = ['GOOD', 'FAIR', 'POOR', 'UNKNOWN'] as const;
+export const zDeliveryChangeReputation = z.enum(DELIVERY_CHANGE_REPUTATIONS);
+export type DeliveryChangeReputation = z.infer<typeof zDeliveryChangeReputation>;
+
+export const zCustomerDeliveryChange = z.object({
+  changedAt: z.string(),
+  orderNumber: z.string(),
+  previousDate: z.string().nullable(),
+  newDate: z.string().nullable(),
+  cause: zDeliveryChangeCause.nullable(),
+  reason: zDeliveryChangeReason.nullable(),
+  note: z.string().nullable(),
+});
+export type CustomerDeliveryChange = z.infer<typeof zCustomerDeliveryChange>;
+
+export const zCustomerDeliveryChangeSummary = z.object({
+  total: z.number().int(),
+  // Pedidos distintos afectados (la entrega es del encabezado).
+  orders: z.number().int(),
+  byCompany: z.number().int(),
+  byCustomer: z.number().int(),
+  unclassified: z.number().int(),
+  // Motivos del cliente. Los cambios de la empresa no llevan motivo.
+  financial: z.number().int(),
+  logistic: z.number().int(),
+  // % de cambios clasificados que originó el cliente (null sin historial).
+  customerSharePct: z.number().nullable(),
+  reputation: zDeliveryChangeReputation,
+  lastChangeAt: z.string().nullable(),
+  recent: z.array(zCustomerDeliveryChange),
+});
+export type CustomerDeliveryChangeSummary = z.infer<typeof zCustomerDeliveryChangeSummary>;
+
 export const zCustomerInsightOrders = z.object({
   activeCount: z.number().int(),
   pendingQty: z.number(),
@@ -871,6 +923,8 @@ export const zCustomerInsightResponse = z.object({
   cadence: zCustomerInsightCadence,
   account: zCustomerInsightAccount.nullable(),
   orders: zCustomerInsightOrders,
+  // Historial de cambios de entrega del cliente (reputación de fechas).
+  deliveryChanges: zCustomerDeliveryChangeSummary,
   alerts: z.array(zCustomerInsightAlert),
   available: z.boolean(),
   billingAvailable: z.boolean(),
@@ -881,6 +935,43 @@ export const zCustomerInsightResponse = z.object({
   source: z.enum(['profit', 'fixtures']),
 });
 export type CustomerInsightResponse = z.infer<typeof zCustomerInsightResponse>;
+
+// ---------- Notas de entrega de un cliente (detalle de la ficha 360) ----------
+// Cada nota trae el pedido que la originó. `number` es el nº de pedido que se
+// ve en la pantalla Pedidos (la solicitud/cotización de Profit); `profitOrder`
+// es el pedido interno de Profit cuando la nota pasó por esa tabla.
+export const zCustomerNoteOrder = z.object({
+  number: z.string(),
+  profitOrder: z.string().nullable(),
+});
+export type CustomerNoteOrder = z.infer<typeof zCustomerNoteOrder>;
+
+export const zCustomerNote = z.object({
+  number: z.string(),
+  date: z.string().nullable(),
+  // Monto de la nota en la moneda solicitada; null si falta la tasa en USD.
+  amount: z.number().nullable(),
+  sacks: z.number(),
+  kg: z.number(),
+  tonnes: z.number(),
+  lines: z.number().int(),
+  orders: z.array(zCustomerNoteOrder),
+});
+export type CustomerNote = z.infer<typeof zCustomerNote>;
+
+export const zCustomerNotesResponse = z.object({
+  code: z.string(),
+  months: z.number().int(),
+  currency: zCustomerStatementCurrency,
+  asOf: z.string(),
+  notes: z.array(zCustomerNote),
+  // `available` = se pudo leer el volumen; `ordersAvailable` = se pudo leer el
+  // pedido de origen. Sin pedidos la nota se muestra igual (orders vacío).
+  available: z.boolean(),
+  ordersAvailable: z.boolean(),
+  source: z.enum(['profit', 'fixtures']),
+});
+export type CustomerNotesResponse = z.infer<typeof zCustomerNotesResponse>;
 
 export const ORDER_STATUSES = ['ABIERTO', 'NOTA_ENTREGA', 'CERRADO', 'CANCELADO', 'DESCONOCIDO'] as const;
 export const zOrderStatus = z.enum(ORDER_STATUSES);
@@ -1028,6 +1119,10 @@ export const zOrderGroupLine = z.object({
   stock03: z.number().nullable(),
   stock9999: z.number().nullable(),
   stock68: z.number().nullable(),
+  // Despacho donde ya vive el pedido (null = libre). Bloquea volver a enviarlo
+  // y, si la carga ya inició, también el cambio de fecha de entrega.
+  dispatchSheetNumber: z.string().nullable(),
+  dispatchStarted: z.boolean(),
 });
 export type OrderGroupLine = z.infer<typeof zOrderGroupLine>;
 
@@ -1081,6 +1176,63 @@ export const zDeliveryDateApplyResponse = z.object({
   unchanged: z.number().int(),
 });
 export type DeliveryDateApplyResponse = z.infer<typeof zDeliveryDateApplyResponse>;
+
+// ---------- Entrega real en Profit (dbo.cotiz_c.fec_venc) ----------
+// La fecha vive en el ENCABEZADO del pedido: editar un renglón mueve todo el
+// pedido. El API deduplica por `orderNumber` antes de escribir.
+// (`zDeliveryChangeCause` / `zDeliveryChangeReason` viven arriba, junto a la
+// Ficha 360, porque la reputación del cliente también los usa.)
+export const zProfitDeliveryDateSetInput = z
+  .object({
+    items: z.array(zDeliveryDateItem).min(1).max(500),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Debe ser yyyy-MM-dd'),
+    cause: zDeliveryChangeCause,
+    note: z.string().trim().max(240).optional(),
+    // Obligatorio solo para CUSTOMER (lo valida el refine de abajo).
+    reason: zDeliveryChangeReason.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.cause === 'CUSTOMER' && !value.reason) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['reason'],
+        message: 'Indica el motivo del cliente: financiero o logístico.',
+      });
+    }
+    if (value.cause === 'COMPANY' && value.reason) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['reason'],
+        message: 'Cuando el cambio lo origina la empresa no se indica motivo.',
+      });
+    }
+  });
+export type ProfitDeliveryDateSetInput = z.infer<typeof zProfitDeliveryDateSetInput>;
+
+export const PROFIT_DELIVERY_DATE_STATUSES = ['APPLIED', 'UNCHANGED', 'SKIPPED', 'FAILED'] as const;
+export const zProfitDeliveryDateStatus = z.enum(PROFIT_DELIVERY_DATE_STATUSES);
+export type ProfitDeliveryDateStatus = z.infer<typeof zProfitDeliveryDateStatus>;
+
+export const zProfitDeliveryDateOrderResult = z.object({
+  orderNumber: z.string(),
+  previousDate: z.string().nullable(),
+  newDate: z.string().nullable(),
+  status: zProfitDeliveryDateStatus,
+  // Motivo cuando el pedido no se pudo mover (cerrado, sin permisos en Profit…).
+  message: z.string().nullable(),
+});
+export type ProfitDeliveryDateOrderResult = z.infer<typeof zProfitDeliveryDateOrderResult>;
+
+export const zProfitDeliveryDateApplyResponse = z.object({
+  // true = se calculó el cambio pero no se escribió en Profit.
+  dryRun: z.boolean(),
+  applied: z.number().int(),
+  unchanged: z.number().int(),
+  skipped: z.number().int(),
+  failed: z.number().int(),
+  orders: z.array(zProfitDeliveryDateOrderResult),
+});
+export type ProfitDeliveryDateApplyResponse = z.infer<typeof zProfitDeliveryDateApplyResponse>;
 
 // ============================================================
 // ============================================================
@@ -1796,6 +1948,15 @@ export const zDispatchSheetDetail = zDispatchSheetSummary.extend({
   loadPlan: zLoadPlan.nullable(),
   // Un registro por cliente con sus relojes y factura.
   customerProgress: z.array(zDispatchCustomerProgress),
+  // Pedidos que se omitieron al publicar porque ya viven en otro despacho.
+  skippedOrders: z
+    .array(
+      z.object({
+        orderNumber: z.string(),
+        sheetNumber: z.string(),
+      }),
+    )
+    .optional(),
 });
 export type DispatchSheetDetail = z.infer<typeof zDispatchSheetDetail>;
 
@@ -2441,7 +2602,7 @@ export type ApiError = z.infer<typeof zApiError>;
 //     normaliza a KILOGRAMOS (SAC × `uni_relac`; KG tal cual). Solo lectura.
 //     `forecast.fecha` indica el mes de vigencia (primer día del mes).
 //   - Reparto en 4 semanas (bloques 1-7 / 8-14 / 15-21 / 22-fin), editable
-//     en Nexo. Por defecto = forecast mensual / 4.
+//     en Nexo. Por defecto = kg mensual × días del bloque ÷ días del mes.
 // ============================================================
 export const FORECAST_WEEK_INDEXES = [1, 2, 3, 4] as const;
 
@@ -2470,8 +2631,11 @@ export type ForecastWeekRange = z.infer<typeof zForecastWeekRange>;
 
 export const zForecastWeekRow = z.object({
   weekIndex: z.number().int(),
-  // Cantidad asignada a la semana (editable). Por defecto = mensual / 4.
+  // Cantidad asignada a la semana (editable), en kg.
   qty: z.number(),
+  // Reparto sugerido del mes: kg_mensual × días del bloque ÷ días del mes.
+  // Es el valor por defecto de `qty` y solo sirve para marcar ediciones.
+  suggestedQty: z.number(),
 });
 export type ForecastWeekRow = z.infer<typeof zForecastWeekRow>;
 
@@ -2487,7 +2651,8 @@ export const zForecastRow = z.object({
   // Forecast mensual leído de Profit (`forecast.kg_mensual`), convertido a kg
   // según la presentación del artículo.
   monthlyQty: z.number(),
-  // Promedio sugerido por semana = forecast mensual / 4 (valor por defecto de `weeks`).
+  // Referencia simple mes ÷ 4 (kg). El valor por defecto de `weeks` es el
+  // reparto por días del bloque (`suggestedQty`).
   averageQty: z.number(),
   weeks: z.array(zForecastWeekRow),
   weeksTotalQty: z.number(),
@@ -2505,27 +2670,47 @@ export const zForecastResponse = z.object({
 export type ForecastResponse = z.infer<typeof zForecastResponse>;
 
 // Reporte/plan de producción semanal.
-// Cada semana trae, además del forecast, los mismos campos de la tabla de
-// Disponibilidad por Producto (existencia, disponible, a producir, neto,
-// estado) calculados con el motor de disponibilidad sobre la demanda OBJETIVO
-// = max(forecast de la semana, demanda de la semana).
+//
+// Todas las cifras de gestión van en KILOGRAMOS: el forecast de Profit ya viene
+// normalizado a kg y la demanda/venta se convierten con kg por saco. Los sacos
+// solo se derivan para presentación (`*Sacks`), nunca se suman entre artículos.
+//
+// Regla semanal (stock secuencial, no se repite la misma brecha 4 veces):
+//   objetivo   = max(forecast de la semana, demanda de la semana)
+//   despachable = min(stock al inicio, objetivo)
+//   a producir = semana cerrada ? 0 : max(0, objetivo − stock al inicio)
+//   stock siguiente = stock + a producir − consumo
+//   consumo    = semana cerrada ? vendido + solicitado : objetivo
 export const zForecastPlanWeek = z.object({
   weekIndex: z.number().int(),
-  // Forecast asignado a esa semana (cantidad editable en el Asignador).
-  forecastQty: z.number(),
-  // Demanda real de pedidos activos cuya entrega cae en esa semana.
-  demandQty: z.number(),
+  // La semana ya terminó: se lee como resultado (vendido vs forecast), sin
+  // sugerencia de producción.
+  closed: z.boolean(),
+  // Forecast asignado a esa semana (kg, editable en el Asignador).
+  forecastKg: z.number(),
+  // Demanda real de pedidos activos con entrega efectiva en esa semana (kg).
   demandKg: z.number(),
+  // La misma demanda en la unidad del artículo (sacos para SAC, kg para granel).
+  demandQty: z.number(),
   // Kg despachados en la semana según notas de entrega (0 si Profit no respondió).
   soldKg: z.number(),
-  // Objetivo de la semana = max(forecast, demanda). Es la "demanda" que usa el
-  // motor de disponibilidad.
-  objectiveQty: z.number(),
-  // Campos de disponibilidad por producto (misma semántica que /availability).
-  availableQty: z.number(),
-  toProduceQty: z.number(),
-  toProduceKg: z.number().nullable(),
-  netQty: z.number(),
+  // Venta de la semana en sacos (solo SAC; null en granel).
+  soldSacks: z.number().nullable(),
+  // Existencia disponible al INICIO de la semana (kg), ya con el arrastre de
+  // la producción y el consumo de las semanas anteriores.
+  stockKg: z.number(),
+  // Objetivo de la semana = max(forecast, demanda).
+  objectiveKg: z.number(),
+  // Existencia que cubre el objetivo (kg).
+  availableKg: z.number(),
+  // Faltante a producir en la semana (kg). 0 en semanas cerradas.
+  toProduceKg: z.number(),
+  // El mismo faltante en sacos (solo SAC; null en granel).
+  toProduceSacks: z.number().nullable(),
+  // Existencia que sobra sobre el objetivo (kg).
+  excessKg: z.number(),
+  // Vendido ÷ forecast de la semana (null sin forecast o sin venta).
+  attainmentPct: z.number().nullable(),
   status: zAvailabilityStatus,
 });
 export type ForecastPlanWeek = z.infer<typeof zForecastPlanWeek>;
@@ -2536,20 +2721,24 @@ export const zForecastPlanRow = z.object({
   uom: z.string(),
   category: z.string().nullable(),
   kgPerUom: z.number().nullable(),
-  // Existencia global y desglose por almacén (Stock 03 / Stock 9999 / Stock 68).
+  // Existencia global y desglose por almacén, en la unidad del artículo
+  // (Stock 03 / Stock 9999 / Stock 68).
   stockTotal: z.number(),
   stock03: z.number(),
   stock9999: z.number(),
   stock68: z.number(),
-  forecastMonthQty: z.number(),
+  // La misma existencia convertida a kg (Stock × kg por saco en SAC).
+  stockKg: z.number(),
+  forecastMonthKg: z.number(),
   averageQty: z.number(),
   demandMonthQty: z.number(),
   // Demanda del mes en kg (pedidos activos), para comparar con forecast y venta.
   demandMonthKg: z.number(),
   // Kg despachados en el mes según notas de entrega.
   soldMonthKg: z.number(),
-  productionMonthQty: z.number(),
+  // Producción planificada del mes: kg y sacos (solo artículos SAC).
   productionMonthKg: z.number(),
+  productionMonthSacks: z.number().nullable(),
   weeks: z.array(zForecastPlanWeek),
 });
 export type ForecastPlanRow = z.infer<typeof zForecastPlanRow>;
@@ -2558,13 +2747,18 @@ export const zForecastPlanResponse = z.object({
   year: z.number().int(),
   month: z.number().int(),
   weekRanges: z.array(zForecastWeekRange),
+  // Corte del plan (America/Caracas): hoy en el mes en curso, último día en un
+  // mes cerrado y null en un mes futuro.
+  asOf: z.string().nullable(),
+  // Semana en curso (1-4) o null si el mes está cerrado o es futuro.
+  currentWeekIndex: z.number().int().nullable(),
   // false si Profit no devolvió los despachos: la UI avisa y no pinta ceros falsos.
   salesAvailable: z.boolean(),
   rows: z.array(zForecastPlanRow),
   totals: z.object({
-    forecastQty: z.number(),
-    demandQty: z.number(),
-    productionQty: z.number(),
+    forecastKg: z.number(),
+    soldKg: z.number(),
+    demandKg: z.number(),
     productionKg: z.number(),
   }),
 });
@@ -3097,14 +3291,28 @@ export const zForecastSellerProductsResponse = z.object({
 export type ForecastSellerProductsResponse = z.infer<typeof zForecastSellerProductsResponse>;
 
 // ============================================================
-// Participación por cliente (`/forecast/sales/customers`).
+// Clientes vs meta histórica (`/forecast/sales/customers`).
 //
-// Sin histórico ni meta por cliente: la venta real de cada cliente se mide
-// contra la venta total ABA del mes hasta el corte. Cada producto del cliente
-// lleva dos porcentajes:
+// Cada cliente se mide contra SU promedio de los últimos 3 meses cerrados
+// (solo meses con compra): esa es su meta de referencia del mes. La venta real
+// del mes a la fecha se proyecta con el mismo run-rate que los productos
+// (días hábiles lun–sáb, corte a ayer).
+//
+// La meta es un benchmark individual de cartera: NO sustituye ni se suma al
+// `forecast` oficial de Profit. Los clientes se ordenan por meta descendente
+// para priorizar a los que más volumen venían comprando. Cada producto del
+// cliente lleva dos porcentajes:
 //  · shareOfCustomerPct: peso del producto dentro de la compra del cliente.
 //  · shareOfProductPct: peso del cliente dentro de la venta total del producto.
 // ============================================================
+
+/** Kg de un cliente en uno de los meses históricos (ventana de 3, cerrado). */
+export const zForecastCustomerSalesHistoryMonth = z.object({
+  year: z.number().int(),
+  month: z.number().int(),
+  kg: z.number(),
+});
+export type ForecastCustomerSalesHistoryMonth = z.infer<typeof zForecastCustomerSalesHistoryMonth>;
 
 export const zForecastCustomerProductRow = z.object({
   productCode: z.string(),
@@ -3128,6 +3336,12 @@ export const zForecastCustomerSalesRow = z.object({
   customerName: z.string(),
   customerType: z.string().nullable(),
   vendor: z.string().nullable(),
+  /** Kg de los 3 meses cerrados anteriores, en orden cronológico (incluye ceros). */
+  history: z.array(zForecastCustomerSalesHistoryMonth),
+  /** Meta del mes: promedio de los meses CON COMPRA de la ventana histórica. */
+  targetKg: z.number(),
+  /** Cuántos de los 3 meses históricos tuvieron compra (0–3). */
+  targetMonths: z.number().int(),
   actualKg: z.number(),
   actualUnits: z.number(),
   /** % de la venta ABA del mes a la fecha que representa este cliente. */
@@ -3135,6 +3349,13 @@ export const zForecastCustomerSalesRow = z.object({
   /** Productos con venta en el mes a la fecha. */
   productCount: z.number().int(),
   lastInvoiceDate: z.string().nullable(),
+  // Run-rate del cliente contra su meta histórica (misma regla que productos).
+  dailyAvgKg: z.number(),
+  projectedKg: z.number().nullable(),
+  attainmentPct: z.number().nullable(),
+  projectedAttainmentPct: z.number().nullable(),
+  gapKg: z.number().nullable(),
+  requiredDailyKg: z.number().nullable(),
   products: z.array(zForecastCustomerProductRow),
 });
 export type ForecastCustomerSalesRow = z.infer<typeof zForecastCustomerSalesRow>;
@@ -3147,14 +3368,28 @@ export const zForecastCustomerSalesResponse = z.object({
   status: zForecastSalesStatus,
   // false = Profit no respondió: la UI avisa, no muestra ceros como ventas.
   salesAvailable: z.boolean(),
+  // Ventana histórica usada para la meta (3 meses cerrados, en orden).
+  historyMonths: z.array(z.object({ year: z.number().int(), month: z.number().int() })),
+  // false = falló la lectura del histórico: hay venta, pero sin meta por cliente.
+  historyAvailable: z.boolean(),
   days: zForecastSalesDays,
   totals: z.object({
     actualKg: z.number(),
     actualUnits: z.number(),
-    /** Clientes incluidos en la tabla (catálogo activo + clientes con venta). */
+    /** Suma de las metas históricas de los clientes (kg). */
+    targetKg: z.number(),
+    /** Suma de las proyecciones de cierre de los clientes (kg). */
+    projectedKg: z.number().nullable(),
+    /** Σ venta ÷ Σ meta × 100 (null sin meta). */
+    attainmentPct: z.number().nullable(),
+    /** Σ proyección ÷ Σ meta × 100 (null sin meta/proyección). */
+    projectedAttainmentPct: z.number().nullable(),
+    /** Clientes incluidos en la tabla (catálogo activo + venta + histórico). */
     customerCount: z.number().int(),
     /** Clientes con venta > 0. */
     activeCustomerCount: z.number().int(),
+    /** Clientes con meta histórica > 0. */
+    targetCustomerCount: z.number().int(),
     /** Productos distintos con venta en el mes. */
     productCount: z.number().int(),
     lastInvoiceDate: z.string().nullable(),
@@ -3251,6 +3486,11 @@ export const AUDIT_ACTIONS: Record<string, AuditActionDefinition> = {
   },
   DELIVERY_DATE_SET: { module: 'orders', label: 'Asignó fecha tentativa a pedidos', severity: 'INFO' },
   DELIVERY_DATE_RESTORE: { module: 'orders', label: 'Restauró la fecha tentativa', severity: 'INFO' },
+  PROFIT_DELIVERY_DATE_SET: {
+    module: 'orders',
+    label: 'Cambió la fecha de entrega en Profit',
+    severity: 'WARN',
+  },
   DB_MIRROR_RESTORE: { module: 'system', label: 'Restauró la base de datos desde main', severity: 'WARN' },
 };
 

@@ -63,6 +63,7 @@ function createFakePrisma() {
       { code: 'ALMACEN', baseRole: 'ALMACEN' },
       { code: 'CONSULTA', baseRole: 'CONSULTA' },
     ] as Row[],
+    profitLockJobs: [] as Row[],
   };
 
   let sequence = 0;
@@ -189,11 +190,53 @@ function createFakePrisma() {
     },
     dispatchSheetLine: {
       findFirst: async ({ where }: Row) => state.lines.find((line) => matches(where, line)) ?? null,
+      findMany: async ({ where }: Row = {}) => {
+        const numbers = where?.orderNumber?.in as string[] | undefined;
+        const notStatus = where?.status?.not as string | undefined;
+        return state.lines
+          .filter((line) => (!numbers || numbers.includes(line.orderNumber)))
+          .filter((line) => (notStatus ? line.status !== notStatus : true))
+          .map((line) => {
+            const sheet = state.sheets.find((row) => row.id === line.sheetId);
+            if (!sheet) return null;
+            if (where?.sheet && !matches(where.sheet, sheet)) return null;
+            return { ...line, sheet: withRelations(sheet) };
+          })
+          .filter((line) => line !== null) as Row[];
+      },
       update: async ({ where, data }: Row) => {
         const line = state.lines.find((row) => row.id === where.id);
         if (!line) throw new Error('no encontrado');
         Object.assign(line, data);
         return line;
+      },
+      updateMany: async ({ where, data }: Row) => {
+        const rows = state.lines.filter((line) => matches(where, line));
+        for (const line of rows) Object.assign(line, data);
+        return { count: rows.length };
+      },
+    },
+    profitLockJob: {
+      upsert: async ({ where, create, update }: Row) => {
+        const key = where.orderNumber_locked as { orderNumber: string; locked: boolean };
+        const found = state.profitLockJobs.find(
+          (row) => row.orderNumber === key.orderNumber && row.locked === key.locked,
+        );
+        if (found) {
+          Object.assign(found, update, { updatedAt: new Date() });
+          return found;
+        }
+        const row = { id: id('lockjob'), attempts: 0, status: 'PENDIENTE', ...create, createdAt: new Date(), updatedAt: new Date() };
+        state.profitLockJobs.push(row);
+        return row;
+      },
+      findMany: async ({ where, take }: Row = {}) =>
+        state.profitLockJobs.filter((row) => matches(where, row)).slice(0, take ?? 100),
+      update: async ({ where, data }: Row) => {
+        const row = state.profitLockJobs.find((item) => item.id === where.id);
+        if (!row) throw new Error('no encontrado');
+        Object.assign(row, data, { updatedAt: new Date() });
+        return row;
       },
     },
     dispatchSheetEvent: {
@@ -301,10 +344,15 @@ function snapshotLine(overrides: Row = {}) {
   };
 }
 
-function seedScenario(prisma: ReturnType<typeof createFakePrisma>, ownerId = 'u-plan', id = 'sc-1') {
+function seedScenario(
+  prisma: ReturnType<typeof createFakePrisma>,
+  ownerId = 'u-plan',
+  id = 'sc-1',
+  orderNumber = '408251710',
+) {
   const lines = [
-    snapshotLine({ comment: 'Retira Elías Lozada' }),
-    snapshotLine({ productCode: 'ABABOV85', priority: 2, assignedQty: 10, assignedKg: 400 }),
+    snapshotLine({ orderNumber, comment: 'Retira Elías Lozada' }),
+    snapshotLine({ orderNumber, productCode: 'ABABOV85', priority: 2, assignedQty: 10, assignedKg: 400 }),
   ];
   const scenario = {
     id,
@@ -337,7 +385,7 @@ function seedScenario(prisma: ReturnType<typeof createFakePrisma>, ownerId = 'u-
             id: 'seg-1',
             label: 'AGRICOLA LA CAÑADA',
             customerCode: '294201237',
-            orderNumbers: ['408251710'],
+            orderNumbers: [orderNumber],
             kg: 2800,
             sacks: 70,
             color: '#0F4C5C',
@@ -519,8 +567,23 @@ describe('DispatchService — publicar', () => {
     expect(prisma.state.notifications).toHaveLength(2);
     expect(prisma.state.notifications.every((row) => row.type === 'DESPACHO_ENVIADO')).toBe(true);
 
-    const second = await service.create(publisher, { scenarioId: 'sc-1', title: 'Despacho martes' });
+    // Un segundo despacho con OTRO pedido conserva el correlativo.
+    seedScenario(prisma, 'u-plan', 'sc-2', '408251711');
+    const second = await service.create(publisher, { scenarioId: 'sc-2', title: 'Despacho martes' });
     expect(second.number).toBe(`DSP-${new Date().getFullYear()}-0002`);
+  });
+
+  it('omite los pedidos que ya están en otro despacho y lo informa', async () => {
+    const prisma = createFakePrisma();
+    const service = new DispatchService(prisma as never, audit, arrivals);
+    seedScenario(prisma);
+    await service.create(publisher, { scenarioId: 'sc-1', title: 'Despacho lunes' });
+
+    await expect(service.create(publisher, { scenarioId: 'sc-1', title: 'Despacho martes' })).rejects.toThrow(
+      /ya están en despacho/i,
+    );
+    // La hoja original sigue siendo la única con el pedido.
+    expect(prisma.state.sheets).toHaveLength(1);
   });
 
   it('solo con el permiso «Armar y enviar simulación» se puede publicar', async () => {
@@ -928,8 +991,9 @@ describe('DispatchService — bitácora y notificaciones', () => {
     const prisma = createFakePrisma();
     const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma);
+    seedScenario(prisma, 'u-plan', 'sc-2', '408251711');
     await service.create(publisher, { scenarioId: 'sc-1', title: 'Uno' });
-    await service.create(publisher, { scenarioId: 'sc-1', title: 'Dos' });
+    await service.create(publisher, { scenarioId: 'sc-2', title: 'Dos' });
 
     const plannerInbox = await service.list(planner, { scope: 'all' });
     expect(plannerInbox.items).toHaveLength(2);
@@ -972,8 +1036,9 @@ describe('DispatchService — bitácora y notificaciones', () => {
     expect(last.actorName).toBe('ALEXIS RIVAS');
     expect(last.entityType).toBe('DispatchSheet');
 
-    // Anular avisa al lado almacén.
-    const second = await service.create(publisher, { scenarioId: 'sc-1', title: 'Para anular' });
+    // Anular avisa al lado almacén (otro pedido, para no chocar con el ya despachado).
+    seedScenario(prisma, 'u-plan', 'sc-2', '408251711');
+    const second = await service.create(publisher, { scenarioId: 'sc-2', title: 'Para anular' });
     await service.cancel(planner, second.id, { reason: 'El cliente reprogramó' });
     expect(typesFor('u-alm1')).toContain('DESPACHO_CANCELADO');
     expect(typesFor('u-alm2')).toContain('DESPACHO_CANCELADO');
@@ -983,15 +1048,16 @@ describe('DispatchService — bitácora y notificaciones', () => {
     const prisma = createFakePrisma();
     const service = new DispatchService(prisma as never, audit, arrivals);
     seedScenario(prisma);
-    seedScenario(prisma, 'u-alm1', 'sc-2');
+    seedScenario(prisma, 'u-plan', 'sc-2', '408251711');
+    seedScenario(prisma, 'u-alm1', 'sc-3', '408251712');
     const first = await service.create(publisher, { scenarioId: 'sc-1', title: 'Pendiente' });
-    const second = await service.create(publisher, { scenarioId: 'sc-1', title: 'Cerrado' });
+    const second = await service.create(publisher, { scenarioId: 'sc-2', title: 'Cerrado' });
     await service.updateLine(operator1, second.id, second.lines[0]!.id, { status: 'CARGADO' });
     await service.updateLine(operator1, second.id, second.lines[1]!.id, { status: 'CARGADO' });
     await service.complete(operator1, second.id, {});
 
     // Otro usuario publica y cierra su propio despacho.
-    const third = await service.create(almacenPublisher, { scenarioId: 'sc-2', title: 'Cerrado por almacén' });
+    const third = await service.create(almacenPublisher, { scenarioId: 'sc-3', title: 'Cerrado por almacén' });
     await service.updateLine(operator1, third.id, third.lines[0]!.id, { status: 'CARGADO' });
     await service.updateLine(operator1, third.id, third.lines[1]!.id, { status: 'CARGADO' });
     await service.complete(operator1, third.id, {});
@@ -1033,6 +1099,12 @@ describe('DispatchService — tiempos por cliente', () => {
     expect(progress.loadClosedAt).toBeNull();
     expect(started.status).toBe('EN_PROCESO');
     expect(started.claimedByName).toBe('ALEXIS RIVAS');
+    // Iniciar la carga encola el bloqueo de fecha en Profit (aux01 = 1).
+    expect(prisma.state.profitLockJobs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ orderNumber: '408251710', locked: true, status: 'PENDIENTE' }),
+      ]),
+    );
 
     // Cerrar el primer producto no cierra el cliente todavía.
     const afterFirst = await service.updateLine(operator1, sheet.id, started.lines[0]!.id, { status: 'CARGADO' });
@@ -1051,6 +1123,9 @@ describe('DispatchService — tiempos por cliente', () => {
     const invoice = invoiced.customerProgress.find((row) => row.customerKey === customerKey)!;
     expect(invoice.invoiceDeliveredAt).not.toBeNull();
     expect(invoice.invoiceRef).toBe('FAC-001');
+    // La última factura cierra la hoja sola, sin pasar por «Cerrar despacho».
+    expect(invoiced.status).toBe('DESPACHADO');
+    expect(invoiced.completedAt).not.toBeNull();
     // La bitácora solo la ve el ADMIN, pero el evento quedó registrado.
     const adminView = await service.detail(admin, sheet.id);
     expect(adminView.events.some((event) => event.type === 'FACTURA_ENTREGADA')).toBe(true);
@@ -1058,7 +1133,7 @@ describe('DispatchService — tiempos por cliente', () => {
     // Con factura entregada, la carga queda bloqueada.
     await expect(
       service.updateLine(operator1, sheet.id, invoiced.lines[0]!.id, { status: 'PENDIENTE' }),
-    ).rejects.toThrow(/factura/i);
+    ).rejects.toThrow(/cerrad|factura/i);
   });
 
   it('otro operador de almacén puede facturar aunque la hoja esté tomada', async () => {
@@ -1103,6 +1178,7 @@ describe('DispatchService — tiempos por cliente', () => {
     const all = await service.deliverAllInvoices(operator1, sheet.id, { note: 'Factura global' });
     expect(all.customerProgress.every((row) => row.invoiceDeliveredAt !== null)).toBe(true);
     expect(all.pendingInvoiceCustomers).toBe(0);
+    expect(all.status).toBe('DESPACHADO');
 
     await expect(
       service.reopenInvoice(operator1, sheet.id, { customerKey: '294201237', reason: 'Error de número' }),
@@ -1114,5 +1190,27 @@ describe('DispatchService — tiempos por cliente', () => {
     });
     expect(reopened.customerProgress.find((row) => row.customerKey === '294201237')!.invoiceDeliveredAt).toBeNull();
     expect(reopened.events.some((event) => event.type === 'FACTURA_REABIERTA')).toBe(true);
+  });
+
+  it('la última factura saca la hoja de la bandeja y la deja en el historial', async () => {
+    const prisma = createFakePrisma();
+    const sheet = await publish(prisma);
+    const service = new DispatchService(prisma as never, audit, arrivals);
+    const customerKey = '294201237';
+    const viewer = { ...admin, canViewHistory: true };
+
+    await service.startLoad(operator1, sheet.id, { customerKey });
+    for (const line of sheet.lines) {
+      await service.updateLine(operator1, sheet.id, line.id, { status: 'CARGADO' });
+    }
+    const invoiced = await service.deliverInvoice(operator1, sheet.id, { customerKey });
+    expect(invoiced.status).toBe('DESPACHADO');
+    const adminView = await service.detail(admin, sheet.id);
+    expect(adminView.events.find((event) => event.type === 'DESPACHADO')?.body).toMatch(/automáticamente/i);
+
+    const tray = await service.list(viewer, { scope: 'pending' });
+    expect(tray.items.some((row) => row.id === sheet.id)).toBe(false);
+    const history = await service.list(viewer, { scope: 'history' });
+    expect(history.items.some((row) => row.id === sheet.id)).toBe(true);
   });
 });

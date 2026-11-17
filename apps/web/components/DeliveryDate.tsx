@@ -1,12 +1,11 @@
 'use client';
 
 // ============================================================
-// Fecha de entrega con capa estimada.
+// Fecha de entrega del pedido en Profit.
 //
-// Sin cambios se muestra la entrega que trae Profit en gris. Si hay una
-// entrega estimada (capa local), se muestra sólo esa fecha en verde y la
-// de Profit queda en el tooltip. La fecha de creación/emisión del pedido
-// nunca se edita aquí. Doble clic abre el editor (también un toque en móvil).
+// Se muestra la fecha real (dbo.cotiz_c.fec_venc). Si la sesión tiene el
+// permiso «Cambiar fecha de entrega», un doble clic (o un toque en móvil)
+// abre el editor, que escribe en Profit. La emisión nunca se edita aquí.
 // ============================================================
 
 import { useEffect, useRef, useState } from 'react';
@@ -14,23 +13,19 @@ import { createPortal } from 'react-dom';
 import { fmtDate } from './ui';
 
 export function DeliveryDateButton({
-  tentativeDate,
-  originalDate,
-  originalTo,
+  date,
   onEdit,
   canEdit = true,
   label,
   hint,
   className = '',
 }: {
-  tentativeDate: string | null;
-  originalDate: string | null;
-  /** Última fecha original del grupo (para mostrar un rango en el tooltip). */
-  originalTo?: string | null;
+  /** Entrega actual (Profit). */
+  date: string | null;
   onEdit: () => void;
   canEdit?: boolean;
   label: string;
-  /** Texto extra del tooltip (p. ej. "3 de 4 con entrega estimada"). */
+  /** Texto extra del tooltip (p. ej. «3 pedidos con fechas distintas»). */
   hint?: string;
   className?: string;
 }) {
@@ -38,8 +33,7 @@ export function DeliveryDateButton({
   const pointerType = useRef<string | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; below: boolean } | null>(null);
 
-  const hasTentative = Boolean(tentativeDate);
-  const action = canEdit ? (hasTentative ? 'Doble clic para cambiar la fecha' : 'Doble clic para asignar fecha') : null;
+  const action = canEdit ? 'Doble clic para cambiar la entrega en Profit' : null;
 
   const showTip = () => {
     const rect = buttonRef.current?.getBoundingClientRect();
@@ -61,17 +55,12 @@ export function DeliveryDateButton({
     };
   }, [tip]);
 
-  const originalLabel =
-    originalDate && originalTo && originalTo !== originalDate
-      ? `${fmtDate(originalDate)} – ${fmtDate(originalTo)}`
-      : fmtDate(originalDate);
-
   return (
     <>
       <button
         ref={buttonRef}
         type="button"
-        aria-label={`${label}. Entrega Profit ${originalLabel}.${hasTentative ? ` Entrega estimada ${fmtDate(tentativeDate)}.` : ''}${action ? ` ${action}.` : ''}`}
+        aria-label={`${label}. Entrega Profit ${fmtDate(date)}.${action ? ` ${action}.` : ''}`}
         aria-disabled={!canEdit}
         tabIndex={canEdit ? 0 : -1}
         onPointerDown={(event) => {
@@ -91,15 +80,11 @@ export function DeliveryDateButton({
         onMouseLeave={hideTip}
         onFocus={showTip}
         onBlur={hideTip}
-        className={`select-none whitespace-nowrap rounded-md px-1 py-0.5 text-label-sm tabular-nums text-outline transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70 ${
+        className={`select-none whitespace-nowrap rounded-md px-1 py-0.5 text-label-sm tabular-nums text-on-surface transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70 ${
           canEdit ? 'cursor-pointer hover:bg-surface-container-low hover:text-primary' : 'cursor-default'
         } ${className}`}
       >
-        {hasTentative ? (
-          <span className="font-semibold text-secondary">{fmtDate(tentativeDate)}</span>
-        ) : (
-          <span>{fmtDate(originalDate)}</span>
-        )}
+        {fmtDate(date)}
       </button>
 
       {tip &&
@@ -115,8 +100,8 @@ export function DeliveryDateButton({
             }}
             className="pointer-events-none z-[80] w-max max-w-[17rem] rounded-xl bg-primary px-space-sm py-space-xs text-on-primary shadow-[0_18px_40px_-24px_rgba(8,29,44,.7)]"
           >
-            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-on-primary/55">Entrega Profit</p>
-            <p className="mt-0.5 text-label-md font-semibold tabular-nums">{originalLabel}</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-on-primary/55">Entrega en Profit</p>
+            <p className="mt-0.5 text-label-md font-semibold tabular-nums">{fmtDate(date)}</p>
             {hint && <p className="mt-0.5 text-label-sm text-on-primary/65">{hint}</p>}
             {action && <p className="mt-1 text-label-sm font-semibold text-secondary-container">{action}</p>}
           </div>,

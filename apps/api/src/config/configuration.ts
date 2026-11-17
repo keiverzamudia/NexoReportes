@@ -24,6 +24,16 @@ const envSchema = z.object({
   PROFIT_DB_REQUEST_TIMEOUT_MS: z.coerce.number().int().default(30000),
   PROFIT_DB_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
 
+  // Escritura puntual en Profit (fecha de entrega). Conexión separada de la
+  // de lectura: el usuario de escritura solo necesita UPDATE sobre cotiz_c.
+  PROFIT_WRITE_ENABLED: z.enum(['true', 'false']).default('false'),
+  PROFIT_WRITE_USER: z.string().optional(),
+  PROFIT_WRITE_PASSWORD: z.string().optional(),
+  PROFIT_WRITE_DRY_RUN: z.enum(['true', 'false']).default('true'),
+  PROFIT_WRITE_MAX_ORDERS: z.coerce.number().int().min(1).max(500).default(50),
+  // Reintento de la cola que escribe el bloqueo de fecha (aux01) en Profit.
+  PROFIT_LOCK_RETRY_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
+
   // Base donde viven `dbo.VUSUARIOS` y la función `dbo.autenticar`
   // (suele ser MasterProfit). Se usa con nombre de tres partes.
   PROFIT_DB_AUTH_DATABASE: z.string().min(1).default('MasterProfit'),
@@ -108,6 +118,17 @@ export default function configuration() {
       maxRetries: env.PROFIT_DB_MAX_RETRIES,
       views: {
         solicitudes: env.PROFIT_VIEW_SOLICITUDES,
+      },
+      write: {
+        enabled: env.PROFIT_WRITE_ENABLED === 'true',
+        // Si no hay credenciales dedicadas se reutiliza el usuario de lectura
+        // (en desarrollo suele tener UPDATE; en producción se recomienda uno
+        // aparte con permiso solo sobre dbo.cotiz_c).
+        user: env.PROFIT_WRITE_USER || env.PROFIT_DB_USER,
+        password: env.PROFIT_WRITE_PASSWORD || env.PROFIT_DB_PASSWORD,
+        dryRun: env.PROFIT_WRITE_DRY_RUN === 'true',
+        maxOrders: env.PROFIT_WRITE_MAX_ORDERS,
+        lockRetrySeconds: env.PROFIT_LOCK_RETRY_SECONDS,
       },
     },
     users: {

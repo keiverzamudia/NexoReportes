@@ -18,6 +18,7 @@ const ACTION_LABEL: Record<(typeof PERMISSION_ACTIONS)[number], string> = {
   read: 'Ver',
   create: 'Crear',
   update: 'Editar',
+  change_date: 'Cambiar fecha de entrega',
   delete: 'Eliminar',
   view_all: 'Ver todos',
   override: 'Quitar de otros',
