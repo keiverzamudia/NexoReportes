@@ -19,7 +19,8 @@ import { useRef, useState } from 'react';
 import { AppNav, LoginScreen } from '../../components/shell';
 import { SellerReport } from '../../components/forecast/SellerReport';
 import { Card, Kpi, PageHeader, Segmented, fmtQty } from '../../components/ui';
-import { AuthRequiredError, apiFetch } from '../../lib/api';
+import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
+import { hasPermission } from '../../lib/permissions';
 
 type SalesBasis = 'WORKING' | 'CALENDAR';
 
@@ -53,6 +54,16 @@ export default function SellersPage() {
   const [yearPart, monthPart] = ym.split('-');
   const year = Number(yearPart);
   const month = Number(monthPart);
+
+  // Permiso especial de cuotas: se resuelve en el cliente solo para mostrar u
+  // ocultar el lápiz. El API vuelve a validarlo en cada escritura.
+  const me = useQuery({
+    queryKey: ['me'],
+    queryFn: currentUser,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const canManageQuotas = hasPermission(me.data?.permissions, 'vendedor_cuotas', 'update');
 
   const report = useQuery<ForecastSellersResponse>({
     queryKey: ['forecast-sellers', tick, year, month, basis, includeToday, historyMonths, attribution],
@@ -204,6 +215,7 @@ export default function SellersPage() {
           historyMonths={Number(historyMonths)}
           onHistoryMonthsChange={(months) => setHistoryMonths(String(months))}
           includeToday={includeToday}
+          canManageQuotas={canManageQuotas}
         />
       </main>
     </>

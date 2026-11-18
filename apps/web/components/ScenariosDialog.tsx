@@ -12,6 +12,7 @@
 // ============================================================
 
 import type { DispatchSheetDetail, ScenarioDetail, ScenarioListResponse, ScenarioListItem } from '@nexo/contracts';
+import { SCENARIO_RETENTION_HOURS } from '@nexo/contracts';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
@@ -685,10 +686,16 @@ export function ScenariosDialog({
             })}
           </div>
 
-          <p className="mt-space-md flex items-center gap-space-xs text-label-sm normal-case text-on-surface-variant">
-            <CheckCircle2 aria-hidden className="size-3.5 shrink-0" />
-            Restaurar nunca escribe en Profit: solo vuelve a simular con los datos de hoy.
-          </p>
+          <div className="mt-space-md flex flex-col gap-1 text-label-sm normal-case text-on-surface-variant">
+            <p className="flex items-center gap-space-xs">
+              <CheckCircle2 aria-hidden className="size-3.5 shrink-0" />
+              Restaurar nunca escribe en Profit: solo vuelve a simular con los datos de hoy.
+            </p>
+            <p className="flex items-center gap-space-xs">
+              <Clock3 aria-hidden className="size-3.5 shrink-0" />
+              Las simulaciones se borran solas a las {SCENARIO_RETENTION_HOURS} h; el despacho conserva su foto.
+            </p>
+          </div>
         </div>
       </div>
     </div>

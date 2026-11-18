@@ -41,11 +41,15 @@ export class MssqlProfitWriter implements ProfitWriter {
     const user = this.config.get<string>('profit.write.user');
     const password = this.config.get<string>('profit.write.password');
     this.enabled = Boolean(this.config.get<boolean>('profit.write.enabled')) && Boolean(user) && Boolean(password);
-    this.dryRun = this.config.get<boolean>('profit.write.dryRun') ?? true;
+    this.dryRun = this.config.get<boolean>('profit.write.dryRun') ?? false;
     if (!this.enabled) {
       this.logger.warn(
-        'Escritura en Profit deshabilitada (PROFIT_WRITE_ENABLED / PROFIT_WRITE_USER / PROFIT_WRITE_PASSWORD).',
+        'Escritura en Profit deshabilitada (PROFIT_WRITE_ENABLED=false o credenciales SQL incompletas).',
       );
+    } else if (this.dryRun) {
+      this.logger.warn('Escritura en Profit en modo SIMULACIÓN (PROFIT_WRITE_DRY_RUN=true): no se escribe nada.');
+    } else {
+      this.logger.log(`Escritura en Profit ACTIVA con el usuario SQL "${user}" (dbo.cotiz_c).`);
     }
   }
 

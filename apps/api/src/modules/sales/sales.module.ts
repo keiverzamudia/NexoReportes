@@ -11,6 +11,7 @@ import { DeliveryDatesService } from './delivery-dates.service';
 import { OrderLifecycleScheduler } from './order-lifecycle.scheduler';
 import { OrderLifecycleService } from './order-lifecycle.service';
 import { ProfitDeliveryDatesService } from './profit-delivery-dates.service';
+import { SalesAnalyticsService } from './sales-analytics.service';
 import { SalesController } from './sales.controller';
 import { SalesService } from './sales.service';
 
@@ -30,6 +31,7 @@ import { SalesService } from './sales.service';
     CustomerSalesService,
     CustomerInsightsService,
     CustomerNotesService,
+    SalesAnalyticsService,
     OrderLifecycleService,
     OrderLifecycleScheduler,
   ],

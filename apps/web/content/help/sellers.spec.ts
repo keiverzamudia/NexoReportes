@@ -16,6 +16,7 @@ const SELLER_KEYS = [
   'cumplimiento',
   'proyeccion',
   'brecha',
+  'plan',
   'ritmo',
   'reparto',
   'ultimaNota',
@@ -24,6 +25,8 @@ const SELLER_KEYS = [
 const CLIENT_KEYS = [
   'cliente',
   'metaCliente',
+  'shareCliente',
+  'aporteCliente',
   'ventaCliente',
   'cumplimientoCliente',
   'proyeccionCliente',

@@ -14,7 +14,7 @@
 // ============================================================
 
 import type { ForecastSellerRow, ForecastSellersResponse } from '@nexo/contracts';
-import { AlertTriangle, CalendarDays, Download, Info, ListFilter, RotateCw, Search, Trophy, Users, X } from 'lucide-react';
+import { AlertTriangle, CalendarDays, Download, Info, ListFilter, RotateCw, Search, Target, Trophy, Users, X } from 'lucide-react';
 import { useCallback, useDeferredValue, useMemo, useState } from 'react';
 import { Badge, Card, Column, DataTable, EmptyState, Skeleton, TextInput, cx, fmtDate } from '../ui';
 import { EChart } from '../EChart';
@@ -27,13 +27,10 @@ import {
 } from '../../content/help/sellers';
 import { useHelpRow } from '../../lib/use-help-row';
 import {
-  META_MARKER_PCT,
   buildSellerNarrative,
   buildSellersCsv,
   buildShareSlices,
   filterSellers,
-  fmtAttainmentPct,
-  quotaGeometry,
   sellersCsvFileName,
   topQuotaSeller,
 } from '../../lib/sellers-report';
@@ -51,10 +48,9 @@ import {
   HERO_TONE,
   HeroStat,
   PctPill,
-  QuotaBar,
+  PerformanceList,
   SellerAvatar,
   ShareStrip,
-  TONE_TEXT,
   cumulativeOption,
   useCountUp,
 } from './seller-ui';
@@ -85,6 +81,7 @@ export function SellerReport({
   historyMonths,
   onHistoryMonthsChange,
   includeToday,
+  canManageQuotas = false,
 }: {
   report?: ForecastSellersResponse;
   isLoading: boolean;
@@ -93,11 +90,13 @@ export function SellerReport({
   historyMonths: number;
   onHistoryMonthsChange: (months: number) => void;
   includeToday: boolean;
+  /** Permiso `vendedor_cuotas:update`: muestra el lápiz de cuotas. */
+  canManageQuotas?: boolean;
 }) {
   const [search, setSearch] = useState('');
   const [onlyWithSales, setOnlyWithSales] = useState(false);
   const [onlyWithQuota, setOnlyWithQuota] = useState(false);
-  const [focusCode, setFocusCode] = useState<string | null>(null);
+  const [focus, setFocus] = useState<{ code: string; salesOnly: boolean } | null>(null);
   const [helpRow, setHelpRow] = useHelpRow();
   const deferredSearch = useDeferredValue(search);
 
@@ -114,6 +113,20 @@ export function SellerReport({
   );
 
   const slices = useMemo(() => (report ? buildShareSlices(report) : []), [report]);
+  // Clientes con plan de cierre, de mayor a menor esfuerzo pedido.
+  const planClients = useMemo(() => {
+    if (!report) return [];
+    return report.sellers
+      .flatMap((seller) =>
+        seller.clients.map((client) => ({
+          ...client,
+          sellerCode: seller.sellerCode,
+          sellerName: seller.sellerName,
+        })),
+      )
+      .filter((client) => client.closingPlanKg > 0)
+      .sort((a, b) => b.closingPlanKg - a.closingPlanKg);
+  }, [report]);
   const narrative = useMemo(() => (report ? buildSellerNarrative(report) : ''), [report]);
   const chart = useMemo(
     () =>
@@ -131,7 +144,7 @@ export function SellerReport({
   const projectedTonnes = useCountUp(
     report && report.totals.projectedKg !== null ? report.totals.projectedKg / 1000 : null,
   );
-  const focusSeller = report && focusCode ? report.sellers.find((seller) => seller.sellerCode === focusCode) ?? null : null;
+  const focusSeller = report && focus ? report.sellers.find((seller) => seller.sellerCode === focus.code) ?? null : null;
 
   const hasFilters = Boolean(search.trim()) || onlyWithSales || onlyWithQuota;
   const clearFilters = useCallback(() => {
@@ -142,9 +155,15 @@ export function SellerReport({
 
   const openSeller = useCallback((code: string) => {
     if (code === '__otras__') return;
-    setFocusCode((current) => (current === code ? null : code));
+    setFocus({ code, salesOnly: false });
   }, []);
-  const closeSeller = useCallback(() => setFocusCode(null), []);
+  // Doble clic en la tabla: abre el expediente ya filtrado a los clientes que
+  // le compraron este mes.
+  const openSellerClients = useCallback((code: string) => {
+    if (code === '__otras__') return;
+    setFocus({ code, salesOnly: true });
+  }, []);
+  const closeSeller = useCallback(() => setFocus(null), []);
 
   if (isLoading && !report) return <SellerSkeleton />;
 
@@ -315,6 +334,20 @@ export function SellerReport({
       },
     },
     {
+      key: 'plan',
+      header: 'Plan cierre',
+      align: 'right',
+      kind: 'detail',
+      help: SELLER_COLUMN_HELP.plan,
+      sortValue: (row) => row.closingPlanKg,
+      render: (row) =>
+        row.closingPlanKg > 0 ? (
+          <span className="tabular-nums font-semibold text-secondary">+{fmtKg(row.closingPlanKg)} kg</span>
+        ) : (
+          <span className="text-outline">—</span>
+        ),
+    },
+    {
       key: 'reparto',
       header: 'Reparto mes',
       align: 'right',
@@ -376,6 +409,18 @@ export function SellerReport({
           el reparto; las cuotas no se pueden calcular.
         </p>
       )}
+
+      {report.status === 'OPEN' &&
+        report.forecastLiveKg !== null &&
+        report.forecastCapturedKg !== null &&
+        Math.abs(report.forecastLiveKg - report.forecastCapturedKg) >= 1 && (
+          <p role="status" className="flex items-start gap-space-sm rounded-xl bg-secondary-container/15 px-space-md py-space-sm text-body-md text-on-surface">
+            <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-secondary" />
+            Profit cambió la meta del mes: la lectura viva es {fmtKg(report.forecastLiveKg)} kg y el snapshot guardado{' '}
+            {fmtKg(report.forecastCapturedKg)} kg. El reparto y el plan de cierre ya usan la meta viva, así que siguen
+            cuadrando al kilo.
+          </p>
+        )}
 
       {/* ---------- Hero ---------- */}
       <section className="relative isolate overflow-hidden rounded-card bg-hero p-space-lg text-white shadow-hero animate-rise">
@@ -515,6 +560,95 @@ export function SellerReport({
         )}
       </section>
 
+      {/* ---------- Plan de cierre de brecha ---------- */}
+      {isOpen && totals.closingGapKg > 0 && (
+        <Card className="animate-rise overflow-hidden">
+          <div className="flex flex-wrap items-start justify-between gap-space-sm px-space-md pt-space-md">
+            <div className="flex items-start gap-space-sm">
+              <span className="mt-0.5 inline-flex size-9 shrink-0 items-center justify-center rounded-xl bg-secondary-container/15 text-secondary">
+                <Target aria-hidden className="size-4" />
+              </span>
+              <div>
+                <h2 className="text-title-md font-bold text-on-surface">Plan de cierre de brecha</h2>
+                <p className="max-w-3xl text-label-md text-on-surface-variant">
+                  Brecha = meta − (proyección + cartera comprometida). Se reparte solo con capacidad real: el mejor mes de
+                  cada cliente en los últimos 12. Nadie recibe más kg de los que ya demostró.
+                </p>
+              </div>
+            </div>
+            <Badge tone={totals.closingUncoveredKg > 0 ? 'warning' : 'success'}>
+              {totals.closingUncoveredKg > 0
+                ? `${fmtKg(totals.closingUncoveredKg)} kg sin capacidad`
+                : 'Brecha cubierta'}
+            </Badge>
+          </div>
+
+          <div className="grid gap-space-sm px-space-md py-space-md sm:grid-cols-3">
+            <div className="rounded-xl bg-surface-container-low px-space-sm py-space-xs">
+              <p className="text-label-sm font-semibold uppercase tracking-wider text-outline">Brecha a cubrir</p>
+              <p className="tabular-nums text-title-md font-bold text-on-surface">{fmtKg(totals.closingGapKg)} kg</p>
+              <p className="text-label-sm text-outline">
+                Meta {fmtKg(totals.forecastKg)} − esperado {fmtKg(totals.expectedKg)}
+              </p>
+            </div>
+            <div className="rounded-xl bg-surface-container-low px-space-sm py-space-xs">
+              <p className="text-label-sm font-semibold uppercase tracking-wider text-outline">Cubierto con capacidad real</p>
+              <p className="tabular-nums text-title-md font-bold text-secondary">{fmtKg(totals.closingCoveredKg)} kg</p>
+              <p className="text-label-sm text-outline">
+                {totals.closingGapKg > 0 ? fmtPct((totals.closingCoveredKg / totals.closingGapKg) * 100) : '—'} de la
+                brecha · mejor mes de 12
+              </p>
+            </div>
+            <div className="rounded-xl bg-surface-container-low px-space-sm py-space-xs">
+              <p className="text-label-sm font-semibold uppercase tracking-wider text-outline">Sin capacidad</p>
+              <p
+                className={cx(
+                  'tabular-nums text-title-md font-bold',
+                  totals.closingUncoveredKg > 0 ? 'text-warning' : 'text-success',
+                )}
+              >
+                {fmtKg(totals.closingUncoveredKg)} kg
+              </p>
+              <p className="text-label-sm text-outline">
+                {totals.closingUncoveredKg > 0
+                  ? 'La cartera actual no lo puede absorber: no se inventa.'
+                  : 'Toda la brecha se cubre con cartera real.'}
+              </p>
+            </div>
+          </div>
+
+          {planClients.length > 0 && (
+            <div className="border-t border-surface-container px-space-md py-space-sm">
+              <p className="text-label-sm font-semibold uppercase tracking-wider text-outline">
+                A quién pedirle el faltante
+              </p>
+              <ul className="mt-space-2xs flex flex-col gap-1">
+                {planClients.slice(0, 8).map((client) => (
+                  <li
+                    key={`${client.sellerCode}-${client.clientCode}`}
+                    className="flex flex-wrap items-baseline justify-between gap-x-space-sm gap-y-0.5 text-label-md"
+                  >
+                    <span className="min-w-0 truncate">
+                      <strong className="font-semibold text-on-surface">{client.clientName}</strong>
+                      <span className="text-outline"> · {client.sellerName}</span>
+                    </span>
+                    <span className="shrink-0 tabular-nums text-on-surface-variant">
+                      esperado {fmtKg(client.expectedKg)} · capacidad {fmtKg(client.capacityKg)} ·
+                      <strong className="ml-1 text-secondary">+{fmtKg(client.closingPlanKg)} kg</strong>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {planClients.length > 8 && (
+                <p className="mt-1 text-label-sm text-outline">
+                  y {fmtKg(planClients.length - 8, 0)} clientes más repartidos en los expedientes.
+                </p>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
       {/* ---------- Gráficas ---------- */}
       <div className="grid items-start gap-space-lg xl:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
         <Card className="overflow-hidden animate-rise">
@@ -629,128 +763,40 @@ export function SellerReport({
           </header>
 
           <div className="px-space-md pb-space-md pt-space-sm">
-            <div className="mb-space-xs px-space-xs">
-              <div className="relative h-4 text-label-sm text-outline">
-                <span className="absolute left-0 top-0 leading-none">0 %</span>
-                <span
-                  className="absolute top-0 -translate-x-1/2 whitespace-nowrap font-semibold leading-none text-secondary"
-                  style={{ left: `${META_MARKER_PCT}%` }}
-                >
-                  cuota 100 %
-                </span>
-              </div>
-              <div className="relative h-3">
-                <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-surface-container-high" />
-                <span
-                  aria-hidden
-                  className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 rounded-pill bg-secondary"
-                  style={{ left: `calc(${META_MARKER_PCT}% - 1px)` }}
+            <PerformanceList
+              items={filtered.map((seller, index) => ({
+                key: seller.sellerCode || seller.sellerName,
+                name: seller.sellerName,
+                rank: index + 1,
+                badge: seller.isInternal ? <Badge tone="muted">Interna</Badge> : undefined,
+                metaLine: `Cuota ${
+                  seller.quotaPct === null ? '—' : fmtPct(seller.quotaPct)
+                } · ${
+                  report.attribution === 'PORTFOLIO'
+                    ? `${fmtKg(seller.assignedClientCount, 0)} en cartera`
+                    : `${fmtKg(seller.clientCount, 0)} clientes`
+                } · ${fmtKg(seller.activeClientCount, 0)} con venta · ${
+                  seller.currentSharePct === null ? '—' : fmtPct(seller.currentSharePct)
+                } del mes`,
+                targetKg: seller.targetKg,
+                actualKg: seller.actualKg,
+                noteKg: seller.executedKg,
+                projectedKg: seller.projectedKg,
+                gapKg: seller.gapKg,
+                pct: seller.projectedAttainmentPct ?? seller.attainmentPct,
+                planKg: seller.closingPlanKg,
+                onSelect: () => openSeller(seller.sellerCode),
+                selectTitle: `Abrir el expediente de ${seller.sellerName}`,
+              }))}
+              showProjection={isOpen}
+              empty={
+                <EmptyState
+                  icon={Users}
+                  title="Sin vendedores para el filtro"
+                  description="Prueba con otro texto o desactiva los filtros."
                 />
-              </div>
-            </div>
-
-            {filtered.length === 0 ? (
-              <EmptyState
-                icon={Users}
-                title="Sin vendedores para el filtro"
-                description="Prueba con otro texto o desactiva los filtros."
-              />
-            ) : (
-              <ul className="flex max-h-[560px] flex-col gap-space-2xs overflow-y-auto pr-1">
-                {filtered.map((seller, index) => {
-                  const pct = seller.projectedAttainmentPct ?? seller.attainmentPct;
-                  const sellerTone = salesTone(pct);
-                  const geometry = quotaGeometry(seller);
-                  const overPct = pct !== null && Number.isFinite(pct) && pct > 100 && pct <= 999 ? pct - 100 : null;
-                  return (
-                    <li key={seller.sellerCode || seller.sellerName}>
-                      <button
-                        type="button"
-                        onClick={() => openSeller(seller.sellerCode)}
-                        aria-haspopup="dialog"
-                        title={`Abrir el expediente de ${seller.sellerName}`}
-                        className="group w-full rounded-xl px-2 py-2 text-left transition-all duration-200 hover:bg-surface-container-low focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70"
-                      >
-                        <div className="flex items-start gap-space-sm">
-                          <span className="mt-0.5 w-4 shrink-0 text-center tabular-nums text-label-sm font-black text-outline">
-                            {index + 1}
-                          </span>
-                          <SellerAvatar name={seller.sellerName} rank={index + 1} />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-baseline justify-between gap-space-sm">
-                              <span className="flex min-w-0 items-center gap-1">
-                                <span className="truncate font-semibold text-on-surface">{seller.sellerName}</span>
-                                {seller.isInternal && <Badge tone="muted">Interna</Badge>}
-                              </span>
-                              <span className="flex shrink-0 flex-col items-end leading-tight">
-                                <span className={cx('tabular-nums text-label-md font-bold', TONE_TEXT[sellerTone])}>
-                                  {geometry.hasMeta ? fmtAttainmentPct(pct) : 'Sin cuota'}
-                                </span>
-                                {overPct !== null && (
-                                  <span className="whitespace-nowrap text-label-sm font-semibold text-success">
-                                    +{fmtPct(overPct)} sobre cuota
-                                  </span>
-                                )}
-                              </span>
-                            </div>
-                            <p className="truncate text-label-sm text-outline">
-                              Cuota {seller.quotaPct === null ? '—' : fmtPct(seller.quotaPct)} ·{' '}
-                              {report.attribution === 'PORTFOLIO'
-                                ? `${fmtKg(seller.assignedClientCount, 0)} en cartera`
-                                : `${fmtKg(seller.clientCount, 0)} clientes`}{' '}
-                              · {fmtKg(seller.activeClientCount, 0)} con venta ·{' '}
-                              {seller.currentSharePct === null ? '—' : fmtPct(seller.currentSharePct)} del mes
-                            </p>
-                            <QuotaBar
-                              targetKg={seller.targetKg}
-                              actualKg={seller.actualKg}
-                              projectedKg={seller.projectedKg}
-                              showProjection={isOpen}
-                              className="mt-1.5"
-                            />
-                            <div className="mt-1 flex flex-wrap items-baseline justify-between gap-x-space-sm gap-y-0.5 text-label-sm">
-                              <span className="tabular-nums text-on-surface-variant">
-                                Meta <strong className="text-on-surface">{fmtKg(seller.targetKg)}</strong> kg
-                              </span>
-                              <span className="tabular-nums text-on-surface-variant">
-                                Venta <strong className="text-on-surface">{fmtKg(seller.actualKg)}</strong> kg
-                              </span>
-                              {seller.executedKg !== seller.actualKg && (
-                                <span className="tabular-nums text-outline">
-                                  Nota <strong className="text-on-surface-variant">{fmtKg(seller.executedKg)}</strong> kg
-                                </span>
-                              )}
-                              <span
-                                className={cx(
-                                  'tabular-nums font-semibold',
-                                  seller.gapKg === null ? 'text-outline' : seller.gapKg < 0 ? 'text-critical' : 'text-success',
-                                )}
-                              >
-                                {seller.gapKg === null ? '—' : `${seller.gapKg > 0 ? '+' : ''}${fmtKg(seller.gapKg)} kg`}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-
-            <div className="mt-space-xs flex flex-wrap items-center gap-space-sm border-t border-surface-container pt-space-xs text-label-sm text-on-surface-variant">
-              <span className="inline-flex items-center gap-1">
-                <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Real
-              </span>
-              {isOpen && (
-                <span className="inline-flex items-center gap-1">
-                  <span aria-hidden className="size-2 rounded-full bg-secondary-container/60" /> Proyección
-                </span>
-              )}
-              <span className="inline-flex items-center gap-1">
-                <span aria-hidden className="h-3 w-[2px] rounded-pill bg-secondary" /> Marcador verde = 100 % de su cuota
-              </span>
-            </div>
+              }
+            />
           </div>
         </Card>
       </div>
@@ -795,10 +841,14 @@ export function SellerReport({
             />
           </div>
         </div>
+        <p className="hidden items-center gap-1 px-space-md pb-space-2xs text-label-sm text-outline md:flex">
+          Doble clic en un vendedor para ver sus clientes y sus ventas.
+        </p>
         <DataTable
           columns={columns}
           rows={filtered}
           rowKey={(row) => row.sellerCode || row.sellerName}
+          onRowDoubleClick={(row) => openSellerClients(row.sellerCode)}
           showHelpRow={helpRow}
           empty={
             <EmptyState
@@ -825,12 +875,16 @@ export function SellerReport({
 
       {focusSeller && (
         <SellerDetailDrawer
+          key={`${focusSeller.sellerCode}-${focus?.salesOnly ? 'venta' : 'todo'}`}
           seller={focusSeller}
           report={report}
           onClose={closeSeller}
           historyMonths={historyMonths}
           onHistoryMonthsChange={onHistoryMonthsChange}
           includeToday={includeToday}
+          canManageQuotas={canManageQuotas}
+          initialTab={report.attribution === 'NOTE' && focus?.salesOnly ? 'nota' : 'cartera'}
+          initialSalesFilter={focus?.salesOnly ? 'with' : 'all'}
         />
       )}
     </>

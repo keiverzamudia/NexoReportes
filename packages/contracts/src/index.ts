@@ -54,6 +54,12 @@ export interface AppModuleDefinition {
 // Fuente única para la matriz de permisos (API y web). El orden es el del menú.
 export const APP_MODULES: AppModuleDefinition[] = [
   {
+    key: 'cxc',
+    label: 'Cuentas por cobrar',
+    href: '/por-cobrar',
+    actions: [{ action: 'read', label: 'Ver' }],
+  },
+  {
     key: 'disponibilidad',
     label: 'Disponibilidad',
     href: '/disponibilidad',
@@ -75,17 +81,28 @@ export const APP_MODULES: AppModuleDefinition[] = [
     actions: [{ action: 'read', label: 'Ver' }],
   },
   {
+    // Permiso especial, asignable por rol o excepción de usuario. No tiene
+    // pantalla propia: se ejerce desde el expediente del vendedor.
+    key: 'vendedor_cuotas',
+    label: 'Cuotas de vendedores',
+    href: null,
+    actions: [{ action: 'update', label: 'Fijar cuotas de reactivación y clientes nuevos' }],
+  },
+  {
     key: 'pedidos',
     label: 'Pedidos',
     href: '/pedidos',
     actions: [
-      { action: 'read', label: 'Ver' },
+      { action: 'read', label: 'Ver simulador' },
       { action: 'create', label: 'Guardar simulación' },
       { action: 'update', label: 'Editar' },
       // Permiso independiente: mover la entrega escribe en Profit (fec_venc).
       { action: 'change_date', label: 'Cambiar fecha de entrega (Profit)' },
       { action: 'delete', label: 'Eliminar simulación' },
       { action: 'override', label: 'Quitar selecciones de otros' },
+      // Vistas separadas dentro de Pedidos. Se conceden por rol o excepción.
+      { action: 'view_summary', label: 'Ver ventas e indicadores' },
+      { action: 'view_history', label: 'Ver historial de pedidos' },
     ],
   },
   {
@@ -148,9 +165,11 @@ export const APP_MODULES: AppModuleDefinition[] = [
 ];
 
 export type AppModuleKey =
+  | 'cxc'
   | 'disponibilidad'
   | 'forecast'
   | 'vendedor'
+  | 'vendedor_cuotas'
   | 'pedidos'
   | 'clientes'
   | 'despacho'
@@ -175,6 +194,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     module.actions.map(({ action }) => [module.key as AppModuleKey, action] as [AppModuleKey, PermissionAction]),
   ),
   GERENCIA: [
+    ['cxc', 'read'],
     ['disponibilidad', 'read'],
     ['forecast', 'read'],
     ['forecast', 'update'],
@@ -184,6 +204,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['pedidos', 'update'],
     ['pedidos', 'change_date'],
     ['pedidos', 'delete'],
+    ['pedidos', 'view_summary'],
+    ['pedidos', 'view_history'],
     ['clientes', 'read'],
     ['despacho', 'read'],
     ['despacho', 'create'],
@@ -201,6 +223,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['pedidos', 'update'],
     ['pedidos', 'change_date'],
     ['pedidos', 'delete'],
+    ['pedidos', 'view_summary'],
     ['clientes', 'read'],
     ['despacho', 'read'],
     ['despacho', 'create'],
@@ -217,6 +240,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['pedidos', 'read'],
     ['pedidos', 'create'],
     ['pedidos', 'delete'],
+    ['pedidos', 'view_history'],
     ['clientes', 'read'],
     ['despacho', 'read'],
     ['despacho', 'update'],
@@ -229,6 +253,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['pedidos', 'read'],
     ['pedidos', 'create'],
     ['pedidos', 'delete'],
+    ['pedidos', 'view_summary'],
     ['clientes', 'read'],
   ],
 };
@@ -469,6 +494,9 @@ export const zAvailabilityRow = z.object({
   // Lo que falta producir expresado en KG (toProduceQty × kgPerUom);
   // null cuando el producto no tiene kg por unidad.
   toProduceKg: z.number().nullable(),
+  // Días de cobertura = existencia combinada / venta promedio diaria
+  // (ventas de los últimos 90 días ÷ 90). null si no hubo ventas.
+  stockDays: z.number().nullable(),
   status: zAvailabilityStatus,
 });
 export type AvailabilityRow = z.infer<typeof zAvailabilityRow>;
@@ -700,6 +728,273 @@ export const zCustomerStatementSummaryResponse = z.object({
   source: zCustomerStatementSource,
 });
 export type CustomerStatementSummaryResponse = z.infer<typeof zCustomerStatementSummaryResponse>;
+
+// ============================================================
+// Cuentas por cobrar (CxC) — análisis de vencimiento.
+//
+// Fuente: `dbo.docum_cc` en vivo (solo lectura). Los documentos débito
+// (FACT, N/DB, AJPM, GIRO) forman la cartera y los tramos de antigüedad.
+// Los créditos (ADEL, N/CR) NO son deuda: se informan aparte como «a favor»
+// y se restan para obtener la cartera neta.
+//
+// Los tramos son los del reporte «Análisis de Vencimiento» de Profit:
+// por vencer (≤ 0 días), 1–30, 31–60, 61–90, 91–120, 121–150 y más de 150.
+//
+// La cobranza se informa en dos ventanas: últimos 90 días y últimos 12 meses
+// móviles. El % de cobranza a tiempo usa la ventana de 12 meses y se pondera
+// por monto, no por cantidad de recibos.
+// ============================================================
+export const RECEIVABLES_CURRENCIES = ['USD', 'BS'] as const;
+export const zReceivablesCurrency = z.enum(RECEIVABLES_CURRENCIES);
+export type ReceivablesCurrency = z.infer<typeof zReceivablesCurrency>;
+
+export const RECEIVABLES_BUCKET_KEYS = [
+  'POR_VENCER',
+  'D1_30',
+  'D31_60',
+  'D61_90',
+  'D91_120',
+  'D121_150',
+  'D150_MAS',
+] as const;
+export const zReceivablesBucketKey = z.enum(RECEIVABLES_BUCKET_KEYS);
+export type ReceivablesBucketKey = z.infer<typeof zReceivablesBucketKey>;
+
+export const RECEIVABLES_BUCKETS: Array<{
+  key: ReceivablesBucketKey;
+  label: string;
+  short: string;
+  range: string;
+}> = [
+  { key: 'POR_VENCER', label: 'Por vencer', short: 'Por vencer', range: 'Vence hoy o aún no vence' },
+  { key: 'D1_30', label: '1 a 30 días', short: '1–30', range: 'Vencido de 1 a 30 días' },
+  { key: 'D31_60', label: '31 a 60 días', short: '31–60', range: 'Vencido de 31 a 60 días' },
+  { key: 'D61_90', label: '61 a 90 días', short: '61–90', range: 'Vencido de 61 a 90 días' },
+  { key: 'D91_120', label: '91 a 120 días', short: '91–120', range: 'Vencido de 91 a 120 días' },
+  { key: 'D121_150', label: '121 a 150 días', short: '121–150', range: 'Vencido de 121 a 150 días' },
+  { key: 'D150_MAS', label: 'Más de 150 días', short: '+150', range: 'Vencido hace más de 150 días' },
+];
+
+const zReceivablesBool = z
+  .union([z.boolean(), z.enum(['true', 'false'])])
+  .transform((value) => value === true || value === 'true');
+
+const zReceivablesDay = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Usa el formato AAAA-MM-DD');
+
+export const zReceivablesQuery = z
+  .object({
+    // Moneda de presentación. USD convierte cada documento con su tasa;
+    // BS muestra el saldo nativo del documento.
+    moneda: zReceivablesCurrency.optional(),
+    // Búsqueda libre por código, nombre del cliente o vendedor.
+    q: z.string().trim().max(80).optional(),
+    // Vendedor de la cartera del cliente (`clientes.co_ven`).
+    vendedor: z.string().trim().max(10).optional(),
+    tipoCliente: z.string().trim().max(10).optional(),
+    zona: z.string().trim().max(10).optional(),
+    segmento: z.string().trim().max(10).optional(),
+    // Rango sobre la fecha de emisión del documento.
+    desde: zReceivablesDay.optional(),
+    hasta: zReceivablesDay.optional(),
+    soloVencido: zReceivablesBool.optional(),
+    // Incluye adelantos/notas de crédito en la lista de documentos. El
+    // resumen siempre los informa aparte como «a favor».
+    incluirAFavor: zReceivablesBool.optional(),
+    // Fuerza una lectura nueva a Profit e ignora la caché de 60 s.
+    refresh: zReceivablesBool.optional(),
+  })
+  .refine(
+    (value) => !value.desde || !value.hasta || value.desde <= value.hasta,
+    { message: 'La fecha desde no puede ser mayor que la fecha hasta', path: ['desde'] },
+  );
+export type ReceivablesQuery = z.infer<typeof zReceivablesQuery>;
+
+export const zReceivablesFilters = z.object({
+  moneda: zReceivablesCurrency,
+  q: z.string(),
+  vendedor: z.string(),
+  tipoCliente: z.string(),
+  zona: z.string(),
+  segmento: z.string(),
+  desde: z.string().nullable(),
+  hasta: z.string().nullable(),
+  soloVencido: z.boolean(),
+  incluirAFavor: z.boolean(),
+});
+export type ReceivablesFilters = z.infer<typeof zReceivablesFilters>;
+
+export const zReceivablesOption = z.object({
+  value: z.string(),
+  label: z.string(),
+});
+export type ReceivablesOption = z.infer<typeof zReceivablesOption>;
+
+export const zReceivablesOptions = z.object({
+  vendedores: z.array(zReceivablesOption),
+  tipos: z.array(zReceivablesOption),
+  zonas: z.array(zReceivablesOption),
+  segmentos: z.array(zReceivablesOption),
+});
+export type ReceivablesOptions = z.infer<typeof zReceivablesOptions>;
+
+export const zReceivablesBucket = z.object({
+  key: zReceivablesBucketKey,
+  label: z.string(),
+  short: z.string(),
+  amount: z.number(),
+  pct: z.number(),
+  documentos: z.number().int(),
+});
+export type ReceivablesBucket = z.infer<typeof zReceivablesBucket>;
+
+export const zReceivablesTotals = z.object({
+  cartera: z.number(),
+  aFavor: z.number(),
+  neto: z.number(),
+  porVencer: z.number(),
+  d1_30: z.number(),
+  d31_60: z.number(),
+  d61_90: z.number(),
+  d91_120: z.number(),
+  d121_150: z.number(),
+  d150Mas: z.number(),
+  vencido: z.number(),
+  pctVencido: z.number(),
+  clientes: z.number().int(),
+  clientesConDeuda: z.number().int(),
+  clientesVencidos: z.number().int(),
+  documentos: z.number().int(),
+  documentosVencidos: z.number().int(),
+  notasCredito: z.number().int(),
+  diasMaxVencido: z.number().int().nullable(),
+  diasPromedioVencido: z.number().nullable(),
+  ticketPromedio: z.number().nullable(),
+  concentracionTop5Pct: z.number(),
+  cobrado90: z.number(),
+  // Cobranza de los últimos 12 meses. El % se pondera por monto y usa la
+  // misma ventana móvil que `cobrado12m`.
+  cobrado12m: z.number(),
+  cobrado12mATiempo: z.number(),
+  pctCobranzaATiempo: z.number().nullable(),
+  pagos12m: z.number().int(),
+  pagos12mATiempo: z.number().int(),
+  clientesSinPago30: z.number().int(),
+  montoSinPago30: z.number(),
+  sinTasa: z.number().int(),
+  sinVencimiento: z.number().int(),
+});
+export type ReceivablesTotals = z.infer<typeof zReceivablesTotals>;
+
+export const zReceivablesClientRow = z.object({
+  codigo: z.string(),
+  nombre: z.string(),
+  vendedor: z.string(),
+  vendedorCodigo: z.string(),
+  tipoCliente: z.string(),
+  tipoClienteLabel: z.string(),
+  zona: z.string(),
+  zonaLabel: z.string(),
+  segmento: z.string(),
+  segmentoLabel: z.string(),
+  limiteCredito: z.number().nullable(),
+  plazoPago: z.number().int().nullable(),
+  cartera: z.number(),
+  aFavor: z.number(),
+  neto: z.number(),
+  porVencer: z.number(),
+  d1_30: z.number(),
+  d31_60: z.number(),
+  d61_90: z.number(),
+  d91_120: z.number(),
+  d121_150: z.number(),
+  d150Mas: z.number(),
+  vencido: z.number(),
+  pctVencido: z.number(),
+  documentos: z.number().int(),
+  vencidos: z.number().int(),
+  notasCredito: z.number().int(),
+  diasMaxVencido: z.number().int().nullable(),
+  vencimientoMasAntiguo: z.string().nullable(),
+  ultimaEmision: z.string().nullable(),
+  ultimoPago: z.string().nullable(),
+  diasSinPago: z.number().int().nullable(),
+  cobrado90: z.number(),
+  cobrado12m: z.number(),
+  cobrado12mATiempo: z.number(),
+  pctCobranzaATiempo: z.number().nullable(),
+  excedeLimite: z.boolean(),
+});
+export type ReceivablesClientRow = z.infer<typeof zReceivablesClientRow>;
+
+export const zReceivablesDocumentRow = z.object({
+  clienteCodigo: z.string(),
+  clienteNombre: z.string(),
+  vendedor: z.string(),
+  vendedorCodigo: z.string(),
+  tipoDoc: z.string(),
+  nroDoc: z.number().int(),
+  fechaEmision: z.string().nullable(),
+  fechaVencimiento: z.string().nullable(),
+  diasVencimiento: z.number().int(),
+  tramo: zReceivablesBucketKey.nullable(),
+  saldo: z.number(),
+  montoOriginal: z.number().nullable(),
+  esCredito: z.boolean(),
+  tipoCliente: z.string(),
+  tipoClienteLabel: z.string(),
+  zona: z.string(),
+  segmento: z.string(),
+});
+export type ReceivablesDocumentRow = z.infer<typeof zReceivablesDocumentRow>;
+
+export const zReceivablesRisk = z.object({
+  topCliente: z
+    .object({
+      codigo: z.string(),
+      nombre: z.string(),
+      monto: z.number(),
+      pct: z.number(),
+    })
+    .nullable(),
+  top5Pct: z.number(),
+  clientesMas90: z.number().int(),
+  montoMas90: z.number(),
+  clientesMas150: z.number().int(),
+  montoMas150: z.number(),
+  clientesSinPago30: z.number().int(),
+  montoSinPago30: z.number(),
+  clientesSobreLimite: z.number().int(),
+  montoSobreLimite: z.number(),
+});
+export type ReceivablesRisk = z.infer<typeof zReceivablesRisk>;
+
+export const zReceivablesQuality = z.object({
+  sinTasa: z.number().int(),
+  sinVencimiento: z.number().int(),
+  truncado: z.boolean(),
+});
+export type ReceivablesQuality = z.infer<typeof zReceivablesQuality>;
+
+export const zReceivablesSource = z.enum(['profit', 'fixtures']);
+export type ReceivablesSource = z.infer<typeof zReceivablesSource>;
+
+export const zReceivablesResponse = z.object({
+  asOf: z.string(),
+  generatedAt: z.string(),
+  moneda: zReceivablesCurrency,
+  source: zReceivablesSource,
+  filtros: zReceivablesFilters,
+  totals: zReceivablesTotals,
+  buckets: z.array(zReceivablesBucket),
+  risk: zReceivablesRisk,
+  quality: zReceivablesQuality,
+  clientes: z.array(zReceivablesClientRow),
+  documentos: z.array(zReceivablesDocumentRow),
+  opciones: zReceivablesOptions,
+});
+export type ReceivablesResponse = z.infer<typeof zReceivablesResponse>;
 
 // ---------- Ficha 360 de clientes ----------
 // Informe comercial por cliente. El volumen sale de las notas de entrega
@@ -937,25 +1232,44 @@ export const zCustomerInsightResponse = z.object({
 export type CustomerInsightResponse = z.infer<typeof zCustomerInsightResponse>;
 
 // ---------- Notas de entrega de un cliente (detalle de la ficha 360) ----------
-// Cada nota trae el pedido que la originó. `number` es el nº de pedido que se
-// ve en la pantalla Pedidos (la solicitud/cotización de Profit); `profitOrder`
-// es el pedido interno de Profit cuando la nota pasó por esa tabla.
+// Cada nota trae la factura que la respalda (`invoices`, vacío = nota aún sin
+// facturar) y el pedido que la originó. `number` es el nº de pedido que se ve
+// en la pantalla Pedidos (la solicitud/cotización de Profit); `profitOrder` es
+// el pedido interno de Profit cuando la nota pasó por esa tabla.
 export const zCustomerNoteOrder = z.object({
   number: z.string(),
   profitOrder: z.string().nullable(),
 });
 export type CustomerNoteOrder = z.infer<typeof zCustomerNoteOrder>;
 
+// Renglón de la nota: qué artículo se entregó y en qué cantidad.
+export const zCustomerNoteItem = z.object({
+  code: z.string(),
+  description: z.string(),
+  // Unidad de venta del artículo ('SAC', 'KG', …); vacía si Profit no la trae.
+  unit: z.string(),
+  qty: z.number(),
+  kg: z.number(),
+  tonnes: z.number(),
+});
+export type CustomerNoteItem = z.infer<typeof zCustomerNoteItem>;
+
 export const zCustomerNote = z.object({
   number: z.string(),
   date: z.string().nullable(),
+  // Vendedor que firmó la nota en Profit (`not_ent.co_ven`).
+  vendor: z.string().nullable(),
   // Monto de la nota en la moneda solicitada; null si falta la tasa en USD.
   amount: z.number().nullable(),
   sacks: z.number(),
   kg: z.number(),
   tonnes: z.number(),
   lines: z.number().int(),
+  // Facturas de Profit (`factura.fact_num`) que respaldan la nota. Vacío = la
+  // nota de entrega todavía no se facturó («N/T» en la ficha).
+  invoices: z.array(z.string()),
   orders: z.array(zCustomerNoteOrder),
+  items: z.array(zCustomerNoteItem),
 });
 export type CustomerNote = z.infer<typeof zCustomerNote>;
 
@@ -966,9 +1280,13 @@ export const zCustomerNotesResponse = z.object({
   asOf: z.string(),
   notes: z.array(zCustomerNote),
   // `available` = se pudo leer el volumen; `ordersAvailable` = se pudo leer el
-  // pedido de origen. Sin pedidos la nota se muestra igual (orders vacío).
+  // pedido de origen; `itemsAvailable` = se pudo leer el detalle de renglones;
+  // `invoicesAvailable` = se pudo resolver la factura de cada nota.
+  // Sin facturas, pedidos o renglones la nota se muestra igual («N/T»).
   available: z.boolean(),
   ordersAvailable: z.boolean(),
+  itemsAvailable: z.boolean(),
+  invoicesAvailable: z.boolean(),
   source: z.enum(['profit', 'fixtures']),
 });
 export type CustomerNotesResponse = z.infer<typeof zCustomerNotesResponse>;
@@ -1001,6 +1319,9 @@ export const zOrderSummary = z.object({
   linesCount: z.number().int(),
   // Suma de pendientes del pedido (puede ser negativa por sobre-compromiso).
   totalPendingQty: z.number(),
+  // Kg del pedido. En la cartera viva es el pendiente; en un pedido cerrado
+  // conserva los kg con los que se procesó (la línea no se borra al cerrar).
+  totalKg: z.number().optional(),
   // Ciclo de vida local (cierre por nota de entrega / anulación).
   closedAt: z.string().nullable().optional(),
   closedReason: z.string().nullable().optional(),
@@ -1045,6 +1366,8 @@ export const zOrderListResponse = z.object({
   total: z.number().int(),
   summary: z.object({
     totalPendingQty: z.number(),
+    // Kg del conjunto filtrado (pendientes en la cartera; procesados en el historial).
+    totalKg: z.number().optional(),
     linesTotal: z.number().int(),
     openCount: z.number().int(),
   }),
@@ -1055,6 +1378,8 @@ export const zOrderQuery = zPaginationQuery.extend({
   q: z.string().trim().max(100).optional(),
   customerCode: z.string().trim().max(20).optional(),
   status: zOrderStatus.optional(),
+  // Estado de facturación local (PENDIENTE / FACTURADO_ASUMIDO / FACTURADO).
+  billingStatus: zOrderBillingStatus.optional(),
   // Por defecto solo se ve la cartera viva (isActive=true). El historial de
   // cierres se consulta con includeClosed=true.
   includeClosed: z
@@ -1148,6 +1473,229 @@ export const zOrderGroupedResponse = z.object({
   totalPendingKg: z.number(),
 });
 export type OrderGroupedResponse = z.infer<typeof zOrderGroupedResponse>;
+
+// ============================================================
+// Analítica comercial de Pedidos (pestaña «Ventas»).
+//
+// · Volumen y facturación: ventas reales de Profit (notas de entrega y CxC).
+// · Procesados: pedidos cerrados de la capa local (ciclo de vida).
+// · Pendientes: cartera viva (isActive=true).
+//
+// La comparación siempre es contra el MISMO tramo del año anterior para no
+// comparar un mes en curso contra un mes completo.
+// ============================================================
+
+export const SALES_ANALYTICS_CURRENCIES = ['USD', 'VES'] as const;
+export const zSalesAnalyticsCurrency = z.enum(SALES_ANALYTICS_CURRENCIES);
+export type SalesAnalyticsCurrency = z.infer<typeof zSalesAnalyticsCurrency>;
+
+export const zSalesAnalyticsQuery = z.object({
+  // Año de foco. Por defecto, el año en curso.
+  year: z.coerce.number().int().min(2020).max(2100).optional(),
+  currency: zSalesAnalyticsCurrency.default('USD'),
+  vendor: z.string().trim().max(100).optional(),
+  customerType: z.string().trim().max(60).optional(),
+});
+export type SalesAnalyticsQuery = z.infer<typeof zSalesAnalyticsQuery>;
+
+export const SALES_ANALYTICS_SORTS = [
+  'kg_desc',
+  'kg_asc',
+  'yoy_desc',
+  'yoy_asc',
+  'pending_desc',
+  'recent_desc',
+  'name_asc',
+] as const;
+export const zSalesAnalyticsSort = z.enum(SALES_ANALYTICS_SORTS);
+export type SalesAnalyticsSort = z.infer<typeof zSalesAnalyticsSort>;
+
+export const zSalesAnalyticsCustomersQuery = zSalesAnalyticsQuery.extend({
+  q: z.string().trim().max(100).optional(),
+  sort: zSalesAnalyticsSort.default('kg_desc'),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(25),
+});
+export type SalesAnalyticsCustomersQuery = z.infer<typeof zSalesAnalyticsCustomersQuery>;
+
+export const zSalesAnalyticsMonth = z.object({
+  month: z.string(),
+  label: z.string(),
+  kg: z.number(),
+  sacks: z.number(),
+  notes: z.number().int(),
+  customers: z.number().int(),
+  billed: z.number().nullable(),
+  prevYearKg: z.number().nullable(),
+  prevYearBilled: z.number().nullable(),
+  yoyPct: z.number().nullable(),
+  // Mes en curso: la barra se dibuja punteada y no se compara contra un mes
+  // completo del año anterior.
+  isPartial: z.boolean(),
+  isCurrent: z.boolean(),
+});
+export type SalesAnalyticsMonth = z.infer<typeof zSalesAnalyticsMonth>;
+
+export const zSalesAnalyticsYear = z.object({
+  year: z.number().int(),
+  label: z.string(),
+  kg: z.number(),
+  sacks: z.number(),
+  notes: z.number().int(),
+  billed: z.number().nullable(),
+  ytd: z.boolean(),
+  yoyPct: z.number().nullable(),
+});
+export type SalesAnalyticsYear = z.infer<typeof zSalesAnalyticsYear>;
+
+export const zSalesAnalyticsTotals = z.object({
+  kg: z.number(),
+  sacks: z.number(),
+  notes: z.number().int(),
+  customers: z.number().int(),
+  billed: z.number().nullable(),
+  avgKgPerNote: z.number().nullable(),
+  avgBilledPerNote: z.number().nullable(),
+  lastSaleDate: z.string().nullable(),
+  newCustomers: z.number().int(),
+  lostCustomers: z.number().int(),
+  atRiskCustomers: z.number().int(),
+});
+export type SalesAnalyticsTotals = z.infer<typeof zSalesAnalyticsTotals>;
+
+export const zSalesAnalyticsComparison = z.object({
+  ytdKg: z.number(),
+  prevYtdKg: z.number(),
+  ytdPct: z.number().nullable(),
+  ytdBilled: z.number().nullable(),
+  prevYtdBilled: z.number().nullable(),
+  ytdBilledPct: z.number().nullable(),
+  monthKg: z.number(),
+  prevMonthKg: z.number(),
+  momPct: z.number().nullable(),
+  sameMonthPrevYearKg: z.number(),
+  sameMonthYoyPct: z.number().nullable(),
+  monthLabel: z.string(),
+  prevMonthLabel: z.string(),
+  elapsedDays: z.number().int(),
+  projectedKg: z.number().nullable(),
+});
+export type SalesAnalyticsComparison = z.infer<typeof zSalesAnalyticsComparison>;
+
+export const zSalesAnalyticsStatusBucket = z.object({
+  orders: z.number().int(),
+  kg: z.number(),
+});
+export type SalesAnalyticsStatusBucket = z.infer<typeof zSalesAnalyticsStatusBucket>;
+
+export const zSalesAnalyticsPending = z.object({
+  orders: z.number().int(),
+  customers: z.number().int(),
+  kg: z.number(),
+  nextDeliveryDate: z.string().nullable(),
+  avgMonthlyKg: z.number().nullable(),
+  monthsOfCover: z.number().nullable(),
+});
+export type SalesAnalyticsPending = z.infer<typeof zSalesAnalyticsPending>;
+
+export const zSalesAnalyticsCustomer = z.object({
+  code: z.string(),
+  name: z.string(),
+  vendor: z.string().nullable(),
+  customerType: z.string().nullable(),
+  kg: z.number(),
+  sacks: z.number(),
+  notes: z.number().int(),
+  billed: z.number().nullable(),
+  lastSaleDate: z.string().nullable(),
+  prevYearKg: z.number(),
+  yoyPct: z.number().nullable(),
+  pendingKg: z.number(),
+  pendingOrders: z.number().int(),
+  status: z.enum(['ACTIVO', 'NUEVO', 'PERDIDO', 'EN_RIESGO']),
+});
+export type SalesAnalyticsCustomer = z.infer<typeof zSalesAnalyticsCustomer>;
+
+export const zSalesAnalyticsTopCustomer = zSalesAnalyticsCustomer.extend({
+  sharePct: z.number().nullable(),
+});
+export type SalesAnalyticsTopCustomer = z.infer<typeof zSalesAnalyticsTopCustomer>;
+
+export const zSalesAnalyticsProduct = z.object({
+  code: z.string(),
+  description: z.string().nullable(),
+  kg: z.number(),
+  sacks: z.number(),
+  notes: z.number().int(),
+  sharePct: z.number().nullable(),
+  prevYearKg: z.number(),
+  yoyPct: z.number().nullable(),
+});
+export type SalesAnalyticsProduct = z.infer<typeof zSalesAnalyticsProduct>;
+
+export const zSalesAnalyticsVendor = z.object({
+  name: z.string(),
+  kg: z.number(),
+  sacks: z.number(),
+  notes: z.number().int(),
+  customers: z.number().int(),
+  billed: z.number().nullable(),
+  sharePct: z.number().nullable(),
+  prevYearKg: z.number(),
+  yoyPct: z.number().nullable(),
+});
+export type SalesAnalyticsVendor = z.infer<typeof zSalesAnalyticsVendor>;
+
+export const zSalesAnalyticsAlert = z.object({
+  kind: z.enum(['DROP', 'NEW', 'LOST', 'CONCENTRATION', 'PENDING']),
+  title: z.string(),
+  detail: z.string(),
+  customerCode: z.string().nullable(),
+  customerName: z.string().nullable(),
+  severity: z.enum(['info', 'warning', 'danger']),
+});
+export type SalesAnalyticsAlert = z.infer<typeof zSalesAnalyticsAlert>;
+
+export const zSalesAnalyticsResponse = z.object({
+  asOf: z.string(),
+  year: z.number().int(),
+  currency: zSalesAnalyticsCurrency,
+  period: z.object({
+    from: z.string(),
+    to: z.string(),
+    label: z.string(),
+  }),
+  // false = Profit no respondió: los ceros no son ventas, son ausencia de dato.
+  available: z.boolean(),
+  billingAvailable: z.boolean(),
+  source: z.enum(['profit', 'fixtures']),
+  totals: zSalesAnalyticsTotals,
+  comparison: zSalesAnalyticsComparison,
+  monthly: z.array(zSalesAnalyticsMonth),
+  annual: z.array(zSalesAnalyticsYear),
+  statusMix: z.object({
+    open: zSalesAnalyticsStatusBucket,
+    closed: zSalesAnalyticsStatusBucket,
+    canceled: zSalesAnalyticsStatusBucket,
+  }),
+  pending: zSalesAnalyticsPending,
+  topCustomers: z.array(zSalesAnalyticsTopCustomer),
+  topProducts: z.array(zSalesAnalyticsProduct),
+  vendors: z.array(zSalesAnalyticsVendor),
+  alerts: z.array(zSalesAnalyticsAlert),
+  dataNotes: z.array(z.string()),
+});
+export type SalesAnalyticsResponse = z.infer<typeof zSalesAnalyticsResponse>;
+
+export const zSalesAnalyticsCustomersResponse = z.object({
+  items: z.array(zSalesAnalyticsCustomer),
+  page: z.number().int(),
+  pageSize: z.number().int(),
+  total: z.number().int(),
+  available: z.boolean(),
+  asOf: z.string(),
+});
+export type SalesAnalyticsCustomersResponse = z.infer<typeof zSalesAnalyticsCustomersResponse>;
 
 // ---------- Fecha tentativa local (capa Nexo, nunca Profit) ----------
 // Un renglón = pedido + artículo. La selección del plan envía varios ítems.
@@ -1325,8 +1873,14 @@ export type OrderLifecycleQuery = z.infer<typeof zOrderLifecycleQuery>;
 // La simulación vive en el navegador hasta que el usuario la guarda. Aquí
 // viaja como RECETA (qué se marcó y con qué filtros/modo) + FOTO (totales y
 // cantidades del momento). Nunca escribe en Profit.
+//
+// Las simulaciones son un objeto de vida corta: se borran solas a las 72 h
+// sin uso. La hoja de despacho ya copió nombre, foto y receta, así que el
+// almacén no pierde nada al eliminarlas.
 // ============================================================
 export const MAX_SCENARIOS = 25;
+/** Horas que vive una simulación guardada sin volver a usarse. */
+export const SCENARIO_RETENTION_HOURS = 72;
 export const MAX_SCENARIO_LINES = 5000;
 // TTL del lock de edición del plan global (el cliente renueva por heartbeat).
 export const SCENARIO_LOCK_SECONDS = 120;
@@ -3154,9 +3708,58 @@ export const zForecastSellerClientRow = z.object({
   lastInvoiceDate: z.string().nullable(),
   // Cliente sin histórico que ya compró en el mes: suma venta, no tiene meta.
   isNew: z.boolean(),
+  // Cartera comprometida del mes: pedidos activos con entrega dentro del mes.
+  pendingKg: z.number().default(0),
+  // Venta + cartera comprometida: lo que se espera del cliente al cierre.
+  expectedKg: z.number().default(0),
+  // Mejor mes de venta real de los últimos 12 meses (capacidad demostrada).
+  bestMonthKg: z.number().default(0),
+  // Capacidad real = max(mejor mes 12m, esperado). Nunca es un número inventado.
+  capacityKg: z.number().default(0),
+  // Margen real para crecer = max(0, capacidad − esperado).
+  headroomKg: z.number().default(0),
+  // Kg del plan de cierre de brecha asignados a este cliente según su margen.
+  closingPlanKg: z.number().default(0),
   ...zForecastRunRateFields,
 });
 export type ForecastSellerClientRow = z.infer<typeof zForecastSellerClientRow>;
+
+// Cobranza del mes del vendedor (solo lectura, Profit).
+// El % se pondera por monto en USD: no basta con contar facturas, porque una
+// factura pequeña atrasada no debe pesar igual que una grande pagada a tiempo.
+export const zForecastSellerCollection = z.object({
+  // false = no se pudo leer la cobranza en Profit (la ficha muestra «—»).
+  available: z.boolean(),
+  onTimePct: z.number().nullable(),
+  onTimeAmountUsd: z.number(),
+  lateAmountUsd: z.number(),
+  collectedAmountUsd: z.number(),
+  // Días desde la emisión de la factura hasta el cobro (ponderado por monto).
+  averageDays: z.number().nullable(),
+  // Días desde el vencimiento hasta el cobro de lo que llegó tarde.
+  averageLateDays: z.number().nullable(),
+  paymentCount: z.number().int(),
+  onTimePaymentCount: z.number().int(),
+  latePaymentCount: z.number().int(),
+  // Vencido pendiente de cobro hoy (solo se lee en el mes en curso).
+  overdueUsd: z.number().nullable(),
+});
+export type ForecastSellerCollection = z.infer<typeof zForecastSellerCollection>;
+
+// Activación de la cartera asignada en Profit. Se calcula con ventanas fijas
+// (12 meses para «nuevo», 3 meses para «reactivado») para que la cuota no
+// cambie según la ventana histórica que el usuario elija en la pantalla.
+export const zForecastSellerActivation = z.object({
+  // false = no se pudo leer la cartera de Profit.
+  available: z.boolean(),
+  assignedClients: z.number().int(),
+  activeClients: z.number().int(),
+  inertClients: z.number().int(),
+  activationPct: z.number().nullable(),
+  reactivatedClients: z.number().int(),
+  newClients: z.number().int(),
+});
+export type ForecastSellerActivation = z.infer<typeof zForecastSellerActivation>;
 
 export const zForecastSellerRow = z.object({
   sellerCode: z.string(),
@@ -3189,6 +3792,12 @@ export const zForecastSellerRow = z.object({
   executedHistoricalKg: z.number(),
   // Kg del mes de su cartera facturados por otro vendedor.
   otherSellerKg: z.number(),
+  // Cartera comprometida del mes: pedidos activos de sus clientes.
+  pendingKg: z.number().default(0),
+  // Proyección + cartera comprometida de sus clientes.
+  expectedKg: z.number().default(0),
+  // Kg del plan de cierre asignados a sus clientes (Σ de los clientes).
+  closingPlanKg: z.number().default(0),
   // Kg históricos de la ventana (base de la cuota).
   historicalKg: z.number(),
   // % de la venta histórica de la empresa. Null si no hay histórico.
@@ -3205,6 +3814,9 @@ export const zForecastSellerRow = z.object({
   ...zForecastRunRateFields,
   history: z.array(zForecastSellerHistory),
   daily: z.array(zForecastSellerDaily),
+  // Cobranza del mes y activación de su cartera (fichas del expediente).
+  collection: zForecastSellerCollection,
+  activation: zForecastSellerActivation,
   clients: z.array(zForecastSellerClientRow),
 });
 export type ForecastSellerRow = z.infer<typeof zForecastSellerRow>;
@@ -3219,18 +3831,36 @@ export const zForecastSellersResponse = z.object({
   salesAvailable: z.boolean(),
   forecastAvailable: z.boolean(),
   forecastSource: zForecastSalesSource,
+  // Meta viva de Profit y snapshot local: si difieren, la UI avisa del cambio.
+  forecastLiveKg: z.number().nullable().default(null),
+  forecastCapturedKg: z.number().nullable().default(null),
+  forecastCapturedAt: z.string().nullable().default(null),
+  // Última detección de cambio en Profit con el mes ya capturado.
+  forecastDriftAt: z.string().nullable().default(null),
   // Criterio realmente aplicado: si la cartera falla, cae a NOTE.
   attribution: zForecastSellerAttribution,
   // false = no se pudo leer la cartera de Profit; se usó la nota de entrega.
   assignmentAvailable: z.boolean(),
   // Cómo se repartió la meta: histórico, igualitario de respaldo o sin meta.
   allocationBasis: zForecastSellerAllocationBasis,
+  // true = hay brecha y mes en curso: se calculó el plan de cierre.
+  closingPlanAvailable: z.boolean().default(false),
   days: zForecastSalesDays,
   totals: z.object({
     forecastKg: z.number(),
     actualKg: z.number(),
     actualUnits: z.number(),
     ...zForecastRunRateFields,
+    // Cartera comprometida del mes (pedidos activos de la cartera).
+    pendingKg: z.number().default(0),
+    // Venta proyectada + cartera comprometida.
+    expectedKg: z.number().default(0),
+    // Brecha del plan: max(0, meta − esperado). 0 = la red ya cierra en meta.
+    closingGapKg: z.number().default(0),
+    // Parte de la brecha cubierta con capacidad real de los clientes.
+    closingCoveredKg: z.number().default(0),
+    // Brecha que la cartera actual no puede absorber (no se inventa).
+    closingUncoveredKg: z.number().default(0),
     invoiceCount: z.number().int(),
     lastInvoiceDate: z.string().nullable(),
     sellerCount: z.number().int(),
@@ -3249,6 +3879,43 @@ export const zForecastSellersResponse = z.object({
   generatedAt: z.string(),
 });
 export type ForecastSellersResponse = z.infer<typeof zForecastSellersResponse>;
+
+// ============================================================
+// Cuotas mensuales de activación por vendedor.
+//
+// Las fija quien tenga el permiso `vendedor_cuotas:update` (ADMIN por sistema
+// y cualquier rol/usuario al que se le conceda). Son locales: no se escriben
+// en Profit. La cuota de reactivación cuenta clientes de la cartera que
+// vuelven a comprar después de 3 meses sin compra; la de nuevos, clientes sin
+// compras en los 12 meses previos.
+// ============================================================
+export const zForecastSellerQuota = z.object({
+  sellerCode: z.string(),
+  year: z.number().int(),
+  month: z.number().int(),
+  reactivationQuota: z.number().int().nullable(),
+  newClientsQuota: z.number().int().nullable(),
+  updatedAt: z.string(),
+});
+export type ForecastSellerQuota = z.infer<typeof zForecastSellerQuota>;
+
+export const zForecastSellerQuotasResponse = z.object({
+  year: z.number().int(),
+  month: z.number().int(),
+  quotas: z.array(zForecastSellerQuota),
+  generatedAt: z.string(),
+});
+export type ForecastSellerQuotasResponse = z.infer<typeof zForecastSellerQuotasResponse>;
+
+export const zForecastSellerQuotaUpdate = z.object({
+  sellerCode: z.string().trim().min(1).max(20),
+  year: zYear,
+  month: zMonth,
+  // null = sin cuota (se muestra el avance, pero sin objetivo).
+  reactivationQuota: z.number().int().min(0).max(100000).nullable(),
+  newClientsQuota: z.number().int().min(0).max(100000).nullable(),
+});
+export type ForecastSellerQuotaUpdate = z.infer<typeof zForecastSellerQuotaUpdate>;
 
 // ============================================================
 // Productos vendidos por un vendedor (`/forecast/sellers/:code/products`).
@@ -3463,6 +4130,11 @@ export const AUDIT_ACTIONS: Record<string, AuditActionDefinition> = {
   SCENARIO_SAVE: { module: 'scenarios', label: 'Guardó una simulación', severity: 'INFO' },
   SCENARIO_UPDATE: { module: 'scenarios', label: 'Renombró una simulación', severity: 'INFO' },
   SCENARIO_DELETE: { module: 'scenarios', label: 'Eliminó una simulación', severity: 'WARN' },
+  SCENARIO_AUTO_DELETE: {
+    module: 'scenarios',
+    label: 'Eliminó una simulación vencida automáticamente',
+    severity: 'INFO',
+  },
   SCENARIO_RESTORE: { module: 'scenarios', label: 'Restauró una simulación', severity: 'INFO' },
   SCENARIO_LOCK: { module: 'scenarios', label: 'Tomó el control del plan global', severity: 'INFO' },
   SCENARIO_UNLOCK: { module: 'scenarios', label: 'Liberó el control del plan global', severity: 'INFO' },
@@ -3477,6 +4149,11 @@ export const AUDIT_ACTIONS: Record<string, AuditActionDefinition> = {
   FORECAST_TARGET_ACCEPTED: {
     module: 'forecast',
     label: 'Aceptó un cambio de meta de Profit',
+    severity: 'WARN',
+  },
+  SELLER_QUOTA_UPDATED: {
+    module: 'forecast',
+    label: 'Fijó cuotas de activación de un vendedor',
     severity: 'WARN',
   },
   DELIVERY_DATE_SET: { module: 'orders', label: 'Asignó fecha tentativa a pedidos', severity: 'INFO' },

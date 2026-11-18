@@ -1,22 +1,25 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
   ForecastQuery,
   ForecastSalesDayQuery,
   ForecastSalesQuery,
+  ForecastSellerQuotaUpdate,
   ForecastSellersQuery,
   ForecastSetWeeks,
   zForecastQuery,
   zForecastSalesDayQuery,
   zForecastSalesQuery,
+  zForecastSellerQuotaUpdate,
   zForecastSellersQuery,
   zForecastSetWeeks,
 } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RequirePermission } from '../permissions/permissions.decorator';
 import { PermissionsGuard } from '../permissions/permissions.guard';
 import { ForecastService } from './forecast.service';
+import { SellerQuotasService } from './seller-quotas.service';
 import { SellersService } from './sellers.service';
 
 // Forecast (pronóstico de producción): el mensual se lee de Profit (solo lectura)
@@ -29,7 +32,25 @@ export class ForecastController {
   constructor(
     private readonly forecast: ForecastService,
     private readonly sellers: SellersService,
+    private readonly sellerQuotas: SellerQuotasService,
   ) {}
+
+  // Cuotas mensuales de activación. La lectura es del módulo Vendedor; la
+  // escritura exige el permiso especial y deja auditoría.
+  @Get('sellers/quotas')
+  @RequirePermission('vendedor:read')
+  sellerQuotasList(@Query(new ZodValidationPipe(zForecastQuery)) query: ForecastQuery) {
+    return this.sellerQuotas.list(query.year, query.month);
+  }
+
+  @Put('sellers/quotas')
+  @RequirePermission('vendedor_cuotas:update')
+  updateSellerQuota(
+    @Body(new ZodValidationPipe(zForecastSellerQuotaUpdate)) dto: ForecastSellerQuotaUpdate,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.sellerQuotas.set(dto, { id: request.access?.userId });
+  }
 
   // Desglose por producto de un vendedor: cartera, firmado por él y firmado
   // por otros. Se pide al abrir la pestaña Productos del expediente.

@@ -28,10 +28,33 @@ export function canSeeModule(permissions: string[] | undefined | null, module: s
   return hasPermission(permissions, module, 'read');
 }
 
+/**
+ * Pedidos tiene tres vistas con permiso propio. El módulo aparece si el
+ * usuario puede ver al menos una; el destino depende de cuál tenga.
+ */
+export function canSeePedidos(permissions: string[] | undefined | null): boolean {
+  return (
+    canSeeModule(permissions, 'pedidos') ||
+    hasPermission(permissions, 'pedidos', 'view_summary') ||
+    hasPermission(permissions, 'pedidos', 'view_history')
+  );
+}
+
+export function firstPedidosHref(permissions: string[] | undefined | null): string | null {
+  if (hasPermission(permissions, 'pedidos', 'read')) return '/pedidos';
+  if (hasPermission(permissions, 'pedidos', 'view_summary')) return '/pedidos/ventas';
+  if (hasPermission(permissions, 'pedidos', 'view_history')) return '/pedidos/historial';
+  return null;
+}
+
 /** Primer módulo visible con pantalla: destino seguro tras un 403 de ruta. */
 export function firstAllowedHref(permissions: string[] | undefined | null): string | null {
-  const module = APP_MODULES.find((entry) => entry.href && canSeeModule(permissions, entry.key));
-  return module?.href ?? null;
+  for (const entry of APP_MODULES) {
+    if (!entry.href) continue;
+    if (entry.key === 'pedidos' && canSeePedidos(permissions)) return firstPedidosHref(permissions);
+    if (entry.key !== 'pedidos' && canSeeModule(permissions, entry.key)) return entry.href;
+  }
+  return null;
 }
 
 /** Acciones disponibles de un módulo según el catálogo compartido. */

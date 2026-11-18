@@ -150,6 +150,7 @@ function forecastStub(
     totalKg?: number;
     available?: boolean;
     source?: 'LIVE' | 'CAPTURED' | 'SNAPSHOT' | 'NONE';
+    pending?: Map<string, number>;
   } = {},
 ) {
   return {
@@ -157,7 +158,12 @@ function forecastStub(
       totalKg: options.totalKg ?? 1_000_000,
       available: options.available ?? true,
       source: options.source ?? 'SNAPSHOT',
+      liveKg: null,
+      capturedKg: null,
+      capturedAt: null,
+      driftAt: null,
     })),
+    pendingKgByCustomer: vi.fn(async () => options.pending ?? new Map<string, number>()),
   } as unknown as ForecastService;
 }
 
@@ -250,6 +256,40 @@ describe('SellersService', () => {
     expect(juiliard.clients[0]!.clientCode).toBe('C10');
     expect(juiliard.clients[0]!.actualKg).toBe(0);
     expect(juiliard.clients[0]!.targetKg).toBe(0);
+  });
+
+  it('cuenta activación, reactivados y nuevos con ventanas fijas', async () => {
+    const monthly = [
+      // C1 compró en noviembre y vuelve en marzo: reactivado (más de 3 meses).
+      sale({ year: 2024, month: 11, seller: '012', sellerName: 'LIZ PEREZ', client: 'C1', clientName: 'CLIENTE UNO', kg: 100 }),
+      sale({ year: 2025, month: 3, seller: '012', sellerName: 'LIZ PEREZ', client: 'C1', clientName: 'CLIENTE UNO', kg: 40 }),
+      // C2 compró en febrero: se mantiene activo, no es reactivado.
+      sale({ year: 2025, month: 2, seller: '012', sellerName: 'LIZ PEREZ', client: 'C2', clientName: 'CLIENTE DOS', kg: 100 }),
+      sale({ year: 2025, month: 3, seller: '012', sellerName: 'LIZ PEREZ', client: 'C2', clientName: 'CLIENTE DOS', kg: 40 }),
+      // C3 no tiene compras previas: nuevo.
+      sale({ year: 2025, month: 3, seller: '012', sellerName: 'LIZ PEREZ', client: 'C3', clientName: 'CLIENTE TRES', kg: 30 }),
+    ];
+    const portfolio = [
+      { co_ven: '012', ven_des: 'LIZ PEREZ', co_cli: 'C1', cli_des: 'CLIENTE UNO', tipo: 'L2 DISTRIBUIDORES' },
+      { co_ven: '012', ven_des: 'LIZ PEREZ', co_cli: 'C2', cli_des: 'CLIENTE DOS', tipo: 'L2 DISTRIBUIDORES' },
+      { co_ven: '012', ven_des: 'LIZ PEREZ', co_cli: 'C3', cli_des: 'CLIENTE TRES', tipo: 'L2 DISTRIBUIDORES' },
+      // C4 está en cartera pero no compró: inerte.
+      { co_ven: '012', ven_des: 'LIZ PEREZ', co_cli: 'C4', cli_des: 'CLIENTE CUATRO', tipo: 'L3 MINORISTA' },
+    ];
+    const { adapter } = adapterWith({ monthly, portfolio });
+    const service = new SellersService(adapter, forecastStub());
+    const report = await service.sellersReport(QUERY);
+    const seller = report.sellers.find((row) => row.sellerCode === '012')!;
+
+    expect(seller.activation).toMatchObject({
+      available: true,
+      assignedClients: 4,
+      activeClients: 3,
+      inertClients: 1,
+      activationPct: 75,
+      reactivatedClients: 1,
+      newClients: 1,
+    });
   });
 
   it('atribuye la venta a la cartera y marca la nota de otro vendedor', async () => {
@@ -544,5 +584,48 @@ describe('SellersService', () => {
     await service.sellersReport({ ...QUERY, attribution: 'NOTE' });
 
     expect(calls.monthly).toBe(2);
+  });
+
+  it('en el mes en curso arma el plan de cierre con margen real y cuadra la brecha', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2025-03-18T15:00:00Z'));
+    try {
+      const { adapter } = adapterWith({ monthly: baseMonthly(), daily: baseDaily() });
+      const pending = new Map<string, number>([['C1', 100_000]]);
+      const service = new SellersService(
+        adapter,
+        forecastStub({ totalKg: 1_000_000, source: 'LIVE', pending }),
+      );
+      const report = await service.sellersReport({ ...QUERY, refresh: true });
+
+      expect(report.status).toBe('OPEN');
+      expect(report.closingPlanAvailable).toBe(true);
+      expect(report.totals.pendingKg).toBe(100_000);
+      expect(report.totals.expectedKg).toBeGreaterThanOrEqual(100_000);
+      expect(
+        Math.max(0, report.totals.forecastKg - report.totals.expectedKg),
+      ).toBeCloseTo(report.totals.closingGapKg, 2);
+
+      // La brecha se cubre solo con margen real y el resto queda declarado.
+      const covered = report.sellers.reduce((acc, seller) => acc + seller.closingPlanKg, 0);
+      expect(Math.round(covered * 10) / 10).toBe(report.totals.closingCoveredKg);
+      expect(
+        Math.round((report.totals.closingCoveredKg + report.totals.closingUncoveredKg) * 10) / 10,
+      ).toBe(Math.round(report.totals.closingGapKg * 10) / 10);
+
+      // Nadie recibe más kg que su capacidad demostrada.
+      for (const seller of report.sellers) {
+        for (const client of seller.clients) {
+          expect(client.closingPlanKg).toBeLessThanOrEqual(client.headroomKg + 0.1);
+        }
+      }
+
+      // La cartera comprometida se cuelga una sola vez (C1).
+      const clients = report.sellers.flatMap((seller) => seller.clients);
+      expect(clients.filter((client) => client.pendingKg > 0).length).toBe(1);
+      expect(clients.find((client) => client.clientCode === 'C1')?.pendingKg).toBe(100_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

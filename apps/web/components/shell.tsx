@@ -15,6 +15,7 @@ import {
   DoorOpen,
   Eye,
   EyeOff,
+  HandCoins,
   Loader2,
   LogIn,
   LogOut,
@@ -32,7 +33,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, currentUser, login as apiLogin, logout, searchLoginCandidates } from '../lib/api';
 import { humanAge } from '../lib/dispatch-sheet';
-import { hasPermission } from '../lib/permissions';
+import { canSeePedidos, hasPermission } from '../lib/permissions';
 import { Logo, Isotype } from './Logo';
 import { NotificationsBell } from './NotificationsBell';
 import { useLoadingOverlay } from './loading/LoadingOverlayProvider';
@@ -332,6 +333,7 @@ const NAV_LINKS: NavLink[] = [
   { href: '/disponibilidad', label: 'Disponibilidad', icon: Boxes, module: 'disponibilidad' },
   { href: '/forecast', label: 'Forecast', icon: CalendarRange, module: 'forecast' },
   { href: '/vendedor', label: 'Vendedor', icon: Trophy, module: 'vendedor' },
+  { href: '/por-cobrar', label: 'Por cobrar', icon: HandCoins, module: 'cxc' },
   { href: '/pedidos', label: 'Pedidos', icon: ShoppingCart, module: 'pedidos' },
   { href: '/despacho', label: 'Despacho', icon: ClipboardList, module: 'despacho' },
   { href: '/llegadas', label: 'Llegadas', icon: DoorOpen, module: 'llegadas' },
@@ -340,7 +342,11 @@ const NAV_LINKS: NavLink[] = [
 ];
 
 export function linksFor(permissions: string[] | undefined): NavLink[] {
-  return NAV_LINKS.filter((link) => hasPermission(permissions, link.module, 'read'));
+  return NAV_LINKS.filter((link) =>
+    link.module === 'pedidos'
+      ? canSeePedidos(permissions)
+      : hasPermission(permissions, link.module, 'read'),
+  );
 }
 
 /** Spinner localizado en el enlace que está navegando (Next 15). */

@@ -4,7 +4,7 @@ Sistema inteligente de planificación de producción alimenticia, inventarios, p
 
 > **Regla de oro:** ninguna simulación modifica Profit. El adaptador SQL Server es de solo lectura y las asignaciones del simulador viven únicamente en la base interna del sistema.
 >
-> **Excepciones acotadas:** «Cambiar fecha de entrega» escribe `dbo.cotiz_c.fec_venc` (permiso `pedidos:change_date`) y, al iniciar la carga de un pedido en Despacho, se marca `dbo.cotiz_c.aux01 = 1` para que Profit tampoco permita moverla (se reintenta en cola si Profit no responde). Ambas usan credenciales SQL aparte, flag `PROFIT_WRITE_ENABLED` y auditoría de quién lo hizo.
+> **Excepciones acotadas:** «Cambiar fecha de entrega» (desde Pedidos o Despacho) escribe `dbo.cotiz_c.fec_venc` (permiso `pedidos:change_date`) y, al iniciar la carga de un pedido en Despacho, se marca `dbo.cotiz_c.aux01 = 1` para que Profit tampoco permita moverla (se reintenta en cola si Profit no responde). Ambas usan credenciales SQL aparte, flag `PROFIT_WRITE_ENABLED` y auditoría de quién lo hizo.
 
 ## Monorepo
 

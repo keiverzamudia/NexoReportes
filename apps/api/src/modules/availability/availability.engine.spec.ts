@@ -118,3 +118,30 @@ describe('computeAvailability — existencia combinada y redondeo', () => {
     expect(kg.status).toBe('DISPONIBLE');
   });
 });
+
+describe('computeAvailability — Stock/día (días de cobertura)', () => {
+  it('divide la existencia combinada entre la venta promedio diaria de 90 días', () => {
+    const row = computeAvailability(
+      input({
+        demandQty: 0,
+        stockByWarehouse: stock({ 'Stock PTP': 30, 'Stock 03': 60 }),
+        // 900 unidades en 90 días = 10 por día → 90 de existencia = 9 días.
+        salesQty90d: 900,
+      }),
+    );
+    expect(row.stockDays).toBe(9);
+  });
+
+  it('sin ventas en la ventana devuelve null (la UI muestra «—»)', () => {
+    const row = computeAvailability(input({ demandQty: 0, stockByWarehouse: stock({ 'Stock 03': 50 }) }));
+    expect(row.stockDays).toBeNull();
+  });
+
+  it('sin existencia pero con ventas devuelve 0 días, no negativo', () => {
+    const row = computeAvailability(
+      input({ demandQty: 10, stockByWarehouse: stock({ 'Stock 03': -4 }), salesQty90d: 900 }),
+    );
+    expect(row.stockTotal).toBe(-4);
+    expect(row.stockDays).toBe(0);
+  });
+});

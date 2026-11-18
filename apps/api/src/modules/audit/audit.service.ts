@@ -71,6 +71,7 @@ function entryLink(entityType: string, entityId: string | null): string | null {
   if (entityType === 'DispatchSheet') return `/despacho/${entityId}`;
   if (entityType === 'CustomerArrival') return `/llegadas/${entityId}`;
   if (entityType === 'User' || entityType === 'Role' || entityType === 'UserPermission') return '/usuarios';
+  if (entityType === 'SellerQuota') return '/vendedor';
   return null;
 }
 

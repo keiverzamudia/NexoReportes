@@ -1,9 +1,11 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   ForecastSalesDaily,
+  ForecastSellerActivation,
   ForecastSellerAllocationBasis,
   ForecastSellerAttribution,
   ForecastSellerClientRow,
+  ForecastSellerCollection,
   ForecastSellerHistory,
   ForecastSellerProductRow,
   ForecastSellerProductsResponse,
@@ -13,6 +15,7 @@ import {
 } from '@nexo/contracts';
 import { ProfitAdapter, PROFIT_ADAPTER } from '../sync/profit.adapter';
 import { ForecastService } from './forecast.service';
+import { allocateGapByHeadroom } from './sellers-gap-plan';
 import { allocateByWeight, sharePct } from './sellers-allocation';
 import {
   MonthCalendar,
@@ -51,6 +54,18 @@ import {
 // Σ cuotas = 100 % y Σ metas = meta de la empresa (redondeo por mayor
 // residuo). Sin histórico se reparte en partes iguales y se marca
 // `EQUAL_FALLBACK`; sin meta los porcentajes quedan en `null`.
+//
+// COBRANZA Y ACTIVACIÓN: además de la venta, el expediente muestra la cobranza
+// del mes (fecha de pago vs vencimiento) y la activación de la cartera (nuevos,
+// reactivados e inertes). La cobranza se lee de `cobros` + `reng_cob`; la
+// actividad, del mismo histórico de notas que alimenta la cuota.
+//
+// PLAN DE CIERRE (mes en curso): la brecha es `meta − (proyección + cartera
+// comprometida)`. Se reparte entre los clientes según su margen real (mejor mes
+// de los últimos 12 menos lo esperado), nunca por encima de esa marca. Lo que
+// la cartera no puede absorber se devuelve como `closingUncoveredKg`: no se
+// inventan kg ni clientes. Todo se calcula en cada consulta a partir de la meta
+// viva de Profit, así que si el forecast cambia el reparto sigue cuadrando.
 // ============================================================
 
 export const PROFIT_SELLER_PORTFOLIO_SQL = `
@@ -169,9 +184,70 @@ GROUP BY
   RTRIM(ISNULL(c.co_ven, ''))
 `;
 
+// ============================================================
+// Cobranza del mes por vendedor.
+//
+// `docum_cc` no expone la fecha de pago; `cobros` (cabecera del recibo) sí.
+// `reng_cob` aplica cada recibo a una factura y copia emisión/vencimiento.
+// Se comparan la fecha de cobro y el vencimiento de la factura, y se convierte
+// el monto a USD con la tasa del documento (igual que el estado de cuenta).
+//
+// Se devuelven las dos atribuciones posibles (cartera y nota) para que el
+// servicio elija después la misma que usa el informe, sin una consulta extra.
+// ============================================================
+export const PROFIT_SELLER_COLLECTION_SQL = `
+SELECT /* nexo:seller_collection */
+  RTRIM(ISNULL(cl.co_ven, '')) AS co_ven_cartera,
+  RTRIM(ISNULL(c.co_ven, '')) AS co_ven_cobro,
+  COUNT(*) AS pagos,
+  SUM(CASE WHEN c.fec_cob <= rc.fec_venc THEN rc.mont_cob / NULLIF(rc.tasa, 0) ELSE 0 END) AS usd_a_tiempo,
+  SUM(CASE WHEN c.fec_cob > rc.fec_venc THEN rc.mont_cob / NULLIF(rc.tasa, 0) ELSE 0 END) AS usd_tarde,
+  SUM(rc.mont_cob / NULLIF(rc.tasa, 0)) AS usd_total,
+  SUM(DATEDIFF(DAY, rc.fec_emis, c.fec_cob) * (rc.mont_cob / NULLIF(rc.tasa, 0))) AS dias_peso,
+  SUM(CASE WHEN c.fec_cob > rc.fec_venc THEN DATEDIFF(DAY, rc.fec_venc, c.fec_cob) * (rc.mont_cob / NULLIF(rc.tasa, 0)) ELSE 0 END) AS atraso_peso,
+  SUM(CASE WHEN c.fec_cob <= rc.fec_venc THEN 1 ELSE 0 END) AS pagos_a_tiempo,
+  SUM(CASE WHEN c.fec_cob > rc.fec_venc THEN 1 ELSE 0 END) AS pagos_tarde
+FROM dbo.cobros AS c
+INNER JOIN dbo.reng_cob AS rc ON rc.cob_num = c.cob_num
+LEFT JOIN dbo.clientes AS cl ON cl.co_cli = c.co_cli
+WHERE c.anulado = 0
+  AND c.fec_cob >= @desde
+  AND c.fec_cob < @hasta
+  AND rc.tp_doc_cob IN ('FACT', 'N/DB', 'AJPM', 'GIRO')
+  AND rc.mont_cob > 0
+  AND rc.fec_emis IS NOT NULL
+  AND rc.fec_venc IS NOT NULL
+  AND rc.fec_venc > '1990-01-01'
+  AND (rc.moneda LIKE 'US$%' OR rc.moneda LIKE 'USD%')
+  AND rc.tasa > 0
+GROUP BY RTRIM(ISNULL(cl.co_ven, '')), RTRIM(ISNULL(c.co_ven, ''))
+`;
+
+// Vencido pendiente de cobro HOY. Solo se consulta en el mes en curso: el
+// saldo de `docum_cc` es vivo y no se puede reconstruir a una fecha pasada.
+export const PROFIT_SELLER_OVERDUE_SQL = `
+SELECT /* nexo:seller_overdue */
+  RTRIM(ISNULL(cl.co_ven, '')) AS co_ven_cartera,
+  RTRIM(ISNULL(cc.co_ven, '')) AS co_ven_cobro,
+  SUM(cc.saldo / NULLIF(cc.tasa, 0)) AS usd_vencido
+FROM dbo.docum_cc AS cc
+LEFT JOIN dbo.clientes AS cl ON cl.co_cli = cc.co_cli
+WHERE cc.anulado = 0
+  AND cc.saldo > 0
+  AND cc.tipo_doc IN ('FACT', 'N/DB', 'AJPM', 'GIRO')
+  AND (cc.moneda LIKE 'US$%' OR cc.moneda LIKE 'USD%')
+  AND cc.tasa > 0
+  AND cc.fec_venc IS NOT NULL
+  AND cc.fec_venc < CAST(GETDATE() AS date)
+GROUP BY RTRIM(ISNULL(cl.co_ven, '')), RTRIM(ISNULL(cc.co_ven, ''))
+`;
+
 const BUSINESS_TIME_ZONE = 'America/Caracas';
 const CACHE_TTL_MS = 5 * 60_000;
 const CACHE_MAX_ENTRIES = 40;
+// Ventana de capacidad real del plan de cierre: mejor mes de los últimos 12.
+// Es independiente de la ventana histórica de la cuota (3/6/12/24).
+const PLAN_CAPACITY_MONTHS = 12;
 const NO_SELLER = '__sin_vendedor__';
 const NO_SELLER_LABEL = 'Sin vendedor';
 const NO_CLIENT = '__sin_cliente__';
@@ -216,6 +292,54 @@ function emptyMetrics() {
     requiredDailyKg: null as number | null,
     historicalAvgKg: null as number | null,
     vsHistoricalPct: null as number | null,
+  };
+}
+
+interface CollectionAccum {
+  onTimeAmount: number;
+  lateAmount: number;
+  totalAmount: number;
+  daysWeight: number;
+  lateDaysWeight: number;
+  paymentCount: number;
+  onTimePaymentCount: number;
+  latePaymentCount: number;
+}
+
+function emptyCollectionAccum(): CollectionAccum {
+  return {
+    onTimeAmount: 0,
+    lateAmount: 0,
+    totalAmount: 0,
+    daysWeight: 0,
+    lateDaysWeight: 0,
+    paymentCount: 0,
+    onTimePaymentCount: 0,
+    latePaymentCount: 0,
+  };
+}
+
+function collectionResult(
+  accum: CollectionAccum | undefined,
+  available: boolean,
+  overdueUsd: number | null,
+): ForecastSellerCollection {
+  const total = accum?.totalAmount ?? 0;
+  return {
+    available,
+    onTimePct: total > 0 ? roundTo(((accum?.onTimeAmount ?? 0) / total) * 100, 1) : null,
+    onTimeAmountUsd: roundTo(accum?.onTimeAmount ?? 0, 2),
+    lateAmountUsd: roundTo(accum?.lateAmount ?? 0, 2),
+    collectedAmountUsd: roundTo(total, 2),
+    averageDays: total > 0 ? roundTo((accum?.daysWeight ?? 0) / total, 1) : null,
+    averageLateDays:
+      (accum?.lateAmount ?? 0) > 0
+        ? roundTo((accum?.lateDaysWeight ?? 0) / (accum?.lateAmount ?? 1), 1)
+        : null,
+    paymentCount: accum?.paymentCount ?? 0,
+    onTimePaymentCount: accum?.onTimePaymentCount ?? 0,
+    latePaymentCount: accum?.latePaymentCount ?? 0,
+    overdueUsd: overdueUsd === null ? null : roundTo(overdueUsd, 2),
   };
 }
 
@@ -486,7 +610,51 @@ export class SellersService {
 
     const historyMonths = previousMonths(year, month, query.months);
     const historyKeys = new Set(historyMonths.map((entry) => monthKey(entry.year, entry.month)));
-    const historyStart = new Date(Date.UTC(year, month - 1 - query.months, 1));
+    // La misma consulta trae 12 meses: los de la ventana alimentan la cuota y
+    // los 12 (meses cerrados) alimentan la capacidad real del plan de cierre.
+    const capacityStart = new Date(Date.UTC(year, month - 1 - Math.max(query.months, PLAN_CAPACITY_MONTHS), 1));
+
+    // Ventanas FIJAS de activación (independientes del selector histórico):
+    // inerte = sin compra este mes; reactivado = sin compra en 3 meses pero
+    // con compra en los 12 previos; nuevo = sin compra en los 12 previos.
+    const recent3Keys = new Set(previousMonths(year, month, 3).map((entry) => monthKey(entry.year, entry.month)));
+    const recent12Keys = new Set(previousMonths(year, month, 12).map((entry) => monthKey(entry.year, entry.month)));
+
+    // Cobranza del mes: mismo corte que la venta. En un mes cerrado llega
+    // hasta el último día; en el mes en curso, hasta el corte (ayer por
+    // defecto o hoy si se incluye).
+    const collectionStart = reportStart;
+    let collectionHasta: Date | null = null;
+    if (calendar.status !== 'FUTURE' && calendar.cut) {
+      const [cutYear, cutMonth, cutDay] = calendar.cut.split('-').map(Number) as [number, number, number];
+      collectionHasta = new Date(Date.UTC(cutYear, cutMonth - 1, cutDay + 1));
+    }
+
+    const collectionPromise: Promise<Record<string, unknown>[] | null> = collectionHasta
+      ? this.profit
+          .selectQuery(PROFIT_SELLER_COLLECTION_SQL, 2000, { desde: collectionStart, hasta: collectionHasta })
+          .catch((error: unknown) => {
+            this.logger.warn(
+              `Cobranza por vendedor no disponible: ${
+                error instanceof Error ? error.message : 'error desconocido'
+              }`,
+            );
+            return null;
+          })
+      : Promise.resolve(null);
+
+    // El vencido vivo solo tiene sentido en el mes en curso.
+    const overduePromise: Promise<Record<string, unknown>[] | null> =
+      calendar.status === 'OPEN'
+        ? this.profit.selectQuery(PROFIT_SELLER_OVERDUE_SQL, 2000).catch((error: unknown) => {
+            this.logger.warn(
+              `Vencido por vendedor no disponible: ${
+                error instanceof Error ? error.message : 'error desconocido'
+              }`,
+            );
+            return null;
+          })
+        : Promise.resolve(null);
 
     const dailyPromise = dailyHasta
       ? this.profit
@@ -513,16 +681,72 @@ export class SellersService {
         return [] as Record<string, unknown>[];
       });
 
-    const [company, monthlyRows, dailyRows, portfolioRows] = await Promise.all([
+    const [
+      company,
+      monthlyRows,
+      dailyRows,
+      portfolioRows,
+      pendingByClient,
+      collectionRows,
+      overdueRows,
+    ] = await Promise.all([
       this.forecast.companyTarget(year, month, calendar.status),
-      this.profit.selectQuery(PROFIT_SELLER_MONTHLY_SQL, 20000, { desde: historyStart, hasta: monthlyHasta }),
+      this.profit.selectQuery(PROFIT_SELLER_MONTHLY_SQL, 40000, { desde: capacityStart, hasta: monthlyHasta }),
       dailyPromise,
       portfolioPromise,
+      // La cartera comprometida solo se usa en el mes en curso (plan de cierre).
+      calendar.status === 'OPEN'
+        ? this.forecast.pendingKgByCustomer(year, month).catch(() => new Map<string, number>())
+        : Promise.resolve(new Map<string, number>()),
+      collectionPromise,
+      overduePromise,
     ]);
 
     const assignmentAvailable = portfolioRows.length > 0;
     const attribution: ForecastSellerAttribution =
       query.attribution === 'PORTFOLIO' && assignmentAvailable ? 'PORTFOLIO' : 'NOTE';
+
+    // Cobranza por las dos atribuciones. La consulta devuelve ambos códigos de
+    // vendedor (cartera y nota) y aquí se elige el mismo criterio del informe.
+    const collectionPortfolio = new Map<string, CollectionAccum>();
+    const collectionNote = new Map<string, CollectionAccum>();
+    const overduePortfolio = new Map<string, number>();
+    const overdueNote = new Map<string, number>();
+
+    const addCollection = (
+      target: Map<string, CollectionAccum>,
+      keyRaw: unknown,
+      raw: Record<string, unknown>,
+    ) => {
+      const key = text(keyRaw) || NO_SELLER;
+      const acc = target.get(key) ?? emptyCollectionAccum();
+      acc.onTimeAmount += num(raw.usd_a_tiempo);
+      acc.lateAmount += num(raw.usd_tarde);
+      acc.totalAmount += num(raw.usd_total);
+      acc.daysWeight += num(raw.dias_peso);
+      acc.lateDaysWeight += num(raw.atraso_peso);
+      acc.paymentCount += Math.trunc(num(raw.pagos));
+      acc.onTimePaymentCount += Math.trunc(num(raw.pagos_a_tiempo));
+      acc.latePaymentCount += Math.trunc(num(raw.pagos_tarde));
+      target.set(key, acc);
+    };
+
+    for (const raw of collectionRows ?? []) {
+      addCollection(collectionPortfolio, raw.co_ven_cartera, raw);
+      addCollection(collectionNote, raw.co_ven_cobro, raw);
+    }
+    for (const raw of overdueRows ?? []) {
+      const amount = num(raw.usd_vencido);
+      const portfolioKey = text(raw.co_ven_cartera) || NO_SELLER;
+      const noteKey = text(raw.co_ven_cobro) || NO_SELLER;
+      overduePortfolio.set(portfolioKey, (overduePortfolio.get(portfolioKey) ?? 0) + amount);
+      overdueNote.set(noteKey, (overdueNote.get(noteKey) ?? 0) + amount);
+    }
+    // Un mes futuro no tiene cobros por definición: available=true con cero
+    // evita mostrar el aviso de error de Profit.
+    const collectionAvailable = calendar.status === 'FUTURE' ? true : collectionRows !== null;
+    const chosenCollection = attribution === 'PORTFOLIO' ? collectionPortfolio : collectionNote;
+    const chosenOverdue = attribution === 'PORTFOLIO' ? overduePortfolio : overdueNote;
 
     const portfolioSellers = new Map<string, SellerAccum>();
     const noteSellers = new Map<string, SellerAccum>();
@@ -531,8 +755,44 @@ export class SellersService {
     // Conteo por vendedor de la cartera leída en Profit. Se lleva aparte para
     // no mezclarlo con clientes que solo aparecen en las notas (inactivos).
     const portfolioAssignmentCounts = new Map<string, number>();
+    // Códigos asignados por vendedor: base exacta de la activación (no incluye
+    // clientes inactivos que solo aparecen en una nota).
+    const portfolioAssigned = new Map<string, Set<string>>();
+    // Actividad previa por cliente para las cuotas de activación.
+    const activityByClient = new Map<string, { recent3: boolean; recent12: boolean }>();
     const windowClients = new Set<string>();
     const activeClients = new Set<string>();
+    // Capacidad real (plan de cierre): mejor mes de los últimos 12 meses por
+    // vendedor + cliente, en paralelo para cartera y nota.
+    const carteraCapacity = new Map<string, Map<string, number>>();
+    const noteCapacity = new Map<string, Map<string, number>>();
+
+    const addCapacityKg = (
+      map: Map<string, Map<string, number>>,
+      sellerCode: string,
+      clientCode: string,
+      month: string,
+      kg: number,
+    ) => {
+      const key = `${sellerCode}\u0000${clientCode}`;
+      let byMonth = map.get(key);
+      if (!byMonth) {
+        byMonth = new Map();
+        map.set(key, byMonth);
+      }
+      byMonth.set(month, (byMonth.get(month) ?? 0) + kg);
+    };
+    const bestMonthKg = (
+      map: Map<string, Map<string, number>>,
+      sellerCode: string,
+      clientCode: string,
+    ): number => {
+      const byMonth = map.get(`${sellerCode}\u0000${clientCode}`);
+      if (!byMonth) return 0;
+      let best = 0;
+      for (const kg of byMonth.values()) if (kg > best) best = kg;
+      return best;
+    };
 
     const sellerOf = (map: Map<string, SellerAccum>, codeRaw: unknown, nameRaw: unknown): SellerAccum => {
       const code = text(codeRaw) || NO_SELLER;
@@ -605,6 +865,11 @@ export class SellersService {
       const seller = sellerOf(portfolioSellers, sellerCode, sellerName);
       clientOf(seller, clientCode, raw.cli_des, raw.tipo, sellerCode, sellerName);
       portfolioAssignmentCounts.set(sellerCode, (portfolioAssignmentCounts.get(sellerCode) ?? 0) + 1);
+      if (clientCode !== NO_CLIENT) {
+        const assigned = portfolioAssigned.get(sellerCode) ?? new Set<string>();
+        assigned.add(clientCode);
+        portfolioAssigned.set(sellerCode, assigned);
+      }
     }
 
     // 2) Ventas: se acumulan por cartera y por nota al mismo tiempo.
@@ -613,6 +878,18 @@ export class SellersService {
       const rowMonth = num(raw.mes);
       if (!rowYear || !rowMonth) continue;
       const key = monthKey(rowYear, rowMonth);
+
+      // Actividad previa (ventanas fijas): se procesa ANTES del filtro de la
+      // ventana histórica de la cuota para que «nuevo» y «reactivado» no
+      // cambien cuando el usuario elige 3, 6, 12 o 24 meses.
+      if (key !== reportKey && recent12Keys.has(key) && num(raw.kg) > 0) {
+        const activityClient = text(raw.co_cli) || NO_CLIENT;
+        const activity = activityByClient.get(activityClient) ?? { recent3: false, recent12: false };
+        activity.recent12 = true;
+        if (recent3Keys.has(key)) activity.recent3 = true;
+        activityByClient.set(activityClient, activity);
+      }
+
       if (key !== reportKey && !historyKeys.has(key)) continue;
 
       const carteraCode = text(raw.co_ven_cartera ?? raw.co_ven) || NO_SELLER;
@@ -626,6 +903,13 @@ export class SellersService {
       const invoices = Math.trunc(num(raw.notas));
       const last = isoDayOf(raw.ultima);
       const mismatched = notaCode !== carteraCode;
+
+      // Capacidad demostrada: solo meses cerrados de los últimos 12. Se
+      // acumula por mes antes del filtro de la ventana histórica de la cuota.
+      if (key !== reportKey && kg > 0) {
+        addCapacityKg(carteraCapacity, carteraCode, clientCode, key, kg);
+        addCapacityKg(noteCapacity, notaCode, clientCode, key, kg);
+      }
 
       const portfolioSeller = sellerOf(portfolioSellers, carteraCode, carteraName);
       const portfolioClient = clientOf(
@@ -937,10 +1221,52 @@ export class SellersService {
                 : (noteClient?.currentInvoices ?? 0),
             lastInvoiceDate: lastDates.at(-1) ?? null,
             isNew: chosenClientHistory <= 0 && chosenClientCurrent > 0,
+            // Se completan en el pase del plan de cierre (después del reparto).
+            pendingKg: 0,
+            expectedKg: 0,
+            bestMonthKg: roundTo(
+              attribution === 'PORTFOLIO'
+                ? bestMonthKg(carteraCapacity, seller.code, code)
+                : bestMonthKg(noteCapacity, seller.code, code),
+            ),
+            capacityKg: 0,
+            headroomKg: 0,
+            closingPlanKg: 0,
             ...clientMetrics,
           };
         })
         .sort((a, b) => b.targetKg - a.targetKg || b.actualKg - a.actualKg || a.clientName.localeCompare(b.clientName, 'es'));
+
+      // Activación sobre la cartera asignada (no sobre la vista Nota): la
+      // cuota es de «sus clientes», aunque la venta la firme otro vendedor.
+      const assignedCodes = portfolioAssigned.get(seller.code) ?? new Set<string>();
+      let activeActivation = 0;
+      let reactivatedClients = 0;
+      let newClients = 0;
+      for (const clientCode of assignedCodes) {
+        const client = carteraSeller?.clients.get(clientCode);
+        if (!client || client.currentKg <= 0) continue;
+        activeActivation += 1;
+        const activity = activityByClient.get(clientCode);
+        if (!activity?.recent12) newClients += 1;
+        else if (!activity.recent3) reactivatedClients += 1;
+      }
+      const activation: ForecastSellerActivation = {
+        available: assignmentAvailable,
+        assignedClients: assignedCodes.size,
+        activeClients: activeActivation,
+        inertClients: Math.max(0, assignedCodes.size - activeActivation),
+        activationPct:
+          assignedCodes.size > 0 ? roundTo((activeActivation / assignedCodes.size) * 100, 1) : null,
+        reactivatedClients,
+        newClients,
+      };
+
+      const collection = collectionResult(
+        chosenCollection.get(seller.code),
+        collectionAvailable,
+        chosenOverdue.get(seller.code) ?? null,
+      );
 
       const carteraHistory = historySeriesOf(carteraSeller);
       const noteHistory = historySeriesOf(noteSeller);
@@ -973,6 +1299,10 @@ export class SellersService {
         executedKg: roundTo(noteSeller?.currentKg ?? 0),
         executedHistoricalKg: roundTo(noteSellerHistory),
         otherSellerKg: roundTo(carteraSeller?.otherSellerKg ?? 0),
+        // Se completan en el pase del plan de cierre.
+        pendingKg: 0,
+        expectedKg: 0,
+        closingPlanKg: 0,
         historicalKg: roundTo(chosenSellerHistory),
         sharePct: sharePct(chosenSellerHistory, historyTotal),
         currentSharePct: sharePct(chosenSellerCurrent, companyActual),
@@ -990,6 +1320,8 @@ export class SellersService {
         ...metrics,
         history: chosenHistory,
         daily: this.buildDaily(calendar, chosenDaily.get(seller.code) ?? new Map(), targetKg),
+        collection,
+        activation,
         clients,
       };
     });
@@ -997,6 +1329,98 @@ export class SellersService {
     rows.sort(
       (a, b) => b.targetKg - a.targetKg || b.actualKg - a.actualKg || a.sellerName.localeCompare(b.sellerName, 'es'),
     );
+
+    // ---------- Plan de cierre de brecha ----------
+    //
+    // 1) La cartera comprometida es del CLIENTE, no del vendedor: se cuelga de
+    //    una sola fila para no contarla dos veces en el criterio Nota (un
+    //    cliente puede aparecer con varios vendedores). Se prefiere su vendedor
+    //    asignado en Profit y, si no está en la lista, la fila de mayor meta.
+    // 2) Esperado = proyección + pendiente. Capacidad = su mejor mes real de
+    //    los últimos 12. Margen = lo que puede crecer sin pasar de esa marca.
+    // 3) La brecha de la red se reparte solo entre márgenes reales de clientes
+    //    de vendedores reales (las cuentas internas no la absorben).
+    if (calendar.status === 'OPEN' && pendingByClient.size > 0) {
+      const clientRows = new Map<
+        string,
+        Array<{ sellerCode: string; isInternal: boolean; client: ForecastSellerClientRow }>
+      >();
+      for (const row of rows) {
+        for (const client of row.clients) {
+          if (!client.clientCode) continue;
+          const list = clientRows.get(client.clientCode) ?? [];
+          list.push({ sellerCode: row.sellerCode, isInternal: row.isInternal, client });
+          clientRows.set(client.clientCode, list);
+        }
+      }
+      for (const [clientCode, pending] of pendingByClient) {
+        if (pending <= 0) continue;
+        const candidates = clientRows.get(clientCode);
+        if (!candidates || candidates.length === 0) continue;
+        const real = candidates.filter((entry) => !entry.isInternal);
+        const assigned =
+          real.find((entry) => entry.client.assignedSellerCode === entry.sellerCode) ??
+          real.sort((a, b) => b.client.targetKg - a.client.targetKg)[0] ??
+          candidates.sort((a, b) => b.client.targetKg - a.client.targetKg)[0];
+        if (assigned) assigned.client.pendingKg = roundTo(pending);
+      }
+    }
+
+    for (const row of rows) {
+      let pending = 0;
+      let expected = 0;
+      for (const client of row.clients) {
+        const base = client.projectedKg ?? client.actualKg;
+        client.expectedKg = roundTo(base + client.pendingKg);
+        client.capacityKg = roundTo(Math.max(client.bestMonthKg, client.expectedKg));
+        client.headroomKg = roundTo(Math.max(0, client.capacityKg - client.expectedKg));
+        pending += client.pendingKg;
+        expected += client.expectedKg;
+      }
+      row.pendingKg = roundTo(pending);
+      row.expectedKg = roundTo(expected);
+    }
+
+    const expectedTotal = roundTo(rows.reduce((acc, row) => acc + row.expectedKg, 0));
+    const closingPlanAvailable = calendar.status === 'OPEN' && company.totalKg > 0;
+    const closingGapKg = closingPlanAvailable ? roundTo(Math.max(0, company.totalKg - expectedTotal)) : 0;
+
+    // Un cliente puede aparecer en varias filas en el criterio Nota (varios
+    // vendedores le firmaron). Para no duplicar su margen se toma una sola
+    // fila: la de mayor margen y, a igualdad, la de su vendedor asignado.
+    const planRows = new Map<string, { sellerCode: string; client: ForecastSellerClientRow }>();
+    for (const row of rows) {
+      // La cuenta interna no tiene cartera real: su cuota la cubren los reales.
+      if (row.isInternal) continue;
+      for (const client of row.clients) {
+        if (!client.clientCode || client.headroomKg <= 0) continue;
+        const current = planRows.get(client.clientCode);
+        const preferAssigned = client.assignedSellerCode === row.sellerCode;
+        if (
+          !current ||
+          client.headroomKg > current.client.headroomKg ||
+          (client.headroomKg === current.client.headroomKg && preferAssigned)
+        ) {
+          planRows.set(client.clientCode, { sellerCode: row.sellerCode, client });
+        }
+      }
+    }
+    const headroom = new Map<string, number>();
+    for (const [clientCode, entry] of planRows) headroom.set(clientCode, entry.client.headroomKg);
+    const gapPlan =
+      closingGapKg > 0
+        ? allocateGapByHeadroom(headroom, closingGapKg)
+        : { plan: new Map<string, number>(), gapKg: closingGapKg, coveredKg: 0, uncoveredKg: closingGapKg };
+    if (closingGapKg > 0) {
+      for (const [clientCode, kg] of gapPlan.plan) {
+        const entry = planRows.get(clientCode);
+        if (entry && kg > 0) entry.client.closingPlanKg = kg;
+      }
+      for (const row of rows) {
+        row.closingPlanKg = roundTo(row.clients.reduce((acc, client) => acc + client.closingPlanKg, 0));
+      }
+    }
+    const pendingTotal = roundTo(rows.reduce((acc, row) => acc + row.pendingKg, 0));
 
     const companyHistorySeries = historyMonths.map(
       (entry) => companyHistory.get(monthKey(entry.year, entry.month)) ?? 0,
@@ -1017,9 +1441,14 @@ export class SellersService {
       salesAvailable: true,
       forecastAvailable: company.available,
       forecastSource: company.source,
+      forecastLiveKg: company.liveKg,
+      forecastCapturedKg: company.capturedKg,
+      forecastCapturedAt: company.capturedAt,
+      forecastDriftAt: company.driftAt,
       attribution,
       assignmentAvailable,
       allocationBasis,
+      closingPlanAvailable,
       days: {
         inMonth: calendar.inMonth,
         elapsed: calendar.elapsed,
@@ -1035,6 +1464,11 @@ export class SellersService {
         actualKg: companyActual,
         actualUnits: companyUnits,
         ...totalsMetrics,
+        pendingKg: pendingTotal,
+        expectedKg: roundTo(expectedTotal),
+        closingGapKg,
+        closingCoveredKg: gapPlan.coveredKg,
+        closingUncoveredKg: gapPlan.uncoveredKg,
         invoiceCount: companyInvoices,
         lastInvoiceDate: companyLastInvoice,
         sellerCount: rows.length,
@@ -1129,9 +1563,14 @@ export class SellersService {
       salesAvailable: false,
       forecastAvailable: false,
       forecastSource: 'NONE',
+      forecastLiveKg: null,
+      forecastCapturedKg: null,
+      forecastCapturedAt: null,
+      forecastDriftAt: null,
       attribution,
       assignmentAvailable: false,
       allocationBasis: 'NONE',
+      closingPlanAvailable: false,
       days: {
         inMonth: calendar.inMonth,
         elapsed: calendar.elapsed,
@@ -1147,6 +1586,11 @@ export class SellersService {
         actualKg: 0,
         actualUnits: 0,
         ...emptyMetrics(),
+        pendingKg: 0,
+        expectedKg: 0,
+        closingGapKg: 0,
+        closingCoveredKg: 0,
+        closingUncoveredKg: 0,
         invoiceCount: 0,
         lastInvoiceDate: null,
         sellerCount: 0,

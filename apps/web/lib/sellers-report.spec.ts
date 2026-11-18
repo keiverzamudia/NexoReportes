@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import type { ForecastSellerClientRow, ForecastSellerRow, ForecastSellersResponse } from '@nexo/contracts';
 import {
   allocationLabel,
+  buildClientQuotaRisk,
   buildSellerClientsCsv,
   buildSellerNarrative,
   buildSellersCsv,
   buildShareSlices,
+  clientGapContributionPct,
+  clientQuotaSharePct,
   filterSellerClients,
   filterSellers,
   quotaGeometry,
@@ -42,6 +45,12 @@ function client(overrides: Partial<ForecastSellerClientRow> = {}): ForecastSelle
     invoiceCount: 2,
     lastInvoiceDate: '2025-03-04',
     isNew: false,
+    pendingKg: 0,
+    expectedKg: 150,
+    bestMonthKg: 200,
+    capacityKg: 200,
+    headroomKg: 50,
+    closingPlanKg: 0,
     dailyAvgKg: 5,
     projectedKg: 150,
     attainmentPct: 33.3,
@@ -84,6 +93,9 @@ function seller(overrides: Partial<ForecastSellerRow> = {}): ForecastSellerRow {
     executedKg: 100,
     executedHistoricalKg: 200,
     otherSellerKg: 0,
+    pendingKg: 0,
+    expectedKg: 200,
+    closingPlanKg: 0,
     historicalKg: 200,
     sharePct: 60,
     currentSharePct: 66.7,
@@ -104,6 +116,28 @@ function seller(overrides: Partial<ForecastSellerRow> = {}): ForecastSellerRow {
       { year: 2025, month: 3, actualKg: 100 },
     ],
     daily: [],
+    collection: {
+      available: true,
+      onTimePct: 75,
+      onTimeAmountUsd: 750,
+      lateAmountUsd: 250,
+      collectedAmountUsd: 1000,
+      averageDays: 12,
+      averageLateDays: 4,
+      paymentCount: 4,
+      onTimePaymentCount: 3,
+      latePaymentCount: 1,
+      overdueUsd: 0,
+    },
+    activation: {
+      available: true,
+      assignedClients: 2,
+      activeClients: 1,
+      inertClients: 1,
+      activationPct: 50,
+      reactivatedClients: 0,
+      newClients: 1,
+    },
     clients: [client()],
     ...rest,
     lastInvoiceDate: lastInvoiceDate ?? '2025-03-05',
@@ -120,9 +154,14 @@ function report(overrides: Partial<ForecastSellersResponse> = {}): ForecastSelle
     salesAvailable: true,
     forecastAvailable: true,
     forecastSource: 'SNAPSHOT',
+    forecastLiveKg: null,
+    forecastCapturedKg: null,
+    forecastCapturedAt: null,
+    forecastDriftAt: null,
     attribution: 'PORTFOLIO',
     assignmentAvailable: true,
     allocationBasis: 'HISTORY',
+    closingPlanAvailable: false,
     days: {
       inMonth: 31,
       elapsed: 31,
@@ -145,6 +184,11 @@ function report(overrides: Partial<ForecastSellersResponse> = {}): ForecastSelle
       requiredDailyKg: null,
       historicalAvgKg: 100,
       vsHistoricalPct: 0,
+      pendingKg: 0,
+      expectedKg: 150,
+      closingGapKg: 0,
+      closingCoveredKg: 0,
+      closingUncoveredKg: 0,
       invoiceCount: 3,
       lastInvoiceDate: '2025-03-05',
       sellerCount: 2,
@@ -317,6 +361,27 @@ describe('historial y etiquetas', () => {
     expect(allocationLabel(report())).toContain('histórica');
     expect(allocationLabel(report({ allocationBasis: 'EQUAL_FALLBACK' }))).toContain('igualitaria');
     expect(allocationLabel(report({ allocationBasis: 'NONE' }))).toContain('sin meta');
+  });
+});
+
+describe('reparto de la cuota entre clientes', () => {
+  it('calcula la porción de cada cliente sobre la cuota del vendedor', () => {
+    expect(clientQuotaSharePct(300, 600)).toBe(50);
+    expect(clientQuotaSharePct(300, 0)).toBeNull();
+  });
+
+  it('mide qué parte de la brecha explica cada cliente', () => {
+    expect(clientGapContributionPct(-150, -400)).toBe(37.5);
+    expect(clientGapContributionPct(50, -400)).toBe(-12.5);
+    expect(clientGapContributionPct(-150, 20)).toBeNull();
+    expect(clientGapContributionPct(null, -400)).toBeNull();
+  });
+
+  it('resume concentración y clientes en riesgo', () => {
+    const risk = buildClientQuotaRisk(seller(), report());
+    expect(risk.gapKg).toBe(-200);
+    expect(risk.top3SharePct).toBe(50);
+    expect(risk.atRisk.map((row) => row.clientCode)).toEqual(['C1']);
   });
 });
 

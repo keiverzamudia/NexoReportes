@@ -451,6 +451,33 @@ model ForecastTarget {
 }
 
 // ============================================================
+// Cuotas mensuales de activación por vendedor.
+//
+// `sellerCode` es el código de Profit (`vendedor.co_ven`, recortado). Las
+// cuotas son locales: no se escriben en Profit. Se fijan desde el expediente
+// del vendedor y solo con el permiso `vendedor_cuotas:update`.
+//
+// `reactivationQuota` = clientes de su cartera que vuelven a comprar después
+// de 3 meses sin compra. `newClientsQuota` = clientes sin compras en los 12
+// meses previos que compran en el mes. `null` = sin cuota asignada.
+// ============================================================
+model SellerQuota {
+  id                String   @id @default(cuid())
+  sellerCode        String
+  year              Int
+  month             Int
+  reactivationQuota Int?
+  newClientsQuota   Int?
+  createdById       String?
+  updatedById       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([sellerCode, year, month])
+  @@index([year, month])
+}
+
+// ============================================================
 // Simulador de despacho (Fase 6): escenarios guardados.
 //
 // Un escenario tiene dos capas:

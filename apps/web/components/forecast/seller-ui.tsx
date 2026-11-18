@@ -9,12 +9,13 @@
 // ============================================================
 
 import type { ForecastSellerRow } from '@nexo/contracts';
-import { ArrowDownRight, ArrowUpRight } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { ArrowDownRight, ArrowUpRight, type LucideIcon } from 'lucide-react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { EChart } from '../EChart';
 import { cx } from '../ui';
 import { fmtKg, fmtPct } from '../../lib/sales-report';
 import {
+  META_MARKER_PCT,
   fmtAttainmentPct,
   quotaGeometry,
   sellerInitials,
@@ -202,6 +203,99 @@ export function MiniStat({
   );
 }
 
+// ============================================================
+// Fichas del expediente (volumen, cobranza, activación y cuotas).
+//
+// Mantienen el mismo lenguaje que MiniStat: fondo blanco, borde suave,
+// etiqueta en mayúsculas y cifra tabular. La barra es solo una ayuda visual;
+// las cifras y definiciones viven en el texto y en el tooltip.
+// ============================================================
+
+export function SellerFicha({
+  icon: Icon,
+  label,
+  value,
+  hint,
+  tone = 'none',
+  action,
+  title,
+  children,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: ReactNode;
+  hint?: ReactNode;
+  tone?: SalesTone;
+  action?: ReactNode;
+  title?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div
+      title={title}
+      className="flex h-full min-h-[8.75rem] flex-col gap-1 rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-sm"
+    >
+      <div className="flex items-start justify-between gap-space-2xs">
+        <p className="flex min-w-0 items-center gap-1.5 text-label-sm font-semibold uppercase tracking-wide text-outline">
+          <Icon aria-hidden className="size-3.5 shrink-0" />
+          <span className="truncate">{label}</span>
+        </p>
+        {action}
+      </div>
+      <p
+        className={cx(
+          'tabular-nums text-title-md font-black leading-tight',
+          tone === 'none' ? 'text-on-surface' : TONE_TEXT[tone],
+        )}
+      >
+        {value}
+      </p>
+      {hint && <div className="text-label-sm leading-snug text-on-surface-variant">{hint}</div>}
+      <div className="mt-auto pt-space-2xs">{children}</div>
+    </div>
+  );
+}
+
+/** Barra de una o dos porciones (p. ej. a tiempo / fuera de fecha). */
+export function SplitMeter({
+  segments,
+  label,
+  className,
+  normalize = true,
+}: {
+  segments: Array<{ pct: number; className: string; label?: string }>;
+  label?: string;
+  className?: string;
+  /** true = reparte 100 % entre las porciones; false = usa el pct tal cual. */
+  normalize?: boolean;
+}) {
+  const visible = segments.filter((segment) => Number.isFinite(segment.pct) && segment.pct > 0);
+  const total = normalize ? visible.reduce((acc, segment) => acc + segment.pct, 0) : 100;
+  const description =
+    label ?? visible.map((segment) => `${segment.label ?? ''} ${fmtPct(segment.pct)}`.trim()).join(' · ');
+
+  return (
+    <div
+      role="img"
+      aria-label={description}
+      title={description}
+      className={cx('flex h-1.5 w-full overflow-hidden rounded-pill bg-surface-container', className)}
+    >
+      {visible.map((segment, index) => {
+        const width = total > 0 ? (segment.pct / total) * 100 : 0;
+        return (
+          <span
+            key={`${segment.label ?? 'segment'}-${index}`}
+            aria-hidden
+            className={cx('h-full transition-[width] duration-700 ease-out', segment.className)}
+            style={{ width: `${width}%` }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 const RANK_STYLE = [
   'ring-2 ring-secondary-container text-on-secondary-container bg-secondary-container/20',
   'ring-1 ring-outline-variant text-on-surface-variant bg-surface-container-high',
@@ -321,7 +415,7 @@ export function ShareStrip({
               type="button"
               onClick={() => onSelect(slice.code)}
               title={`${slice.name}: ${fmtPct(slice.pct)} · ${fmtKg(slice.kg)} kg`}
-              aria-label={`Ver el expediente de ${slice.name} (${fmtPct(slice.pct)} de la venta)`}
+              aria-label={`Ver ${slice.name} (${fmtPct(slice.pct)})`}
               className="h-full min-w-[3px] transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 first:rounded-l-pill last:rounded-r-pill"
               style={style}
             >
@@ -359,6 +453,198 @@ export function ShareStrip({
         })}
       </div>
     </div>
+  );
+}
+
+// ============================================================
+// Lista de desempeño (vendedores o clientes).
+//
+// Misma pieza para el panel «Desempeño por vendedor» y para los clientes del
+// expediente: número, avatar, cumplimiento, barra contra su cuota y cifras.
+// ============================================================
+
+export interface PerformanceItem {
+  key: string;
+  name: string;
+  rank: number;
+  badge?: ReactNode;
+  /** Línea corta bajo el nombre: cuota, notas, peso en el mes… */
+  metaLine: string;
+  targetKg: number;
+  actualKg: number;
+  noteKg: number;
+  /** Etiqueta de la tercera cifra cuando no es «Nota» (p. ej. «Cartera»). */
+  noteLabel?: string;
+  projectedKg: number | null;
+  gapKg: number | null;
+  pct: number | null;
+  /** Kg del plan de cierre de brecha asignados (0 o undefined = no aplica). */
+  planKg?: number;
+  /** Texto corto tras la brecha, p. ej. «22 % de la brecha». */
+  gapNote?: string;
+  /** Texto del excedente: «sobre su parte» en clientes. */
+  overLabel?: string;
+  onSelect?: () => void;
+  selectTitle?: string;
+}
+
+export function PerformanceList({
+  items,
+  showProjection,
+  empty,
+  maxHeightClass = 'max-h-[560px]',
+  markerLabel = 'cuota 100 %',
+  legendLabel = 'Marcador verde = 100 % de su cuota',
+}: {
+  items: PerformanceItem[];
+  showProjection: boolean;
+  empty?: ReactNode;
+  maxHeightClass?: string;
+  markerLabel?: string;
+  legendLabel?: string;
+}) {
+  if (items.length === 0) return <>{empty}</>;
+
+  return (
+    <div>
+      <div className="mb-space-xs px-space-xs">
+        <div className="relative h-4 text-label-sm text-outline">
+          <span className="absolute left-0 top-0 leading-none">0 %</span>
+          <span
+            className="absolute top-0 -translate-x-1/2 whitespace-nowrap font-semibold leading-none text-secondary"
+            style={{ left: `${META_MARKER_PCT}%` }}
+          >
+            {markerLabel}
+          </span>
+        </div>
+        <div className="relative h-3">
+          <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-surface-container-high" />
+          <span
+            aria-hidden
+            className="absolute top-1/2 h-3 w-[2px] -translate-y-1/2 rounded-pill bg-secondary"
+            style={{ left: `calc(${META_MARKER_PCT}% - 1px)` }}
+          />
+        </div>
+      </div>
+
+      <ul className={cx('flex flex-col gap-space-2xs overflow-y-auto pr-1', maxHeightClass)}>
+        {items.map((item) => (
+          <PerformanceRow key={item.key} item={item} showProjection={showProjection} />
+        ))}
+      </ul>
+
+      <div className="mt-space-xs flex flex-wrap items-center gap-space-sm border-t border-surface-container pt-space-xs text-label-sm text-on-surface-variant">
+        <span className="inline-flex items-center gap-1">
+          <span aria-hidden className="size-2 rounded-full bg-primary-container" /> Real
+        </span>
+        {showProjection && (
+          <span className="inline-flex items-center gap-1">
+            <span aria-hidden className="size-2 rounded-full bg-secondary-container/60" /> Proyección
+          </span>
+        )}
+        <span className="inline-flex items-center gap-1">
+          <span aria-hidden className="h-3 w-[2px] rounded-pill bg-secondary" /> {legendLabel}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function PerformanceRow({ item, showProjection }: { item: PerformanceItem; showProjection: boolean }) {
+  const tone = salesTone(item.pct);
+  const geometry = quotaGeometry({
+    targetKg: item.targetKg,
+    actualKg: item.actualKg,
+    projectedKg: item.projectedKg,
+  });
+  const overPct =
+    item.pct !== null && Number.isFinite(item.pct) && item.pct > 100 && item.pct <= 999
+      ? item.pct - 100
+      : null;
+
+  const inner = (
+    <div className="flex items-start gap-space-sm">
+      <span className="mt-0.5 w-4 shrink-0 text-center tabular-nums text-label-sm font-black text-outline">
+        {item.rank}
+      </span>
+      <SellerAvatar name={item.name} rank={item.rank} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-space-sm">
+          <span className="flex min-w-0 items-center gap-1">
+            <span className="truncate font-semibold text-on-surface" title={item.name}>
+              {item.name}
+            </span>
+            {item.badge}
+          </span>
+          <span className="flex shrink-0 flex-col items-end leading-tight">
+            <span className={cx('tabular-nums text-label-md font-bold', TONE_TEXT[tone])}>
+              {geometry.hasMeta ? fmtAttainmentPct(item.pct) : 'Sin cuota'}
+            </span>
+            {overPct !== null && (
+              <span className="whitespace-nowrap text-label-sm font-semibold text-success">
+                +{fmtPct(overPct)} {item.overLabel ?? 'sobre cuota'}
+              </span>
+            )}
+          </span>
+        </div>
+        <p className="truncate text-label-sm text-outline" title={item.metaLine}>
+          {item.metaLine}
+        </p>
+        <QuotaBar
+          targetKg={item.targetKg}
+          actualKg={item.actualKg}
+          projectedKg={item.projectedKg}
+          showProjection={showProjection}
+          className="mt-1.5"
+        />
+        <div className="mt-1 flex flex-wrap items-baseline justify-between gap-x-space-sm gap-y-0.5 text-label-sm">
+          <span className="tabular-nums text-on-surface-variant">
+            Meta <strong className="text-on-surface">{fmtKg(item.targetKg)}</strong> kg
+          </span>
+          <span className="tabular-nums text-on-surface-variant">
+            Venta <strong className="text-on-surface">{fmtKg(item.actualKg)}</strong> kg
+          </span>
+          {item.noteKg !== item.actualKg && (
+            <span className="tabular-nums text-outline">
+              {item.noteLabel ?? 'Nota'}{' '}
+              <strong className="text-on-surface-variant">{fmtKg(item.noteKg)}</strong> kg
+            </span>
+          )}
+          {item.planKg !== undefined && item.planKg > 0 && (
+            <span className="tabular-nums text-secondary">
+              Plan <strong className="text-secondary">{fmtKg(item.planKg)}</strong> kg
+            </span>
+          )}
+          <span
+            className={cx(
+              'tabular-nums font-semibold',
+              item.gapKg === null ? 'text-outline' : item.gapKg < 0 ? 'text-critical' : 'text-success',
+            )}
+          >
+            {item.gapKg === null ? '—' : `${item.gapKg > 0 ? '+' : ''}${fmtKg(item.gapKg)} kg`}
+            {item.gapNote && <span className="ml-1 font-normal text-outline">· {item.gapNote}</span>}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <li>
+      {item.onSelect ? (
+        <button
+          type="button"
+          onClick={item.onSelect}
+          aria-haspopup="dialog"
+          title={item.selectTitle}
+          className="group w-full rounded-xl px-2 py-2 text-left transition-all duration-200 hover:bg-surface-container-low focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70"
+        >
+          {inner}
+        </button>
+      ) : (
+        <div className="w-full rounded-xl px-2 py-2">{inner}</div>
+      )}
+    </li>
   );
 }
 

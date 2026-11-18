@@ -22,6 +22,8 @@ import {
   OrderReconcileInput,
   OrderReopenInput,
   ProfitDeliveryDateSetInput,
+  SalesAnalyticsCustomersQuery,
+  SalesAnalyticsQuery,
   zCustomerInsightQuery,
   zCustomerQuery,
   zCustomerStatementQuery,
@@ -32,6 +34,8 @@ import {
   zOrderReconcileInput,
   zOrderReopenInput,
   zProfitDeliveryDateSetInput,
+  zSalesAnalyticsCustomersQuery,
+  zSalesAnalyticsQuery,
 } from '@nexo/contracts';
 import { ZodValidationPipe } from '../../common/zod-validation.pipe';
 import { AuthenticatedRequest, JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -42,6 +46,7 @@ import { CustomerInsightsService } from './customer-insights.service';
 import { CustomerNotesService } from './customer-notes.service';
 import { OrderLifecycleService } from './order-lifecycle.service';
 import { ProfitDeliveryDatesService } from './profit-delivery-dates.service';
+import { SalesAnalyticsService } from './sales-analytics.service';
 import { SalesService } from './sales.service';
 
 // Pedidos y clientes (Fase 4): consulta de lo sincronizado desde Profit y
@@ -58,6 +63,7 @@ export class SalesController {
     private readonly customerInsights: CustomerInsightsService,
     private readonly customerNotes: CustomerNotesService,
     private readonly lifecycle: OrderLifecycleService,
+    private readonly analytics: SalesAnalyticsService,
   ) {}
 
   @Get('customers')
@@ -117,6 +123,31 @@ export class SalesController {
     return this.sales.listGrouped(query);
   }
 
+  // Historial de pedidos procesados (pestaña «Historial»). Es una vista
+  // separada del simulador y tiene su propio permiso: incluye cierres y
+  // cancelaciones que la cartera viva oculta.
+  @Get('orders/history')
+  @RequirePermission('pedidos:view_history')
+  listOrdersHistory(@Query(new ZodValidationPipe(zOrderQuery)) query: OrderQuery) {
+    return this.sales.listOrders({ ...query, includeClosed: true });
+  }
+
+  // ---------- Analítica comercial (pestaña «Ventas») ----------
+
+  @Get('sales/analytics/customers')
+  @RequirePermission('pedidos:view_summary')
+  analyticsCustomers(
+    @Query(new ZodValidationPipe(zSalesAnalyticsCustomersQuery)) query: SalesAnalyticsCustomersQuery,
+  ) {
+    return this.analytics.customers(query);
+  }
+
+  @Get('sales/analytics')
+  @RequirePermission('pedidos:view_summary')
+  analyticsReport(@Query(new ZodValidationPipe(zSalesAnalyticsQuery)) query: SalesAnalyticsQuery) {
+    return this.analytics.get(query);
+  }
+
   // ---------- Cierre por nota de entrega (solo ADMIN) ----------
 
   @Get('orders/lifecycle')
@@ -155,7 +186,7 @@ export class SalesController {
   }
 
   @Get('orders/:id')
-  @RequirePermission('pedidos:read')
+  @RequireAnyPermission('pedidos:read', 'pedidos:view_history')
   orderDetail(@Param('id') id: string) {
     return this.sales.orderDetail(id);
   }

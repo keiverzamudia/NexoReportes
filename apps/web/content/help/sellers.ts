@@ -18,6 +18,7 @@ export const SELLERS_HELP_RULES = [
   'La cuota de cada vendedor es su participación en los kg de los últimos meses cerrados del filtro Histórico.',
   'La meta del vendedor = meta de la empresa × su cuota. La suma de todas las metas cuadra al kilo con la meta de la empresa.',
   'La meta de cada cliente = meta de su vendedor × su participación en la venta histórica de ese vendedor.',
+  'Dentro del expediente la cuota del vendedor es el 100 % y cada cliente es una porción: su cumplimiento se mide contra esa porción y el aporte a la brecha dice quién explica el faltante.',
   'Reparto del mes = venta del vendedor ÷ venta total de la red. Responde «qué representación tiene cada uno».',
   'El cumplimiento compara la venta contra la meta ASIGNADA, no contra el forecast global.',
   'Sin histórico la cuota se reparte en partes iguales y se avisa; sin meta los porcentajes quedan en «—».',
@@ -27,6 +28,12 @@ export const SELLERS_HELP_RULES = [
   'En el expediente, la pestaña Cartera muestra la cartera completa (con venta y sin venta); la pestaña Nota muestra solo los clientes con notas firmadas por el vendedor.',
   'La pestaña Productos cruza cada artículo: cartera asignada, firmado por el vendedor y cartera facturada por otros.',
   'El histórico del expediente arranca en 3 meses y se puede cambiar allí; ese cambio recalcula la cuota y la meta de todo el informe.',
+  'Plan de cierre de brecha: la brecha del mes es meta − (proyección + cartera comprometida). Se reparte entre los clientes según su capacidad real (mejor mes de los últimos 12) y nunca se le pide a un cliente más de lo que ya vendió en su mejor mes.',
+  'Si el margen real de la cartera no alcanza, los kg que faltan se muestran como «sin capacidad»: no se reparten a la fuerza ni se inventan clientes.',
+  'La meta viva de Profit manda en el mes en curso. Si cambia, el reparto y el plan se recalculan en la misma consulta y siguen cuadrando al kilo; el aviso compara la lectura viva con el snapshot guardado.',
+  'Cobranza a tiempo = cobros recibidos en el mes cuya fecha de pago no supera el vencimiento de la factura. El porcentaje se pondera por monto en USD, no por cantidad de facturas.',
+  'Reactivado = cliente de la cartera sin compras en los 3 meses previos que vuelve a comprar este mes. Nuevo = cliente sin compras en los 12 meses previos que compra este mes. Inerte = cliente de la cartera sin compra este mes.',
+  'Las cuotas de reactivación y clientes nuevos son mensuales y locales. Las fija quien tenga el permiso «Cuotas de vendedores»; un mes cerrado queda solo lectura.',
 ];
 
 export const SELLER_COLUMN_HELP = {
@@ -97,6 +104,15 @@ export const SELLER_COLUMN_HELP = {
     formula: 'proyección kg − meta kg',
     source: 'Cálculo del API',
   },
+  plan: {
+    id: 'plan',
+    title: 'Plan de cierre',
+    short: 'Kg extra para cerrar la brecha',
+    what:
+      'Kilogramos que el plan de cierre le pide por encima de lo esperado. Se reparte entre los clientes según su capacidad real (mejor mes de los últimos 12) y nunca supera esa marca.',
+    formula: 'margen del cliente ÷ margen de la red × brecha',
+    source: 'Cartera pendiente + mejor mes de 12 meses',
+  },
   ritmo: {
     id: 'ritmo',
     title: 'Ritmo nec.',
@@ -138,9 +154,27 @@ export const SELLER_CLIENT_COLUMN_HELP = {
     title: 'Meta kg',
     short: 'Meta asignada al cliente',
     what:
-      'Kilogramos que debe comprar el cliente para que su vendedor cumpla su cuota. Debajo se muestra su peso en la venta histórica del vendedor. La parte que representa del forecast global se ve en el CSV.',
+      'Kilogramos que debe comprar el cliente para que su vendedor cumpla su cuota. Debajo se muestra qué parte de la cuota del vendedor es (su porción del 100 %) y del forecast global.',
     formula: 'meta del vendedor × % del cliente en el vendedor',
     source: 'Reparto histórico',
+  },
+  shareCliente: {
+    id: 'cli_share',
+    title: '% de su cuota',
+    short: 'Porción del 100 % del vendedor',
+    what:
+      'Parte de la cuota del vendedor que carga este cliente. Sus metas repartidas suman el 100 %; su cumplimiento se mide contra esa porción, no contra el forecast global.',
+    formula: 'meta del cliente ÷ meta del vendedor × 100',
+    source: 'Reparto histórico del vendedor',
+  },
+  aporteCliente: {
+    id: 'cli_aporte',
+    title: 'Aporte a brecha',
+    short: 'Cuánto explica del faltante',
+    what:
+      'Kilogramos que este cliente aporta a la brecha del vendedor y qué porcentaje del faltante explica. En rojo, va por debajo de su parte; en verde, la compensa.',
+    formula: 'brecha del cliente ÷ brecha del vendedor × 100',
+    source: 'Cálculo del API',
   },
   ventaCliente: {
     id: 'cli_venta',
@@ -153,8 +187,9 @@ export const SELLER_CLIENT_COLUMN_HELP = {
   cumplimientoCliente: {
     id: 'cli_cumplimiento',
     title: 'Cumplimiento',
-    short: 'Cierre estimado contra su meta',
-    what: 'Porcentaje de su meta asignada que alcanzaría al cierre con el ritmo actual. Sin meta queda en «—».',
+    short: 'Cierre estimado contra su parte',
+    what:
+      'Porcentaje de su meta asignada que alcanzaría al cierre con el ritmo actual (arriba a la derecha de la fila). La línea de la cuota muestra además el avance real, y la barra mide contra su parte con el 100 % marcado. Sin meta queda en «—».',
     formula: 'proyección kg ÷ meta kg × 100',
     source: 'Cálculo del API',
   },
@@ -179,7 +214,47 @@ export const SELLER_CLIENT_COLUMN_HELP = {
 export type SellerHelpKey = keyof typeof SELLER_COLUMN_HELP;
 export type SellerClientHelpKey = keyof typeof SELLER_CLIENT_COLUMN_HELP;
 
+const SELLER_FICHA_HELP: HelpTerm[] = [
+  {
+    id: 'ficha_cobranza',
+    title: 'Cobranza a tiempo',
+    short: '% cobrado dentro del vencimiento',
+    what:
+      'Parte del monto cobrado en el mes que llegó en la fecha de vencimiento o antes. También muestra lo que llegó fuera de fecha, el promedio de días desde la emisión y el atraso promedio.',
+    formula: 'monto cobrado a tiempo ÷ monto cobrado total × 100',
+    source: 'cobros + reng_cob (Profit)',
+  },
+  {
+    id: 'ficha_activacion',
+    title: 'Activación de clientes',
+    short: 'Clientes de la cartera con compra',
+    what:
+      'Clientes de la cartera asignada que compraron algo en el mes, contra el total de la cartera. Los que no compraron quedan como inertes.',
+    formula: 'clientes activos ÷ clientes en cartera × 100',
+    source: 'clientes.co_ven + not_ent',
+  },
+  {
+    id: 'ficha_reactivacion',
+    title: 'Cuota de reactivación',
+    short: 'Clientes dormidos que vuelven',
+    what:
+      'Clientes de su cartera que no compraban desde hacía al menos 3 meses y volvieron a comprar este mes. La cuota la fija un usuario con el permiso especial.',
+    formula: 'reactivados ÷ cuota de reactivación × 100',
+    source: 'SellerQuota + not_ent',
+  },
+  {
+    id: 'ficha_nuevos',
+    title: 'Cuota de clientes nuevos',
+    short: 'Clientes sin compra en 12 meses',
+    what:
+      'Clientes sin compras en los 12 meses previos que compran este mes. La cuota es mensual y se administra desde el expediente del vendedor.',
+    formula: 'nuevos ÷ cuota de nuevos × 100',
+    source: 'SellerQuota + not_ent',
+  },
+];
+
 export const SELLERS_HELP_TERMS: HelpTerm[] = [
   ...Object.values(SELLER_COLUMN_HELP),
   ...Object.values(SELLER_CLIENT_COLUMN_HELP),
+  ...SELLER_FICHA_HELP,
 ];

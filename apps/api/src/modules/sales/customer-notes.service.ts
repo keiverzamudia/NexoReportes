@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   CustomerInsightQuery,
   CustomerNote,
+  CustomerNoteItem,
   CustomerNoteOrder,
   CustomerNotesResponse,
 } from '@nexo/contracts';
@@ -10,9 +11,14 @@ import { buildInsightWindows, round2, toNumber } from './customer-insights.calcu
 import { normalizeCustomerCode } from './customer-code';
 
 // ============================================================
-// Notas de entrega de un cliente con su pedido de origen (solo lectura).
+// Notas de entrega de un cliente con su factura y pedido de origen (solo
+// lectura).
 //
-// El vínculo vive en el renglón de la nota (`reng_nde`):
+// · Factura: `dbo.factura` + `dbo.reng_fac`, donde el renglón de la factura
+//   (`tipo_doc = 'E'`) apunta a la nota (`num_doc = not_ent.fact_num`). Si la
+//   nota no tiene factura todavía, `invoices` queda vacío («N/T» en la ficha).
+//
+// El vínculo con el pedido vive en el renglón de la nota (`reng_nde`):
 //   · tipo_doc = 'T' → `num_doc` es la solicitud/cotización de Profit, que es
 //     el número que la app muestra como «Pedido».
 //   · tipo_doc = 'P' → `num_doc` es un pedido de Profit (`dbo.pedidos`). Ese
@@ -27,6 +33,7 @@ export const CUSTOMER_NOTES_TOTALS_SQL = `
 SELECT /* nexo:customer_notes_totals */
   CAST(f.fact_num AS varchar(30)) AS nota,
   MAX(f.fec_emis) AS fecha,
+  RTRIM(MAX(ISNULL(v.ven_des, ''))) AS vendedor,
   CASE WHEN @moneda = 'USD'
        THEN ROUND(MAX(f.tot_neto) / NULLIF(MAX(f.tasa), 0), 2)
        ELSE ROUND(MAX(f.tot_neto), 2) END AS monto,
@@ -36,11 +43,49 @@ SELECT /* nexo:customer_notes_totals */
 FROM dbo.not_ent AS f
 INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num AND r.anulado = 0
 LEFT JOIN dbo.art AS a ON a.co_art = r.co_art
+LEFT JOIN dbo.vendedor AS v ON v.co_ven = f.co_ven
 WHERE f.anulada = 0
   AND RTRIM(f.co_cli) = @co_cli
   AND f.fec_emis >= @desde
   AND f.fec_emis < @hasta
 GROUP BY CAST(f.fact_num AS varchar(30))
+`;
+
+// Detalle «qué se le vendió» de cada nota: se agrupa por artículo para que el
+// desplegable muestre una línea por producto y no un renglón por despacho.
+export const CUSTOMER_NOTES_ITEMS_SQL = `
+SELECT /* nexo:customer_notes_items */
+  CAST(r.fact_num AS varchar(30)) AS nota,
+  RTRIM(r.co_art) AS co_art,
+  RTRIM(ISNULL(a.art_des, '')) AS art_des,
+  RTRIM(ISNULL(a.uni_venta, '')) AS uni_venta,
+  ISNULL(a.uni_relac, 1) AS uni_relac,
+  SUM(r.total_art) AS unid,
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num AND r.anulado = 0
+LEFT JOIN dbo.art AS a ON a.co_art = r.co_art
+WHERE f.anulada = 0
+  AND RTRIM(f.co_cli) = @co_cli
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+GROUP BY CAST(r.fact_num AS varchar(30)), RTRIM(r.co_art), RTRIM(ISNULL(a.art_des, '')), RTRIM(ISNULL(a.uni_venta, '')), ISNULL(a.uni_relac, 1)
+`;
+
+// Factura de cada nota: `reng_fac` guarda el documento de origen en `num_doc`
+// (tipo_doc = 'E' → nota de entrega). Las facturas anuladas no cuentan. No se
+// filtra por fecha de la factura: una nota del cierre del periodo puede
+// facturarse después y no debe aparecer como «N/T».
+export const CUSTOMER_NOTES_INVOICES_SQL = `
+SELECT /* nexo:customer_notes_invoices */
+  CAST(rf.num_doc AS varchar(30)) AS nota,
+  CAST(fa.fact_num AS varchar(30)) AS factura
+FROM dbo.factura AS fa
+INNER JOIN dbo.reng_fac AS rf ON rf.fact_num = fa.fact_num
+WHERE fa.anulada = 0
+  AND RTRIM(fa.co_cli) = @co_cli
+  AND rf.tipo_doc = 'E'
+GROUP BY CAST(rf.num_doc AS varchar(30)), CAST(fa.fact_num AS varchar(30))
 `;
 
 export const CUSTOMER_NOTES_ORDERS_SQL = `
@@ -70,6 +115,8 @@ WHERE f.anulada = 0
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 200;
 const QUERY_LIMIT = 5_000;
+// El detalle se agrupa por artículo: una nota puede traer decenas de renglones.
+const ITEMS_QUERY_LIMIT = 15_000;
 
 interface CachedNotes {
   at: number;
@@ -108,7 +155,7 @@ export class CustomerNotesService {
 
     const windows = buildInsightWindows(months);
 
-    const [totalsRes, linksRes] = await Promise.allSettled([
+    const [totalsRes, linksRes, itemsRes, invoicesRes] = await Promise.allSettled([
       this.profit.selectQuery(CUSTOMER_NOTES_TOTALS_SQL, QUERY_LIMIT, {
         co_cli: code,
         desde: windows.from,
@@ -120,10 +167,20 @@ export class CustomerNotesService {
         desde: windows.from,
         hasta: windows.to,
       }),
+      this.profit.selectQuery(CUSTOMER_NOTES_ITEMS_SQL, ITEMS_QUERY_LIMIT, {
+        co_cli: code,
+        desde: windows.from,
+        hasta: windows.to,
+      }),
+      this.profit.selectQuery(CUSTOMER_NOTES_INVOICES_SQL, QUERY_LIMIT, {
+        co_cli: code,
+      }),
     ]);
 
     const totalsOk = totalsRes.status === 'fulfilled';
     const linksOk = linksRes.status === 'fulfilled';
+    const itemsOk = itemsRes.status === 'fulfilled';
+    const invoicesOk = invoicesRes.status === 'fulfilled';
 
     if (!totalsOk) {
       this.logger.error(
@@ -143,8 +200,28 @@ export class CustomerNotesService {
         }`,
       );
     }
+    if (!itemsOk) {
+      this.logger.warn(
+        `No se pudo leer el detalle de artículos de las notas de ${code}: ${
+          itemsRes.status === 'rejected' && itemsRes.reason instanceof Error
+            ? itemsRes.reason.message
+            : 'Error desconocido'
+        }`,
+      );
+    }
+    if (!invoicesOk) {
+      this.logger.warn(
+        `No se pudo resolver la factura de las notas de ${code}: ${
+          invoicesRes.status === 'rejected' && invoicesRes.reason instanceof Error
+            ? invoicesRes.reason.message
+            : 'Error desconocido'
+        }`,
+      );
+    }
 
     const notes = totalsOk ? this.buildNotes(totalsRes.value, linksOk ? linksRes.value : []) : [];
+    if (totalsOk && itemsOk) this.attachItems(notes, itemsRes.value);
+    if (totalsOk && invoicesOk) this.attachInvoices(notes, invoicesRes.value);
 
     const result: CustomerNotesResponse = {
       code,
@@ -154,11 +231,15 @@ export class CustomerNotesService {
       notes,
       available: totalsOk,
       ordersAvailable: linksOk,
+      itemsAvailable: itemsOk,
+      invoicesAvailable: invoicesOk,
       source: this.profit.dialect === 'mssql' ? 'profit' : 'fixtures',
     };
 
     // Solo se cachea una lectura completa: un fallo debe reintentarse.
-    if (result.available && result.ordersAvailable) this.remember(cacheKey, result);
+    if (result.available && result.ordersAvailable && result.itemsAvailable && result.invoicesAvailable) {
+      this.remember(cacheKey, result);
+    }
 
     return result;
   }
@@ -187,12 +268,15 @@ export class CustomerNotesService {
       notes.push({
         number,
         date: day(raw.fecha),
+        vendor: text(raw.vendedor) || null,
         amount: raw.monto === null || raw.monto === undefined ? null : round2(toNumber(raw.monto)),
         sacks: round2(toNumber(raw.sacos)),
         kg: round2(kg),
         tonnes: round2(kg / 1000),
         lines: Math.trunc(toNumber(raw.lineas)),
+        invoices: [],
         orders: [],
+        items: [],
       });
     }
 
@@ -236,5 +320,53 @@ export class CustomerNotesService {
     );
 
     return notes;
+  }
+
+  /** Pega el detalle de artículos de cada nota (una línea por producto). */
+  private attachItems(notes: CustomerNote[], itemRows: Record<string, unknown>[]): void {
+    const byNumber = new Map(notes.map((note) => [note.number, note]));
+
+    for (const raw of itemRows) {
+      const note = byNumber.get(text(raw.nota));
+      if (!note) continue;
+      const code = text(raw.co_art);
+      if (!code) continue;
+      const kg = toNumber(raw.kg);
+      const item: CustomerNoteItem = {
+        code,
+        description: text(raw.art_des),
+        unit: text(raw.uni_venta),
+        qty: round2(toNumber(raw.unid)),
+        kg: round2(kg),
+        tonnes: round2(kg / 1000),
+      };
+      note.items.push(item);
+    }
+
+    // El producto de mayor peso primero: es el que explica la nota.
+    for (const note of notes) {
+      note.items.sort(
+        (a, b) => b.kg - a.kg || a.description.localeCompare(b.description, 'es'),
+      );
+    }
+  }
+
+  /** Pega la(s) factura(s) de cada nota (vacío = nota sin facturar). */
+  private attachInvoices(notes: CustomerNote[], invoiceRows: Record<string, unknown>[]): void {
+    const byNumber = new Map(notes.map((note) => [note.number, note]));
+
+    for (const raw of invoiceRows) {
+      const note = byNumber.get(text(raw.nota));
+      if (!note) continue;
+      const number = text(raw.factura);
+      if (!number || note.invoices.includes(number)) continue;
+      note.invoices.push(number);
+    }
+
+    // Una nota puede facturarse en varios documentos (caso raro): se listan en
+    // orden numérico para que el chip sea estable entre consultas.
+    for (const note of notes) {
+      note.invoices.sort((a, b) => a.localeCompare(b, 'es', { numeric: true }));
+    }
   }
 }

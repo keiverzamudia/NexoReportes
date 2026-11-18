@@ -71,6 +71,8 @@ export default function DespachoPage() {
   const [tick, setTick] = useState(0);
   const [scope, setScope] = useState<Scope>('pending');
   const [status, setStatus] = useState<DispatchCustomerRowStatus | ''>('');
+  // Fecha de entrega seleccionada (YYYY-MM-DD). Vacío = todas las fechas.
+  const [deliveryDate, setDeliveryDate] = useState('');
   const [q, setQ] = useState('');
   // Cliente abierto dentro de la bandeja (`sheetId:customerKey`).
   const [openRow, setOpenRow] = useState<string | null>(null);
@@ -129,7 +131,9 @@ export default function DespachoPage() {
 
   const clientRows = useMemo(() => clientRowsFrom(data?.items ?? []), [data]);
   const rowKey = (row: DispatchClientRow) => `${row.sheet.id}:${row.customerKey}`;
-  const rows = useMemo(() => {
+  // Filas que cumplen tab, estado y búsqueda. El filtro de fecha se aplica
+  // después para poder listar solo las fechas que hoy tienen pedidos.
+  const baseRows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return clientRows.filter((row) => {
       // La bandeja es de trabajo vivo: el cliente con factura entregada ya
@@ -143,7 +147,27 @@ export default function DespachoPage() {
       );
     });
   }, [clientRows, scope, status, q]);
-  const hasFilters = Boolean(status || q);
+
+  // Fechas de entrega presentes en la bandeja con su número de clientes.
+  const deliveryDates = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of baseRows) {
+      if (!row.nextDeliveryDate) continue;
+      counts.set(row.nextDeliveryDate, (counts.get(row.nextDeliveryDate) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [baseRows]);
+
+  const rows = useMemo(
+    () => (deliveryDate ? baseRows.filter((row) => row.nextDeliveryDate === deliveryDate) : baseRows),
+    [baseRows, deliveryDate],
+  );
+  // Si la fecha elegida deja de tener pedidos (cambio de estado o búsqueda),
+  // el filtro vuelve a «Todas» en vez de quedar en un valor invisible.
+  useEffect(() => {
+    if (deliveryDate && !deliveryDates.some(([date]) => date === deliveryDate)) setDeliveryDate('');
+  }, [deliveryDate, deliveryDates]);
+  const hasFilters = Boolean(status || deliveryDate || q);
 
   if (error instanceof AuthRequiredError) {
     return <LoginScreen onSuccess={() => setTick((t) => t + 1)} />;
@@ -393,10 +417,28 @@ export default function DespachoPage() {
                 onChange={(value) => {
                   setScope(value as Scope);
                   setStatus('');
+                  setDeliveryDate('');
                 }}
                 options={scopeOptions}
               />
-              <Select className="w-44" value={status} onChange={(value) => setStatus(value as DispatchCustomerRowStatus | '')} options={statusOptions} ariaLabel="Estado" />
+              <div className="w-36 shrink-0">
+                <Select value={status} onChange={(value) => setStatus(value as DispatchCustomerRowStatus | '')} options={statusOptions} ariaLabel="Estado" />
+              </div>
+              <div className="w-48 shrink-0">
+                <Select
+                  value={deliveryDate}
+                  onChange={setDeliveryDate}
+                  options={[
+                    { value: '', label: 'Entrega: Todas' },
+                    ...deliveryDates.map(([date, count]) => ({
+                      value: date,
+                      label: `${formatBusinessDate(date)} · ${count} cliente${count === 1 ? '' : 's'}`,
+                    })),
+                  ]}
+                  ariaLabel="Fecha de entrega"
+                  disabled={deliveryDates.length === 0}
+                />
+              </div>
               <TextInput className="w-56" icon={Search} value={q} onChange={setQ} placeholder="Buscar cliente, N° o título…" ariaLabel="Buscar cliente o despacho" />
             </div>
             <div className="flex items-center gap-space-sm">
@@ -440,7 +482,7 @@ export default function DespachoPage() {
                 }
                 description={
                   hasFilters
-                    ? 'Prueba con otro estado o limpia la búsqueda.'
+                    ? 'Prueba con otra fecha, otro estado o limpia la búsqueda.'
                     : scope === 'pending'
                       ? 'Cuando envíes una simulación desde Pedidos, cada cliente aparecerá aquí para cargarlo y facturarlo.'
                       : 'Arma el plan en Pedidos y usa «Guardar y enviar a despacho».'

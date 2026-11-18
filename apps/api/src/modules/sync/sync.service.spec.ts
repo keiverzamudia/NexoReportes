@@ -49,6 +49,7 @@ function createFakePrisma() {
       const key = (where.externalCode ?? where.externalNumber) as string;
       return table.get(key) ?? null;
     },
+    findMany: async () => [...table.values()],
     count: async () => table.size,
   });
 
@@ -201,6 +202,7 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
   it('ALMACENES: se derivan de las columnas de existencia de la vista', async () => {
     const prisma = createFakePrisma();
     await serviceWith(new FixturesProfitAdapter(), prisma).run('ALMACENES');
+    expect(prisma.tables.warehouses.has('Stock PTP')).toBe(true);
     expect(prisma.tables.warehouses.has('Stock 03')).toBe(true);
     expect(prisma.tables.warehouses.has('Stock 9999')).toBe(true);
     expect(prisma.tables.warehouses.has('Stock 68')).toBe(true);
@@ -286,12 +288,42 @@ describe('SyncService.run (derivación desde la vista aplanada)', () => {
     await service.run('ALMACENES');
     const run = await service.run('EXISTENCIAS');
     expect(run.status).toBe('EXITOSA');
-    // 6 artículos × 3 almacenes (todas las columnas con dato en fixtures).
-    expect(prisma.tables.snapshotLines.length).toBe(18);
+    // 6 productos × 4 almacenes (PTP + 03 + 9999 + 68).
+    expect(prisma.tables.snapshotLines.length).toBe(24);
 
     // Corrida posterior crea OTRA fotografía (no muta la anterior).
     await service.run('EXISTENCIAS');
-    expect(prisma.tables.snapshotLines.length).toBe(36);
+    expect(prisma.tables.snapshotLines.length).toBe(48);
+  });
+
+  it('EXISTENCIAS en mssql: inventario completo de artículos ABA (incluye PTP)', async () => {
+    const prisma = createFakePrisma();
+    const adapter: ProfitAdapter = {
+      dialect: 'mssql',
+      authenticateUser: async () => null,
+      listUsers: async () => [],
+      testConnection: async () => ({ connected: true }),
+      listViews: async () => [],
+      describeView: async () => [],
+      selectQuery: async (sqlText) => {
+        if (!sqlText.includes('nexo:inventory')) return [];
+        return [
+          { co_art: 'P1', Stock_PTP: 12, Stock_03: 5, Stock_9999: 0, Stock_68: 7 },
+          { co_art: 'P2', Stock_PTP: 0, Stock_03: 0, Stock_9999: 4, Stock_68: 0 },
+        ];
+      },
+      select: async () => [],
+    };
+    const service = serviceWith(adapter, prisma);
+    await service.run('PRODUCTOS').catch(() => undefined); // productos reales no aplican aquí
+    await service.run('ALMACENES');
+    const run = await service.run('EXISTENCIAS');
+
+    expect(run.status).toBe('EXITOSA');
+    expect(run.recordsRead).toBe(2);
+    // 2 artículos × 4 almacenes, aunque P1/P2 no tengan pedido pendiente.
+    expect(run.recordsUpserted).toBe(8);
+    expect(prisma.tables.snapshotLines.filter((l) => l['warehouseCode'] === 'Stock PTP')).toHaveLength(2);
   });
 
   it('una fila inválida no enmascara la corrida: se registra como error', async () => {

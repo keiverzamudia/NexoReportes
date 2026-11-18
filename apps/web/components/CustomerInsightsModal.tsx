@@ -1596,8 +1596,8 @@ export function CustomerInsightsModal({
                         <div>
                           <p className="text-title-md font-semibold text-primary">Notas de entrega (ventas)</p>
                           <p className="text-label-md normal-case text-on-surface-variant">
-                            Cada nota con el pedido que la originó. El número de pedido es el mismo que ves en
-                            la pantalla Pedidos.
+                            Cada nota de entrega con su factura y la solicitud que la originó. N/T = nota aún
+                            sin facturar en Profit. Despliega una nota para ver qué productos se entregaron.
                           </p>
                         </div>
                         <CustomerNotesPanel customer={customer} months={months} currency={currency} />

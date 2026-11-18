@@ -23,6 +23,7 @@ const REAL_ROW = {
   Stock_03: 273,
   Stock_9999: 15,
   Stock_68: 0,
+  Stock_PTP: 0,
   // Campos del reporte ampliado (con padding, como en Profit).
   vendedor: 'MEIDY CRISTINA ARIAS VIDAL' + ' '.repeat(20),
   vendedor_cliente: 'MEIDY CRISTINA ARIAS VIDAL' + ' '.repeat(20),
@@ -79,6 +80,7 @@ describe('normalizeSolicitudRow', () => {
       stock03: 273,
       stock9999: 15,
       stock68: 0,
+      stockPtp: 0,
       vendedor: 'MEIDY CRISTINA ARIAS VIDAL',
       vendedorCliente: 'MEIDY CRISTINA ARIAS VIDAL',
       tipoCliente: 'L1 EXCLUSIVOS',
@@ -119,11 +121,18 @@ describe('normalizeSolicitudRow', () => {
   });
 
   it('conserva NULL en columnas anulables de stock (no inventa 0)', () => {
-    const result = normalizeSolicitudRow({ ...REAL_ROW, Stock_03: null, Stock_9999: null, Stock_68: null });
+    const result = normalizeSolicitudRow({
+      ...REAL_ROW,
+      Stock_03: null,
+      Stock_9999: null,
+      Stock_68: null,
+      Stock_PTP: null,
+    });
     expect(result.ok).toBe(true);
     expect(result.value?.stock03).toBeNull();
     expect(result.value?.stock9999).toBeNull();
     expect(result.value?.stock68).toBeNull();
+    expect(result.value?.stockPtp).toBeNull();
   });
 
   it('las columnas de conversión a KG se normalizan y admiten negativo (kg del sobre-compromiso)', () => {

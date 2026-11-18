@@ -26,10 +26,13 @@ const envSchema = z.object({
 
   // Escritura puntual en Profit (fecha de entrega). Conexión separada de la
   // de lectura: el usuario de escritura solo necesita UPDATE sobre cotiz_c.
-  PROFIT_WRITE_ENABLED: z.enum(['true', 'false']).default('false'),
+  // Opt-out: si no se define, queda ACTIVA cuando hay credenciales; solo
+  // `PROFIT_WRITE_ENABLED=false` la desactiva (kill switch).
+  PROFIT_WRITE_ENABLED: z.enum(['true', 'false']).optional(),
   PROFIT_WRITE_USER: z.string().optional(),
   PROFIT_WRITE_PASSWORD: z.string().optional(),
-  PROFIT_WRITE_DRY_RUN: z.enum(['true', 'false']).default('true'),
+  // Simulación solo si se pide explícitamente con `true`.
+  PROFIT_WRITE_DRY_RUN: z.enum(['true', 'false']).default('false'),
   PROFIT_WRITE_MAX_ORDERS: z.coerce.number().int().min(1).max(500).default(50),
   // Reintento de la cola que escribe el bloqueo de fecha (aux01) en Profit.
   PROFIT_LOCK_RETRY_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
@@ -68,6 +71,13 @@ const envSchema = z.object({
   ORDER_RECONCILE_SECONDS: z.coerce.number().int().min(60).max(86400).default(300),
   ORDER_RECONCILE_DRY_RUN: z.enum(['true', 'false']).default('false'),
   ORDER_RECONCILE_BATCH_SIZE: z.coerce.number().int().min(50).max(2000).default(200),
+
+  // Limpieza de simulaciones guardadas: son fotos de vida corta. La hoja de
+  // despacho conserva nombre, foto y receta, así que borrarlas no rompe nada.
+  SCENARIO_CLEANUP_ENABLED: z.enum(['true', 'false']).default('true'),
+  SCENARIO_CLEANUP_HOURS: z.coerce.number().int().min(1).max(720).default(72),
+  SCENARIO_CLEANUP_INTERVAL_HOURS: z.coerce.number().int().min(1).max(168).default(6),
+  SCENARIO_CLEANUP_DRY_RUN: z.enum(['true', 'false']).default('false'),
 
   CORS_ORIGINS: z.string().default('http://localhost:4100'),
 
@@ -120,7 +130,7 @@ export default function configuration() {
         solicitudes: env.PROFIT_VIEW_SOLICITUDES,
       },
       write: {
-        enabled: env.PROFIT_WRITE_ENABLED === 'true',
+        enabled: env.PROFIT_WRITE_ENABLED !== 'false',
         // Si no hay credenciales dedicadas se reutiliza el usuario de lectura
         // (en desarrollo suele tener UPDATE; en producción se recomienda uno
         // aparte con permiso solo sobre dbo.cotiz_c).
@@ -150,6 +160,12 @@ export default function configuration() {
       seconds: env.ORDER_RECONCILE_SECONDS,
       dryRun: env.ORDER_RECONCILE_DRY_RUN === 'true',
       batchSize: env.ORDER_RECONCILE_BATCH_SIZE,
+    },
+    scenarioCleanup: {
+      enabled: env.SCENARIO_CLEANUP_ENABLED === 'true',
+      hours: env.SCENARIO_CLEANUP_HOURS,
+      intervalHours: env.SCENARIO_CLEANUP_INTERVAL_HOURS,
+      dryRun: env.SCENARIO_CLEANUP_DRY_RUN === 'true',
     },
     forecast: {
       productionLine: 'ABA',

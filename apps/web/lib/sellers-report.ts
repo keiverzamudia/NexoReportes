@@ -7,6 +7,7 @@ import type {
 import {
   META_MARKER_PCT,
   MONTHS_ES_SHORT,
+  SALES_THRESHOLDS,
   fmtKg,
   fmtPct,
   fmtTonnes,
@@ -190,6 +191,80 @@ export function buildShareSlices(report: ForecastSellersResponse, max = 6): Sell
 }
 
 // ============================================================
+// Reparto de la cuota del vendedor entre sus clientes.
+//
+// El vendedor es el «todo» (100 % de su meta) y cada cliente es una porción:
+// su meta asignada ÷ la meta del vendedor. Con eso se ve quién carga la cuota
+// y, al compararlo con su venta, con qué cliente se está cayendo el mes.
+// ============================================================
+
+/** Peso de un cliente dentro de la cuota de su vendedor. */
+export function clientQuotaSharePct(targetKg: number, sellerTargetKg: number): number | null {
+  if (!Number.isFinite(targetKg) || !Number.isFinite(sellerTargetKg) || sellerTargetKg <= 0) return null;
+  return roundTab((targetKg / sellerTargetKg) * 100);
+}
+
+/**
+ * Parte de la brecha del vendedor que explica un cliente: su brecha ÷ la
+ * brecha total. Negativa cuando el cliente va por encima de su parte (compensa).
+ * Null si el vendedor no tiene brecha o al cliente le falta la meta.
+ */
+export function clientGapContributionPct(
+  gapKg: number | null,
+  sellerGapKg: number | null,
+): number | null {
+  if (gapKg === null || sellerGapKg === null) return null;
+  if (!Number.isFinite(gapKg) || !Number.isFinite(sellerGapKg) || sellerGapKg >= 0) return null;
+  return roundTab((gapKg / sellerGapKg) * 100);
+}
+
+export interface ClientQuotaRisk {
+  /** Clientes con meta que, al ritmo actual, no llegan a su parte (100 %). */
+  atRisk: ForecastSellerClientRow[];
+  /** Peso de los 3 clientes más grandes en la cuota del vendedor. */
+  top3SharePct: number | null;
+  /** Brecha de la cartera: Σ de las brechas de los clientes con meta. */
+  gapKg: number | null;
+}
+
+/** Radiografía de la cartera: concentración y quién explica la brecha. */
+export function buildClientQuotaRisk(
+  seller: ForecastSellerRow,
+  report: ForecastSellersResponse,
+): ClientQuotaRisk {
+  const withTarget = seller.clients.filter((client) => client.carteraTargetKg > 0);
+  const rows = withTarget.map((client) => ({
+    client,
+    metrics: tabRunRate(client.carteraCurrentKg, client.carteraTargetKg, report),
+  }));
+
+  const gapKg =
+    seller.carteraTargetKg > 0
+      ? roundTab(rows.reduce((acc, row) => acc + (row.metrics.gapKg ?? 0), 0))
+      : null;
+
+  const atRisk = rows
+    .filter(
+      (row) =>
+        (row.metrics.projectedAttainmentPct ?? row.metrics.attainmentPct ?? 0) <
+        SALES_THRESHOLDS.good,
+    )
+    .map((row) => row.client);
+
+  const top3 = [...withTarget].sort((a, b) => b.carteraTargetKg - a.carteraTargetKg).slice(0, 3);
+  const top3SharePct =
+    seller.carteraTargetKg > 0
+      ? roundTab(
+          (top3.reduce((acc, client) => acc + client.carteraTargetKg, 0) /
+            seller.carteraTargetKg) *
+            100,
+        )
+      : null;
+
+  return { atRisk, top3SharePct, gapKg };
+}
+
+// ============================================================
 // Run-rate de una pestaña (Cartera o Nota) calculado en el cliente.
 //
 // El API ya entrega las métricas del criterio activo. El expediente necesita
@@ -325,6 +400,7 @@ const SELLER_CSV_HEADERS = [
   'Proyección kg',
   'Cumplimiento proyectado %',
   'Brecha kg',
+  'Plan cierre kg',
   'Ritmo necesario kg/día',
   'Reparto del mes %',
   'Última nota',
@@ -345,6 +421,10 @@ const CLIENT_CSV_HEADERS = [
   'Proyección kg',
   'Cumplimiento proyectado %',
   'Brecha kg',
+  'Pendiente mes kg',
+  'Esperado kg',
+  'Capacidad kg',
+  'Plan cierre kg',
   'Última nota',
 ] as const;
 
@@ -381,6 +461,7 @@ export function buildSellersCsv(report: ForecastSellersResponse): string {
         csvNumber(seller.projectedKg),
         csvNumber(seller.projectedAttainmentPct),
         csvNumber(seller.gapKg),
+        csvNumber(seller.closingPlanKg),
         csvNumber(seller.requiredDailyKg),
         csvNumber(seller.currentSharePct),
         seller.lastInvoiceDate ?? '',
@@ -408,6 +489,7 @@ export function buildSellersCsv(report: ForecastSellersResponse): string {
       csvNumber(totals.projectedKg),
       csvNumber(totals.projectedAttainmentPct),
       csvNumber(totals.gapKg),
+      csvNumber(totals.closingCoveredKg),
       csvNumber(totals.requiredDailyKg),
       // No se suman repartos de vendedores en el total: la red siempre es 100 %.
       '',
@@ -441,6 +523,10 @@ export function buildSellerClientsCsv(seller: ForecastSellerRow): string {
         csvNumber(client.projectedKg),
         csvNumber(client.projectedAttainmentPct),
         csvNumber(client.gapKg),
+        csvNumber(client.pendingKg),
+        csvNumber(client.expectedKg),
+        csvNumber(client.capacityKg),
+        csvNumber(client.closingPlanKg),
         client.lastInvoiceDate ?? '',
       ]
         .map(csvCell)
@@ -460,9 +546,15 @@ const CARTERA_CSV_HEADERS = [
   'Otros kg',
   'Histórico cartera kg',
   'Meta cartera kg',
+  '% de su cuota',
   'Cumplimiento %',
   'Proyección kg',
   'Brecha kg',
+  'Aporte brecha %',
+  'Pendiente mes kg',
+  'Esperado kg',
+  'Capacidad kg',
+  'Plan cierre kg',
   'Última nota',
 ] as const;
 
@@ -473,10 +565,14 @@ const NOTA_CSV_HEADERS = [
   'Venta firmada kg',
   'Histórico nota kg',
   'Meta nota kg',
+  '% de su cuota',
   'Cumplimiento %',
   'Proyección kg',
   'Brecha kg',
+  'Aporte brecha %',
   'Cartera asignada kg',
+  'Pendiente mes kg',
+  'Plan cierre kg',
   'Última nota',
 ] as const;
 
@@ -498,6 +594,17 @@ const PRODUCT_CSV_HEADERS = [
 /** CSV de la pestaña Cartera del expediente. */
 export function buildSellerCarteraCsv(seller: ForecastSellerRow, report: ForecastSellersResponse): string {
   const lines = [CARTERA_CSV_HEADERS.map(csvCell).join(',')];
+  const sellerGap =
+    seller.carteraTargetKg > 0
+      ? roundTab(
+          seller.clients.reduce(
+            (acc, client) =>
+              acc + (tabRunRate(client.carteraCurrentKg, client.carteraTargetKg, report).gapKg ?? 0),
+            0,
+          ),
+        )
+      : null;
+
   for (const client of seller.clients) {
     const metrics = tabRunRate(client.carteraCurrentKg, client.carteraTargetKg, report);
     lines.push(
@@ -510,9 +617,15 @@ export function buildSellerCarteraCsv(seller: ForecastSellerRow, report: Forecas
         csvNumber(client.otherSellerKg),
         csvNumber(client.carteraHistoricalKg),
         csvNumber(client.carteraTargetKg),
+        csvNumber(clientQuotaSharePct(client.carteraTargetKg, seller.carteraTargetKg)),
         csvNumber(metrics.projectedAttainmentPct ?? metrics.attainmentPct),
         csvNumber(metrics.projectedKg),
         csvNumber(metrics.gapKg),
+        csvNumber(clientGapContributionPct(metrics.gapKg, sellerGap)),
+        csvNumber(client.pendingKg),
+        csvNumber(client.expectedKg),
+        csvNumber(client.capacityKg),
+        csvNumber(client.closingPlanKg),
         client.lastInvoiceDate ?? '',
       ]
         .map(csvCell)
@@ -525,6 +638,17 @@ export function buildSellerCarteraCsv(seller: ForecastSellerRow, report: Forecas
 /** CSV de la pestaña Nota del expediente. */
 export function buildSellerNotaCsv(seller: ForecastSellerRow, report: ForecastSellersResponse): string {
   const lines = [NOTA_CSV_HEADERS.map(csvCell).join(',')];
+  const sellerGap =
+    seller.noteTargetKg > 0
+      ? roundTab(
+          seller.clients.reduce(
+            (acc, client) =>
+              acc + (tabRunRate(client.noteCurrentKg, client.noteTargetKg, report).gapKg ?? 0),
+            0,
+          ),
+        )
+      : null;
+
   for (const client of seller.clients.filter((row) => row.noteCurrentKg > 0 || row.noteHistoricalKg > 0)) {
     const metrics = tabRunRate(client.noteCurrentKg, client.noteTargetKg, report);
     lines.push(
@@ -535,10 +659,14 @@ export function buildSellerNotaCsv(seller: ForecastSellerRow, report: ForecastSe
         csvNumber(client.noteCurrentKg),
         csvNumber(client.noteHistoricalKg),
         csvNumber(client.noteTargetKg),
+        csvNumber(clientQuotaSharePct(client.noteTargetKg, seller.noteTargetKg)),
         csvNumber(metrics.projectedAttainmentPct ?? metrics.attainmentPct),
         csvNumber(metrics.projectedKg),
         csvNumber(metrics.gapKg),
+        csvNumber(clientGapContributionPct(metrics.gapKg, sellerGap)),
         csvNumber(client.carteraCurrentKg),
+        csvNumber(client.pendingKg),
+        csvNumber(client.closingPlanKg),
         client.lastInvoiceDate ?? '',
       ]
         .map(csvCell)

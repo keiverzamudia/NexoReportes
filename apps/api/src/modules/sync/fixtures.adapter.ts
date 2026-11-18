@@ -21,11 +21,12 @@ const ALMACENES: Record<string, unknown>[] = [
 // Una fila = un RENGLÓN de solicitud. Columnas reales:
 //   nro_solicitud, emision, entrega, co_cli, cli_des,
 //   co_art, art_des, pendiente, uni_venta, relacion_empaque, kg,
-//   Stock_03, Stock_9999, Stock_68
+//   Stock_03, Stock_9999, Stock_68, Stock_PTP
 // `pendiente` = cantidad pendiente por despachar (decimal).
 // `relacion_empaque` = kg por unidad de venta (35 = saco de 35 kg).
 // `kg` = kg del renglón = pendiente × relacion_empaque (calculado en Profit).
-// `Stock_03`/`Stock_9999`/`Stock_68` = existencia del artículo en ese almacén.
+// `Stock_03`/`Stock_9999`/`Stock_68`/`Stock_PTP` = existencia del artículo en
+// ese almacén (PTP = PT PRODUCCION, creado en Profit el 18/11/2026).
 // El catálogo de productos/clientes se DERIVA de estas filas.
 // ============================================================
 const SOLICITUDES: Record<string, unknown>[] = [
@@ -136,6 +137,181 @@ function statementSummaries(params: Record<string, unknown> = {}, limit = 1000):
     };
   });
 }
+
+// ============================================================
+// Cuentas por cobrar de desarrollo (equivalente a `dbo.docum_cc`).
+// La fecha de vencimiento se genera relativa a hoy para que los tramos
+// (1–30, 31–60, …, +150) siempre tengan contenido al abrir el módulo.
+// `tasa` y `saldo` siguen la forma real: el saldo está en Bs y al dividirlo
+// por la tasa se obtiene el USD del documento.
+// ============================================================
+const FIXTURE_RECEIVABLES_RATE = 880;
+
+function receivableDay(offset: number): Date {
+  const date = new Date();
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date;
+}
+
+interface FixtureReceivableInput {
+  co_cli: string;
+  cli_des: string;
+  seller: { code: string; name: string };
+  tipo: string;
+  tipoDes: string;
+  zona: string;
+  zonaDes: string;
+  segmento: string;
+  segmentoDes: string;
+  tipo_doc: string;
+  nro_doc: number;
+  dias: number;
+  usd: number;
+  limite?: number;
+}
+
+function receivableDoc(input: FixtureReceivableInput): Record<string, unknown> {
+  const saldo = round2(input.usd * FIXTURE_RECEIVABLES_RATE);
+  return {
+    co_cli: input.co_cli,
+    cli_des: input.cli_des,
+    co_ven: input.seller.code,
+    ven_des: input.seller.name,
+    co_ven_cartera: input.seller.code,
+    ven_des_cartera: input.seller.name,
+    tipo_doc: input.tipo_doc,
+    nro_doc: input.nro_doc,
+    fec_emis: receivableDay(-input.dias - 30),
+    fec_venc: receivableDay(-input.dias),
+    dias_venc: input.dias,
+    monto_net: round2(saldo * 1.15),
+    saldo,
+    tasa: FIXTURE_RECEIVABLES_RATE,
+    tipo_cli: input.tipo,
+    tipo_des: input.tipoDes,
+    co_zon: input.zona,
+    zona_des: input.zonaDes,
+    co_seg: input.segmento,
+    seg_des: input.segmentoDes,
+    mont_cre: input.limite ?? null,
+    plaz_pag: 15,
+    as_of: new Date().toISOString(),
+  };
+}
+
+const RECEIVABLE_153 = {
+  co_cli: '153064128',
+  cli_des: 'JOSEF HENDRIX HERNANDEZ REYES',
+  seller: { code: '031', name: 'JUILIARD ANGULO' },
+  tipo: 'L1',
+  tipoDes: 'EXCLUSIVOS',
+  zona: '024',
+  zonaDes: 'LARA',
+  segmento: '09',
+  segmentoDes: 'PRODUCTOR',
+  limite: 25000,
+};
+
+const RECEIVABLE_505 = {
+  co_cli: '505835220',
+  cli_des: 'AGRO INVERSIONES MP, C.A',
+  seller: { code: '025', name: 'MEIDY CRISTINA ARIAS VIDAL' },
+  tipo: 'L2',
+  tipoDes: 'DISTRIBUIDORES',
+  zona: '014',
+  zonaDes: 'DISTRITO CAPITAL',
+  segmento: '05',
+  segmentoDes: 'DISTRIBUIDORES',
+  limite: 12000,
+};
+
+const RECEIVABLE_900 = {
+  co_cli: '900000001',
+  cli_des: 'AVICOLA LOS LLANOS, C.A',
+  seller: { code: '026', name: 'YARITZA DEL CARMEN PARRA' },
+  tipo: 'L2',
+  tipoDes: 'DISTRIBUIDORES',
+  zona: '007',
+  zonaDes: 'CARABOBO',
+  segmento: '02',
+  segmentoDes: 'MAYORISTAS',
+  limite: 20000,
+};
+
+const RECEIVABLE_9002 = {
+  co_cli: '900000002',
+  cli_des: 'GRANJA SAN JOSE, C.A',
+  seller: { code: '022', name: 'JAIME FRANCISCO QUINTERO PIÑERO' },
+  tipo: 'L3',
+  tipoDes: 'MINORISTA',
+  zona: '005',
+  zonaDes: 'BARINAS',
+  segmento: '09',
+  segmentoDes: 'PRODUCTOR',
+};
+
+const FIXTURE_RECEIVABLES_DOCS: Record<string, unknown>[] = [
+  receivableDoc({ ...RECEIVABLE_153, tipo_doc: 'FACT', nro_doc: 50003001, dias: 10, usd: 10 }),
+  receivableDoc({ ...RECEIVABLE_153, tipo_doc: 'FACT', nro_doc: 50003002, dias: 45, usd: 20 }),
+  receivableDoc({ ...RECEIVABLE_153, tipo_doc: 'FACT', nro_doc: 50003003, dias: 75, usd: 30 }),
+  receivableDoc({ ...RECEIVABLE_153, tipo_doc: 'FACT', nro_doc: 50003004, dias: 100, usd: 40 }),
+  receivableDoc({ ...RECEIVABLE_153, tipo_doc: 'FACT', nro_doc: 50003005, dias: 130, usd: 50 }),
+  receivableDoc({ ...RECEIVABLE_153, tipo_doc: 'FACT', nro_doc: 50003006, dias: 200, usd: 60 }),
+  receivableDoc({ ...RECEIVABLE_153, tipo_doc: 'FACT', nro_doc: 50003007, dias: -20, usd: 10 }),
+  receivableDoc({ ...RECEIVABLE_153, tipo_doc: 'ADEL', nro_doc: 60001, dias: 3, usd: 5 }),
+  receivableDoc({ ...RECEIVABLE_153, tipo_doc: 'N/CR', nro_doc: 60002, dias: 1, usd: 1 }),
+  receivableDoc({ ...RECEIVABLE_505, tipo_doc: 'FACT', nro_doc: 50003101, dias: 20, usd: 25 }),
+  receivableDoc({ ...RECEIVABLE_505, tipo_doc: 'FACT', nro_doc: 50003102, dias: 180, usd: 35 }),
+  receivableDoc({ ...RECEIVABLE_505, tipo_doc: 'ADEL', nro_doc: 60003, dias: 2, usd: 3 }),
+  receivableDoc({ ...RECEIVABLE_900, tipo_doc: 'FACT', nro_doc: 50003201, dias: 5, usd: 18 }),
+  receivableDoc({ ...RECEIVABLE_900, tipo_doc: 'FACT', nro_doc: 50003202, dias: 160, usd: 28 }),
+  receivableDoc({ ...RECEIVABLE_9002, tipo_doc: 'FACT', nro_doc: 50003301, dias: 0, usd: 5 }),
+  receivableDoc({ ...RECEIVABLE_9002, tipo_doc: 'FACT', nro_doc: 50003302, dias: -15, usd: 7 }),
+  receivableDoc({ ...RECEIVABLE_9002, tipo_doc: 'ADEL', nro_doc: 60004, dias: 4, usd: 3 }),
+];
+
+const FIXTURE_RECEIVABLES_PAYMENTS: Record<string, unknown>[] = [
+  {
+    co_cli: '153064128',
+    ultimo_pago: receivableDay(-12),
+    dias_sin_pago: 12,
+    cobrado_90_bs: 8800,
+    cobrado_90_usd: 10,
+    cobrado_12m_bs: 26400,
+    cobrado_12m_usd: 30,
+    cobrado_12m_a_tiempo_bs: 17600,
+    cobrado_12m_a_tiempo_usd: 20,
+    pagos_12m: 3,
+    pagos_12m_a_tiempo: 2,
+  },
+  {
+    co_cli: '505835220',
+    ultimo_pago: receivableDay(-45),
+    dias_sin_pago: 45,
+    cobrado_90_bs: 0,
+    cobrado_90_usd: 0,
+    cobrado_12m_bs: 44000,
+    cobrado_12m_usd: 50,
+    cobrado_12m_a_tiempo_bs: 17600,
+    cobrado_12m_a_tiempo_usd: 20,
+    pagos_12m: 2,
+    pagos_12m_a_tiempo: 1,
+  },
+  {
+    co_cli: '900000001',
+    ultimo_pago: receivableDay(-3),
+    dias_sin_pago: 3,
+    cobrado_90_bs: 17600,
+    cobrado_90_usd: 20,
+    cobrado_12m_bs: 26400,
+    cobrado_12m_usd: 30,
+    cobrado_12m_a_tiempo_bs: 17600,
+    cobrado_12m_a_tiempo_usd: 20,
+    pagos_12m: 2,
+    pagos_12m_a_tiempo: 1,
+  },
+];
 
 // Forecast mensual de desarrollo (equivalente a `dbo.forecast`).
 // `forecast_mes` viene en la presentación del artículo (sacos para SAC, kg para
@@ -606,6 +782,202 @@ function paramDay(value: unknown): string {
 }
 
 // ============================================================
+// Analítica comercial de Pedidos (desarrollo).
+//
+// Se deriva del mismo `SALES_DAILY` del Forecast, así los kg de la pestaña
+// «Ventas» cuadran con el resto de módulos. La facturación usa un precio/kg
+// determinista: sirve para ver la serie y el toggle USD/Bs, no para validar
+// importes reales.
+// ============================================================
+
+interface FixtureAnalyticsSale {
+  fecha: string;
+  co_art: string;
+  art_des: string;
+  unid: number;
+  uni_venta: string;
+  kg: number;
+  sellerCode: string;
+  sellerName: string;
+  clientCode: string;
+  clientName: string;
+  clientType: string;
+}
+
+function fixtureAnalyticsSales(params: Record<string, unknown>): FixtureAnalyticsSale[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const vendor = String(params.vendor ?? '').trim();
+  const tipo = String(params.tipo ?? '').trim();
+  const rows: FixtureAnalyticsSale[] = [];
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const { seller, client } = fixtureSellerOf(day, String(row.co_art));
+    if (vendor && seller.name !== vendor) continue;
+    if (tipo && client.tipo !== tipo) continue;
+    rows.push({
+      fecha: day,
+      co_art: String(row.co_art),
+      art_des: String(row.art_des),
+      unid: Number(row.unid),
+      uni_venta: String(row.uni_venta),
+      kg: Number(row.kg),
+      sellerCode: seller.code,
+      sellerName: seller.name,
+      clientCode: client.code,
+      clientName: client.name,
+      clientType: client.tipo,
+    });
+  }
+  return rows;
+}
+
+function analyticsMonthly(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const buckets = new Map<
+    string,
+    {
+      anio: number;
+      mes: number;
+      co_cli: string;
+      cli_des: string;
+      co_ven: string;
+      ven_des: string;
+      tipo: string;
+      unid: number;
+      sacos: number;
+      kg: number;
+      dias: Set<string>;
+      ultima: string;
+    }
+  >();
+
+  for (const row of fixtureAnalyticsSales(params)) {
+    const [year, month] = row.fecha.split('-');
+    const key = `${year}-${month}|${row.clientCode}|${row.sellerCode}`;
+    const bucket = buckets.get(key) ?? {
+      anio: Number(year),
+      mes: Number(month),
+      co_cli: row.clientCode,
+      cli_des: row.clientName,
+      co_ven: row.sellerCode,
+      ven_des: row.sellerName,
+      tipo: row.clientType,
+      unid: 0,
+      sacos: 0,
+      kg: 0,
+      dias: new Set<string>(),
+      ultima: row.fecha,
+    };
+    bucket.unid += row.unid;
+    bucket.sacos += row.uni_venta === 'SAC' ? row.unid : 0;
+    bucket.kg += row.kg;
+    bucket.dias.add(row.fecha);
+    if (row.fecha > bucket.ultima) bucket.ultima = row.fecha;
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .sort((a, b) => a.anio - b.anio || a.mes - b.mes || b.kg - a.kg)
+    .slice(0, limit)
+    .map((bucket) => ({
+      anio: bucket.anio,
+      mes: bucket.mes,
+      co_cli: bucket.co_cli,
+      cli_des: bucket.cli_des,
+      co_ven: bucket.co_ven,
+      ven_des: bucket.ven_des,
+      tipo: bucket.tipo,
+      unid: round2(bucket.unid),
+      sacos: round2(bucket.sacos),
+      kg: round2(bucket.kg),
+      notas: bucket.dias.size,
+      ultima: bucket.ultima,
+    }));
+}
+
+function analyticsBilling(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const currency = String(params.moneda ?? 'USD');
+  const factor = currency === 'VES' ? 36.5 : 1;
+  return analyticsMonthly(params, limit).map((row) => {
+    const digits = String(row.co_cli).replace(/\D/g, '');
+    const price = 0.4 + ((Number(digits.slice(-2)) || 1) % 7) * 0.02;
+    return {
+      anio: row.anio,
+      mes: row.mes,
+      co_cli: row.co_cli,
+      facturado: round2(Number(row.kg) * price * factor),
+      creditos: 0,
+      documentos: Number(row.notas),
+      sin_tasa: 0,
+    };
+  });
+}
+
+function analyticsProducts(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const buckets = new Map<
+    string,
+    { anio: number; mes: number; co_art: string; art_des: string; unid: number; sacos: number; kg: number; dias: Set<string> }
+  >();
+
+  for (const row of fixtureAnalyticsSales(params)) {
+    const [year, month] = row.fecha.split('-');
+    const key = `${year}-${month}|${row.co_art}`;
+    const bucket = buckets.get(key) ?? {
+      anio: Number(year),
+      mes: Number(month),
+      co_art: row.co_art,
+      art_des: row.art_des,
+      unid: 0,
+      sacos: 0,
+      kg: 0,
+      dias: new Set<string>(),
+    };
+    bucket.unid += row.unid;
+    bucket.sacos += row.uni_venta === 'SAC' ? row.unid : 0;
+    bucket.kg += row.kg;
+    bucket.dias.add(row.fecha);
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .sort((a, b) => a.anio - b.anio || a.mes - b.mes || b.kg - a.kg)
+    .slice(0, limit)
+    .map((bucket) => ({
+      anio: bucket.anio,
+      mes: bucket.mes,
+      co_art: bucket.co_art,
+      art_des: bucket.art_des,
+      unid: round2(bucket.unid),
+      sacos: round2(bucket.sacos),
+      kg: round2(bucket.kg),
+      notas: bucket.dias.size,
+    }));
+}
+
+function analyticsDaily(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const buckets = new Map<string, { fecha: string; kg: number; unid: number; clientes: Set<string> }>();
+  for (const row of fixtureAnalyticsSales(params)) {
+    const bucket = buckets.get(row.fecha) ?? { fecha: row.fecha, kg: 0, unid: 0, clientes: new Set<string>() };
+    bucket.kg += row.kg;
+    bucket.unid += row.unid;
+    bucket.clientes.add(row.clientCode);
+    buckets.set(row.fecha, bucket);
+  }
+  return [...buckets.values()]
+    .sort((a, b) => a.fecha.localeCompare(b.fecha))
+    .slice(0, limit)
+    .map((bucket) => ({
+      fecha: bucket.fecha,
+      kg: round2(bucket.kg),
+      unid: round2(bucket.unid),
+      notas: bucket.clientes.size,
+    }));
+}
+
+// ============================================================
 // Clientes de desarrollo: catálogo completo y ventas por cliente.
 //
 // El catálogo añade clientes SIN pedido para probar la cartera por ventas.
@@ -930,14 +1302,18 @@ function customerNoteRows(
   const rows = customerInsightRows(params, 20000);
   const byNote = new Map<
     string,
-    { fecha: string; sacos: number; kg: number; monto: number; lineas: number }
+    { fecha: string; vendedor: string; sacos: number; kg: number; monto: number; lineas: number }
   >();
 
   for (const row of rows) {
     const nota = String(row.nota ?? '');
     if (!nota) continue;
     const kg = Number(row.kg ?? 0);
-    const bucket = byNote.get(nota) ?? { fecha: String(row.fecha ?? ''), sacos: 0, kg: 0, monto: 0, lineas: 0 };
+    const fecha = String(row.fecha ?? '');
+    // El vendedor de la nota es el que asigna la fixture a su primer renglón;
+    // así el nombre es estable entre consultas.
+    const vendedor = fixtureSellerOf(fecha, String(row.co_art ?? '')).seller.name;
+    const bucket = byNote.get(nota) ?? { fecha, vendedor, sacos: 0, kg: 0, monto: 0, lineas: 0 };
     if (String(row.uni_venta ?? '').toUpperCase() === 'SAC') bucket.sacos += Number(row.unid ?? 0);
     bucket.kg += kg;
     bucket.monto += kg * Number(row.precio_kg ?? 0.45);
@@ -952,11 +1328,46 @@ function customerNoteRows(
     .map(([nota, bucket]) => ({
       nota,
       fecha: bucket.fecha,
+      vendedor: bucket.vendedor,
       monto: round2(moneda === 'USD' ? bucket.monto : bucket.monto * 900),
       sacos: round2(bucket.sacos),
       kg: round2(bucket.kg),
       lineas: bucket.lineas,
     }));
+}
+
+// Detalle de artículos de cada nota: mismo origen sintético que los totales,
+// agregado por producto para que el desplegable muestre una línea por artículo.
+function customerNoteItems(
+  params: Record<string, unknown>,
+  limit: number,
+): Record<string, unknown>[] {
+  const rows = customerInsightRows(params, 20000);
+  const buckets = new Map<
+    string,
+    { nota: string; co_art: string; art_des: string; uni_venta: string; uni_relac: number; unid: number; kg: number }
+  >();
+
+  for (const row of rows) {
+    const nota = String(row.nota ?? '');
+    const coArt = String(row.co_art ?? '');
+    if (!nota || !coArt) continue;
+    const key = `${nota}|${coArt}`;
+    const bucket = buckets.get(key) ?? {
+      nota,
+      co_art: coArt,
+      art_des: String(row.art_des ?? ''),
+      uni_venta: String(row.uni_venta ?? ''),
+      uni_relac: Number(row.uni_relac ?? 1),
+      unid: 0,
+      kg: 0,
+    };
+    bucket.unid += Number(row.unid ?? 0);
+    bucket.kg += Number(row.kg ?? 0);
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()].slice(0, limit);
 }
 
 function customerNoteOrders(
@@ -975,6 +1386,22 @@ function customerNoteOrders(
     }
   }
   return rows.slice(0, limit);
+}
+
+// Factura de cada nota: se dejan algunas sin facturar (nota % 7 === 0) para
+// ejercitar el «N/T» de la ficha sin depender de Profit.
+function customerNoteInvoices(
+  params: Record<string, unknown>,
+  limit: number,
+): Record<string, unknown>[] {
+  const notes = customerNoteRows({ ...params, moneda: 'USD' }, 20000);
+  return notes
+    .filter((note) => Number(note.nota ?? 0) % 7 !== 0)
+    .map((note) => ({
+      nota: note.nota,
+      factura: String(50000000 + (Number(note.nota ?? 0) % 8000)),
+    }))
+    .slice(0, limit);
 }
 
 // Filas de `forecast` para todos los meses del rango [desde, hasta): una fila
@@ -1091,6 +1518,26 @@ function salesDailyProducts(params: Record<string, unknown>, limit: number): Rec
 
   return [...buckets.values()]
     .sort((a, b) => a.fecha.localeCompare(b.fecha) || b.kg - a.kg)
+    .slice(0, limit);
+}
+
+// Ventas por artículo de la ventana de 90 días que usa Disponibilidad para
+// calcular «Stock/día». Misma data determinista que el Forecast.
+function availabilitySales(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const buckets = new Map<string, number>();
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const code = String(row.co_art);
+    buckets.set(code, (buckets.get(code) ?? 0) + Number(row.unid));
+  }
+
+  return [...buckets.entries()]
+    .map(([co_art, unid]) => ({ co_art, unid }))
     .slice(0, limit);
 }
 
@@ -1219,6 +1666,7 @@ const SOLICITUDES_COLUMNS = [
   { name: 'Stock_03', dataType: 'decimal', maxLength: null, precision: 38, scale: 5, nullable: true },
   { name: 'Stock_9999', dataType: 'decimal', maxLength: null, precision: 38, scale: 5, nullable: true },
   { name: 'Stock_68', dataType: 'decimal', maxLength: null, precision: 38, scale: 5, nullable: true },
+  { name: 'Stock_PTP', dataType: 'decimal', maxLength: null, precision: 38, scale: 5, nullable: true },
   { name: 'vendedor', dataType: 'varchar', maxLength: 100, precision: null, scale: null, nullable: true },
   { name: 'tipo_cliente', dataType: 'varchar', maxLength: 60, precision: null, scale: null, nullable: true },
   { name: 'status_cotizacion', dataType: 'char', maxLength: 1, precision: null, scale: null, nullable: true },
@@ -1243,7 +1691,10 @@ export class FixturesProfitAdapter implements ProfitAdapter {
   }
 
   async select(viewName: string, _params: Record<string, unknown>, limit: number): Promise<Record<string, unknown>[]> {
-    return datasetFor(viewName).slice(0, limit);
+    // PTP es un almacén nuevo en Profit: en fixtures existe con 0 existencia.
+    return datasetFor(viewName)
+      .slice(0, limit)
+      .map((row) => ({ ...row, Stock_PTP: row.Stock_PTP ?? 0 }));
   }
 
   // En fixtures la consulta ampliada devuelve el mismo dataset determinista,
@@ -1256,6 +1707,14 @@ export class FixturesProfitAdapter implements ProfitAdapter {
   ): Promise<Record<string, unknown>[]> {
     const lower = sqlText.toLowerCase();
     if (lower.includes('dbo.forecast')) return forecastRows(params, limit);
+    // Analítica comercial de Pedidos (pestaña «Ventas»).
+    if (lower.includes('nexo:sales_analytics_monthly')) return analyticsMonthly(params, limit);
+    if (lower.includes('nexo:sales_analytics_billing')) return analyticsBilling(params, limit);
+    if (lower.includes('nexo:sales_analytics_products')) return analyticsProducts(params, limit);
+    if (lower.includes('nexo:sales_analytics_daily')) return analyticsDaily(params, limit);
+    // Disponibilidad: ventas por artículo de los últimos 90 días (Stock/día).
+    // Va antes de `reng_nde` porque la consulta usa esa tabla.
+    if (lower.includes('nexo:availability_sales')) return availabilitySales(params, limit);
     // Ficha 360 de clientes (volumen, facturación y surtido del segmento).
     // Va antes de `reng_nde` porque la consulta de volumen usa esa tabla.
     if (lower.includes('nexo:customer_insights_products')) return customerInsightRows(params, limit);
@@ -1264,6 +1723,8 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     // Detalle de notas de entrega con su pedido de origen (ficha 360).
     if (lower.includes('nexo:customer_notes_totals')) return customerNoteRows(params, limit);
     if (lower.includes('nexo:customer_notes_orders')) return customerNoteOrders(params, limit);
+    if (lower.includes('nexo:customer_notes_items')) return customerNoteItems(params, limit);
+    if (lower.includes('nexo:customer_notes_invoices')) return customerNoteInvoices(params, limit);
     // Catálogo completo de clientes y ventas por cliente (módulo Clientes).
     // Van antes de `reng_nde` porque la consulta de ventas usa esa tabla.
     if (lower.includes('nexo:customer_catalog')) return customerCatalog(limit);
@@ -1279,6 +1740,10 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     if (lower.includes('nexo:seller_portfolio')) return sellerPortfolio(limit);
     if (lower.includes('nexo:seller_sales_monthly')) return sellerSalesMonthly(params, limit);
     if (lower.includes('nexo:seller_sales_daily')) return sellerSalesDaily(params, limit);
+    // Cobranza y vencido: en fixtures no hay recibos; se devuelve vacío para
+    // que la ficha muestre «sin cobros» en vez de datos de otra consulta.
+    if (lower.includes('nexo:seller_collection')) return [];
+    if (lower.includes('nexo:seller_overdue')) return [];
     // Reconciliación de pedidos: se detecta por el marcador del SELECT.
     if (lower.includes('order_lifecycle_header')) return lifecycleHeaders(params, limit);
     if (lower.includes('order_lifecycle_pending')) return lifecyclePending(params, limit);
@@ -1292,6 +1757,12 @@ export class FixturesProfitAdapter implements ProfitAdapter {
       return lower.includes('as fecha') ? salesDaily(params, limit) : salesMonthly(params, limit);
     }
     if (lower.includes('cartera_resumen')) return statementSummaries(params, limit);
+    // Cuentas por cobrar: se detecta por el marcador y va antes del bloque
+    // genérico de `docum_cc` (la consulta también menciona esa tabla).
+    if (lower.includes('nexo:receivables_docs')) return FIXTURE_RECEIVABLES_DOCS.slice(0, limit);
+    if (lower.includes('nexo:receivables_payments')) {
+      return FIXTURE_RECEIVABLES_PAYMENTS.slice(0, limit);
+    }
     if (lower.includes('docum_cc') || lower.includes('documentos_pendientes')) {
       return statementRows(params, limit);
     }

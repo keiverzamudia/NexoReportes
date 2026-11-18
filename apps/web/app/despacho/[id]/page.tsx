@@ -22,7 +22,9 @@
 //
 // Al iniciar la carga o cerrar el primer producto el operador toma la hoja.
 // No hay acuse previo.
-// Nada de esto escribe en Profit.
+// La única escritura en Profit es la fecha de entrega (permiso
+// `pedidos:change_date` y auditoría); el resto del despacho no genera
+// movimientos.
 // ============================================================
 
 import type {
@@ -55,6 +57,9 @@ import {
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
+import { DeliveryDateButton } from '../../../components/DeliveryDate';
+import { DeliveryDateDialog } from '../../../components/DeliveryDateDialog';
+import type { DeliveryDateTarget } from '../../../components/DeliveryDateDialog';
 import { DispatchBitacoraDrawer } from '../../../components/DispatchBitacoraDrawer';
 import { DispatchCustomerTimeline } from '../../../components/DispatchCustomerTimeline';
 import { DispatchInvoiceDialog } from '../../../components/DispatchInvoiceDialog';
@@ -67,6 +72,7 @@ import type { LoadPlanLine } from '../../../components/TruckLoadPlan';
 import { AppNav, LoginScreen } from '../../../components/shell';
 import { Badge, Card, EmptyState, PageHeader, Skeleton, cx } from '../../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../../lib/api';
+import { hasPermission } from '../../../lib/permissions';
 import {
   activeLines as activeSheetLines,
   buildDispatchReport,
@@ -134,6 +140,8 @@ export default function DispatchSheetPage() {
   const [cancelReason, setCancelReason] = useState('');
   const [reportOpen, setReportOpen] = useState(false);
   const [bitacoraOpen, setBitacoraOpen] = useState(false);
+  // Editar la entrega en Profit desde el despacho (mismo permiso que Pedidos).
+  const [dateTarget, setDateTarget] = useState<DeliveryDateTarget | null>(null);
 
   const { data: sessionUser } = useQuery({ queryKey: ['me'], queryFn: currentUser, staleTime: 60_000, retry: false });
 
@@ -152,6 +160,9 @@ export default function DispatchSheetPage() {
   const isMobile = useIsMobile();
   const isPlanner =
     ['PLANIFICADOR', 'GERENCIA', 'ADMIN'].includes(sessionUser?.baseRole ?? '') && !sheet?.canOperate;
+  // Cambiar la entrega escribe en Profit: permiso independiente y solo antes
+  // de iniciar la carga (el backend también lo bloquea).
+  const canEditDates = hasPermission(sessionUser?.permissions, 'pedidos', 'change_date');
 
   useEffect(() => {
     if (!toast) return;
@@ -336,6 +347,23 @@ export default function DispatchSheetPage() {
     const target = noteTarget;
     setNoteTarget(null);
     if (target) setDraft(target.line.id, null);
+  }
+
+  /** La fecha es del pedido, no del renglón: el diálogo deduplica por pedido. */
+  function openDateEditor(line: DispatchSheetLine) {
+    setDateTarget({
+      title: `Entrega del pedido ${line.orderNumber}`,
+      customerName: line.customerName ?? 'Cliente',
+      customerCode: line.customerCode,
+      items: [
+        {
+          orderNumber: line.orderNumber,
+          productCode: line.productCode,
+          orderDate: null,
+          requestedDate: line.effectiveDate,
+        },
+      ],
+    });
   }
 
   /** «Iniciar carga»: arranca los relojes del cliente sin marcar productos. */
@@ -845,9 +873,18 @@ export default function DispatchSheetPage() {
                             </div>
 
                             <Cell label="Entrega" align="right">
-                              <span className="tabular-nums text-on-surface-variant">
-                                {formatBusinessDate(line.effectiveDate)}
-                              </span>
+                              {canEditDates && !closed && !started && line.status === 'PENDIENTE' ? (
+                                <DeliveryDateButton
+                                  date={line.effectiveDate}
+                                  onEdit={() => openDateEditor(line)}
+                                  label={`Entrega en Profit del pedido ${line.orderNumber}`}
+                                  hint="Mueve el pedido completo en Profit y esta hoja."
+                                />
+                              ) : (
+                                <span className="tabular-nums text-on-surface-variant">
+                                  {formatBusinessDate(line.effectiveDate)}
+                                </span>
+                              )}
                             </Cell>
 
                             <Cell label="Cargado" align="right">
@@ -1099,7 +1136,8 @@ export default function DispatchSheetPage() {
 
         <p className="flex flex-wrap items-center gap-space-xs text-label-sm normal-case text-on-surface-variant">
           <UserCheck aria-hidden className="size-3.5" />
-          Quien inicia la carga o cierra el primer producto queda como responsable. Este despacho no genera movimientos en Profit.
+          Quien inicia la carga o cierra el primer producto queda como responsable. El despacho no genera movimientos en
+          Profit; solo la fecha de entrega se escribe allí, con permiso y auditoría.
         </p>
       </main>
       )}
@@ -1122,6 +1160,26 @@ export default function DispatchSheetPage() {
         busy={busy === 'invoice'}
         onClose={() => setInvoiceTarget(null)}
         onConfirm={(input) => void confirmInvoice(input)}
+      />
+
+      <DeliveryDateDialog
+        open={dateTarget !== null}
+        target={dateTarget}
+        onClose={() => setDateTarget(null)}
+        onSaved={(result) => {
+          setDateTarget(null);
+          const parts: string[] = [];
+          if (result.applied > 0) parts.push(`${result.applied} pedido(s) movido(s)`);
+          if (result.skipped > 0) parts.push(`${result.skipped} omitido(s)`);
+          if (result.failed > 0) parts.push(`${result.failed} con error`);
+          setToast(
+            result.dryRun
+              ? `Simulación: ${result.applied} pedido(s) cambiarían de entrega.`
+              : parts.length > 0
+                ? `Entrega: ${parts.join(' · ')}.`
+                : 'La entrega no cambió.',
+          );
+        }}
       />
 
       {isAdmin && (

@@ -63,7 +63,7 @@ export class ProfitDeliveryDatesService {
     const { items, date, cause, reason, note } = input;
     if (!this.writer.enabled) {
       throw new ServiceUnavailableException(
-        'El cambio de entrega en Profit no está habilitado. Falta configurar PROFIT_WRITE_ENABLED y las credenciales de escritura.',
+        'El cambio de entrega en Profit está deshabilitado en este servidor: revisa PROFIT_WRITE_ENABLED=false y las credenciales SQL de escritura.',
       );
     }
 
@@ -310,10 +310,10 @@ export class ProfitDeliveryDatesService {
             sheetId: sheet.id,
             kind: 'SYSTEM',
             type: 'FECHA_MOVIDA',
-            body: `La entrega del pedido ${orderNumber} se movió de ${previousDate ?? '—'} a ${date} desde Pedidos.`,
+            body: `La entrega del pedido ${orderNumber} se movió de ${previousDate ?? '—'} a ${date}.`,
             authorId: actor.id ?? null,
             authorCode: actor.code ?? null,
-            authorName: 'Pedidos',
+            authorName: 'Nexo',
           },
         });
       }

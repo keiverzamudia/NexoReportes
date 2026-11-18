@@ -4,6 +4,7 @@ import {
   DraftDispatchImpact,
   DraftReleaseInput,
   MAX_SCENARIOS,
+  SCENARIO_RETENTION_HOURS,
   ScenarioDetail,
   ScenarioDraftInput,
   ScenarioDraftResponse,
@@ -667,13 +668,92 @@ export class ScenariosService implements OnModuleInit {
 
   // ---------- Escenarios guardados ----------
 
+  // Las simulaciones son fotos de vida corta: la hoja de despacho ya copió
+  // nombre, foto, receta y guía de carga, así que a las 72 h sin uso se
+  // borran solas. El barrido es idempotente y deja traza en la bitácora
+  // ANTES del DELETE (el historial de restauraciones cae en cascada).
+  async purgeExpired(
+    options: { hours?: number; dryRun?: boolean } = {},
+  ): Promise<{ deleted: number; expired: number }> {
+    const hours = options.hours ?? SCENARIO_RETENTION_HOURS;
+    const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000);
+    const rows = await this.prisma.dispatchScenario.findMany({
+      where: { kind: 'SAVED', updatedAt: { lt: cutoff } },
+      include: { owner: { select: { profitCode: true, displayName: true } } },
+    });
+    if (rows.length === 0) return { deleted: 0, expired: 0 };
+
+    // Enviar al almacén también es «usar»: la simulación sobrevive 72 h desde
+    // el último envío, aunque su fila no se haya tocado desde entonces.
+    const sheets = await this.prisma.dispatchSheet.findMany({
+      where: { scenarioId: { in: rows.map((row) => row.id) } },
+      select: { scenarioId: true, number: true, sentAt: true },
+    });
+    const sheetsByScenario = new Map<string, string[]>();
+    const lastSentByScenario = new Map<string, Date>();
+    for (const sheet of sheets) {
+      if (!sheet.scenarioId) continue;
+      const list = sheetsByScenario.get(sheet.scenarioId) ?? [];
+      list.push(sheet.number);
+      sheetsByScenario.set(sheet.scenarioId, list);
+      const current = lastSentByScenario.get(sheet.scenarioId);
+      if (!current || sheet.sentAt.getTime() > current.getTime()) {
+        lastSentByScenario.set(sheet.scenarioId, sheet.sentAt);
+      }
+    }
+    const expired = rows.filter((row) => {
+      const lastSent = lastSentByScenario.get(row.id);
+      return !lastSent || lastSent.getTime() < cutoff.getTime();
+    });
+    if (expired.length === 0) return { deleted: 0, expired: 0 };
+    if (options.dryRun) {
+      this.logger.log(`[simulaciones] dry-run: ${expired.length} vencerían a las ${hours} h.`);
+      return { deleted: 0, expired: expired.length };
+    }
+
+    const ids = expired.map((row) => row.id);
+    await this.prisma.dispatchScenario.deleteMany({ where: { id: { in: ids } } });
+
+    for (const row of expired) {
+      await this.audit.record({
+        actorId: null,
+        actorEmail: 'SYSTEM',
+        action: 'SCENARIO_AUTO_DELETE',
+        entityType: 'DispatchScenario',
+        entityId: row.id,
+        context: {
+          name: row.name,
+          ownerId: row.ownerId,
+          ownerCode: row.owner?.profitCode ?? null,
+          lines: row.lineCount,
+          coverage: row.coverage,
+          hours,
+          updatedAt: row.updatedAt.toISOString(),
+          dispatchSheets: sheetsByScenario.get(row.id) ?? [],
+        },
+      });
+    }
+
+    this.logger.log(`[simulaciones] ${expired.length} eliminadas por vencer a las ${hours} h.`);
+    return { deleted: expired.length, expired: expired.length };
+  }
+
   async create(viewerInput: ScenarioViewerInput, input: ScenarioSaveInput, actorInput: ScenarioActorInput): Promise<ScenarioDetail> {
     const viewer = asViewer(viewerInput);
     const actor = asActor(actorInput);
+    // Antes de contar, libera el cupo de las vencidas: si el equipo llega al
+    // tope, primero se limpia lo que ya cumplió su ciclo.
+    try {
+      await this.purgeExpired();
+    } catch (error) {
+      this.logger.warn(
+        `No se pudieron limpiar las simulaciones vencidas: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     const saved = await this.prisma.dispatchScenario.count({ where: { kind: 'SAVED' } });
     if (saved >= MAX_SCENARIOS) {
       throw new ConflictException(
-        `El equipo llegó al límite de ${MAX_SCENARIOS} simulaciones guardadas. Borra una para guardar otra.`,
+        `El equipo llegó al límite de ${MAX_SCENARIOS} simulaciones guardadas. Borra una o espera a que se limpien las de más de ${SCENARIO_RETENTION_HOURS} h.`,
       );
     }
 

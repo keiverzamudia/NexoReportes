@@ -105,11 +105,57 @@ export class PermissionsService implements OnModuleInit {
     // resucitar permisos que un administrador haya quitado a mano.
     await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'llegadas');
     await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'vendedor');
+    // Cuentas por cobrar nace como module de solo lectura para GERENCIA.
+    await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'cxc');
+    // Permiso especial de cuotas: ADMIN lo recibe por sistema al arrancar.
+    // Los demás roles lo obtienen solo si un administrador se lo concede.
+    await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'vendedor_cuotas');
 
     // «Cambiar fecha de entrega» nace como permiso independiente de
     // «Editar» (ahora escribe en Profit). Los roles y excepciones que ya
     // tenían «Editar» conservan la capacidad sin intervención manual.
     await this.inheritPermission('pedidos', 'update', 'change_date');
+
+    // Pedidos se partió en tres vistas (Simulador / Ventas / Historial).
+    // Se siembran UNA sola vez en los roles de sistema que ya ven Pedidos;
+    // a partir de ahí el administrador decide y una revocación no se resucita
+    // en el siguiente arranque.
+    await this.seedPedidosViews();
+  }
+
+  private async seedPedidosViews(): Promise<void> {
+    const markerKey = 'rbac.seed.pedidos_views.v1';
+    const marker = await this.prisma.systemSetting.findUnique({ where: { key: markerKey } });
+    if (marker) return;
+
+    const views = ['view_summary', 'view_history'] as const;
+    for (const role of ROLES) {
+      const read = await this.prisma.rolePermission.findUnique({
+        where: { roleCode_module_action: { roleCode: role, module: 'pedidos', action: 'read' } },
+      });
+      if (!read) continue;
+
+      const defaults = DEFAULT_ROLE_PERMISSIONS[role]
+        .filter(([module, action]) => module === 'pedidos' && views.includes(action as (typeof views)[number]))
+        .map(([, action]) => action);
+      for (const action of defaults) {
+        await this.prisma.rolePermission.upsert({
+          where: { roleCode_module_action: { roleCode: role, module: 'pedidos', action } },
+          update: {},
+          create: { roleCode: role, module: 'pedidos', action },
+        });
+      }
+    }
+
+    await this.prisma.systemSetting.upsert({
+      where: { key: markerKey },
+      update: {},
+      create: {
+        key: markerKey,
+        value: new Date().toISOString(),
+        description: 'Siembra inicial de las vistas Ventas e Historial de Pedidos.',
+      },
+    });
   }
 
   /**

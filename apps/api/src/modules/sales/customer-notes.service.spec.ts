@@ -4,12 +4,15 @@ import { CustomerNotesService } from './customer-notes.service';
 interface FakeOptions {
   totalsFail?: boolean;
   linksFail?: boolean;
+  itemsFail?: boolean;
+  invoicesFail?: boolean;
 }
 
 const TOTALS = [
   {
     nota: '14808',
     fecha: '2026-08-12T00:00:00.000Z',
+    vendedor: 'JULIARD ANGULO',
     monto: 2839.12,
     sacos: 223,
     kg: 5645,
@@ -18,6 +21,7 @@ const TOTALS = [
   {
     nota: '14368',
     fecha: '2026-06-10T00:00:00.000Z',
+    vendedor: 'MEIDY CRISTINA ARIAS VIDAL',
     monto: 2346.09,
     sacos: 120,
     kg: 3540,
@@ -26,11 +30,25 @@ const TOTALS = [
   {
     nota: '14073',
     fecha: '2026-04-30T00:00:00.000Z',
+    vendedor: '',
     monto: 2013.42,
     sacos: 203,
     kg: 5524,
     lineas: 5,
   },
+];
+
+const ITEMS = [
+  { nota: '14808', co_art: 'ABABOV58', art_des: 'MULTIPROPOSITO 14%', uni_venta: 'SAC', unid: 120, kg: 4800 },
+  { nota: '14808', co_art: 'ABAEQUI01', art_des: 'ALFALFA EN PELLETS', uni_venta: 'SAC', unid: 3, kg: 845 },
+  { nota: '14368', co_art: 'ABABOV58', art_des: 'MULTIPROPOSITO 14%', uni_venta: 'SAC', unid: 120, kg: 3540 },
+];
+
+// Factura(s) de cada nota: `14073` queda sin factura para probar el «N/T».
+const INVOICES = [
+  { nota: '14808', factura: '50001772' },
+  { nota: '14368', factura: '50001600' },
+  { nota: '14368', factura: '50001601' },
 ];
 
 const LINKS = [
@@ -58,6 +76,14 @@ function createProfit(options: FakeOptions = {}) {
         if (options.linksFail) throw new Error('Sin pedidos');
         return LINKS;
       }
+      if (sql.includes('customer_notes_items')) {
+        if (options.itemsFail) throw new Error('Sin artículos');
+        return ITEMS;
+      }
+      if (sql.includes('customer_notes_invoices')) {
+        if (options.invoicesFail) throw new Error('Sin facturas');
+        return INVOICES;
+      }
       return [];
     },
     totalsCalls: () => totalsCalls,
@@ -78,8 +104,14 @@ describe('CustomerNotesService', () => {
     expect(first.amount).toBe(2839.12);
     expect(first.sacks).toBe(223);
     expect(first.tonnes).toBe(5.65);
+    expect(first.vendor).toBe('JULIARD ANGULO');
     // El vínculo directo y el indirecto son el mismo pedido: no se duplica.
     expect(first.orders).toEqual([{ number: '6222', profitOrder: '8514' }]);
+    // Detalle agregado por artículo, el de más peso primero.
+    expect(first.items.map((item) => item.code)).toEqual(['ABABOV58', 'ABAEQUI01']);
+    expect(first.items[0]!.tonnes).toBe(4.8);
+    // La factura que respalda la nota (vacío = «N/T» en la ficha).
+    expect(first.invoices).toEqual(['50001772']);
 
     expect(result.notes[1]!.orders).toEqual([
       { number: '5661', profitOrder: '8012' },
@@ -88,6 +120,12 @@ describe('CustomerNotesService', () => {
 
     // Sin cadena hasta la solicitud se muestra el pedido de Profit.
     expect(result.notes[2]!.orders).toEqual([{ number: '7723', profitOrder: null }]);
+    // Nota sin factura: la ficha pinta «N/T».
+    expect(result.notes[2]!.invoices).toEqual([]);
+    expect(result.notes[1]!.invoices).toEqual(['50001600', '50001601']);
+    // Sin vendedor en Profit queda null (nunca se inventa).
+    expect(result.notes[2]!.vendor).toBeNull();
+    expect(result.notes[2]!.items).toEqual([]);
   });
 
   it('si falla el vínculo conserva las notas sin pedidos', async () => {
@@ -98,6 +136,36 @@ describe('CustomerNotesService', () => {
     expect(result.ordersAvailable).toBe(false);
     expect(result.notes).toHaveLength(3);
     expect(result.notes.every((note) => note.orders.length === 0)).toBe(true);
+    // El detalle de artículos se lee por separado: no se pierde.
+    expect(result.itemsAvailable).toBe(true);
+    expect(result.notes[0]!.items).toHaveLength(2);
+  });
+
+  it('si falla la factura conserva las notas sin factura y no cachea', async () => {
+    const profit = createProfit({ invoicesFail: true });
+    const service = new CustomerNotesService(profit as never);
+
+    const result = await service.get('030432700', { months: 12, currency: 'USD' });
+    expect(result.available).toBe(true);
+    expect(result.invoicesAvailable).toBe(false);
+    expect(result.notes.every((note) => note.invoices.length === 0)).toBe(true);
+
+    await service.get('030432700', { months: 12, currency: 'USD' });
+    expect(profit.totalsCalls()).toBe(2);
+  });
+
+  it('si falla el detalle conserva las notas sin artículos y no cachea', async () => {
+    const profit = createProfit({ itemsFail: true });
+    const service = new CustomerNotesService(profit as never);
+
+    const result = await service.get('030432700', { months: 12, currency: 'USD' });
+    expect(result.available).toBe(true);
+    expect(result.itemsAvailable).toBe(false);
+    expect(result.notes).toHaveLength(3);
+    expect(result.notes.every((note) => note.items.length === 0)).toBe(true);
+
+    await service.get('030432700', { months: 12, currency: 'USD' });
+    expect(profit.totalsCalls()).toBe(2);
   });
 
   it('si falla Profit no inventa notas y no cachea el fallo', async () => {

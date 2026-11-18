@@ -145,6 +145,10 @@ export function DeliveryDateDialog({
       void queryClient.invalidateQueries({ queryKey: ['order'] });
       void queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
       void queryClient.invalidateQueries({ queryKey: ['customer-insights'] });
+      // La hoja abierta mueve su renglón y la llegada PCP: refrescarla ya.
+      void queryClient.invalidateQueries({ queryKey: ['dispatch-sheet'] });
+      void queryClient.invalidateQueries({ queryKey: ['dispatch-sheets'] });
+      void queryClient.invalidateQueries({ queryKey: ['dispatch-pulse'] });
       onSaved(result);
     },
     onError: (causeError) => {
@@ -234,12 +238,20 @@ export function DeliveryDateDialog({
                       {order.orderNumber}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block text-[10px] font-semibold uppercase tracking-wider text-outline">
-                        Emisión
-                      </span>
-                      <span className="block text-label-sm tabular-nums text-on-surface-variant">
-                        {fmtDate(order.orderDate)}
-                      </span>
+                      {order.orderDate ? (
+                        <>
+                          <span className="block text-[10px] font-semibold uppercase tracking-wider text-outline">
+                            Emisión
+                          </span>
+                          <span className="block text-label-sm tabular-nums text-on-surface-variant">
+                            {fmtDate(order.orderDate)}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="block text-label-sm text-on-surface-variant">
+                          Pedido completo
+                        </span>
+                      )}
                     </span>
                     <span className="shrink-0 text-right">
                       <span className="block text-[10px] font-semibold uppercase tracking-wider text-outline">

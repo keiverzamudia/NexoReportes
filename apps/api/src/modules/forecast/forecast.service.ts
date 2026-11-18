@@ -111,6 +111,10 @@ export const WEEK_BOUNDS = [
 const WAREHOUSE_03 = 'Stock 03';
 const WAREHOUSE_9999 = 'Stock 9999';
 const WAREHOUSE_68 = 'Stock 68';
+// El forecast mantiene su desglose histórico de 3 almacenes. PTP (PT
+// PRODUCCION) se usa en Disponibilidad, pero todavía no se suma al plan de
+// producción: incluirlo aquí rompería la suma 03 + 9999 + 68 = stockTotal.
+const FORECAST_WAREHOUSES = new Set([WAREHOUSE_03, WAREHOUSE_9999, WAREHOUSE_68]);
 
 // Forecast mensual mantenido por producción en Profit (`COR_A3.dbo.forecast`).
 // `fecha` es el mes de vigencia (primer día del mes), `co_art` el artículo y
@@ -1141,7 +1145,18 @@ export class ForecastService {
     year: number,
     month: number,
     status: ForecastSalesStatus,
-  ): Promise<{ totalKg: number; available: boolean; source: ForecastSalesSource }> {
+  ): Promise<{
+    totalKg: number;
+    available: boolean;
+    source: ForecastSalesSource;
+    /** Última lectura viva de `forecast` (null si Profit no respondió). */
+    liveKg: number | null;
+    /** Snapshot local congelado (null si no hay captura). */
+    capturedKg: number | null;
+    capturedAt: string | null;
+    /** Cambio detectado en Profit con el mes ya capturado (solo mes en curso). */
+    driftAt: string | null;
+  }> {
     const key = monthKey(year, month);
     const [series, targets] = await Promise.all([
       this.profitForecastSeries([{ year, month }]),
@@ -1150,7 +1165,52 @@ export class ForecastService {
     const live = series.byMonth.get(key) ?? new Map<string, number>();
     const captured = targets.get(key) ?? new Map<string, ForecastTargetMeta>();
     const resolved = resolveForecastTargets(status, series.available, live, captured);
-    return { totalKg: resolved.totalKg, available: resolved.forecastAvailable, source: resolved.source };
+
+    let liveTotal = 0;
+    for (const value of live.values()) liveTotal += value;
+    let capturedTotal = 0;
+    for (const meta of captured.values()) capturedTotal += meta.targetKg;
+    const latest = (values: Array<string | null>): string | null =>
+      values.filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+
+    return {
+      totalKg: resolved.totalKg,
+      available: resolved.forecastAvailable,
+      source: resolved.source,
+      liveKg: series.available ? roundTo(liveTotal) : null,
+      capturedKg: captured.size > 0 ? roundTo(capturedTotal) : null,
+      capturedAt: latest([...captured.values()].map((meta) => meta.firstCapturedAt)),
+      // Igual que Ventas vs Forecast: el drift solo se avisa en el mes en curso.
+      driftAt:
+        status === 'OPEN' ? latest([...captured.values()].map((meta) => meta.driftDetectedAt)) : null,
+    };
+  }
+
+  /**
+   * Cartera comprometida del mes por cliente (pedidos activos con entrega
+   * efectiva dentro del mes). Es el mismo dato que dibuja la tira diaria; lo
+   * usa el plan de cierre de brecha de «Vendedor vs Forecast» para no pedirle
+   * a la cartera kg que ya están comprometidos.
+   */
+  async pendingKgByCustomer(year: number, month: number): Promise<Map<string, number>> {
+    const from = new Date(Date.UTC(year, month - 1, 1));
+    const to = new Date(Date.UTC(year, month, 1));
+    const map = new Map<string, number>();
+    try {
+      const lines = await this.pendingLines(from, to);
+      for (const line of lines) {
+        const code = (line.customerCode ?? '').trim();
+        if (!code) continue;
+        map.set(code, roundTo((map.get(code) ?? 0) + line.kg));
+      }
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo leer la cartera pendiente por cliente: ${
+          error instanceof Error ? error.message : 'error desconocido'
+        }`,
+      );
+    }
+    return map;
   }
 
   // ============================================================
@@ -2364,6 +2424,7 @@ export class ForecastService {
     });
     const map = new Map<string, { total: number; byWarehouse: InventoryByWarehouse[] }>();
     for (const l of snapshot?.lines ?? []) {
+      if (!FORECAST_WAREHOUSES.has(l.warehouseCode)) continue;
       const entry: InventoryByWarehouse = {
         warehouseCode: l.warehouseCode,
         warehouseName: l.warehouse?.name ?? null,

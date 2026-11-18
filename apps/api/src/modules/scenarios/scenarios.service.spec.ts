@@ -12,6 +12,12 @@ function matchesWhere(where: Row, row: Row): boolean {
     if (value && typeof value === 'object' && 'in' in (value as Row)) {
       return (value as { in: unknown[] }).in.includes(row[key]);
     }
+    if (value && typeof value === 'object' && 'lt' in (value as Row)) {
+      const left = row[key];
+      const right = (value as { lt: unknown }).lt;
+      if (left instanceof Date && right instanceof Date) return left.getTime() < right.getTime();
+      return String(left) < String(right);
+    }
     return row[key] === value;
   });
 }
@@ -42,6 +48,8 @@ function createFakePrisma() {
     dispatchSheet: {
       findFirst: async ({ where }: Row) =>
         state.sheets.find((row) => matchesWhere(where, row)) ?? null,
+      findMany: async ({ where }: Row) =>
+        state.sheets.filter((row) => matchesWhere(where, row)),
     },
     salesOrderLine: {
       findMany: async () => [],
@@ -100,6 +108,13 @@ function createFakePrisma() {
         // Cascada: el historial de restauraciones se va con el escenario.
         state.restores = state.restores.filter((restore) => restore.scenarioId !== where.id);
         return removed;
+      },
+      deleteMany: async ({ where }: Row) => {
+        const ids = (where?.id?.in as unknown[] | undefined) ?? [];
+        const before = state.scenarios.length;
+        state.scenarios = state.scenarios.filter((row) => !ids.includes(row.id));
+        state.restores = state.restores.filter((restore) => !ids.includes(restore.scenarioId));
+        return { count: before - state.scenarios.length };
       },
     },
     dispatchDraft: {
@@ -459,5 +474,84 @@ describe('ScenariosService', () => {
 
     await service.remove('u1', created.id, { id: 'u1' });
     expect(prisma.state.restores).toHaveLength(0);
+  });
+
+  it('borra las simulaciones vencidas (72 h) y deja traza en la auditoría', async () => {
+    const prisma = createFakePrisma();
+    const events: Row[] = [];
+    const auditSpy = {
+      record: async (event: Row) => {
+        events.push(event);
+      },
+    } as never;
+    const service = new ScenariosService(prisma as never, auditSpy, dispatch);
+    const vieja = await service.create('u1', saveInput({ name: 'Vieja' }), {});
+    const nueva = await service.create('u1', saveInput({ name: 'Nueva' }), {});
+    prisma.state.scenarios.find((row) => row.id === vieja.id)!.updatedAt = new Date(
+      Date.now() - 73 * 60 * 60 * 1000,
+    );
+    // Cada `create` deja su propia traza; aquí solo interesa la del barrido.
+    events.length = 0;
+
+    const result = await service.purgeExpired();
+
+    expect(result.deleted).toBe(1);
+    expect(prisma.state.scenarios.map((row) => row.id)).toEqual([nueva.id]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      action: 'SCENARIO_AUTO_DELETE',
+      entityType: 'DispatchScenario',
+      entityId: vieja.id,
+    });
+  });
+
+  it('restaurar reinicia el reloj de las 72 h', async () => {
+    const prisma = createFakePrisma();
+    const service = new ScenariosService(prisma as never, audit, dispatch);
+    const created = await service.create('u1', saveInput(), {});
+    prisma.state.scenarios[0]!.updatedAt = new Date(Date.now() - 80 * 60 * 60 * 1000);
+
+    await service.markRestored('u1', created.id, restoreInput({ restored: 2 }), { id: 'u1' });
+    const result = await service.purgeExpired();
+
+    expect(result.deleted).toBe(0);
+    expect(prisma.state.scenarios).toHaveLength(1);
+  });
+
+  it('enviar al almacén también reinicia el reloj de las 72 h', async () => {
+    const prisma = createFakePrisma();
+    const service = new ScenariosService(prisma as never, audit, dispatch);
+    const created = await service.create('u1', saveInput(), {});
+    prisma.state.scenarios[0]!.updatedAt = new Date(Date.now() - 80 * 60 * 60 * 1000);
+    prisma.state.sheets.push({
+      id: 'sheet-1',
+      scenarioId: created.id,
+      number: 'DSP-2026-0001',
+      sentAt: new Date(),
+    });
+
+    const result = await service.purgeExpired();
+
+    expect(result.deleted).toBe(0);
+    expect(prisma.state.scenarios).toHaveLength(1);
+  });
+
+  it('el dry-run no borra y guardar libera cupo limpiando las vencidas', async () => {
+    const prisma = createFakePrisma();
+    const service = new ScenariosService(prisma as never, audit, dispatch);
+    for (let index = 0; index < 25; index += 1) {
+      await service.create('u1', saveInput({ name: `Plan ${index}` }), {});
+    }
+    const oldDate = new Date(Date.now() - 96 * 60 * 60 * 1000);
+    for (const row of prisma.state.scenarios) row.updatedAt = oldDate;
+
+    const dryRun = await service.purgeExpired({ dryRun: true });
+    expect(dryRun).toEqual({ deleted: 0, expired: 25 });
+    expect(prisma.state.scenarios).toHaveLength(25);
+
+    // El guardado corre el barrido antes del conteo: libera el cupo solo.
+    const created = await service.create('u1', saveInput({ name: 'Plan 26' }), {});
+    expect(created.name).toBe('Plan 26');
+    expect(prisma.state.scenarios).toHaveLength(1);
   });
 });

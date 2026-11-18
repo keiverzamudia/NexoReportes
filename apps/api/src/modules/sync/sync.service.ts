@@ -13,13 +13,19 @@ type ProfitViewsConfig = { solicitudes?: string };
 
 // La vista expone las existencias en columnas fijas por almacén.
 // Códigos derivados de los nombres reales de columna (Stock_03 → Stock 03).
+// PTP (PT PRODUCCION) se agregó al Profit el 18/11/2026.
 const STOCK_COLUMNS = [
+  { column: 'stockPtp', code: 'Stock PTP' },
   { column: 'stock03', code: 'Stock 03' },
   { column: 'stock9999', code: 'Stock 9999' },
   { column: 'stock68', code: 'Stock 68' },
 ] as const;
 
 type StockColumn = (typeof STOCK_COLUMNS)[number]['column'];
+
+// Forma mínima que necesita la fotografía de inventario. La cumplen tanto las
+// filas de la vista de solicitudes como las de PROFIT_INVENTORY_SQL.
+type StockLine = Pick<RawSolicitudLine, 'coArt' | 'stockPtp' | 'stock03' | 'stock9999' | 'stock68'>;
 
 function warehouseCodeFor(column: StockColumn): string {
   return STOCK_COLUMNS.find((c) => c.column === column)?.code ?? column;
@@ -52,6 +58,7 @@ SELECT
     r.uni_venta               AS uni_venta,
     a.uni_relac               AS relacion_empaque,
     r.pendiente * a.uni_relac AS kg,
+    (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = r.co_art AND sa.co_alma = 'PTP')  AS Stock_PTP,
     (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = r.co_art AND sa.co_alma = '03')   AS Stock_03,
     (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = r.co_art AND sa.co_alma = '9999') AS Stock_9999,
     (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = r.co_art AND sa.co_alma = '6804') AS Stock_68
@@ -63,6 +70,21 @@ LEFT JOIN  dbo.vendedor AS v  ON v.co_ven   = f.co_ven
 LEFT JOIN  dbo.vendedor AS cv ON cv.co_ven  = cl.co_ven
 LEFT JOIN  dbo.tipo_cli AS tc ON tc.tip_cli = cl.tipo
 WHERE f.anulada = 0 AND f.status <> '2' AND r.pendiente > 0
+`;
+
+// Inventario COMPLETO de la línea de producción: una fila por artículo ABA con
+// la existencia de los 4 almacenes que usa Disponibilidad (PTP, 03, 9999, 6804).
+// Se usa SOLO en la sincronización de EXISTENCIAS, para que el stock no dependa
+// de que el artículo tenga un pedido pendiente. Solo lectura.
+const PROFIT_INVENTORY_SQL = `
+SELECT /* nexo:inventory */
+    RTRIM(a.co_art) AS co_art,
+    (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = a.co_art AND sa.co_alma = 'PTP')  AS Stock_PTP,
+    (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = a.co_art AND sa.co_alma = '03')   AS Stock_03,
+    (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = a.co_art AND sa.co_alma = '9999') AS Stock_9999,
+    (SELECT ISNULL(SUM(sa.stock_act), 0) FROM dbo.st_almac AS sa WHERE sa.co_art = a.co_art AND sa.co_alma = '6804') AS Stock_68
+FROM dbo.art AS a
+WHERE a.anulado = 0 AND a.co_lin = 'ABA'
 `;
 
 // Catálogo COMPLETO de la línea de producción (ABA = alimentos balanceados),
@@ -204,9 +226,15 @@ export class SyncService {
   // Ejecución de sincronización (idempotente)
   // Todas las corridas leen la MISMA vista aplanada y derivan el
   // dominio solicitado. Cada fila = un renglón de solicitud.
+  //
+  // Excepción: EXISTENCIAS en mssql usa una consulta de inventario propia para
+  // traer el stock de TODOS los artículos ABA (no solo los que tienen pedido).
   // ============================================================
   async run(domain: SyncDomain, actor?: { id?: string; email?: string }): Promise<SyncRun> {
-    const source = this.resolveSource();
+    const inventoryMode = domain === 'EXISTENCIAS' && this.profit.dialect === 'mssql';
+    const source = inventoryMode
+      ? { ref: 'SQL:st_almac@COR_A3', sql: PROFIT_INVENTORY_SQL }
+      : this.resolveSource();
 
     const run = await this.prisma.syncRun.create({
       data: { domain, status: 'EN_CURSO', sourceRef: source.ref },
@@ -224,33 +252,63 @@ export class SyncService {
       // Normalización primero: las filas inválidas se registran como error
       // y NO alimentan ningún dominio (no se inventa datos para enmascararlos).
       const lines: RawSolicitudLine[] = [];
-      for (const raw of rawRows) {
-        const parsed = normalizeSolicitudRow(raw);
-        if (!parsed.ok || !parsed.value) {
-          errorsCount += 1;
-          await this.prisma.syncError.create({
-            data: {
-              runId: run.id,
-              entity: domain,
-              externalId: this.rawExternalId(raw),
-              message: parsed.issues.map((i) => `${i.field}: ${i.message}`).join('; ') || 'Fila inválida',
-              raw: JSON.stringify(raw).slice(0, 4000),
-            },
+      const stockLines: StockLine[] = [];
+      if (inventoryMode) {
+        for (const raw of rawRows) {
+          const coArt = String(raw.co_art ?? '').trim();
+          if (!coArt) {
+            errorsCount += 1;
+            await this.prisma.syncError.create({
+              data: {
+                runId: run.id,
+                entity: domain,
+                externalId: this.rawExternalId(raw),
+                message: 'Código de artículo ausente en el inventario',
+                raw: JSON.stringify(raw).slice(0, 4000),
+              },
+            });
+            continue;
+          }
+          stockLines.push({
+            coArt,
+            stockPtp: parseProfitDecimal(raw.Stock_PTP ?? raw.stock_ptp),
+            stock03: parseProfitDecimal(raw.Stock_03 ?? raw.stock_03),
+            stock9999: parseProfitDecimal(raw.Stock_9999 ?? raw.stock_9999),
+            stock68: parseProfitDecimal(raw.Stock_68 ?? raw.stock_68),
           });
-          continue;
         }
-        lines.push(parsed.value);
+      } else {
+        for (const raw of rawRows) {
+          const parsed = normalizeSolicitudRow(raw);
+          if (!parsed.ok || !parsed.value) {
+            errorsCount += 1;
+            await this.prisma.syncError.create({
+              data: {
+                runId: run.id,
+                entity: domain,
+                externalId: this.rawExternalId(raw),
+                message: parsed.issues.map((i) => `${i.field}: ${i.message}`).join('; ') || 'Fila inválida',
+                raw: JSON.stringify(raw).slice(0, 4000),
+              },
+            });
+            continue;
+          }
+          lines.push(parsed.value);
+        }
       }
 
       // Fotografía coherente de inventario por corrida (no por fila).
+      const itemCount = inventoryMode ? stockLines.length : lines.length;
       const snapshotId =
-        domain === 'EXISTENCIAS' && lines.length > 0
+        domain === 'EXISTENCIAS' && itemCount > 0
           ? (await this.prisma.inventorySnapshot.create({ data: { source: this.profit.dialect, takenAt: new Date(), runId: run.id } })).id
           : null;
 
       const seen = new Set<string>();
       try {
-        recordsUpserted = await this.applyDomain(domain, lines, seen, snapshotId, run.id);
+        recordsUpserted = inventoryMode
+          ? await this.syncInventory(stockLines, seen, snapshotId, run.id)
+          : await this.applyDomain(domain, lines, seen, snapshotId, run.id);
       } catch (error) {
         errorsCount += 1;
         await this.prisma.syncError.create({
@@ -700,7 +758,7 @@ export class SyncService {
   // Fotografía: una línea por (artículo, almacén) con columna no nula.
   // NULL = la vista no informa esa existencia → NO se crea línea (no se inventa 0).
   private async syncInventory(
-    lines: RawSolicitudLine[],
+    lines: StockLine[],
     seen: Set<string>,
     snapshotId: string | null,
     runId: string,
@@ -708,10 +766,18 @@ export class SyncService {
     if (!snapshotId) {
       throw new Error('Fotografía de inventario no creada para esta corrida');
     }
-    const byArticle = new Map<string, RawSolicitudLine>();
+    const byArticle = new Map<string, StockLine>();
     for (const line of lines) {
       if (!byArticle.has(line.coArt)) byArticle.set(line.coArt, line);
     }
+
+    // Precarga de almacenes: la fotografía completa son ~130 artículos × 4
+    // almacenes; no tiene sentido consultar el mismo almacén 130 veces.
+    const warehouses = new Map(
+      (await this.prisma.warehouse.findMany({ select: { id: true, externalCode: true } })).map(
+        (w) => [w.externalCode, w.id] as const,
+      ),
+    );
 
     let count = 0;
     for (const [code, line] of byArticle) {
@@ -720,14 +786,13 @@ export class SyncService {
         const qty = line[column];
         if (qty === null) continue; // columna anulable sin dato: no se rellena
         seen.add(`${code}@${warehouseCode}`);
-        const warehouse = await this.prisma.warehouse.findUnique({ where: { externalCode: warehouseCode } });
         await this.prisma.inventorySnapshotLine.create({
           data: {
             snapshotId,
             productCode: code,
             productId: product?.id ?? null,
             warehouseCode,
-            warehouseId: warehouse?.id ?? null,
+            warehouseId: warehouses.get(warehouseCode) ?? null,
             qty,
             reservedQty: 0, // la vista no expone reservas (documentado)
           },

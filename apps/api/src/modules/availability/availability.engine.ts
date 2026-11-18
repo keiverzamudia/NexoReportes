@@ -24,6 +24,10 @@ export interface AvailabilityInput {
   stockByWarehouse: InventoryByWarehouse[];
   demandQty: number;
   demandKg: number | null;
+  // Ventas de los últimos 90 días en la unidad de venta del artículo.
+  // Opcional: si no llega (Profit caído o consulta no disponible), no se
+  // inventa el dato y `stockDays` queda null.
+  salesQty90d?: number | null;
 }
 
 // Nota de redondeo: los decimales de Profit (decimal(18,5)) pueden traer
@@ -51,6 +55,15 @@ export function computeAvailability(input: AvailabilityInput): AvailabilityRow {
   // Equivalente en KG del faltante (para el plan de producción en kilos).
   const toProduceKg = input.kgPerUom === null ? null : round3(toProduceQty * input.kgPerUom);
 
+  // Días de cobertura: existencia total entre la venta promedio diaria de los
+  // últimos 90 días. Sin ventas no hay referencia → null (la UI muestra «—»).
+  // Un stock negativo (sobre-compromiso) equivale a 0 días de cobertura.
+  const dailySalesQty =
+    input.salesQty90d !== null && input.salesQty90d !== undefined && input.salesQty90d > 0
+      ? round3(input.salesQty90d / 90)
+      : null;
+  const stockDays = dailySalesQty !== null ? round3(Math.max(0, stockTotal) / dailySalesQty) : null;
+
   let status: AvailabilityRow['status'];
   if (demandQty <= 0) {
     status = 'SIN_DEMANDA';
@@ -75,6 +88,7 @@ export function computeAvailability(input: AvailabilityInput): AvailabilityRow {
     availableQty,
     toProduceQty,
     toProduceKg,
+    stockDays,
     status,
   };
 }

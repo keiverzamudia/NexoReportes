@@ -91,6 +91,7 @@ function orderWhere(query: OrderFilters, options: { includeDeliveryDate?: boolea
   return {
     ...(query.includeClosed ? {} : { isActive: true }),
     ...(query.status ? { status: query.status } : {}),
+    ...(query.billingStatus ? { billingStatus: query.billingStatus } : {}),
     ...(query.customerCode ? { customerCode: query.customerCode } : {}),
     ...(query.customerType ? { customerType: { contains: query.customerType } } : {}),
     ...(query.vendor ? { vendor: { contains: query.vendor } } : {}),
@@ -246,8 +247,12 @@ export class SalesService {
         where,
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
-        orderBy: [{ requestedDate: 'asc' }, { externalNumber: 'asc' }],
-        include: { lines: { select: { pendingQty: true } } },
+        // La cartera viva se ordena por entrega próxima; el historial, por el
+        // cierre más reciente (lo último que pasó por Pedidos).
+        orderBy: query.includeClosed
+          ? [{ closedAt: 'desc' }, { orderDate: 'desc' }]
+          : [{ requestedDate: 'asc' }, { externalNumber: 'asc' }],
+        include: { lines: { select: { pendingQty: true, pendingKg: true } } },
       }),
       this.prisma.salesOrder.count({ where }),
     ]);
@@ -256,7 +261,7 @@ export class SalesService {
     const [linesAgg, openCount] = await Promise.all([
       this.prisma.salesOrderLine.aggregate({
         where: { order: where },
-        _sum: { pendingQty: true },
+        _sum: { pendingQty: true, pendingKg: true },
         _count: { _all: true },
       }),
       this.prisma.salesOrder.count({ where: { ...where, status: 'ABIERTO' } }),
@@ -265,13 +270,15 @@ export class SalesService {
     return {
       items: orders.map((o) => {
         const totalPendingQty = o.lines.reduce((acc, l) => acc + toNumber(l.pendingQty), 0);
-        return this.toSummary(o, o.lines.length, totalPendingQty);
+        const totalKg = o.lines.reduce((acc, l) => acc + toNumber(l.pendingKg), 0);
+        return this.toSummary(o, o.lines.length, totalPendingQty, totalKg);
       }),
       page: query.page,
       pageSize: query.pageSize,
       total,
       summary: {
         totalPendingQty: toNumber(linesAgg._sum.pendingQty),
+        totalKg: toNumber(linesAgg._sum.pendingKg),
         linesTotal: linesAgg._count._all,
         openCount,
       },
@@ -289,6 +296,7 @@ export class SalesService {
 
     const productCodes = order.lines.map((l) => l.productCode);
     const totalPendingQty = order.lines.reduce((acc, l) => acc + toNumber(l.pendingQty), 0);
+    const totalKg = order.lines.reduce((acc, l) => acc + toNumber(l.pendingKg), 0);
     const [stock, tentative] = await Promise.all([
       this.stockByProduct(productCodes),
       this.deliveryDates.resolveForLines(
@@ -297,7 +305,7 @@ export class SalesService {
     ]);
 
     return {
-      order: this.toSummary(order, order.lines.length, totalPendingQty),
+      order: this.toSummary(order, order.lines.length, totalPendingQty, totalKg),
       lines: order.lines.map((l) =>
         this.toLine(l, stock, tentative.get(deliveryDateKey(order.externalNumber, l.productCode)) ?? null),
       ),
@@ -495,6 +503,7 @@ export class SalesService {
     },
     linesCount: number,
     totalPendingQty: number,
+    totalKg = 0,
   ): OrderSummary {
     return {
       id: order.id,
@@ -509,6 +518,7 @@ export class SalesService {
       status: order.status as OrderSummary['status'],
       linesCount,
       totalPendingQty,
+      totalKg,
       closedAt: toDate(order.closedAt ?? null),
       closedReason: order.closedReason ?? null,
       billingStatus: (order.billingStatus ?? 'PENDIENTE') as OrderSummary['billingStatus'],

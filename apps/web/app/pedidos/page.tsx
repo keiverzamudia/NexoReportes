@@ -46,6 +46,7 @@ import { AlertTriangle, CalendarRange, ChevronDown, ChevronRight, Download, File
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { CoverageOthersDialog } from '../../components/CoverageOthersDialog';
 import { CustomerStatementDialog } from '../../components/CustomerStatementDialog';
+import { PedidosTabs } from '../../components/PedidosTabs';
 import { DeliveryDateButton } from '../../components/DeliveryDate';
 import { DeliveryDateDialog } from '../../components/DeliveryDateDialog';
 import type { DeliveryDateTarget } from '../../components/DeliveryDateDialog';
@@ -1574,6 +1575,8 @@ export default function PedidosPage() {
           title="Pedidos"
           subtitle="Simula qué puedes despachar hoy con tu existencia real. Marca renglones para armar el plan de despacho; se ordena por prioridad y nunca escribe en Profit."
         />
+
+        <PedidosTabs active="pedidos" permissions={sessionUser?.permissions} />
 
         {/* Sala de simulación: sin lock; cada renglón tiene dueño y se libera
             solo al desmarcarlo o cuando un admin/permiso lo quita. */}

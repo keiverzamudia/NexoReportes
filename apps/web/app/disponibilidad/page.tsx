@@ -8,8 +8,9 @@
 
 import type { AvailabilityResponse, AvailabilityRow, AvailabilityStatus } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, Boxes, PackageSearch, Search } from 'lucide-react';
+import { AlertTriangle, BookOpen, Boxes, PackageSearch, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { ModuleHelp } from '../../components/help/ColumnHelp';
 import { AppNav, LoginScreen } from '../../components/shell';
 import { AvailabilityCustomersModal } from '../../components/AvailabilityCustomersModal';
 import {
@@ -23,9 +24,17 @@ import {
   Segmented,
   Select,
   TextInput,
+  cx,
   fmtQty,
 } from '../../components/ui';
+import {
+  DISPO_COLUMN_HELP,
+  DISPO_HELP_RULES,
+  DISPO_HELP_TERMS,
+  DISPO_HELP_TITLE,
+} from '../../content/help/disponibilidad';
 import { AuthRequiredError, apiFetch } from '../../lib/api';
+import { useHelpRow } from '../../lib/use-help-row';
 
 const STATUS_LABEL: Record<AvailabilityStatus, string> = {
   DISPONIBLE: 'Despachable',
@@ -80,7 +89,7 @@ function stockOf(row: AvailabilityRow, warehouseCode: string): number | null {
   return row.stockByWarehouse.find((w) => w.warehouseCode === warehouseCode)?.qty ?? null;
 }
 
-// «A producir (SAC)»: SOLO los artículos a granel (KG) muestran un 0 tachado,
+// «Prod (sac)»: SOLO los artículos a granel (KG) muestran un 0 tachado,
 // porque no se producen en sacos. Los artículos SAC mantienen su 0 normal.
 function renderToProduceSacs(row: AvailabilityRow) {
   if (row.uom !== 'SAC') {
@@ -104,6 +113,7 @@ const COLUMNS: Column<AvailabilityRow>[] = [
   {
     key: 'codigo',
     header: 'Código',
+    help: DISPO_COLUMN_HELP.codigo,
     kind: 'id',
     sortValue: (r) => r.productCode,
     render: (r) => <span className="font-bold tabular-nums text-primary">{r.productCode}</span>,
@@ -111,28 +121,45 @@ const COLUMNS: Column<AvailabilityRow>[] = [
   {
     key: 'descripcion',
     header: 'Descripción',
+    help: DISPO_COLUMN_HELP.descripcion,
     title: (r) => r.description,
     sortValue: (r) => r.description,
     render: (r) => r.description,
   },
-  { key: 'unid', header: 'Unid.', render: (r) => <span className="text-on-surface-variant">{r.uom}</span> },
+  {
+    key: 'unid',
+    header: 'Unid.',
+    help: DISPO_COLUMN_HELP.unid,
+    render: (r) => <span className="text-on-surface-variant">{r.uom}</span>,
+  },
+  {
+    key: 'stockPtp',
+    header: 'PTP',
+    help: DISPO_COLUMN_HELP.stockPtp,
+    align: 'right',
+    sortValue: (r) => stockOf(r, 'Stock PTP') ?? 0,
+    render: (r) => fmtQty(stockOf(r, 'Stock PTP'), 0),
+  },
   {
     key: 'stock03',
-    header: 'Stock 03',
+    header: '03',
+    help: DISPO_COLUMN_HELP.stock03,
     align: 'right',
     sortValue: (r) => stockOf(r, 'Stock 03') ?? 0,
     render: (r) => fmtQty(stockOf(r, 'Stock 03'), 0),
   },
   {
     key: 'stock9999',
-    header: 'Stock 9999',
+    header: '9999',
+    help: DISPO_COLUMN_HELP.stock9999,
     align: 'right',
     sortValue: (r) => stockOf(r, 'Stock 9999') ?? 0,
     render: (r) => fmtQty(stockOf(r, 'Stock 9999'), 0),
   },
   {
     key: 'stock68',
-    header: 'Stock 68',
+    header: '68',
+    help: DISPO_COLUMN_HELP.stock68,
     align: 'right',
     sortValue: (r) => stockOf(r, 'Stock 68') ?? 0,
     render: (r) => fmtQty(stockOf(r, 'Stock 68'), 0),
@@ -140,14 +167,27 @@ const COLUMNS: Column<AvailabilityRow>[] = [
   {
     key: 'existencia',
     header: 'Existencia',
+    help: DISPO_COLUMN_HELP.existencia,
     align: 'right',
     kind: 'metric',
     sortValue: (r) => r.stockTotal,
     render: (r) => <span className="font-bold">{fmtQty(r.stockTotal, 0)}</span>,
   },
   {
+    key: 'stockDias',
+    header: 'Stock/día',
+    help: DISPO_COLUMN_HELP.stockDias,
+    align: 'right',
+    kind: 'metric',
+    sortValue: (r) => r.stockDays ?? Number.POSITIVE_INFINITY,
+    render: (r) => (
+      <span className={r.stockDays === null ? 'text-on-surface-variant' : ''}>{fmtQty(r.stockDays, 1)}</span>
+    ),
+  },
+  {
     key: 'solicitado',
-    header: 'Solicitado',
+    header: 'Solicitud',
+    help: DISPO_COLUMN_HELP.solicitado,
     align: 'right',
     kind: 'metric',
     sortValue: (r) => r.demandQty,
@@ -156,21 +196,32 @@ const COLUMNS: Column<AvailabilityRow>[] = [
   {
     key: 'despachable',
     header: 'Despachable',
+    help: DISPO_COLUMN_HELP.despachable,
     align: 'right',
     kind: 'metric',
     sortValue: (r) => r.availableQty,
     render: (r) => <span className="font-bold text-secondary">{fmtQty(r.availableQty, 0)}</span>,
   },
   {
+    key: 'neto',
+    header: 'Neto',
+    help: DISPO_COLUMN_HELP.neto,
+    align: 'right',
+    sortValue: (r) => r.netQty,
+    render: (r) => <span className={r.netQty < 0 ? 'text-error' : ''}>{fmtQty(r.netQty, 0)}</span>,
+  },
+  {
     key: 'aProducir',
-    header: 'A producir (SAC)',
+    header: 'Prod (sac)',
+    help: DISPO_COLUMN_HELP.aProducir,
     align: 'right',
     sortValue: (r) => r.toProduceQty,
     render: renderToProduceSacs,
   },
   {
     key: 'aProducirKg',
-    header: 'A producir (kg)',
+    header: 'Prod (kg)',
+    help: DISPO_COLUMN_HELP.aProducirKg,
     align: 'right',
     kind: 'metric',
     sortValue: (r) => r.toProduceKg ?? 0,
@@ -179,15 +230,9 @@ const COLUMNS: Column<AvailabilityRow>[] = [
     ),
   },
   {
-    key: 'neto',
-    header: 'Neto (unid.)',
-    align: 'right',
-    sortValue: (r) => r.netQty,
-    render: (r) => <span className={r.netQty < 0 ? 'text-error' : ''}>{fmtQty(r.netQty, 0)}</span>,
-  },
-  {
     key: 'estado',
     header: 'Estado',
+    help: DISPO_COLUMN_HELP.estado,
     align: 'center',
     kind: 'status',
     sortValue: (r) => STATUS_LABEL[r.status],
@@ -202,6 +247,8 @@ export default function DisponibilidadPage() {
   const [unit, setUnit] = useState<UnitFilter>('ALL');
   // El KPI «A producir» se puede ver en kg (por defecto) o en toneladas.
   const [inTons, setInTons] = useState(false);
+  // Fila de explicaciones debajo de cada encabezado (preferencia persistida).
+  const [helpRow, setHelpRow] = useHelpRow();
   // Producto abierto en el modal de clientes (doble clic en una fila).
   const [customersProduct, setCustomersProduct] = useState<AvailabilityRow | null>(null);
 
@@ -304,6 +351,28 @@ export default function DisponibilidadPage() {
               <span className="font-semibold uppercase text-label-sm text-outline">Presentación</span>
               <Segmented ariaLabel="Presentación" value={unit} onChange={setUnit} options={UNIT_OPTIONS} />
             </div>
+            <div className="flex flex-wrap items-center gap-space-sm md:col-span-2 lg:col-span-3 lg:justify-end">
+              <button
+                type="button"
+                onClick={() => setHelpRow(!helpRow)}
+                aria-pressed={helpRow}
+                title={helpRow ? 'Ocultar la explicación bajo cada columna' : 'Mostrar qué significa cada columna'}
+                className={cx(
+                  'inline-flex h-10 items-center gap-space-2xs rounded-xl border px-space-md text-label-md font-semibold transition-colors',
+                  helpRow
+                    ? 'border-primary-container/60 bg-primary-container/10 text-primary'
+                    : 'border-outline-variant/50 bg-surface-container-lowest text-on-surface-variant hover:border-primary-container/40 hover:text-primary',
+                )}
+              >
+                <BookOpen aria-hidden className="size-4" /> Explicaciones
+              </button>
+              <ModuleHelp
+                title={DISPO_HELP_TITLE}
+                narrative="Qué hay en cada almacén, cuánto se puede despachar y cuánto falta producir, en una sola tabla."
+                rules={DISPO_HELP_RULES}
+                terms={DISPO_HELP_TERMS}
+              />
+            </div>
           </div>
         </Card>
 
@@ -320,6 +389,7 @@ export default function DisponibilidadPage() {
               columns={COLUMNS}
               rows={rows}
               rowKey={(r) => r.productCode}
+              showHelpRow={helpRow}
               onRowDoubleClick={setCustomersProduct}
               empty={
                 <EmptyState
@@ -334,8 +404,11 @@ export default function DisponibilidadPage() {
               <div className="flex flex-col gap-space-2xs">
                 <span>
                   {rows.length} de {data.rows.length} productos · unidades en la unidad de venta de cada producto (SAC/KG),
-                  no se mezclan entre sí. <strong className="text-on-surface">Existencia</strong> = Stock 03 + Stock 9999 +
-                  Stock 68.
+                  no se mezclan entre sí. <strong className="text-on-surface">Existencia</strong> = PTP + 03 + 9999 + 68.
+                </span>
+                <span>
+                  <strong className="text-on-surface">Stock/día</strong> = Existencia ÷ venta promedio diaria de los
+                  últimos 90 días (notas de entrega ÷ 90). Sin ventas en la ventana se muestra «—».
                 </span>
                 <span>
                   <strong className="text-on-surface">Despachable</strong> = parte del solicitado que cubre la existencia
@@ -343,7 +416,7 @@ export default function DisponibilidadPage() {
                   <strong className="text-on-surface">Neto</strong> (existencia − solicitado).
                 </span>
                 <span>
-                  <strong className="text-on-surface">A producir (SAC)</strong>: el{' '}
+                  <strong className="text-on-surface">Prod (sac)</strong>: el{' '}
                   <span className="line-through decoration-1">0</span> tachado corresponde a artículos a granel (KG),
                   que no se producen en sacos; en los artículos SAC el 0 es una cantidad real.
                 </span>

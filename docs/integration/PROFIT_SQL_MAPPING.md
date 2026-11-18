@@ -31,7 +31,8 @@ Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
 | 11 | `kg` | `decimal(??,?)` | NO | **kg totales del renglón** = `pendiente × relacion_empaque` (verificado: 217×35=7595) |
 | 12 | `Stock_03` | `decimal(38,5)` | **SÍ** | `InventorySnapshotLine.qty` del almacén `Stock 03` |
 | 13 | `Stock_9999` | `decimal(38,5)` | **SÍ** | `InventorySnapshotLine.qty` del almacén `Stock 9999` (columna calculada desde `st_almac.co_alma='9999'`, subalmacén TRANSLADO ENTRE ALMACENES) |
-| 14 | `Stock_68` | `decimal(38,5)` | **SÍ** | `InventorySnapshotLine.qty` del almacén `Stock 68` |
+| 14 | `Stock_68` | `decimal(38,5)` | **SÍ** | `InventorySnapshotLine.qty` del almacén `Stock 68` (columna calculada desde `st_almac.co_alma='6804'`, PT ALMACEN 68) |
+| 15 | `Stock_PTP` | `decimal(38,5)` | **SÍ** | `InventorySnapshotLine.qty` del almacén `Stock PTP` (columna calculada desde `st_almac.co_alma='PTP'`, PT PRODUCCION, creado el 18/11/2026) |
 
 > `relacion_empaque` y `kg` son la clave para reportar en **KG/TON** (el negocio reporta
 > totales en KG y TON). Desde la **Fase 3** se persisten en `Product.kgPerUom` y
@@ -44,13 +45,14 @@ Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
   signo se conserva igualmente porque el reporte histórico sí los tiene).
 - `relacion_empaque`: 1..40; `kg`: 40..30000.
 - `Stock_03`/`Stock_9999`/`Stock_68`: 0 nulos en esta extracción (el manejo `NULL = sin dato` se mantiene).
+- `Stock_PTP`: agregado el 18/11/2026 (almacén `PTP — PT PRODUCCION`), inicia en 0.
 - Unidades: `SAC`, `KG`.
 
 ## Negocio real (derivado del reporte PDF y de la vista)
 
 - **Empresa:** Corporación Agropecuaria Venezolana, C.A. — balanceados para animales (alfalfa, vaca lechera, gallina ponedora, cerdo, multiespecie...).
 - **Unidad de medida:** `SAC` (sacos 10/35/40 kg); totales reportados en **KG** y **TON**.
-- **Almacenes:** `Stock 03`, `Stock 9999`, `Stock 68` — en la vista/consulta son **columnas** (`Stock_03`, `Stock_9999`, `Stock_68`), no filas. `Stock_9999` corresponde al subalmacén `9999` de `st_almac` (TRANSLADO ENTRE ALMACENES) y suma a la existencia combinada.
+- **Almacenes:** `Stock PTP`, `Stock 03`, `Stock 9999`, `Stock 68` — en la vista/consulta son **columnas** (`Stock_PTP`, `Stock_03`, `Stock_9999`, `Stock_68`), no filas. `Stock_9999` corresponde al subalmacén `9999` de `st_almac` (TRANSLADO ENTRE ALMACENES) y suma a la existencia combinada. `Stock 68` lee `co_alma='6804'` (PT ALMACEN 68) y `Stock PTP` lee `co_alma='PTP'` (PT PRODUCCION).
 - **Tipos de cliente (prioridad comercial):** `L1 EXCLUSIVOS` > `COR CORPORATIVO` > `L2 DISTRIBUIDORES` > `L3 MINORISTA` *(orden confirmado por el usuario; COR entre L1 y L2 es un supuesto configurable)*. Catálogo real: `COR, DET, L1, L2, L3, L4, L5, L6, MAY`. La **vista no trae el tipo de cliente**, pero la **consulta ampliada (solo lectura, 15/10/2026)** sí: `clientes.tipo` + `tipo_cli.des_tipo` → `Customer.customerType` / `SalesOrder.customerType` (p. ej. «L1 EXCLUSIVOS»).
 - El reporte de pendientes incluye **valores negativos** (p. ej. `-247.00`) que indican sobre-compromiso: la disponibilidad neta puede ser negativa y debe reflejarse, no recortarse a cero en el detalle.
 
@@ -68,7 +70,7 @@ Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
 
 | Dominio de sync | Derivación desde las filas de la vista | Clave de upsert |
 |---|---|---|
-| `ALMACENES` | Una fila por columna de existencia (`Stock_03`→`Stock 03`, `Stock_9999`→`Stock 9999`, `Stock_68`→`Stock 68`) | `Warehouse.externalCode` |
+| `ALMACENES` | Una fila por columna de existencia (`Stock_PTP`→`Stock PTP`, `Stock_03`→`Stock 03`, `Stock_9999`→`Stock 9999`, `Stock_68`→`Stock 68`) | `Warehouse.externalCode` |
 | `PRODUCTOS` | Un producto por `co_art` distinto | `Product.externalCode` |
 | `CLIENTES` | Un cliente por `co_cli` distinto | `Customer.externalCode` |
 | `PEDIDOS` | Un encabezado por `nro_solicitud` distinto | `SalesOrder.externalNumber` |
@@ -93,6 +95,7 @@ Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
 | `Stock_03` | `InventorySnapshotLine.qty` (`Stock 03`) | `parseProfitDecimal` | anulable | `null` → **no se crea línea** (no se inventa `0`) | IMPLEMENTADO |
 | `Stock_9999` | `InventorySnapshotLine.qty` (`Stock 9999`) | `parseProfitDecimal` | anulable | `null` → no se crea línea | IMPLEMENTADO (21/10/2026) |
 | `Stock_68` | `InventorySnapshotLine.qty` (`Stock 68`) | `parseProfitDecimal` | anulable | `null` → no se crea línea | IMPLEMENTADO |
+| `Stock_PTP` | `InventorySnapshotLine.qty` (`Stock PTP`) | `parseProfitDecimal` | anulable | `null` → no se crea línea | IMPLEMENTADO (18/11/2026) |
 | *(no expuesto)* | `Product.family` | — | — | `null` (la vista/consulta no lo trae) | NO DISPONIBLE |
 | `clientes.tipo` + `tipo_cli.des_tipo` | `Customer.customerType` / `SalesOrder.customerType` | `RTRIM(tipo) + ' ' + RTRIM(des_tipo)` | anulable | conserva el valor previo si no llega | IMPLEMENTADO (15/10/2026) |
 | `cotiz_c.co_ven` → `vendedor.ven_des` | `SalesOrder.vendor` | `trim` | anulable | `null` (no se inventa) | IMPLEMENTADO (15/10/2026) |
@@ -108,7 +111,7 @@ Estructura real (**13 columnas**, 61 filas — inspeccionada el 14/10/2026 vía
 1. ¿La vista puede traer **tipo de cliente** y **vendedor** (columnas adicionales), o hay otra vista para el motor de prioridades?
 2. ¿Hay columna de **estado/autorización** del pedido? Hoy se asume `ABIERTO` porque la vista sólo lista pendientes.
 3. ¿Existe columna de **cantidad total original** del renglón (para distinguir `quantity` de `pendingQty`)?
-4. ¿Las columnas `Stock_03`/`Stock_9999`/`Stock_68` son existencia física o ya incluyen reservas?
+4. ¿Las columnas `Stock_PTP`/`Stock_03`/`Stock_9999`/`Stock_68` son existencia física o ya incluyen reservas?
 5. ¿Hay campos de **fecha de modificación** confiables para sincronización incremental? Si no, se usará lectura completa (61 filas hoy: no es un problema de volumen).
 
 ## Reglas del adaptador (implementadas)
@@ -143,6 +146,7 @@ SELECT
     r.co_art, a.art_des, r.co_alma AS almacen, r.total_art AS cantidad,
     r.pendiente, r.uni_venta, a.uni_relac AS relacion_empaque,
     r.pendiente * a.uni_relac AS kg,
+    (SELECT ISNULL(SUM(sa.stock_act),0) FROM dbo.st_almac sa WHERE sa.co_art=r.co_art AND sa.co_alma='PTP')  AS Stock_PTP,
     (SELECT ISNULL(SUM(sa.stock_act),0) FROM dbo.st_almac sa WHERE sa.co_art=r.co_art AND sa.co_alma='03')   AS Stock_03,
     (SELECT ISNULL(SUM(sa.stock_act),0) FROM dbo.st_almac sa WHERE sa.co_art=r.co_art AND sa.co_alma='9999') AS Stock_9999,
     (SELECT ISNULL(SUM(sa.stock_act),0) FROM dbo.st_almac sa WHERE sa.co_art=r.co_art AND sa.co_alma='6804') AS Stock_68
@@ -315,6 +319,34 @@ Endpoints (permiso `clientes:read`):
   un solo agregado con `IN (@co_cli_0, @co_cli_1, …)` y `LEFT JOIN` desde
   `dbo.clientes` para devolver también a los clientes sin documentos. Tope:
   200 clientes por consulta.
+
+## Cobranza por vendedor (expediente de `/vendedor`)
+
+La ficha «Cobranza a tiempo» del expediente compara la **fecha de cobro** con el
+**vencimiento de la factura**. `dbo.docum_cc` no guarda la fecha de pago; se
+obtiene de `dbo.cobros` (cabecera del recibo) y `dbo.reng_cob` (aplicación del
+recibo a cada factura). La consulta es en vivo y de solo lectura.
+
+| Tabla | Columnas usadas | Uso |
+|---|---|---|
+| `dbo.cobros` | `cob_num`, `co_cli`, `co_ven`, `fec_cob`, `anulado` | Fecha del cobro y vendedor del recibo. |
+| `dbo.reng_cob` | `cob_num`, `tp_doc_cob`, `doc_num`, `mont_cob`, `moneda`, `tasa`, `fec_emis`, `fec_venc` | Aplicación a facturas, emisión/vencimiento y monto. |
+| `dbo.clientes` | `co_cli`, `co_ven` | Vendedor de la cartera (criterio Cartera). |
+| `dbo.docum_cc` | `saldo`, `tasa`, `fec_venc`, `moneda`, `tipo_doc` | Vencido pendiente de cobro hoy. |
+
+Reglas:
+
+- Solo se consideran documentos de débito (`FACT`, `N/DB`, `AJPM`, `GIRO`),
+  recibos no anulados, montos positivos y documentos en USD (`US$` o `USD`).
+- El monto se convierte a USD con `mont_cob / tasa`, igual que el estado de cuenta.
+- **A tiempo** = `cobros.fec_cob <= reng_cob.fec_venc`; **fuera de fecha** = pago
+  posterior al vencimiento. El porcentaje se pondera por monto, no por cantidad.
+- `dias_peso` = días desde `fec_emis` hasta `fec_cob`, ponderados por monto;
+  `atraso_peso` = días desde `fec_venc` hasta `fec_cob` de lo pagado tarde.
+- La consulta devuelve las dos atribuciones (cartera y nota); el servicio elige
+  la misma que el informe (`cartera` por defecto).
+- El **vencido** se consulta solo en el mes en curso, porque el `saldo` de
+  `docum_cc` es vivo y no se puede reconstruir a una fecha pasada.
 
 ## Ventas del mes vs Forecast (`GET /api/forecast/sales`)
 

@@ -237,7 +237,7 @@ describe('ProfitDeliveryDatesService', () => {
 
     await expect(
       service.setDates({ items, date: '2026-10-27', cause: 'COMPANY' }, { id: 'u1', code: 'KZ' }),
-    ).rejects.toThrow(/no está habilitado/);
+    ).rejects.toThrow(/deshabilitado/);
   });
 
   it('exige el código de Profit de la sesión para poder atribuir el cambio', async () => {

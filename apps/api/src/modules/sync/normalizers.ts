@@ -63,7 +63,8 @@ export function parseProfitDecimal(input: unknown): number | null {
 
 // ---------- SOLICITUDES (vista real aplanada) ----------
 // Una fila = un RENGLÓN de solicitud con su pendiente y las existencias
-// del artículo en los tres almacenes (Stock_03 / Stock_9999 / Stock_68).
+// del artículo en los almacenes de Disponibilidad (Stock_03 / Stock_9999 /
+// Stock_68 / Stock_PTP).
 export interface RawSolicitudLine {
   nroSolicitud: number;
   emision: Date | null;
@@ -81,6 +82,8 @@ export interface RawSolicitudLine {
   stock03: number | null;
   stock9999: number | null;
   stock68: number | null;
+  // Almacén PTP (PT PRODUCCION), nuevo en Profit (18/11/2026).
+  stockPtp: number | null;
   // Campos del reporte "Solicitudes con sus renglones PROD y LOGÍSTICA"
   // que la vista actual NO exponía: se leen de una consulta ampliada de la
   // app (solo lectura). Todos anulables: si no llegan, quedan `null`.
@@ -155,6 +158,7 @@ export function normalizeSolicitudRow(row: Record<string, unknown>): Normalized<
       stock03: parseProfitDecimal(row.Stock_03 ?? row.stock_03),
       stock9999: parseProfitDecimal(row.Stock_9999 ?? row.stock_9999),
       stock68: parseProfitDecimal(row.Stock_68 ?? row.stock_68),
+      stockPtp: parseProfitDecimal(row.Stock_PTP ?? row.stock_ptp),
       // Campos del reporte ampliado (opcionales; null si la fuente no los trae).
       vendedor: trimOrNull(row.vendedor),
       vendedorCliente: trimOrNull(row.vendedor_cliente),

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
   AvailabilityProductCustomers,
   AvailabilityResponse,
@@ -10,13 +10,43 @@ import {
 } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
 import { AvailabilityInput, computeAvailability } from '../availability/availability.engine';
+import { todayInTimeZone } from '../forecast/sales-run-rate';
+import { ProfitAdapter, PROFIT_ADAPTER } from '../sync/profit.adapter';
 
 // ============================================================
 // Catálogo, inventario y disponibilidad (Fase 3).
 // Todo se calcula desde lo sincronizado desde Profit:
 //  - existencia: ÚLTIMA fotografía (InventorySnapshot) por almacén
 //  - demanda: suma de pendientes de renglones de pedidos ACTIVOS
+//  - stock/día: ventas de los últimos 90 días leídas en vivo de Profit
 // ============================================================
+
+// Ventas por artículo de los últimos 90 días (notas de entrega, no facturas).
+// Se usa para los días de cobertura de Disponibilidad. `@desde`/`@hasta` son un
+// rango semiabierto y los calcula la app (no GETDATE) para poder probarlo.
+const PROFIT_PRODUCT_SALES_90D_SQL = `
+SELECT /* nexo:availability_sales */
+  RTRIM(r.co_art) AS co_art,
+  SUM(r.total_art) AS unid
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+GROUP BY RTRIM(r.co_art)
+`;
+
+// Caché en memoria de la venta a 90 días: la tabla se refresca seguido y no
+// tiene sentido golpear SQL Server en cada render. 5 minutos por ventana.
+const SALES_CACHE_TTL_MS = 5 * 60_000;
+
+function addDaysIso(day: string, days: number): string {
+  const date = new Date(`${day}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
 
 function toNumber(value: unknown): number {
   if (value === null || value === undefined) return 0;
@@ -36,7 +66,13 @@ function round3(value: number): number {
 
 @Injectable()
 export class CatalogService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(CatalogService.name);
+  private salesCache: { at: number; byCode: Map<string, number> } | null = null;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(PROFIT_ADAPTER) private readonly profit: ProfitAdapter,
+  ) {}
 
   async listProducts(query: ProductQuery) {
     const where = {
@@ -92,10 +128,11 @@ export class CatalogService {
   }
 
   async availability(): Promise<AvailabilityResponse> {
-    const [products, snapshot, demands] = await Promise.all([
+    const [products, snapshot, demands, sales] = await Promise.all([
       this.prisma.product.findMany({ where: { isActive: true }, orderBy: { externalCode: 'asc' } }),
       this.latestSnapshot(),
       this.allDemands(),
+      this.salesByProduct90d(),
     ]);
 
     // Índice de la fotografía: producto → existencias por almacén.
@@ -115,7 +152,9 @@ export class CatalogService {
     const rows = products.map((product) => {
       const demand = demands.get(product.externalCode) ?? { pendingQty: 0, pendingKg: null };
       const inventory = stockByProduct.get(product.externalCode) ?? [];
-      return computeAvailability(this.toInput(product, inventory, demand));
+      return computeAvailability(
+        this.toInput(product, inventory, demand, sales.get(product.externalCode) ?? null),
+      );
     });
 
     return {
@@ -293,10 +332,43 @@ export class CatalogService {
     );
   }
 
+  // Ventas de la unidad de venta por artículo en los últimos 90 días cerrados.
+  // Si Profit falla, el mapa queda vacío y la columna Stock/día muestra «—»;
+  // nunca se tumba la tabla de disponibilidad por una consulta accesoria.
+  private async salesByProduct90d(): Promise<Map<string, number>> {
+    const now = Date.now();
+    if (this.salesCache && now - this.salesCache.at < SALES_CACHE_TTL_MS) {
+      return this.salesCache.byCode;
+    }
+
+    const today = todayInTimeZone('America/Caracas');
+    const byCode = new Map<string, number>();
+    try {
+      const rows = await this.profit.selectQuery(PROFIT_PRODUCT_SALES_90D_SQL, 20_000, {
+        desde: addDaysIso(today, -90),
+        hasta: today,
+      });
+      for (const row of rows) {
+        const code = String(row.co_art ?? '').trim();
+        const qty = toNumber(row.unid);
+        if (code && qty > 0) byCode.set(code, qty);
+      }
+      this.salesCache = { at: now, byCode };
+    } catch (error) {
+      this.logger.warn(
+        `No se pudieron leer las ventas de 90 días para Stock/día: ${
+          error instanceof Error ? error.message : 'error desconocido'
+        }`,
+      );
+    }
+    return byCode;
+  }
+
   private toInput(
     product: { externalCode: string; description: string; uom: string; kgPerUom: unknown },
     stockByWarehouse: InventoryByWarehouse[],
     demand: { pendingQty: number; pendingKg: number | null },
+    salesQty90d: number | null = null,
   ): AvailabilityInput {
     return {
       productCode: product.externalCode,
@@ -306,6 +378,7 @@ export class CatalogService {
       stockByWarehouse,
       demandQty: demand.pendingQty,
       demandKg: demand.pendingKg,
+      salesQty90d,
     };
   }
 
