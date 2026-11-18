@@ -715,7 +715,10 @@ export function DataTable<T>({
                           // largo: se trunca con elipsis y el completo sale en el title.
                           c.title && 'max-w-[20rem] truncate',
                           index === 0 &&
-                            'sticky left-0 z-[1] border-r border-outline-variant/20 bg-surface-container-lowest font-semibold text-primary group-hover:bg-surface-container-low/70',
+                            // Opaco: la columna anclada tapa las columnas que quedan
+                            // debajo al desplazar en horizontal. Con un fondo
+                            // semitransparente sus cifras se transparentaban en hover.
+                            'sticky left-0 z-[1] border-r border-outline-variant/20 bg-surface-container-lowest font-semibold text-primary group-hover:bg-surface-container-low',
                           isOpen && index === 0 && 'bg-surface-container-low',
                           c.className,
                         )}
