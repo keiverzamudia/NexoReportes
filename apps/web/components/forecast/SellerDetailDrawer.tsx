@@ -1,11 +1,12 @@
 'use client';
 
 // ============================================================
-// Expediente de un vendedor: cierre, histórico y dos vistas de su venta.
+// Expediente de un vendedor: los dos libros de su facturación.
 //
-//  · Cartera: clientes asignados en Profit, aunque no hayan comprado.
-//  · Nota: solo los clientes a los que les firmó una nota.
-//  · Productos: el mismo cruce por artículo (cartera / firmado / otros).
+//  · Facturado: notas firmadas por él, sea o no su cliente.
+//  · Mi cartera: clientes asignados en Profit, compren o no.
+//  · Facturado por otros: la fuga de su cartera, con nombre y kg.
+//  · Productos: el mismo cruce por artículo.
 //
 // El histórico arranca en 3 meses y se cambia aquí; el cambio recalcula el
 // informe completo porque la cuota depende de esa ventana.
@@ -14,7 +15,6 @@
 import type {
   Customer,
   ForecastSellerActivation,
-  ForecastSellerClientRow,
   ForecastSellerCollection,
   ForecastSellerProductRow,
   ForecastSellerProductsResponse,
@@ -26,10 +26,13 @@ import type {
 import { useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
+  ChevronDown,
   CircleDollarSign,
   Download,
+  Info,
   Package,
   Pencil,
+  Receipt,
   RefreshCcw,
   Search,
   TrendingUp,
@@ -64,20 +67,26 @@ import {
 import { useHelpRow } from '../../lib/use-help-row';
 import { apiFetch } from '../../lib/api';
 import { fmtKg, fmtPct, fmtTonnes, monthLabel, salesTone } from '../../lib/sales-report';
+import type { SellerClientContext, SellerContextView } from '../../lib/seller-context';
 import {
   allocationLabel,
   buildClientQuotaRisk,
   buildSellerCarteraCsv,
-  buildSellerNotaCsv,
+  buildSellerFacturadoCsv,
+  buildSellerLeakCsv,
   buildSellerProductsCsv,
   clientGapContributionPct,
   clientQuotaSharePct,
+  clientsBilledByOthers,
   fmtAttainmentPct,
+  pctOfTotal,
+  sellerBilling,
   tabRunRate,
   topQuotaSeller,
 } from '../../lib/sellers-report';
 import {
   AttainmentRing,
+  BillingList,
   MiniStat,
   PerformanceList,
   SellerAvatar,
@@ -85,11 +94,13 @@ import {
   SplitMeter,
   cumulativeOption,
   monthlyHistoryDualOption,
+  type BillingItem,
   type PerformanceItem,
 } from './seller-ui';
 import { SellerQuotaDialog } from './SellerQuotaDialog';
+import { SellerProductClientsDetail } from './SellerProductClientsDetail';
 
-type Tab = 'cartera' | 'nota' | 'productos';
+type Tab = 'facturado' | 'cartera' | 'otros' | 'productos';
 
 const HISTORY_OPTIONS = [3, 6, 12, 24].map((months) => ({
   value: String(months),
@@ -171,50 +182,56 @@ export function SellerDetailDrawer({
   const [salesFilter, setSalesFilter] = useState<'all' | 'with' | 'without'>(initialSalesFilter);
   const [onlyWithoutBase, setOnlyWithoutBase] = useState(false);
   const [onlyNew, setOnlyNew] = useState(false);
+  const [onlyOutside, setOnlyOutside] = useState(false);
+  const [facturadoOnlyWithSale, setFacturadoOnlyWithSale] = useState(initialSalesFilter === 'with');
   const [onlyAtRisk, setOnlyAtRisk] = useState(false);
+  const [onlyOthers, setOnlyOthers] = useState(false);
   const [insightsCustomer, setInsightsCustomer] = useState<Customer | null>(null);
+  const [insightsContext, setInsightsContext] = useState<SellerClientContext | null>(null);
   const [statementCustomer, setStatementCustomer] = useState<Customer | null>(null);
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false);
   const [productSearch, setProductSearch] = useState('');
+  const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
   const [helpRow, setHelpRow] = useHelpRow();
 
   const isOpen = report.status === 'OPEN';
   const leader = topQuotaSeller(report);
   const isLeader = leader?.sellerCode === seller.sellerCode && seller.sellerCode !== '';
+  const isUnassigned = seller.sellerCode === '';
   const tone = salesTone(seller.projectedAttainmentPct ?? seller.attainmentPct);
   const quotaPct = seller.quotaPct;
 
   const carteraMetrics = tabRunRate(seller.carteraCurrentKg, seller.carteraTargetKg, report);
-  const noteMetrics = tabRunRate(seller.noteCurrentKg, seller.noteTargetKg, report);
+  const billing = useMemo(() => sellerBilling(seller), [seller]);
 
-  const noteClients = useMemo(
+  const facturadoClients = useMemo(
     () => seller.clients.filter((client) => client.noteCurrentKg > 0 || client.noteHistoricalKg > 0),
     [seller.clients],
   );
+  // «Mi cartera» es solo lo asignado a él: `seller.clients` es la unión de su
+  // cartera y los clientes a los que les firmó una nota.
+  const carteraClients = useMemo(
+    () => seller.clients.filter((client) => client.assignedSellerCode === seller.sellerCode),
+    [seller.clients, seller.sellerCode],
+  );
+  const leakClients = useMemo(() => clientsBilledByOthers(seller), [seller]);
 
   // ---------- Cuota como un todo: clientes = 100 % del vendedor ----------
   const quotaRisk = useMemo(() => buildClientQuotaRisk(seller, report), [seller, report]);
 
   const atRiskCartera = useMemo(() => new Set(quotaRisk.atRisk), [quotaRisk]);
 
-  const atRiskNota = useMemo(() => {
-    const rows = seller.clients.filter((client) => {
-      if (client.noteTargetKg <= 0) return false;
-      const metrics = tabRunRate(client.noteCurrentKg, client.noteTargetKg, report);
-      return (metrics.projectedAttainmentPct ?? metrics.attainmentPct ?? 0) < 100;
-    });
-    return new Set(rows);
-  }, [seller.clients, report]);
+  type ContextClient = {
+    clientCode: string;
+    clientName: string;
+    customerType: string | null;
+  };
 
-  const noteGapKg = useMemo(() => {
-    if (seller.noteTargetKg <= 0) return null;
-    return seller.clients.reduce(
-      (acc, client) => acc + (tabRunRate(client.noteCurrentKg, client.noteTargetKg, report).gapKg ?? 0),
-      0,
-    );
-  }, [seller, report]);
-
-  const openCustomer = (client: ForecastSellerClientRow) => {
+  const openCustomer = (
+    client: ContextClient,
+    view: SellerContextView,
+    product?: { productCode: string; description: string },
+  ) => {
     if (!client.clientCode) return;
     setInsightsCustomer({
       id: client.clientCode,
@@ -226,13 +243,28 @@ export function SellerDetailDrawer({
       ordersCount: 0,
       sales: null,
     });
+    setInsightsContext({
+      sellerCode: seller.sellerCode,
+      sellerName: seller.sellerName,
+      clientCode: client.clientCode,
+      clientName: client.clientName,
+      year: report.year,
+      month: report.month,
+      basis: report.basis,
+      includeToday,
+      attribution: report.attribution,
+      view,
+      productCode: product?.productCode ?? null,
+      productLabel: product?.description ?? null,
+    });
   };
 
   const filteredCartera = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return seller.clients.filter((client) => {
+    return carteraClients.filter((client) => {
       if (onlyWithoutBase && client.carteraTargetKg > 0) return false;
       if (onlyAtRisk && !atRiskCartera.has(client)) return false;
+      if (onlyOthers && client.otherSellerKg <= 0) return false;
       if (salesFilter === 'with' && client.carteraCurrentKg <= 0) return false;
       if (salesFilter === 'without' && client.carteraCurrentKg > 0) return false;
       if (!needle) return true;
@@ -241,13 +273,21 @@ export function SellerDetailDrawer({
         client.clientCode.toLowerCase().includes(needle)
       );
     });
-  }, [seller.clients, search, salesFilter, onlyWithoutBase, onlyAtRisk, atRiskCartera]);
+  }, [
+    carteraClients,
+    search,
+    salesFilter,
+    onlyWithoutBase,
+    onlyAtRisk,
+    onlyOthers,
+    atRiskCartera,
+  ]);
 
-  const filteredNota = useMemo(() => {
+  const filteredFacturado = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return noteClients.filter((client) => {
-      if (onlyAtRisk && !atRiskNota.has(client)) return false;
-      if (salesFilter === 'with' && client.noteCurrentKg <= 0) return false;
+    return facturadoClients.filter((client) => {
+      if (facturadoOnlyWithSale && client.noteCurrentKg <= 0) return false;
+      if (onlyOutside && client.assignedSellerCode === seller.sellerCode) return false;
       if (onlyNew && client.noteHistoricalKg > 0) return false;
       if (!needle) return true;
       return (
@@ -255,14 +295,29 @@ export function SellerDetailDrawer({
         client.clientCode.toLowerCase().includes(needle)
       );
     });
-  }, [noteClients, search, onlyNew, onlyAtRisk, atRiskNota]);
+  }, [facturadoClients, search, facturadoOnlyWithSale, onlyOutside, onlyNew, seller.sellerCode]);
+
+  const filteredLeak = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return leakClients;
+    return leakClients.filter(
+      (client) =>
+        client.clientName.toLowerCase().includes(needle) ||
+        client.clientCode.toLowerCase().includes(needle),
+    );
+  }, [leakClients, search]);
+
+  const leakOtherKg = useMemo(
+    () => filteredLeak.reduce((acc, client) => acc + client.otherSellerKg, 0),
+    [filteredLeak],
+  );
 
   // ---------- Filas de la lista de clientes (mismo formato que vendedores) ----------
   const carteraItems: PerformanceItem[] = filteredCartera.map((row, index) => {
     const metrics = tabRunRate(row.carteraCurrentKg, row.carteraTargetKg, report);
     const share = clientQuotaSharePct(row.carteraTargetKg, seller.carteraTargetKg);
     const gapPct = clientGapContributionPct(metrics.gapKg, quotaRisk.gapKg);
-    const notes = fmtKg(row.invoiceCount, 0);
+    const notes = fmtKg(row.carteraInvoiceCount, 0);
     return {
       key: row.clientCode || row.clientName,
       name: row.clientName,
@@ -281,13 +336,15 @@ export function SellerDetailDrawer({
       ),
       metaLine: [
         `Cuota ${share === null ? '—' : fmtPct(share)}`,
-        `${notes} ${row.invoiceCount === 1 ? 'nota' : 'notas'}`,
+        `${notes} ${row.carteraInvoiceCount === 1 ? 'nota' : 'notas'}`,
         `${metrics.attainmentPct === null ? '—' : fmtPct(metrics.attainmentPct)} de su parte`,
+        ...(row.otherSellerKg > 0 ? [`otros ${fmtKg(row.otherSellerKg)} kg`] : []),
         ...(row.pendingKg > 0 ? [`pendiente ${fmtKg(row.pendingKg)} kg`] : []),
       ].join(' · '),
       targetKg: row.carteraTargetKg,
       actualKg: row.carteraCurrentKg,
       noteKg: row.noteCurrentKg,
+      noteLabel: 'Firmado',
       projectedKg: metrics.projectedKg,
       gapKg: metrics.gapKg,
       pct: metrics.projectedAttainmentPct ?? metrics.attainmentPct,
@@ -299,20 +356,18 @@ export function SellerDetailDrawer({
             ? `${fmtPct(gapPct)} de la brecha`
             : `compensa ${fmtPct(-gapPct)}`,
       overLabel: 'sobre su parte',
-      onSelect: row.clientCode ? () => openCustomer(row) : undefined,
-      selectTitle: row.clientCode ? `Abrir la ficha de ${row.clientName}` : undefined,
+      onSelect: row.clientCode ? () => openCustomer(row, 'cartera') : undefined,
+      selectTitle: row.clientCode ? `Ver las notas de ${row.clientName} · Mi cartera` : undefined,
     };
   });
 
-  const notaItems: PerformanceItem[] = filteredNota.map((row, index) => {
-    const metrics = tabRunRate(row.noteCurrentKg, row.noteTargetKg, report);
-    const share = clientQuotaSharePct(row.noteTargetKg, seller.noteTargetKg);
-    const gapPct = clientGapContributionPct(metrics.gapKg, noteGapKg);
-    const notes = fmtKg(row.invoiceCount, 0);
-    const elsewhere =
-      row.assignedSellerCode && row.assignedSellerCode !== seller.sellerCode
-        ? `Cartera de ${row.assignedSellerName || row.assignedSellerCode} · `
-        : '';
+  // Facturado: lo que firmó él, sin cuota. La barra muestra cuánto de ese
+  // cliente vino de su cartera y cuánto de fuera.
+  const facturadoItems: BillingItem[] = filteredFacturado.map((row, index) => {
+    const own = Math.max(0, row.carteraCurrentKg - row.otherSellerKg);
+    const outside = Math.max(0, row.noteCurrentKg - own);
+    const isOwn = row.assignedSellerCode === seller.sellerCode;
+    const last = row.lastInvoiceDate ? fmtDate(row.lastInvoiceDate) : null;
     return {
       key: row.clientCode || row.clientName,
       name: row.clientName,
@@ -323,30 +378,67 @@ export function SellerDetailDrawer({
             <span className="shrink-0 tabular-nums text-label-sm text-outline">{row.clientCode}</span>
           )}
           {row.isNew && <Badge tone="primary">Nuevo</Badge>}
+          {isOwn ? (
+            <Badge tone="success">Mi cartera</Badge>
+          ) : (
+            <Badge tone="muted">
+              {row.assignedSellerName ? `Cartera de ${row.assignedSellerName}` : 'Sin cartera'}
+            </Badge>
+          )}
         </>
       ),
-      metaLine: `${elsewhere}Cuota ${share === null ? '—' : fmtPct(share)} · ${notes} ${
-        row.invoiceCount === 1 ? 'nota' : 'notas'
-      } · ${metrics.attainmentPct === null ? '—' : fmtPct(metrics.attainmentPct)} de su parte${
-        row.pendingKg > 0 ? ` · pendiente ${fmtKg(row.pendingKg)} kg` : ''
+      metaLine: `${fmtKg(row.noteInvoiceCount, 0)} ${row.noteInvoiceCount === 1 ? 'nota' : 'notas'}${
+        last ? ` · última ${last}` : ''
       }`,
-      targetKg: row.noteTargetKg,
-      actualKg: row.noteCurrentKg,
-      noteKg: row.carteraCurrentKg,
-      noteLabel: 'Cartera',
-      projectedKg: metrics.projectedKg,
-      gapKg: metrics.gapKg,
-      pct: metrics.projectedAttainmentPct ?? metrics.attainmentPct,
-      planKg: row.closingPlanKg,
-      gapNote:
-        gapPct === null
-          ? undefined
-          : gapPct >= 0
-            ? `${fmtPct(gapPct)} de la brecha`
-            : `compensa ${fmtPct(-gapPct)}`,
-      overLabel: 'sobre su parte',
-      onSelect: row.clientCode ? () => openCustomer(row) : undefined,
-      selectTitle: row.clientCode ? `Abrir la ficha de ${row.clientName}` : undefined,
+      primaryKg: row.noteCurrentKg,
+      primaryLabel: 'Facturado',
+      secondaryKg: row.carteraCurrentKg,
+      secondaryLabel: 'Cartera',
+      splitPct: row.noteCurrentKg > 0 ? (outside / row.noteCurrentKg) * 100 : null,
+      splitPrimaryLabel: 'De su cartera',
+      splitSecondaryLabel: 'Fuera',
+      showSecondary: isOwn,
+      sharePct: pctOfTotal(row.noteCurrentKg, billing.facturadoKg),
+      shareLabel: 'de su facturación',
+      onSelect: row.clientCode ? () => openCustomer(row, 'facturado') : undefined,
+      selectTitle: row.clientCode ? `Ver las notas de ${row.clientName} · Facturado` : undefined,
+    };
+  });
+
+  // Facturado por otros: clientes de su cartera que compraron y les facturó
+  // alguien más. Es la lista de acción del gerente/vendedor.
+  const leakItems: BillingItem[] = filteredLeak.map((row, index) => {
+    const external = (row as { otherSellerExternalKg?: number }).otherSellerExternalKg ?? row.otherSellerKg;
+    const internal = (row as { otherSellerInternalKg?: number }).otherSellerInternalKg ?? 0;
+    const names = row.otherSellers.length
+      ? row.otherSellers.map((entry) => (entry.internal ? `${entry.name} (interna)` : entry.name)).join(', ')
+      : row.otherSellerNames.join(', ');
+    const last = row.lastInvoiceDate ? fmtDate(row.lastInvoiceDate) : null;
+    return {
+      key: row.clientCode || row.clientName,
+      name: row.clientName,
+      rank: index + 1,
+      badge: (
+        <>
+          {row.clientCode && (
+            <span className="shrink-0 tabular-nums text-label-sm text-outline">{row.clientCode}</span>
+          )}
+          {external > 0 && <Badge tone="warning">Otro vendedor</Badge>}
+          {internal > 0 && <Badge tone="muted">Cuenta interna</Badge>}
+        </>
+      ),
+      metaLine: `Compró ${fmtKg(row.carteraCurrentKg)} kg · ${fmtKg(row.carteraInvoiceCount, 0)} ${
+        row.carteraInvoiceCount === 1 ? 'nota' : 'notas'
+      }${names ? ` · otros: ${names}` : ''}${last ? ` · última ${last}` : ''}`,
+      primaryKg: row.noteCurrentKg,
+      primaryLabel: 'Tú',
+      secondaryKg: row.otherSellerKg,
+      secondaryLabel: 'Otros',
+      splitPct: row.carteraCurrentKg > 0 ? (row.otherSellerKg / row.carteraCurrentKg) * 100 : null,
+      sharePct: pctOfTotal(row.otherSellerKg, billing.carteraByOthersKg),
+      shareLabel: 'de la fuga',
+      onSelect: row.clientCode ? () => openCustomer(row, 'otros') : undefined,
+      selectTitle: row.clientCode ? `Ver las notas de ${row.clientName} · Facturado por otros` : undefined,
     };
   });
 
@@ -477,14 +569,23 @@ export function SellerDetailDrawer({
       sortValue: (row) => row.description,
       className: 'w-[17rem] max-w-[17rem]',
       render: (row) => (
-        <div className="min-w-0">
-          <p className="truncate font-semibold text-on-surface" title={row.description}>
-            {row.description}
-          </p>
-          <p className="text-label-sm text-outline">
-            <span className="tabular-nums">{row.productCode}</span> · {row.uom}
-            {row.kgPerUom !== null ? ` · ${row.kgPerUom} kg/${row.uom}` : ''}
-          </p>
+        <div className="flex items-start gap-1.5">
+          <ChevronDown
+            aria-hidden
+            className={cx(
+              'mt-0.5 size-3.5 shrink-0 text-outline transition-transform',
+              expandedProduct === (row.productCode || row.description) && 'rotate-180',
+            )}
+          />
+          <div className="min-w-0">
+            <p className="truncate font-semibold text-on-surface" title={row.description}>
+              {row.description}
+            </p>
+            <p className="text-label-sm text-outline">
+              <span className="tabular-nums">{row.productCode}</span> · {row.uom}
+              {row.kgPerUom !== null ? ` · ${row.kgPerUom} kg/${row.uom}` : ''}
+            </p>
+          </div>
         </div>
       ),
     },
@@ -498,7 +599,7 @@ export function SellerDetailDrawer({
         <div className="text-right">
           <p className="tabular-nums font-semibold text-on-surface">{fmtKg(row.carteraCurrentKg)}</p>
           <p className="text-label-sm text-outline">
-            él {fmtKg(row.noteCurrentKg)} · otros {fmtKg(row.otherCurrentKg)}
+            facturado {fmtKg(row.noteCurrentKg)} · otros {fmtKg(row.otherCurrentKg)}
           </p>
         </div>
       ),
@@ -512,7 +613,7 @@ export function SellerDetailDrawer({
       render: (row) => (
         <div className="text-right">
           <p className="tabular-nums text-on-surface">{fmtKg(row.carteraHistoricalKg)}</p>
-          <p className="text-label-sm text-outline">nota {fmtKg(row.noteHistoricalKg)}</p>
+          <p className="text-label-sm text-outline">facturado {fmtKg(row.noteHistoricalKg)}</p>
         </div>
       ),
     },
@@ -551,25 +652,37 @@ export function SellerDetailDrawer({
   ];
 
   const tabTitle =
-    tab === 'cartera' ? 'Clientes de' : tab === 'nota' ? 'Notas firmadas por' : 'Productos de';
+    tab === 'cartera'
+      ? 'Cartera de'
+      : tab === 'facturado'
+        ? 'Facturado por'
+        : tab === 'otros'
+          ? 'Otros facturaron a'
+          : 'Productos de';
   const tabCount =
     tab === 'cartera'
-      ? `${fmtKg(filteredCartera.length, 0)} de ${fmtKg(seller.clientCount, 0)} clientes`
-      : tab === 'nota'
-        ? `${fmtKg(filteredNota.length, 0)} de ${fmtKg(noteClients.length, 0)} clientes`
-        : `${fmtKg(filteredProducts.length, 0)} de ${fmtKg(productQuery.data?.products.length ?? 0, 0)} productos`;
+      ? `${fmtKg(filteredCartera.length, 0)} de ${fmtKg(carteraClients.length, 0)} clientes`
+      : tab === 'facturado'
+        ? `${fmtKg(filteredFacturado.length, 0)} de ${fmtKg(facturadoClients.length, 0)} clientes`
+        : tab === 'otros'
+          ? `${fmtKg(filteredLeak.length, 0)} de ${fmtKg(leakClients.length, 0)} clientes`
+          : `${fmtKg(filteredProducts.length, 0)} de ${fmtKg(productQuery.data?.products.length ?? 0, 0)} productos`;
   const tabSummary =
     tab === 'cartera'
       ? `Cuota cartera ${formatQuotaPct(seller.carteraQuotaPct)} · Meta ${fmtKg(seller.carteraTargetKg)} kg · Proyección ${
           carteraMetrics.projectedKg === null ? '—' : `${fmtKg(carteraMetrics.projectedKg)} kg`
         }`
-      : tab === 'nota'
-        ? `Cuota nota ${formatQuotaPct(seller.noteQuotaPct)} · Meta ${fmtKg(seller.noteTargetKg)} kg · Proyección ${
-            noteMetrics.projectedKg === null ? '—' : `${fmtKg(noteMetrics.projectedKg)} kg`
-          }`
-        : `Cartera ${fmtKg(seller.carteraCurrentKg)} kg · firmado ${fmtKg(seller.noteCurrentKg)} kg`;
+      : tab === 'facturado'
+        ? `Facturado ${fmtKg(billing.facturadoKg)} kg · ${fmtKg(billing.facturadoOutsideKg)} kg fuera de cartera`
+        : tab === 'otros'
+          ? `${fmtKg(leakOtherKg)} kg facturados por otros · ${fmtKg(leakClients.length, 0)} clientes`
+          : `Cartera ${fmtKg(seller.carteraCurrentKg)} kg · facturado ${fmtKg(seller.noteCurrentKg)} kg`;
 
-  const showNotaWarning = report.attribution === 'NOTE' && seller.noteHistoricalKg <= 0;
+  const showQuotaWarning = report.totals.forecastKg > 0 && seller.targetKg <= 0;
+  const topLeak = useMemo(
+    () => clientsBilledByOthers(seller, { externalOnly: true }).slice(0, 3),
+    [seller],
+  );
 
   // Ficha de cuota (reactivación / nuevos). No es un componente aparte para no
   // perder la identidad del vendedor ni el estado del diálogo en cada render.
@@ -746,14 +859,14 @@ export function SellerDetailDrawer({
             </div>
           </section>
 
-          {showNotaWarning && (
+          {showQuotaWarning && (
             <p
               role="status"
               className="flex items-start gap-space-sm rounded-xl bg-warning-container/50 px-space-md py-space-sm text-body-md text-on-warning-container"
             >
               <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-              Sin notas firmadas en los últimos {historyMonths} meses. La cuota por nota es 0 %. Su cartera sí tiene{' '}
-              {fmtKg(seller.carteraHistoricalKg)} kg históricos; revisa la pestaña Cartera.
+              No hay base histórica para repartir la cuota en el criterio elegido. El cumplimiento queda en «sin
+              cuota», pero la facturación y la cartera se muestran completas abajo.
             </p>
           )}
 
@@ -932,29 +1045,137 @@ export function SellerDetailDrawer({
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-space-sm sm:grid-cols-4">
-            <MiniStat
-              label="Clientes en cartera"
-              value={fmtKg(seller.assignedClientCount, 0)}
-              hint={`${fmtKg(seller.activeClientCount, 0)} con venta este mes`}
-            />
-            <MiniStat
-              label="Venta de cartera"
-              value={`${fmtKg(seller.carteraCurrentKg)} kg`}
-              hint={`histórico ${fmtKg(seller.carteraHistoricalKg)} kg`}
-            />
-            <MiniStat
-              label="Venta firmada"
-              value={`${fmtKg(seller.noteCurrentKg)} kg`}
-              hint="nota de entrega"
-            />
-            <MiniStat
-              label="Facturado por otro"
-              value={`${fmtKg(seller.otherSellerKg)} kg`}
-              hint={seller.otherSellerKg > 0 ? 'su cartera, otra nota' : 'sin diferencias'}
-              tone={seller.otherSellerKg > 0 ? 'warn' : 'none'}
-            />
+          <div className="grid gap-space-sm sm:grid-cols-2">
+            <SellerFicha
+              icon={Receipt}
+              label="Facturado por el vendedor"
+              value={`${fmtKg(billing.facturadoKg)} kg`}
+              hint={`${fmtKg(billing.facturadoClients, 0)} clientes · ${fmtKg(
+                billing.facturadoOutsideKg,
+              )} kg fuera de cartera`}
+              title="Notas de entrega firmadas por el vendedor, sea o no su cliente."
+            >
+              <SplitMeter
+                label={`De su cartera ${fmtPct(pctOfTotal(billing.facturadoOwnPortfolioKg, billing.facturadoKg) ?? 0)} · fuera de cartera ${fmtPct(
+                  pctOfTotal(billing.facturadoOutsideKg, billing.facturadoKg) ?? 0,
+                )}`}
+                segments={[
+                  {
+                    pct: billing.facturadoOwnPortfolioKg,
+                    className: 'bg-primary-container',
+                    label: 'De su cartera',
+                  },
+                  {
+                    pct: billing.facturadoOutsideKg,
+                    className: 'bg-secondary-container',
+                    label: 'Fuera de cartera',
+                  },
+                ]}
+              />
+              <div className="mt-space-2xs flex flex-wrap items-baseline justify-between gap-x-space-sm text-label-sm text-on-surface-variant">
+                <span>
+                  De su cartera{' '}
+                  <strong className="tabular-nums text-on-surface">
+                    {fmtKg(billing.facturadoOwnPortfolioKg)} kg
+                  </strong>
+                </span>
+                <span>
+                  Fuera{' '}
+                  <strong className="tabular-nums text-on-surface">
+                    {fmtKg(billing.facturadoOutsideKg)} kg
+                  </strong>
+                </span>
+              </div>
+            </SellerFicha>
+
+            <SellerFicha
+              icon={Users}
+              label="Cartera del vendedor"
+              value={`${fmtKg(billing.carteraKg)} kg`}
+              hint={`${fmtKg(seller.assignedClientCount, 0)} clientes en cartera`}
+              tone={billing.carteraByOthersKg > 0 ? 'warn' : 'none'}
+              title="Venta de los clientes asignados en Profit, la firme él u otro vendedor."
+            >
+              <SplitMeter
+                label={`Facturado por él ${fmtPct(pctOfTotal(billing.carteraKg - billing.carteraByOthersKg, billing.carteraKg) ?? 0)} · por otros ${fmtPct(
+                  billing.carteraByOthersPct ?? 0,
+                )}`}
+                segments={[
+                  {
+                    pct: billing.carteraKg - billing.carteraByOthersKg,
+                    className: 'bg-primary-container',
+                    label: 'Facturado por él',
+                  },
+                  {
+                    pct: billing.carteraByOthersKg,
+                    className: 'bg-warning',
+                    label: 'Facturado por otros',
+                  },
+                ]}
+              />
+              <div className="mt-space-2xs flex flex-wrap items-baseline justify-between gap-x-space-sm text-label-sm text-on-surface-variant">
+                <span>
+                  Por él{' '}
+                  <strong className="tabular-nums text-on-surface">
+                    {fmtKg(billing.carteraKg - billing.carteraByOthersKg)} kg
+                  </strong>
+                </span>
+                <span className={billing.carteraByOthersKg > 0 ? 'text-warning' : undefined}>
+                  Por otros{' '}
+                  <strong className="tabular-nums">{fmtKg(billing.carteraByOthersKg)} kg</strong>
+                </span>
+              </div>
+            </SellerFicha>
           </div>
+
+          {isUnassigned ? (
+            <p className="flex items-start gap-space-sm rounded-xl bg-surface-container-low px-space-md py-space-sm text-label-md text-on-surface-variant">
+              <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-outline" />
+              Estos clientes no tienen vendedor asignado en Profit. Asígnalos en la cartera para medir su
+              facturación y su cuota.
+            </p>
+          ) : billing.carteraByOthersExternalKg > 0 ? (
+            <div className="flex flex-wrap items-start justify-between gap-space-sm rounded-xl border border-warning/40 bg-warning-container/40 px-space-md py-space-sm">
+              <div className="flex min-w-0 items-start gap-space-sm">
+                <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-warning" />
+                <div className="min-w-0">
+                  <p className="text-body-md font-semibold text-on-warning-container">
+                    {fmtKg(billing.leakedClients, 0)}{' '}
+                    {billing.leakedClients === 1 ? 'cliente' : 'clientes'} de su cartera le compraron a otro
+                    vendedor: {fmtKg(billing.carteraByOthersExternalKg)} kg
+                    {pctOfTotal(billing.carteraByOthersExternalKg, billing.carteraKg) !== null
+                      ? ` (${fmtPct(
+                          pctOfTotal(billing.carteraByOthersExternalKg, billing.carteraKg) ?? 0,
+                        )} de su cartera)`
+                      : ''}.
+                  </p>
+                  <p className="text-label-md text-on-warning-container/85">
+                    Son su cartera: {topLeak.map((client) => client.clientName).join(' · ')}. La próxima nota
+                    debería ser suya.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTab('otros')}
+                className="inline-flex h-8 shrink-0 items-center rounded-lg bg-warning px-space-sm text-label-md font-semibold text-white transition-transform hover:-translate-y-0.5"
+              >
+                Ver clientes
+              </button>
+            </div>
+          ) : billing.carteraByOthersInternalKg > 0 ? (
+            <p className="flex items-start gap-space-sm rounded-xl bg-surface-container-low px-space-md py-space-sm text-label-md text-on-surface-variant">
+              <Info aria-hidden className="mt-0.5 size-4 shrink-0 text-outline" />
+              Las cuentas internas de Profit facturaron {fmtKg(billing.carteraByOthersInternalKg)} kg a{' '}
+              {fmtKg(billing.internalClients, 0)}{' '}
+              {billing.internalClients === 1 ? 'cliente' : 'clientes'} de su cartera. No es fuga de otro vendedor.
+            </p>
+          ) : (
+            <p className="flex items-start gap-space-sm rounded-xl bg-surface-container-low px-space-md py-space-sm text-label-md text-on-surface-variant">
+              <UserCheck aria-hidden className="mt-0.5 size-4 shrink-0 text-success" />
+              Nadie más está facturando su cartera este mes.
+            </p>
+          )}
 
           <div className="grid gap-space-md lg:grid-cols-2">
             <Card className="overflow-hidden p-space-sm">
@@ -984,7 +1205,7 @@ export function SellerDetailDrawer({
               <header className="mb-space-xs flex items-center justify-between gap-space-sm px-space-xs">
                 <div>
                   <h3 className="text-title-md font-bold text-on-surface">Últimos {historyMonths} meses</h3>
-                  <p className="text-label-md text-on-surface-variant">Cartera asignada vs notas firmadas</p>
+                  <p className="text-label-md text-on-surface-variant">Cartera vs facturado vs por otros</p>
                 </div>
                 <Badge tone="muted">
                   {fmtKg(seller.carteraHistoricalKg / Math.max(1, historyMonths))} kg prom. cartera
@@ -994,7 +1215,7 @@ export function SellerDetailDrawer({
                 <EChart
                   option={historyChart}
                   height={230}
-                  ariaLabel={`Histórico de ${seller.sellerName}: cartera y notas firmadas`}
+                  ariaLabel={`Histórico de ${seller.sellerName}: cartera y facturado`}
                 />
               ) : (
                 <EmptyState icon={Users} title="Sin histórico" description="La ventana elegida no tiene meses cerrados." />
@@ -1015,11 +1236,14 @@ export function SellerDetailDrawer({
                     {tabTitle} {seller.sellerName.split(' ')[0]}
                   </h3>
                   <div className="flex flex-wrap items-center gap-1 rounded-xl bg-surface-container p-1">
-                    <TabButton active={tab === 'cartera'} onClick={() => setTab('cartera')}>
-                      Cartera · {fmtKg(seller.clientCount, 0)}
+                    <TabButton active={tab === 'facturado'} onClick={() => setTab('facturado')}>
+                      Facturado · {fmtKg(facturadoClients.length, 0)}
                     </TabButton>
-                    <TabButton active={tab === 'nota'} onClick={() => setTab('nota')}>
-                      Nota · {fmtKg(noteClients.length, 0)}
+                    <TabButton active={tab === 'cartera'} onClick={() => setTab('cartera')}>
+                      Mi cartera · {fmtKg(carteraClients.length, 0)}
+                    </TabButton>
+                    <TabButton active={tab === 'otros'} onClick={() => setTab('otros')}>
+                      Facturado por otros · {fmtKg(leakClients.length, 0)}
                     </TabButton>
                     <TabButton active={tab === 'productos'} onClick={() => setTab('productos')}>
                       Productos · {fmtKg(productQuery.data?.products.length ?? 0, 0)}
@@ -1040,14 +1264,21 @@ export function SellerDetailDrawer({
                     La cuota del vendedor es el 100 %: su meta de cliente es su peso en el histórico de la cartera.
                   </p>
                 )}
-                {tab === 'nota' && (
+                {tab === 'facturado' && (
                   <p className="text-label-sm text-outline">
-                    La cuota por nota del vendedor es el 100 %: su meta de cliente es su peso en el histórico de las notas firmadas.
+                    Notas firmadas por él, sea o no su cliente. La barra separa lo que vino de su cartera y lo que
+                    facturó fuera. Sin cuota por nota.
+                  </p>
+                )}
+                {tab === 'otros' && (
+                  <p className="text-label-sm text-outline">
+                    Clientes de su cartera que compraron y les facturó otro vendedor. Son una oportunidad de
+                    recuperación: la próxima nota debería ser suya.
                   </p>
                 )}
                 {tab === 'productos' && (
                   <p className="text-label-sm text-outline">
-                    Cartera = venta de sus clientes asignados. Firmado = notas del vendedor. Otros = cartera facturada por otros.
+                    Cartera = venta de sus clientes asignados. Facturado = notas del vendedor. Otros = cartera facturada por otros.
                   </p>
                 )}
               </div>
@@ -1114,10 +1345,49 @@ export function SellerDetailDrawer({
                     >
                       Riesgo · {fmtKg(quotaRisk.atRisk.length, 0)}
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setOnlyOthers((value) => !value)}
+                      aria-pressed={onlyOthers}
+                      className={cx(
+                        'inline-flex h-9 items-center rounded-xl px-space-sm text-label-md font-semibold transition-colors',
+                        onlyOthers
+                          ? 'bg-warning-container text-on-warning-container'
+                          : 'border border-outline-variant/50 text-on-surface-variant hover:text-primary',
+                      )}
+                    >
+                      Me la factura otro · {fmtKg(leakClients.length, 0)}
+                    </button>
                   </>
                 )}
-                {tab === 'nota' && (
+                {tab === 'facturado' && (
                   <>
+                    <button
+                      type="button"
+                      onClick={() => setFacturadoOnlyWithSale((value) => !value)}
+                      aria-pressed={facturadoOnlyWithSale}
+                      className={cx(
+                        'inline-flex h-9 items-center rounded-xl px-space-sm text-label-md font-semibold transition-colors',
+                        facturadoOnlyWithSale
+                          ? 'bg-primary-container text-on-primary'
+                          : 'border border-outline-variant/50 text-on-surface-variant hover:text-primary',
+                      )}
+                    >
+                      Con factura
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOnlyOutside((value) => !value)}
+                      aria-pressed={onlyOutside}
+                      className={cx(
+                        'inline-flex h-9 items-center rounded-xl px-space-sm text-label-md font-semibold transition-colors',
+                        onlyOutside
+                          ? 'bg-warning-container text-on-warning-container'
+                          : 'border border-outline-variant/50 text-on-surface-variant hover:text-primary',
+                      )}
+                    >
+                      Fuera de cartera
+                    </button>
                     <button
                       type="button"
                       onClick={() => setOnlyNew((value) => !value)}
@@ -1131,19 +1401,6 @@ export function SellerDetailDrawer({
                     >
                       Nuevos
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setOnlyAtRisk((value) => !value)}
-                      aria-pressed={onlyAtRisk}
-                      className={cx(
-                        'inline-flex h-9 items-center rounded-xl px-space-sm text-label-md font-semibold transition-colors',
-                        onlyAtRisk
-                          ? 'bg-critical-container text-on-critical-container'
-                          : 'border border-outline-variant/50 text-on-surface-variant hover:text-primary',
-                      )}
-                    >
-                      Riesgo · {fmtKg(atRiskNota.size, 0)}
-                    </button>
                   </>
                 )}
                 <button
@@ -1151,8 +1408,10 @@ export function SellerDetailDrawer({
                   onClick={() => {
                     if (tab === 'cartera') {
                       downloadCsv(buildSellerCarteraCsv(seller, report), csvFileName('clientes-cartera', seller, report));
-                    } else if (tab === 'nota') {
-                      downloadCsv(buildSellerNotaCsv(seller, report), csvFileName('clientes-nota', seller, report));
+                    } else if (tab === 'facturado') {
+                      downloadCsv(buildSellerFacturadoCsv(seller), csvFileName('clientes-facturado', seller, report));
+                    } else if (tab === 'otros') {
+                      downloadCsv(buildSellerLeakCsv(seller), csvFileName('clientes-por-otros', seller, report));
                     } else if (productQuery.data) {
                       downloadCsv(
                         buildSellerProductsCsv(productQuery.data.products),
@@ -1187,23 +1446,32 @@ export function SellerDetailDrawer({
               </div>
             )}
 
-            {tab === 'nota' && (
+            {tab === 'facturado' && (
               <div className="px-space-md pb-space-md">
-                <PerformanceList
-                  items={notaItems}
-                  showProjection={isOpen}
+                <BillingList
+                  items={facturadoItems}
                   maxHeightClass="max-h-[52vh]"
-                  markerLabel="su cuota 100 %"
-                  legendLabel="Marcador verde = 100 % de su parte"
                   empty={
                     <EmptyState
-                      icon={Users}
-                      title="Sin notas en la ventana"
-                      description={
-                        seller.noteHistoricalKg <= 0
-                          ? 'El vendedor no firmó notas en el histórico. Cambia a la pestaña Cartera para ver sus clientes asignados.'
-                          : 'Prueba con otro texto o desactiva el filtro de nuevos.'
-                      }
+                      icon={Receipt}
+                      title="Sin facturación para el filtro"
+                      description="Prueba con otro texto o desactiva los filtros. Si el vendedor no firmó notas, revisa su cartera."
+                    />
+                  }
+                />
+              </div>
+            )}
+
+            {tab === 'otros' && (
+              <div className="px-space-md pb-space-md">
+                <BillingList
+                  items={leakItems}
+                  maxHeightClass="max-h-[52vh]"
+                  empty={
+                    <EmptyState
+                      icon={UserCheck}
+                      title="Nadie más factura su cartera"
+                      description="Todos los clientes de su cartera que compraron lo hicieron con él."
                     />
                   }
                 />
@@ -1232,6 +1500,28 @@ export function SellerDetailDrawer({
                     rowKey={(row) => row.productCode || row.description}
                     maxHeightClass="max-h-[46vh]"
                     showHelpRow={helpRow}
+                    expandedKey={expandedProduct}
+                    onRowClick={(row) => {
+                      const key = row.productCode || row.description;
+                      setExpandedProduct((current) => (current === key ? null : key));
+                    }}
+                    renderExpanded={(row) => (
+                      <SellerProductClientsDetail
+                        seller={seller}
+                        product={row}
+                        report={report}
+                        includeToday={includeToday}
+                        onOpenClient={(client) => {
+                          const view: SellerContextView =
+                            client.carteraKg > 0 || client.carteraNotes > 0
+                              ? 'cartera'
+                              : client.ownKg > 0 || client.ownNotes > 0
+                                ? 'facturado'
+                                : 'otros';
+                          openCustomer(client, view, row);
+                        }}
+                      />
+                    )}
                     empty={
                       <EmptyState
                         icon={Package}
@@ -1247,10 +1537,12 @@ export function SellerDetailDrawer({
             <div className="flex flex-wrap items-center justify-between gap-space-sm border-t border-surface-container px-space-md py-space-xs text-label-sm text-on-surface-variant">
               <span>
                 {tab === 'cartera'
-                  ? 'Σ metas de clientes = 100 % de su cuota. El plan de cierre se reparte por capacidad real (mejor mes de 12). Clic en un cliente para abrir su ficha 360; los «sin base» no entran al reparto.'
-                  : tab === 'nota'
-                    ? 'Σ metas de clientes = 100 % de su cuota por nota. Clic en un cliente para abrir su ficha 360.'
-                    : 'Cartera mes = venta de sus clientes; firmado = notas del vendedor; otros = cartera facturada por otros.'}
+                  ? 'Σ metas de clientes = 100 % de su cuota. El plan de cierre se reparte por capacidad real (mejor mes de 12). Clic en un cliente para ver sus notas del mes; los «sin base» no entran al reparto.'
+                  : tab === 'facturado'
+                    ? 'Facturado = notas firmadas por él. Clic en un cliente para ver las notas que componen su facturación; la barra separa lo que vino de su cartera y lo que facturó fuera.'
+                    : tab === 'otros'
+                      ? 'Facturado por otros = clientes de su cartera con venta de otro vendedor. Clic en un cliente para ver las notas de otros vendedores; la columna derecha es su peso dentro de la fuga.'
+                      : 'Cartera mes = venta de sus clientes; facturado = notas del vendedor; otros = cartera facturada por otros. Clic en un producto para ver sus clientes.'}
               </span>
               {tab === 'productos' && (
                 <button
@@ -1292,9 +1584,14 @@ export function SellerDetailDrawer({
       <CustomerInsightsModal
         open={insightsCustomer !== null}
         customer={insightsCustomer}
-        onClose={() => setInsightsCustomer(null)}
+        context={insightsContext}
+        onClose={() => {
+          setInsightsCustomer(null);
+          setInsightsContext(null);
+        }}
         onOpenStatement={(customer) => {
           setInsightsCustomer(null);
+          setInsightsContext(null);
           setStatementCustomer(customer);
         }}
       />

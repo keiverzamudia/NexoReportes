@@ -4,9 +4,16 @@ import {
   ForecastSellerActivation,
   ForecastSellerAllocationBasis,
   ForecastSellerAttribution,
+  ForecastSellerBilling,
+  ForecastSellerClientDetailResponse,
+  ForecastSellerClientProductRow,
   ForecastSellerClientRow,
   ForecastSellerCollection,
+  ForecastSellerDetailQuery,
   ForecastSellerHistory,
+  ForecastSellerNoteRow,
+  ForecastSellerProductClientRow,
+  ForecastSellerProductClientsResponse,
   ForecastSellerProductRow,
   ForecastSellerProductsResponse,
   ForecastSellerRow,
@@ -185,6 +192,134 @@ GROUP BY
 `;
 
 // ============================================================
+// Detalle contextual del expediente.
+//
+// Las notas se leen con los MISMOS filtros que PROFIT_SELLER_MONTHLY_SQL
+// (anuladas fuera, línea ABA, artículo activo, mismo rango de fechas) para que
+// la suma de las notas coincida al kilo con la fila del cliente. Se incluyen
+// los dos vendedores de cada nota: el que la firmó (`co_ven_nota`) y el que
+// tiene asignado al cliente hoy (`co_ven_cartera`). Así la UI puede separar
+// «Tú» / «Otros» sin recalcular reglas.
+// ============================================================
+
+const SELLER_CLIENT_MATCH = `(RTRIM(ISNULL(c.co_ven, '')) = @coVen OR RTRIM(ISNULL(f.co_ven, '')) = @coVen)`;
+
+/** Notas individuales del cliente en el mes (una fila por nota). */
+export function sellerClientNotesSql(onlyProduct: boolean): string {
+  return `
+SELECT /* nexo:seller_client_notes */
+  CAST(f.fact_num AS varchar(30)) AS nota,
+  MAX(f.fec_emis) AS fecha,
+  RTRIM(MAX(ISNULL(c.cli_des, ''))) AS cli_des,
+  RTRIM(ISNULL(f.co_ven, '')) AS co_ven_nota,
+  RTRIM(ISNULL(vn.ven_des, '')) AS ven_nota,
+  RTRIM(ISNULL(c.co_ven, '')) AS co_ven_cartera,
+  RTRIM(ISNULL(vc.ven_des, '')) AS ven_cartera,
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg,
+  SUM(r.total_art) AS unid,
+  COUNT(*) AS lineas
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+LEFT JOIN dbo.clientes AS c ON c.co_cli = f.co_cli
+LEFT JOIN dbo.vendedor AS vn ON vn.co_ven = f.co_ven
+LEFT JOIN dbo.vendedor AS vc ON vc.co_ven = c.co_ven
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND a.co_lin = 'ABA'
+  AND RTRIM(f.co_cli) = @co_cli
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+  ${onlyProduct ? 'AND RTRIM(r.co_art) = @co_art' : ''}
+  AND ${SELLER_CLIENT_MATCH}
+GROUP BY
+  CAST(f.fact_num AS varchar(30)),
+  RTRIM(ISNULL(f.co_ven, '')),
+  RTRIM(ISNULL(vn.ven_des, '')),
+  RTRIM(ISNULL(c.co_ven, '')),
+  RTRIM(ISNULL(vc.ven_des, ''))
+ORDER BY MAX(f.fec_emis) DESC, CAST(f.fact_num AS varchar(30)) DESC
+`;
+}
+
+/** Productos del cliente en el mes, separados por vendedor de la nota. */
+export function sellerClientProductsSql(onlyProduct: boolean): string {
+  return `
+SELECT /* nexo:seller_client_products */
+  RTRIM(r.co_art) AS co_art,
+  RTRIM(ISNULL(a.art_des, '')) AS art_des,
+  RTRIM(ISNULL(a.uni_venta, '')) AS uni_venta,
+  RTRIM(ISNULL(f.co_ven, '')) AS co_ven_nota,
+  RTRIM(ISNULL(c.co_ven, '')) AS co_ven_cartera,
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg,
+  SUM(r.total_art) AS unid,
+  COUNT(DISTINCT f.fact_num) AS notas
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+LEFT JOIN dbo.clientes AS c ON c.co_cli = f.co_cli
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND a.co_lin = 'ABA'
+  AND RTRIM(f.co_cli) = @co_cli
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+  ${onlyProduct ? 'AND RTRIM(r.co_art) = @co_art' : ''}
+  AND ${SELLER_CLIENT_MATCH}
+GROUP BY
+  RTRIM(r.co_art),
+  RTRIM(ISNULL(a.art_des, '')),
+  RTRIM(ISNULL(a.uni_venta, '')),
+  RTRIM(ISNULL(f.co_ven, '')),
+  RTRIM(ISNULL(c.co_ven, ''))
+ORDER BY SUM(r.total_art * ISNULL(a.uni_relac, 1)) DESC, RTRIM(ISNULL(a.art_des, ''))
+`;
+}
+
+/** Clientes que compraron un producto en el mes (drill-down de Productos). */
+export const PROFIT_SELLER_PRODUCT_CLIENTS_SQL = `
+SELECT /* nexo:seller_product_clients */
+  RTRIM(f.co_cli) AS co_cli,
+  RTRIM(ISNULL(c.cli_des, '')) AS cli_des,
+  RTRIM(LTRIM(RTRIM(ISNULL(c.tipo, '')) + ' ' + RTRIM(ISNULL(tc.des_tipo, '')))) AS tipo,
+  RTRIM(ISNULL(a.art_des, '')) AS art_des,
+  RTRIM(ISNULL(a.uni_venta, '')) AS uni_venta,
+  RTRIM(ISNULL(f.co_ven, '')) AS co_ven_nota,
+  RTRIM(ISNULL(vn.ven_des, '')) AS ven_nota,
+  RTRIM(ISNULL(c.co_ven, '')) AS co_ven_cartera,
+  RTRIM(ISNULL(vc.ven_des, '')) AS ven_cartera,
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg,
+  SUM(r.total_art) AS unid,
+  COUNT(DISTINCT f.fact_num) AS notas,
+  MAX(f.fec_emis) AS ultima
+FROM dbo.not_ent AS f
+INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
+INNER JOIN dbo.art AS a ON a.co_art = r.co_art
+LEFT JOIN dbo.clientes AS c ON c.co_cli = f.co_cli
+LEFT JOIN dbo.tipo_cli AS tc ON tc.tip_cli = c.tipo
+LEFT JOIN dbo.vendedor AS vn ON vn.co_ven = f.co_ven
+LEFT JOIN dbo.vendedor AS vc ON vc.co_ven = c.co_ven
+WHERE f.anulada = 0
+  AND a.anulado = 0
+  AND a.co_lin = 'ABA'
+  AND RTRIM(r.co_art) = @co_art
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+  AND (RTRIM(ISNULL(c.co_ven, '')) = @coVen OR RTRIM(ISNULL(f.co_ven, '')) = @coVen)
+GROUP BY
+  RTRIM(f.co_cli),
+  RTRIM(ISNULL(c.cli_des, '')),
+  RTRIM(LTRIM(RTRIM(ISNULL(c.tipo, '')) + ' ' + RTRIM(ISNULL(tc.des_tipo, '')))),
+  RTRIM(ISNULL(a.art_des, '')),
+  RTRIM(ISNULL(a.uni_venta, '')),
+  RTRIM(ISNULL(f.co_ven, '')),
+  RTRIM(ISNULL(vn.ven_des, '')),
+  RTRIM(ISNULL(c.co_ven, '')),
+  RTRIM(ISNULL(vc.ven_des, ''))
+ORDER BY SUM(r.total_art * ISNULL(a.uni_relac, 1)) DESC, RTRIM(ISNULL(c.cli_des, ''))
+`;
+
+// ============================================================
 // Cobranza del mes por vendedor.
 //
 // `docum_cc` no expone la fecha de pago; `cobros` (cabecera del recibo) sí.
@@ -256,6 +391,22 @@ const NO_CLIENT_LABEL = 'Sin cliente';
 // vendedor más en el reparto. Se marcan en la UI.
 const INTERNAL_SELLER_CODES = new Set(['001', '004']);
 
+/**
+ * Acceso de la sesión que consulta el informe. `vendedor:view_all` separa al
+ * gerente que ve toda la fuerza de ventas de la vendedora que solo ve su
+ * cartera (`sellerCode` asignado en Usuarios).
+ */
+export interface SellerReportAccess {
+  isAdmin: boolean;
+  permissions: string[];
+  sellerCode: string | null;
+}
+
+export function hasFullSellerScope(access?: SellerReportAccess | null): boolean {
+  if (!access) return true;
+  return access.isAdmin || access.permissions.includes('vendedor:view_all');
+}
+
 function num(value: unknown): number {
   if (value === null || value === undefined) return 0;
   const n = Number(value);
@@ -292,6 +443,42 @@ function emptyMetrics() {
     requiredDailyKg: null as number | null,
     historicalAvgKg: null as number | null,
     vsHistoricalPct: null as number | null,
+  };
+}
+
+/** Totales en cero (sin datos o sin alcance sobre ninguna cartera). */
+function zeroTotals(): ForecastSellersResponse['totals'] {
+  return {
+    forecastKg: 0,
+    actualKg: 0,
+    actualUnits: 0,
+    ...emptyMetrics(),
+    pendingKg: 0,
+    expectedKg: 0,
+    closingGapKg: 0,
+    closingCoveredKg: 0,
+    closingUncoveredKg: 0,
+    invoiceCount: 0,
+    lastInvoiceDate: null,
+    sellerCount: 0,
+    clientCount: 0,
+    assignedClientCount: 0,
+    windowClientCount: 0,
+    activeClientCount: 0,
+    billing: {
+      facturadoKg: 0,
+      facturadoOwnPortfolioKg: 0,
+      facturadoOutsideKg: 0,
+      carteraKg: 0,
+      carteraByOthersKg: 0,
+      carteraByOthersExternalKg: 0,
+      carteraByOthersInternalKg: 0,
+      carteraByOthersPct: null,
+      facturadoClients: 0,
+      leakedClients: 0,
+      internalClients: 0,
+    },
+    carteraByOthersHistory: [],
   };
 }
 
@@ -355,7 +542,10 @@ interface SellerClientAccum {
   currentInvoices: number;
   lastInvoiceDate: string | null;
   otherSellerKg: number;
-  otherSellers: Set<string>;
+  otherSellerExternalKg: number;
+  otherSellerInternalKg: number;
+  /** Código → nombre de cada vendedor que le facturó a este cliente. */
+  otherSellers: Map<string, string>;
 }
 
 interface SellerAccum {
@@ -369,6 +559,10 @@ interface SellerAccum {
   lastInvoiceDate: string | null;
   daily: Map<number, { kg: number; units: number; invoices: number }>;
   otherSellerKg: number;
+  otherExternalKg: number;
+  otherInternalKg: number;
+  /** Kg de cartera de cada mes cerrado facturados por otros. */
+  otherHistory: Map<string, number>;
 }
 
 interface CachedSellers {
@@ -386,7 +580,10 @@ export class SellersService {
     private readonly forecast: ForecastService,
   ) {}
 
-  async sellersReport(query: ForecastSellersQuery): Promise<ForecastSellersResponse> {
+  async sellersReport(
+    query: ForecastSellersQuery,
+    access?: SellerReportAccess | null,
+  ): Promise<ForecastSellersResponse> {
     const today = todayInTimeZone(BUSINESS_TIME_ZONE);
     const year = query.year ?? Number(today.slice(0, 4));
     const month = query.month ?? Number(today.slice(5, 7));
@@ -409,21 +606,110 @@ export class SellersService {
     ].join('|');
     if (!query.refresh) {
       const cached = this.cache.get(cacheKey);
-      if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.data;
+      if (cached && Date.now() - cached.at < CACHE_TTL_MS) return this.applyScope(cached.data, access);
     }
 
     try {
       const data = await this.build(query, calendar);
       this.remember(cacheKey, data);
-      return data;
+      return this.applyScope(data, access);
     } catch (error) {
       this.logger.warn(
         `No se pudieron leer las ventas por vendedor de Profit (not_ent/reng_nde): ${
           error instanceof Error ? error.message : 'error desconocido'
         }`,
       );
-      return this.empty(calendar, query.attribution);
+      return this.applyScope(this.empty(calendar, query.attribution), access);
     }
+  }
+
+  /**
+   * Restringe el informe a la cartera del usuario cuando no tiene
+   * `vendedor:view_all`. La fuente se calcula igual (y se cachea) para toda la
+   * red; aquí solo se recorta la vista y se recalculan los totales con la fila
+   * propia, de modo que la meta y los indicadores también sean «solo míos».
+   */
+  private applyScope(
+    data: ForecastSellersResponse,
+    access?: SellerReportAccess | null,
+  ): ForecastSellersResponse {
+    if (hasFullSellerScope(access)) {
+      return { ...data, scope: 'ALL', scopeSellerCode: null };
+    }
+
+    const code = (access?.sellerCode ?? '').trim();
+    if (!code) {
+      return {
+        ...data,
+        scope: 'UNASSIGNED',
+        scopeSellerCode: null,
+        sellers: [],
+        daily: [],
+        totals: zeroTotals(),
+      };
+    }
+
+    const row = data.sellers.find(
+      (seller) => seller.sellerCode.trim().toUpperCase() === code.toUpperCase(),
+    );
+    if (!row) {
+      return {
+        ...data,
+        scope: 'OWN',
+        scopeSellerCode: code,
+        sellers: [],
+        daily: [],
+        totals: zeroTotals(),
+      };
+    }
+
+    const gap = Math.max(0, row.targetKg - row.expectedKg);
+    const covered = Math.min(gap, row.closingPlanKg);
+    return {
+      ...data,
+      scope: 'OWN',
+      scopeSellerCode: row.sellerCode,
+      sellers: [row],
+      daily: row.daily.map((day) => ({
+        date: day.date,
+        actualKg: day.actualKg,
+        actualUnits: 0,
+        invoiceCount: day.invoiceCount,
+        pendingKg: 0,
+        pendingOrders: 0,
+        products: [],
+        cumulativeKg: day.cumulativeKg,
+        projectedCumulativeKg: day.projectedCumulativeKg,
+        forecastCumulativeKg: day.forecastCumulativeKg,
+      })),
+      totals: {
+        forecastKg: row.targetKg,
+        actualKg: row.actualKg,
+        actualUnits: row.actualUnits,
+        dailyAvgKg: row.dailyAvgKg,
+        projectedKg: row.projectedKg,
+        attainmentPct: row.attainmentPct,
+        projectedAttainmentPct: row.projectedAttainmentPct,
+        gapKg: row.gapKg,
+        requiredDailyKg: row.requiredDailyKg,
+        historicalAvgKg: row.historicalAvgKg,
+        vsHistoricalPct: row.vsHistoricalPct,
+        pendingKg: row.pendingKg,
+        expectedKg: row.expectedKg,
+        closingGapKg: data.closingPlanAvailable ? gap : 0,
+        closingCoveredKg: data.closingPlanAvailable ? covered : 0,
+        closingUncoveredKg: data.closingPlanAvailable ? Math.max(0, gap - covered) : 0,
+        invoiceCount: row.invoiceCount,
+        lastInvoiceDate: row.lastInvoiceDate,
+        sellerCount: 1,
+        clientCount: row.clientCount,
+        assignedClientCount: row.assignedClientCount,
+        windowClientCount: row.windowClientCount,
+        activeClientCount: row.activeClientCount,
+        billing: row.billing,
+        carteraByOthersHistory: row.carteraByOthersHistory,
+      },
+    };
   }
 
   /**
@@ -587,6 +873,478 @@ export class SellersService {
       months: query.months,
       products: rows,
       generatedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Ventana del mes del informe para el detalle contextual. Usa el mismo corte
+   * que el informe (ayer por defecto, hoy si `includeToday`, mes cerrado
+   * completo y mes futuro vacío) para que las notas cuadren con la fila.
+   */
+  private detailWindow(query: ForecastSellerDetailQuery): {
+    year: number;
+    month: number;
+    calendar: MonthCalendar;
+    desde: Date;
+    hasta: Date;
+  } {
+    const today = todayInTimeZone(BUSINESS_TIME_ZONE);
+    const year = query.year ?? Number(today.slice(0, 4));
+    const month = query.month ?? Number(today.slice(5, 7));
+    const calendar = monthCalendar({
+      year,
+      month,
+      basis: query.basis,
+      includeToday: query.includeToday,
+      today,
+    });
+    const desde = new Date(Date.UTC(year, month - 1, 1));
+    const monthEnd = new Date(Date.UTC(year, month, 1));
+    const [todayYear, todayMonth, todayDay] = calendar.today.split('-').map(Number) as [number, number, number];
+
+    let hasta = monthEnd;
+    if (calendar.status === 'OPEN') {
+      hasta = new Date(Date.UTC(todayYear, todayMonth - 1, todayDay + (query.includeToday ? 1 : 0)));
+    } else if (calendar.status === 'FUTURE') {
+      hasta = desde;
+    }
+
+    return { year, month, calendar, desde, hasta };
+  }
+
+  /**
+   * Detalle contextual de un cliente en el expediente: notas individuales y
+   * productos del mes. La vista (Facturado / Mi cartera / Facturado por otros)
+   * la resuelve la UI; aquí solo se aplican los filtros del informe. Cada nota
+   * trae sus dos vendedores (nota y cartera) para poder separar «Tú» / «Otros»
+   * y para que los totales coincidan con la fila clicada.
+   */
+  async clientDetail(
+    sellerCodeRaw: string,
+    clientCodeRaw: string,
+    query: ForecastSellerDetailQuery,
+  ): Promise<ForecastSellerClientDetailResponse> {
+    const window = this.detailWindow(query);
+    const sellerCode = sellerCodeRaw.trim() || NO_SELLER;
+    const clientCode = clientCodeRaw.trim();
+    const productCode = query.productCode?.trim() || null;
+    const sellerCodeResponse = sellerCode === NO_SELLER ? '' : sellerCode;
+    const sellerCodeSql = sellerCode === NO_SELLER ? '' : sellerCode;
+    const source = this.profit.dialect === 'mssql' ? ('profit' as const) : ('fixtures' as const);
+
+    const empty = (available: boolean, sellerName = sellerCodeResponse || NO_SELLER_LABEL): ForecastSellerClientDetailResponse => ({
+      sellerCode: sellerCodeResponse,
+      sellerName,
+      clientCode,
+      clientName: clientCode,
+      year: window.year,
+      month: window.month,
+      basis: query.basis,
+      includeToday: query.includeToday,
+      attribution: query.attribution,
+      productCode,
+      notes: [],
+      products: [],
+      productsAvailable: false,
+      totals: {
+        allKg: 0,
+        allNotes: 0,
+        ownKg: 0,
+        ownNotes: 0,
+        otherKg: 0,
+        otherNotes: 0,
+        otherExternalKg: 0,
+        otherInternalKg: 0,
+        lastInvoiceDate: null,
+      },
+      available,
+      source,
+    });
+
+    if (!clientCode) return empty(false);
+
+    const params = {
+      coVen: sellerCodeSql,
+      co_cli: clientCode,
+      desde: window.desde,
+      hasta: window.hasta,
+      ...(productCode ? { co_art: productCode } : {}),
+    };
+
+    const [notesRes, productsRes, nameRes] = await Promise.allSettled([
+      this.profit.selectQuery(sellerClientNotesSql(Boolean(productCode)), 5000, params),
+      this.profit.selectQuery(sellerClientProductsSql(Boolean(productCode)), 5000, params),
+      this.profit.selectQuery(PROFIT_SELLER_NAME_SQL, 1, { coVen: sellerCodeSql }),
+    ]);
+
+    const notesOk = notesRes.status === 'fulfilled';
+    const productsOk = productsRes.status === 'fulfilled';
+    const notesRows = notesOk ? notesRes.value : [];
+    const productRows = productsOk ? productsRes.value : [];
+    if (!notesOk) {
+      this.logger.warn(
+        `No se pudieron leer las notas del cliente ${clientCode} para el vendedor ${sellerCode}: ${
+          notesRes.status === 'rejected' && notesRes.reason instanceof Error
+            ? notesRes.reason.message
+            : 'error desconocido'
+        }`,
+      );
+    }
+    if (!productsOk) {
+      this.logger.warn(
+        `No se pudieron leer los productos del cliente ${clientCode} para el vendedor ${sellerCode}: ${
+          productsRes.status === 'rejected' && productsRes.reason instanceof Error
+            ? productsRes.reason.message
+            : 'error desconocido'
+        }`,
+      );
+    }
+
+    const sellerName =
+      (nameRes.status === 'fulfilled' ? text(nameRes.value[0]?.ven_des) : '') ||
+      (sellerCode === NO_SELLER ? NO_SELLER_LABEL : sellerCode);
+
+    const notes: ForecastSellerNoteRow[] = notesRows
+      .map((raw) => {
+        const noteSeller = text(raw.co_ven_nota) || NO_SELLER;
+        const portfolioSeller = text(raw.co_ven_cartera) || NO_SELLER;
+        return {
+          number: text(raw.nota),
+          date: isoDayOf(raw.fecha),
+          kg: num(raw.kg),
+          units: num(raw.unid),
+          lines: Math.trunc(num(raw.lineas)),
+          noteSellerCode: noteSeller === NO_SELLER ? '' : noteSeller,
+          noteSellerName: text(raw.ven_nota) || (noteSeller === NO_SELLER ? NO_SELLER_LABEL : noteSeller),
+          portfolioSellerCode: portfolioSeller === NO_SELLER ? '' : portfolioSeller,
+          portfolioSellerName:
+            text(raw.ven_cartera) || (portfolioSeller === NO_SELLER ? NO_SELLER_LABEL : portfolioSeller),
+          noteSellerInternal: INTERNAL_SELLER_CODES.has(noteSeller),
+        };
+      })
+      .filter((note) => note.number !== '');
+
+    let allKg = 0;
+    let ownKg = 0;
+    let otherKg = 0;
+    let ownNotes = 0;
+    let otherNotes = 0;
+    let otherExternalKg = 0;
+    let otherInternalKg = 0;
+    const lastDates: string[] = [];
+
+    for (const note of notes) {
+      allKg += note.kg;
+      if (note.date) lastDates.push(note.date);
+      if (note.noteSellerCode === sellerCodeResponse) {
+        ownKg += note.kg;
+        ownNotes += 1;
+      }
+      if (note.portfolioSellerCode === sellerCodeResponse && note.noteSellerCode !== sellerCodeResponse) {
+        otherKg += note.kg;
+        otherNotes += 1;
+        if (note.noteSellerInternal) otherInternalKg += note.kg;
+        else otherExternalKg += note.kg;
+      }
+    }
+
+    interface ClientProductAccum {
+      productCode: string;
+      description: string;
+      uom: string;
+      kg: number;
+      notes: number;
+      ownKg: number;
+      ownNotes: number;
+      otherKg: number;
+      otherNotes: number;
+    }
+
+    const productMap = new Map<string, ClientProductAccum>();
+    for (const raw of productRows) {
+      const code = text(raw.co_art);
+      if (!code) continue;
+      const noteSeller = text(raw.co_ven_nota) || NO_SELLER;
+      const portfolioSeller = text(raw.co_ven_cartera) || NO_SELLER;
+      const kg = num(raw.kg);
+      const noteCount = Math.trunc(num(raw.notas));
+
+      let product = productMap.get(code);
+      if (!product) {
+        product = {
+          productCode: code,
+          description: text(raw.art_des) || code,
+          uom: text(raw.uni_venta),
+          kg: 0,
+          notes: 0,
+          ownKg: 0,
+          ownNotes: 0,
+          otherKg: 0,
+          otherNotes: 0,
+        };
+        productMap.set(code, product);
+      }
+
+      product.kg += kg;
+      product.notes += noteCount;
+      if (noteSeller === sellerCode) {
+        product.ownKg += kg;
+        product.ownNotes += noteCount;
+      }
+      if (portfolioSeller === sellerCode && noteSeller !== sellerCode) {
+        product.otherKg += kg;
+        product.otherNotes += noteCount;
+      }
+    }
+
+    const products: ForecastSellerClientProductRow[] = [...productMap.values()]
+      .map((product) => ({
+        productCode: product.productCode,
+        description: product.description,
+        uom: product.uom,
+        kg: roundTo(product.kg),
+        notes: product.notes,
+        ownKg: roundTo(product.ownKg),
+        ownNotes: product.ownNotes,
+        otherKg: roundTo(product.otherKg),
+        otherNotes: product.otherNotes,
+      }))
+      .sort((a, b) => b.kg - a.kg || a.description.localeCompare(b.description, 'es'));
+
+    return {
+      sellerCode: sellerCodeResponse,
+      sellerName,
+      clientCode,
+      clientName: text(notesRows[0]?.cli_des) || clientCode,
+      year: window.year,
+      month: window.month,
+      basis: query.basis,
+      includeToday: query.includeToday,
+      attribution: query.attribution,
+      productCode,
+      notes,
+      products,
+      productsAvailable: productsOk,
+      totals: {
+        allKg: roundTo(allKg),
+        allNotes: notes.length,
+        ownKg: roundTo(ownKg),
+        ownNotes,
+        otherKg: roundTo(otherKg),
+        otherNotes,
+        otherExternalKg: roundTo(otherExternalKg),
+        otherInternalKg: roundTo(otherInternalKg),
+        lastInvoiceDate: lastDates.sort().at(-1) ?? null,
+      },
+      available: notesOk,
+      source,
+    };
+  }
+
+  /**
+   * Clientes que compraron un producto en el mes. Es el drill-down de la
+   * pestaña Productos: mismos filtros del informe y separación cartera /
+   * firmado por él / otros.
+   */
+  async productClients(
+    sellerCodeRaw: string,
+    productCodeRaw: string,
+    query: ForecastSellerDetailQuery,
+  ): Promise<ForecastSellerProductClientsResponse> {
+    const window = this.detailWindow(query);
+    const sellerCode = sellerCodeRaw.trim() || NO_SELLER;
+    const productCode = productCodeRaw.trim();
+    const sellerCodeResponse = sellerCode === NO_SELLER ? '' : sellerCode;
+    const sellerCodeSql = sellerCode === NO_SELLER ? '' : sellerCode;
+    const source = this.profit.dialect === 'mssql' ? ('profit' as const) : ('fixtures' as const);
+
+    const empty = (available: boolean, sellerName = sellerCodeResponse || NO_SELLER_LABEL): ForecastSellerProductClientsResponse => ({
+      sellerCode: sellerCodeResponse,
+      sellerName,
+      productCode,
+      description: productCode,
+      uom: '',
+      year: window.year,
+      month: window.month,
+      basis: query.basis,
+      includeToday: query.includeToday,
+      attribution: query.attribution,
+      clients: [],
+      totals: {
+        carteraKg: 0,
+        ownKg: 0,
+        otherKg: 0,
+        carteraNotes: 0,
+        ownNotes: 0,
+        clientCount: 0,
+        noteClientCount: 0,
+        lastInvoiceDate: null,
+      },
+      available,
+      source,
+    });
+
+    if (!productCode) return empty(false);
+
+    const [rowsRes, nameRes] = await Promise.allSettled([
+      this.profit.selectQuery(PROFIT_SELLER_PRODUCT_CLIENTS_SQL, 5000, {
+        coVen: sellerCodeSql,
+        co_art: productCode,
+        desde: window.desde,
+        hasta: window.hasta,
+      }),
+      this.profit.selectQuery(PROFIT_SELLER_NAME_SQL, 1, { coVen: sellerCodeSql }),
+    ]);
+
+    const rowsOk = rowsRes.status === 'fulfilled';
+    const rows = rowsOk ? rowsRes.value : [];
+    if (!rowsOk) {
+      this.logger.warn(
+        `No se pudieron leer los clientes del producto ${productCode} para el vendedor ${sellerCode}: ${
+          rowsRes.status === 'rejected' && rowsRes.reason instanceof Error
+            ? rowsRes.reason.message
+            : 'error desconocido'
+        }`,
+      );
+    }
+
+    const sellerName =
+      (nameRes.status === 'fulfilled' ? text(nameRes.value[0]?.ven_des) : '') ||
+      (sellerCode === NO_SELLER ? NO_SELLER_LABEL : sellerCode);
+
+    interface ProductClientAccum {
+      clientCode: string;
+      clientName: string;
+      customerType: string | null;
+      carteraKg: number;
+      ownKg: number;
+      otherKg: number;
+      otherExternalKg: number;
+      otherInternalKg: number;
+      carteraNotes: number;
+      ownNotes: number;
+      lastInvoiceDate: string | null;
+    }
+
+    const clientMap = new Map<string, ProductClientAccum>();
+    for (const raw of rows) {
+      const code = text(raw.co_cli) || NO_CLIENT;
+      const noteSeller = text(raw.co_ven_nota) || NO_SELLER;
+      const portfolioSeller = text(raw.co_ven_cartera) || NO_SELLER;
+      const kg = num(raw.kg);
+      const noteCount = Math.trunc(num(raw.notas));
+      const last = isoDayOf(raw.ultima);
+
+      let client = clientMap.get(code);
+      if (!client) {
+        client = {
+          clientCode: code === NO_CLIENT ? '' : code,
+          clientName: text(raw.cli_des) || (code === NO_CLIENT ? NO_CLIENT_LABEL : code),
+          customerType: text(raw.tipo) || null,
+          carteraKg: 0,
+          ownKg: 0,
+          otherKg: 0,
+          otherExternalKg: 0,
+          otherInternalKg: 0,
+          carteraNotes: 0,
+          ownNotes: 0,
+          lastInvoiceDate: null,
+        };
+        clientMap.set(code, client);
+      }
+
+      if (last && (!client.lastInvoiceDate || last > client.lastInvoiceDate)) {
+        client.lastInvoiceDate = last;
+      }
+      if (portfolioSeller === sellerCode) {
+        client.carteraKg += kg;
+        client.carteraNotes += noteCount;
+        if (noteSeller !== sellerCode) {
+          client.otherKg += kg;
+          if (INTERNAL_SELLER_CODES.has(noteSeller)) client.otherInternalKg += kg;
+          else client.otherExternalKg += kg;
+        }
+      }
+      if (noteSeller === sellerCode) {
+        client.ownKg += kg;
+        client.ownNotes += noteCount;
+      }
+    }
+
+    const clients: ForecastSellerProductClientRow[] = [...clientMap.values()]
+      .map((client) => ({
+        clientCode: client.clientCode,
+        clientName: client.clientName,
+        customerType: client.customerType,
+        carteraKg: roundTo(client.carteraKg),
+        ownKg: roundTo(client.ownKg),
+        otherKg: roundTo(client.otherKg),
+        otherExternalKg: roundTo(client.otherExternalKg),
+        otherInternalKg: roundTo(client.otherInternalKg),
+        carteraNotes: client.carteraNotes,
+        ownNotes: client.ownNotes,
+        lastInvoiceDate: client.lastInvoiceDate,
+      }))
+      .sort(
+        (a, b) =>
+          b.carteraKg - a.carteraKg ||
+          b.ownKg - a.ownKg ||
+          a.clientName.localeCompare(b.clientName, 'es'),
+      );
+
+    const totals = clients.reduce(
+      (acc, client) => {
+        acc.carteraKg += client.carteraKg;
+        acc.ownKg += client.ownKg;
+        acc.otherKg += client.otherKg;
+        acc.carteraNotes += client.carteraNotes;
+        acc.ownNotes += client.ownNotes;
+        if (client.carteraKg > 0 || client.carteraNotes > 0) acc.clientCount += 1;
+        if (client.ownKg > 0 || client.ownNotes > 0) acc.noteClientCount += 1;
+        if (
+          client.lastInvoiceDate &&
+          (!acc.lastInvoiceDate || client.lastInvoiceDate > acc.lastInvoiceDate)
+        ) {
+          acc.lastInvoiceDate = client.lastInvoiceDate;
+        }
+        return acc;
+      },
+      {
+        carteraKg: 0,
+        ownKg: 0,
+        otherKg: 0,
+        carteraNotes: 0,
+        ownNotes: 0,
+        clientCount: 0,
+        noteClientCount: 0,
+        lastInvoiceDate: null as string | null,
+      },
+    );
+
+    return {
+      sellerCode: sellerCodeResponse,
+      sellerName,
+      productCode,
+      description: text(rows[0]?.art_des) || productCode,
+      uom: text(rows[0]?.uni_venta),
+      year: window.year,
+      month: window.month,
+      basis: query.basis,
+      includeToday: query.includeToday,
+      attribution: query.attribution,
+      clients,
+      totals: {
+        carteraKg: roundTo(totals.carteraKg),
+        ownKg: roundTo(totals.ownKg),
+        otherKg: roundTo(totals.otherKg),
+        carteraNotes: totals.carteraNotes,
+        ownNotes: totals.ownNotes,
+        clientCount: totals.clientCount,
+        noteClientCount: totals.noteClientCount,
+        lastInvoiceDate: totals.lastInvoiceDate,
+      },
+      available: rowsOk,
+      source,
     };
   }
 
@@ -810,6 +1568,9 @@ export class SellersService {
           lastInvoiceDate: null,
           daily: new Map(),
           otherSellerKg: 0,
+          otherExternalKg: 0,
+          otherInternalKg: 0,
+          otherHistory: new Map(),
         };
         map.set(code, seller);
       } else if (!seller.name || seller.name === seller.code) {
@@ -843,7 +1604,9 @@ export class SellersService {
           currentInvoices: 0,
           lastInvoiceDate: null,
           otherSellerKg: 0,
-          otherSellers: new Set(),
+          otherSellerExternalKg: 0,
+          otherSellerInternalKg: 0,
+          otherSellers: new Map(),
         };
         seller.clients.set(code, client);
       } else {
@@ -961,9 +1724,22 @@ export class SellersService {
       }
 
       if (mismatched && key === reportKey) {
+        const internal = INTERNAL_SELLER_CODES.has(notaCode);
         portfolioSeller.otherSellerKg += kg;
         portfolioClient.otherSellerKg += kg;
-        if (notaName) portfolioClient.otherSellers.add(notaName);
+        if (internal) {
+          portfolioSeller.otherInternalKg += kg;
+          portfolioClient.otherSellerInternalKg += kg;
+        } else {
+          portfolioSeller.otherExternalKg += kg;
+          portfolioClient.otherSellerExternalKg += kg;
+        }
+        if (notaCode !== NO_SELLER && notaName) portfolioClient.otherSellers.set(notaCode, notaName);
+      }
+
+      // Fuga histórica: mismo criterio sobre los meses cerrados de la ventana.
+      if (mismatched && key !== reportKey) {
+        portfolioSeller.otherHistory.set(key, (portfolioSeller.otherHistory.get(key) ?? 0) + kg);
       }
     }
 
@@ -1019,7 +1795,16 @@ export class SellersService {
     const noteSellerList = [...noteSellers.values()].filter(
       (seller) => seller.currentKg > 0 || seller.history.size > 0,
     );
-    const sellerList = attribution === 'PORTFOLIO' ? portfolioSellerList : noteSellerList;
+    // El informe muestra siempre los dos libros: la lista es la unión de los
+    // vendedores con cartera y los que firmaron notas. La atribución solo
+    // elige la base de la cuota, no a quién se muestra.
+    const unionSellers = new Map<string, SellerAccum>();
+    for (const seller of portfolioSellerList) unionSellers.set(seller.code, seller);
+    for (const seller of noteSellerList) {
+      if (!unionSellers.has(seller.code)) unionSellers.set(seller.code, seller);
+    }
+    const sellerList = [...unionSellers.values()];
+    const basisSellerList = attribution === 'PORTFOLIO' ? portfolioSellerList : noteSellerList;
     const chosenDaily = attribution === 'PORTFOLIO' ? portfolioDaily : noteDaily;
 
     const sumHistory = (seller?: SellerAccum): number =>
@@ -1031,6 +1816,12 @@ export class SellersService {
         year: entry.year,
         month: entry.month,
         actualKg: roundTo(seller?.history.get(monthKey(entry.year, entry.month)) ?? 0),
+      }));
+    const historySeriesFromMap = (map?: Map<string, number>): ForecastSellerHistory[] =>
+      historyMonths.map((entry) => ({
+        year: entry.year,
+        month: entry.month,
+        actualKg: roundTo(map?.get(monthKey(entry.year, entry.month)) ?? 0),
       }));
     const weightsOf = (sellers: SellerAccum[]): Map<string, number> => {
       const weights = new Map<string, number>();
@@ -1079,11 +1870,11 @@ export class SellersService {
     const chosenTargets = attribution === 'PORTFOLIO' ? portfolioTargets : noteTargets;
     const chosenQuotas = attribution === 'PORTFOLIO' ? portfolioQuotas : noteQuotas;
 
-    const companyActual = roundTo(sellerList.reduce((acc, seller) => acc + seller.currentKg, 0));
-    const companyUnits = roundTo(sellerList.reduce((acc, seller) => acc + seller.currentUnits, 0));
-    const companyInvoices = sellerList.reduce((acc, seller) => acc + seller.currentInvoices, 0);
+    const companyActual = roundTo(basisSellerList.reduce((acc, seller) => acc + seller.currentKg, 0));
+    const companyUnits = roundTo(basisSellerList.reduce((acc, seller) => acc + seller.currentUnits, 0));
+    const companyInvoices = basisSellerList.reduce((acc, seller) => acc + seller.currentInvoices, 0);
     const companyLastInvoice =
-      sellerList
+      basisSellerList
         .map((seller) => seller.lastInvoiceDate)
         .filter((value): value is string => Boolean(value))
         .sort()
@@ -1189,6 +1980,9 @@ export class SellersService {
           const lastDates = [carteraClient?.lastInvoiceDate, noteClient?.lastInvoiceDate]
             .filter((value): value is string => Boolean(value))
             .sort();
+          const otherEntries = [...(carteraClient?.otherSellers ?? new Map<string, string>()).entries()].sort(
+            (a, b) => a[1].localeCompare(b[1], 'es'),
+          );
           return {
             clientCode: code === NO_CLIENT ? '' : code,
             clientName: baseClient?.name ?? code,
@@ -1196,7 +1990,14 @@ export class SellersService {
             assignedSellerCode: assignedCode === NO_SELLER ? '' : assignedCode,
             assignedSellerName: assignedName,
             otherSellerKg: roundTo(carteraClient?.otherSellerKg ?? 0),
-            otherSellerNames: [...(carteraClient?.otherSellers ?? [])].sort((a, b) => a.localeCompare(b, 'es')),
+            otherSellerNames: otherEntries.map(([, name]) => name),
+            otherSellers: otherEntries.map(([sellerCode, name]) => ({
+              code: sellerCode,
+              name,
+              internal: INTERNAL_SELLER_CODES.has(sellerCode),
+            })),
+            otherSellerExternalKg: roundTo(carteraClient?.otherSellerExternalKg ?? 0),
+            otherSellerInternalKg: roundTo(carteraClient?.otherSellerInternalKg ?? 0),
             carteraHistoricalKg: roundTo(carteraHistory),
             carteraCurrentKg: roundTo(carteraCurrent),
             carteraTargetKg: roundTo(carteraClientTargets.get(code) ?? 0, 1),
@@ -1219,6 +2020,8 @@ export class SellersService {
               attribution === 'PORTFOLIO'
                 ? (carteraClient?.currentInvoices ?? 0)
                 : (noteClient?.currentInvoices ?? 0),
+            carteraInvoiceCount: carteraClient?.currentInvoices ?? 0,
+            noteInvoiceCount: noteClient?.currentInvoices ?? 0,
             lastInvoiceDate: lastDates.at(-1) ?? null,
             isNew: chosenClientHistory <= 0 && chosenClientCurrent > 0,
             // Se completan en el pase del plan de cierre (después del reparto).
@@ -1270,6 +2073,30 @@ export class SellersService {
 
       const carteraHistory = historySeriesOf(carteraSeller);
       const noteHistory = historySeriesOf(noteSeller);
+
+      // Los dos libros: lo que firmó él y lo que compró su cartera. La fuga se
+      // separa entre vendedores reales y cuentas internas (001/004).
+      const carteraCurrent = roundTo(carteraSeller?.currentKg ?? 0);
+      const facturadoCurrent = roundTo(noteSeller?.currentKg ?? 0);
+      const byOthers = roundTo(carteraSeller?.otherSellerKg ?? 0);
+      const byOthersExternal = roundTo(carteraSeller?.otherExternalKg ?? 0);
+      const byOthersInternal = roundTo(carteraSeller?.otherInternalKg ?? 0);
+      const ownPortfolio = roundTo(Math.max(0, carteraCurrent - byOthers));
+      const outside = roundTo(Math.max(0, facturadoCurrent - ownPortfolio));
+      const billing: ForecastSellerBilling = {
+        facturadoKg: facturadoCurrent,
+        facturadoOwnPortfolioKg: ownPortfolio,
+        facturadoOutsideKg: outside,
+        carteraKg: carteraCurrent,
+        carteraByOthersKg: byOthers,
+        carteraByOthersExternalKg: byOthersExternal,
+        carteraByOthersInternalKg: byOthersInternal,
+        carteraByOthersPct: carteraCurrent > 0 ? roundTo((byOthers / carteraCurrent) * 100, 1) : null,
+        facturadoClients: clients.filter((client) => client.noteCurrentKg > 0).length,
+        leakedClients: clients.filter((client) => client.otherSellerExternalKg > 0).length,
+        internalClients: clients.filter((client) => client.otherSellerInternalKg > 0).length,
+      };
+
       return {
         sellerCode: seller.code === NO_SELLER ? '' : seller.code,
         sellerName: seller.name,
@@ -1282,8 +2109,10 @@ export class SellersService {
         noteCurrentKg: roundTo(noteSeller?.currentKg ?? 0),
         noteQuotaPct: company.totalKg > 0 ? roundTo(noteQuota, 1) : null,
         noteTargetKg,
+        billing,
         carteraHistory,
         noteHistory,
+        carteraByOthersHistory: historySeriesFromMap(carteraSeller?.otherHistory),
         clientCount: clients.length,
         assignedClientCount: assignmentAvailable ? (portfolioAssignmentCounts.get(seller.code) ?? 0) : 0,
         windowClientCount: clients.filter(
@@ -1432,10 +2261,56 @@ export class SellersService {
       history: companyHistorySeries,
     });
 
+    // Totales de los dos libros y de la fuga. Σ facturado = venta de la red por
+    // nota; Σ cartera = venta de la red por cartera; ambos cuadran al kilo.
+    const billingTotals: ForecastSellerBilling = {
+      facturadoKg: 0,
+      facturadoOwnPortfolioKg: 0,
+      facturadoOutsideKg: 0,
+      carteraKg: 0,
+      carteraByOthersKg: 0,
+      carteraByOthersExternalKg: 0,
+      carteraByOthersInternalKg: 0,
+      carteraByOthersPct: null,
+      facturadoClients: activeClients.size,
+      leakedClients: 0,
+      internalClients: 0,
+    };
+    for (const row of rows) {
+      billingTotals.facturadoKg += row.billing.facturadoKg;
+      billingTotals.facturadoOwnPortfolioKg += row.billing.facturadoOwnPortfolioKg;
+      billingTotals.facturadoOutsideKg += row.billing.facturadoOutsideKg;
+      billingTotals.carteraKg += row.billing.carteraKg;
+      billingTotals.carteraByOthersKg += row.billing.carteraByOthersKg;
+      billingTotals.carteraByOthersExternalKg += row.billing.carteraByOthersExternalKg;
+      billingTotals.carteraByOthersInternalKg += row.billing.carteraByOthersInternalKg;
+      billingTotals.leakedClients += row.billing.leakedClients;
+      billingTotals.internalClients += row.billing.internalClients;
+    }
+    billingTotals.facturadoKg = roundTo(billingTotals.facturadoKg);
+    billingTotals.facturadoOwnPortfolioKg = roundTo(billingTotals.facturadoOwnPortfolioKg);
+    billingTotals.facturadoOutsideKg = roundTo(billingTotals.facturadoOutsideKg);
+    billingTotals.carteraKg = roundTo(billingTotals.carteraKg);
+    billingTotals.carteraByOthersKg = roundTo(billingTotals.carteraByOthersKg);
+    billingTotals.carteraByOthersExternalKg = roundTo(billingTotals.carteraByOthersExternalKg);
+    billingTotals.carteraByOthersInternalKg = roundTo(billingTotals.carteraByOthersInternalKg);
+    billingTotals.carteraByOthersPct =
+      billingTotals.carteraKg > 0
+        ? roundTo((billingTotals.carteraByOthersKg / billingTotals.carteraKg) * 100, 1)
+        : null;
+
+    const carteraByOthersHistory = historyMonths.map((entry, index) => ({
+      year: entry.year,
+      month: entry.month,
+      actualKg: roundTo(rows.reduce((acc, row) => acc + (row.carteraByOthersHistory[index]?.actualKg ?? 0), 0)),
+    }));
+
     return {
       year,
       month,
       asOf: calendar.cut,
+      scope: 'ALL',
+      scopeSellerCode: null,
       basis: calendar.basis,
       status: calendar.status,
       salesAvailable: true,
@@ -1476,6 +2351,8 @@ export class SellersService {
         assignedClientCount: assignmentAvailable ? portfolioClients.size : 0,
         windowClientCount: windowClients.size,
         activeClientCount: activeClients.size,
+        billing: billingTotals,
+        carteraByOthersHistory,
       },
       daily: this.buildDaily(calendar, companyByDay, company.totalKg),
       sellers: rows,
@@ -1581,27 +2458,12 @@ export class SellersService {
         today: calendar.today,
         cut: calendar.cut,
       },
-      totals: {
-        forecastKg: 0,
-        actualKg: 0,
-        actualUnits: 0,
-        ...emptyMetrics(),
-        pendingKg: 0,
-        expectedKg: 0,
-        closingGapKg: 0,
-        closingCoveredKg: 0,
-        closingUncoveredKg: 0,
-        invoiceCount: 0,
-        lastInvoiceDate: null,
-        sellerCount: 0,
-        clientCount: 0,
-        assignedClientCount: 0,
-        windowClientCount: 0,
-        activeClientCount: 0,
-      },
+      totals: zeroTotals(),
       daily: [],
       sellers: [],
       generatedAt: new Date().toISOString(),
+      scope: 'ALL',
+      scopeSellerCode: null,
     };
   }
 }

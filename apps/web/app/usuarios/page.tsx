@@ -43,9 +43,16 @@ interface AdminUser {
   role: string;
   roleName?: string;
   isActive: boolean;
+  /** Código de vendedor de Profit: limita su reporte a su propia cartera. */
+  sellerCode?: string | null;
   lastLoginAt: string | null;
   /** Administrador declarado por configuración (ADMIN_PROFIT_CODES). */
   protected: boolean;
+}
+
+interface SellerOption {
+  code: string;
+  name: string;
 }
 
 interface UsersResponse {
@@ -105,7 +112,15 @@ export default function UsuariosPage() {
     queryFn: () => apiFetch<RoleSummary[]>('/roles'),
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
+  // Catálogo de vendedores de Profit para vincular la cuenta con su cartera.
+  const sellersQuery = useQuery<SellerOption[]>({
+    queryKey: ['seller-catalog'],
+    queryFn: () => apiFetch<SellerOption[]>('/users/sellers'),
+    staleTime: 10 * 60_000,
+    retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
+  });
   const roles = rolesQuery.data ?? [];
+  const sellers = sellersQuery.data ?? [];
   const sessionPermissions = me.data?.permissions ?? [];
   const canManage = hasPermission(sessionPermissions, 'usuarios', 'update');
 
@@ -114,7 +129,7 @@ export default function UsuariosPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
   });
 
-  const update = useMutation<void, Error, { id: string; body: { role?: string; isActive?: boolean } }>({
+  const update = useMutation<void, Error, { id: string; body: { role?: string; isActive?: boolean; sellerCode?: string | null } }>({
     mutationFn: ({ id, body }) =>
       apiFetch<void>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     onSuccess: () => {
@@ -172,6 +187,40 @@ export default function UsuariosPage() {
             </span>
           )}
         </span>
+      ),
+    },
+    {
+      key: 'vendedor',
+      header: 'Vendedor',
+      sortValue: (user) => user.sellerCode ?? '',
+      render: (user) => (
+        <select
+          value={user.sellerCode ?? ''}
+          onChange={(event) =>
+            update.mutate({
+              id: user.id,
+              body: { sellerCode: event.target.value || null },
+            })
+          }
+          disabled={update.isPending || !canManage}
+          aria-label={`Vendedor de Profit para ${user.displayName}`}
+          title={
+            canManage
+              ? 'Vincula la cuenta con su código de vendedor en Profit. Sin «Ver todos los vendedores», solo verá su cartera.'
+              : 'No tienes permiso para cambiar la vinculación'
+          }
+          className="h-8 max-w-[13rem] cursor-pointer rounded-md bg-surface px-space-xs text-label-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <option value="">Sin vendedor</option>
+          {user.sellerCode && !sellers.some((seller) => seller.code === user.sellerCode) && (
+            <option value={user.sellerCode}>{user.sellerCode}</option>
+          )}
+          {sellers.map((seller) => (
+            <option key={seller.code} value={seller.code}>
+              {seller.code} · {seller.name}
+            </option>
+          ))}
+        </select>
       ),
     },
     {
@@ -345,6 +394,14 @@ export default function UsuariosPage() {
                   {rolesQuery.error instanceof Error ? rolesQuery.error.message : 'No se pudieron cargar los roles'}
                 </p>
               )}
+              {sellersQuery.error && (
+                <p role="alert" className="mt-space-sm flex items-center gap-space-sm text-body-md text-error">
+                  <AlertTriangle aria-hidden className="size-4" />{' '}
+                  {sellersQuery.error instanceof Error
+                    ? sellersQuery.error.message
+                    : 'No se pudo cargar el catálogo de vendedores de Profit'}
+                </p>
+              )}
             </Card>
 
             {error && !(error instanceof AuthRequiredError) && (
@@ -370,7 +427,9 @@ export default function UsuariosPage() {
               <div className="flex items-center gap-space-sm border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
                 <Lock aria-hidden className="size-4" />
                 El candado marca a los administradores declarados por configuración: no se pueden degradar desde aquí.
-                El botón «Permisos» permite conceder o denegar acciones puntuales sobre el rol.
+                La columna «Vendedor» vincula la cuenta con su código de Profit: sin el permiso «Ver todos los
+                vendedores» solo verá su propia cartera. El botón «Permisos» permite conceder o denegar acciones
+                puntuales sobre el rol.
               </div>
             </Card>
           </>

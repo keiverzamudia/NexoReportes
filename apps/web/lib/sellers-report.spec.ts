@@ -4,14 +4,19 @@ import {
   allocationLabel,
   buildClientQuotaRisk,
   buildSellerClientsCsv,
+  buildSellerFacturadoCsv,
+  buildSellerLeakCsv,
   buildSellerNarrative,
   buildSellersCsv,
   buildShareSlices,
   clientGapContributionPct,
   clientQuotaSharePct,
+  clientsBilledByOthers,
   filterSellerClients,
   filterSellers,
+  pctOfTotal,
   quotaGeometry,
+  sellerBilling,
   sellerHistoryPoints,
   sellerInitials,
   tabRunRate,
@@ -26,6 +31,9 @@ function client(overrides: Partial<ForecastSellerClientRow> = {}): ForecastSelle
     assignedSellerName: 'LIZ ANTONELLA PEREZ BAEZ',
     otherSellerKg: 0,
     otherSellerNames: [],
+    otherSellers: [],
+    otherSellerExternalKg: 0,
+    otherSellerInternalKg: 0,
     carteraHistoricalKg: 100,
     carteraCurrentKg: 100,
     carteraTargetKg: 300,
@@ -43,6 +51,8 @@ function client(overrides: Partial<ForecastSellerClientRow> = {}): ForecastSelle
     actualKg: 100,
     actualUnits: 100,
     invoiceCount: 2,
+    carteraInvoiceCount: 2,
+    noteInvoiceCount: 2,
     lastInvoiceDate: '2025-03-04',
     isNew: false,
     pendingKg: 0,
@@ -77,6 +87,19 @@ function seller(overrides: Partial<ForecastSellerRow> = {}): ForecastSellerRow {
     noteCurrentKg: 100,
     noteQuotaPct: 60,
     noteTargetKg: 600,
+    billing: {
+      facturadoKg: 100,
+      facturadoOwnPortfolioKg: 100,
+      facturadoOutsideKg: 0,
+      carteraKg: 100,
+      carteraByOthersKg: 0,
+      carteraByOthersExternalKg: 0,
+      carteraByOthersInternalKg: 0,
+      carteraByOthersPct: 0,
+      facturadoClients: 1,
+      leakedClients: 0,
+      internalClients: 0,
+    },
     carteraHistory: [
       { year: 2025, month: 2, actualKg: 100 },
       { year: 2025, month: 3, actualKg: 100 },
@@ -85,6 +108,7 @@ function seller(overrides: Partial<ForecastSellerRow> = {}): ForecastSellerRow {
       { year: 2025, month: 2, actualKg: 100 },
       { year: 2025, month: 3, actualKg: 100 },
     ],
+    carteraByOthersHistory: [],
     clientCount: 1,
     assignedClientCount: 1,
     windowClientCount: 1,
@@ -149,6 +173,8 @@ function report(overrides: Partial<ForecastSellersResponse> = {}): ForecastSelle
     year: 2025,
     month: 3,
     asOf: '2025-03-30',
+    scope: 'ALL',
+    scopeSellerCode: null,
     basis: 'WORKING',
     status: 'CLOSED',
     salesAvailable: true,
@@ -196,6 +222,20 @@ function report(overrides: Partial<ForecastSellersResponse> = {}): ForecastSelle
       assignedClientCount: 2,
       windowClientCount: 2,
       activeClientCount: 2,
+      billing: {
+        facturadoKg: 100,
+        facturadoOwnPortfolioKg: 100,
+        facturadoOutsideKg: 0,
+        carteraKg: 100,
+        carteraByOthersKg: 0,
+        carteraByOthersExternalKg: 0,
+        carteraByOthersInternalKg: 0,
+        carteraByOthersPct: 0,
+        facturadoClients: 2,
+        leakedClients: 0,
+        internalClients: 0,
+      },
+      carteraByOthersHistory: [],
     },
     daily: [],
     sellers: [
@@ -236,11 +276,36 @@ describe('filterSellers', () => {
     const rows = report().sellers;
     expect(filterSellers(rows, { search: 'meidy', onlyWithSales: false, onlyWithQuota: false })).toHaveLength(1);
     expect(filterSellers(rows, { search: '', onlyWithSales: true, onlyWithQuota: false })).toHaveLength(2);
+    const noSales = seller({
+      actualKg: 0,
+      noteCurrentKg: 0,
+      billing: { ...seller().billing, facturadoKg: 0 },
+    });
     expect(
-      filterSellers([seller({ actualKg: 0 })], { search: '', onlyWithSales: true, onlyWithQuota: false }),
+      filterSellers([noSales], { search: '', onlyWithSales: true, onlyWithQuota: false }),
     ).toHaveLength(0);
     expect(
       filterSellers([seller({ targetKg: 0 })], { search: '', onlyWithSales: false, onlyWithQuota: true }),
+    ).toHaveLength(0);
+  });
+
+  it('aplica el filtro de una KPI del encabezado', () => {
+    const rows = report().sellers;
+    expect(
+      filterSellers(rows, {
+        search: '',
+        onlyWithSales: false,
+        onlyWithQuota: false,
+        metricFocus: 'facturado',
+      }),
+    ).toHaveLength(2);
+    expect(
+      filterSellers([seller({ targetKg: 0 })], {
+        search: '',
+        onlyWithSales: false,
+        onlyWithQuota: false,
+        metricFocus: 'meta',
+      }),
     ).toHaveLength(0);
   });
 });
@@ -399,5 +464,72 @@ describe('CSV', () => {
     expect(csv.startsWith('\uFEFF')).toBe(true);
     expect(csv).toContain('CLIENTE UNO');
     expect(csv).toContain('300');
+  });
+
+  it('exporta facturado y fuga con sus columnas', () => {
+    const facturado = buildSellerFacturadoCsv(seller());
+    expect(facturado).toContain('Facturado por él kg');
+    expect(facturado).toContain('CLIENTE UNO');
+    const leak = buildSellerLeakCsv(
+      seller({
+        clients: [
+          client({
+            otherSellerKg: 40,
+            otherSellerNames: ['JUILIARD ANGULO'],
+            otherSellers: [{ code: '031', name: 'JUILIARD ANGULO', internal: false }],
+            otherSellerExternalKg: 40,
+            otherSellerInternalKg: 0,
+          }),
+        ],
+      }),
+    );
+    expect(leak).toContain('Otros vendedores');
+    expect(leak).toContain('JUILIARD ANGULO');
+  });
+});
+
+describe('facturación del vendedor', () => {
+  it('usa el bloque billing del API y lo deriva si falta', () => {
+    const withBilling = seller({
+      billing: {
+        facturadoKg: 80,
+        facturadoOwnPortfolioKg: 60,
+        facturadoOutsideKg: 20,
+        carteraKg: 100,
+        carteraByOthersKg: 40,
+        carteraByOthersExternalKg: 40,
+        carteraByOthersInternalKg: 0,
+        carteraByOthersPct: 40,
+        facturadoClients: 2,
+        leakedClients: 1,
+        internalClients: 0,
+      },
+    });
+    expect(sellerBilling(withBilling).carteraByOthersKg).toBe(40);
+
+    const legacy = seller({ noteCurrentKg: 80, carteraCurrentKg: 100, otherSellerKg: 40 });
+    delete (legacy as { billing?: unknown }).billing;
+    const derived = sellerBilling(legacy);
+    expect(derived.facturadoKg).toBe(80);
+    expect(derived.carteraByOthersKg).toBe(40);
+    expect(derived.facturadoOwnPortfolioKg).toBe(60);
+  });
+
+  it('lista los clientes de la cartera facturados por otros y los ordena', () => {
+    const rows = clientsBilledByOthers(
+      seller({
+        clients: [
+          client({ clientCode: 'C1', otherSellerKg: 10, otherSellerExternalKg: 10 }),
+          client({ clientCode: 'C2', clientName: 'CLIENTE DOS', otherSellerKg: 50, otherSellerExternalKg: 50 }),
+          client({ clientCode: 'C3', clientName: 'CLIENTE TRES', otherSellerKg: 0 }),
+        ],
+      }),
+    );
+    expect(rows.map((row) => row.clientCode)).toEqual(['C2', 'C1']);
+  });
+
+  it('calcula porcentajes sin dividir por cero', () => {
+    expect(pctOfTotal(25, 100)).toBe(25);
+    expect(pctOfTotal(25, 0)).toBeNull();
   });
 });

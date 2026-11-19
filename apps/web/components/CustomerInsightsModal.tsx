@@ -23,6 +23,7 @@ import type {
 import { useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
+  ArrowLeft,
   BarChart3,
   CalendarClock,
   CheckCircle2,
@@ -58,10 +59,13 @@ import {
   productsCsvFileName,
   topProducts,
 } from '../lib/customer-insights';
+import { monthLabel as monthLabelFromDate } from '../lib/sales-report';
+import type { SellerClientContext } from '../lib/seller-context';
 import { statementUpdatedAt } from '../lib/statement';
 import { CustomerOrdersPanel } from './CustomerOrdersPanel';
 import { CustomerNotesPanel } from './CustomerNotesPanel';
 import { EChart } from './EChart';
+import { SellerClientContextPanel } from './forecast/SellerClientContextPanel';
 import type { Column } from './ui';
 import {
   Badge,
@@ -1267,11 +1271,14 @@ function InsightSkeleton() {
 export function CustomerInsightsModal({
   open,
   customer,
+  context = null,
   onClose,
   onOpenStatement,
 }: {
   open: boolean;
   customer: Customer | null;
+  /** Contexto del expediente de vendedor: abre las notas del mes, no la 360. */
+  context?: SellerClientContext | null;
   onClose: () => void;
   onOpenStatement: (customer: Customer) => void;
 }) {
@@ -1280,6 +1287,7 @@ export function CustomerInsightsModal({
   const [months, setMonths] = useState<'12' | '24' | '36'>('12');
   const [currency, setCurrency] = useState<CustomerStatementCurrency>('USD');
   const [productFilter, setProductFilter] = useState<ProductFilter>('todos');
+  const [showFullFicha, setShowFullFicha] = useState(false);
 
   const code = customer?.externalCode ?? '';
 
@@ -1289,7 +1297,16 @@ export function CustomerInsightsModal({
     setMonths('12');
     setCurrency('USD');
     setProductFilter('todos');
-  }, [open, customer?.id]);
+    setShowFullFicha(false);
+  }, [
+    open,
+    customer?.id,
+    context?.sellerCode,
+    context?.view,
+    context?.year,
+    context?.month,
+    context?.productCode,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -1312,12 +1329,17 @@ export function CustomerInsightsModal({
       apiFetch<CustomerInsightResponse>(
         `/customers/${encodeURIComponent(code)}/insights?months=${months}&currency=${currency}`,
       ),
-    enabled: open && customer !== null,
+    // La ficha 360 completa solo se pide cuando el usuario la abre desde el
+    // contexto; en modo contexto se usa el endpoint de notas del vendedor.
+    enabled: open && customer !== null && (!context || showFullFicha),
     retry: false,
     refetchOnWindowFocus: false,
   });
 
   if (!open || !customer) return null;
+
+  const contextMode = Boolean(context && !showFullFicha);
+
 
   const message =
     error instanceof AuthRequiredError
@@ -1358,7 +1380,7 @@ export function CustomerInsightsModal({
             </span>
             <div className="min-w-0">
               <p className="text-label-sm font-semibold uppercase tracking-[0.14em] text-outline">
-                Clientes · Ficha 360
+                {contextMode ? 'Vendedor · Notas del cliente' : 'Clientes · Ficha 360'}
               </p>
               <h2 id="customer-insights-title" className="truncate text-title-md text-primary">
                 {displayName}
@@ -1366,33 +1388,40 @@ export function CustomerInsightsModal({
               <p className="truncate text-label-md normal-case text-on-surface-variant">
                 {displayCode}
                 {displayMeta ? ` · ${displayMeta}` : ''}
+                {contextMode && context
+                  ? ` · ${monthLabelFromDate(context.year, context.month)}`
+                  : ''}
               </p>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-space-xs">
-            <span className="hidden sm:inline-flex">
-              <Badge
-                tone={data?.source === 'fixtures' ? 'warning' : data ? 'success' : error ? 'danger' : 'muted'}
-                dot
+            {!contextMode && (
+              <span className="hidden sm:inline-flex">
+                <Badge
+                  tone={data?.source === 'fixtures' ? 'warning' : data ? 'success' : error ? 'danger' : 'muted'}
+                  dot
+                >
+                  {data?.source === 'fixtures'
+                    ? 'Datos de desarrollo'
+                    : data
+                      ? 'Profit en vivo'
+                      : error
+                        ? 'Sin conexión'
+                        : 'Consultando'}
+                </Badge>
+              </span>
+            )}
+            {!contextMode && (
+              <button
+                type="button"
+                onClick={() => void refetch()}
+                aria-label="Actualizar ficha"
+                title="Actualizar ficha"
+                className="grid size-9 place-items-center rounded-full border border-outline-variant/50 text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-primary"
               >
-                {data?.source === 'fixtures'
-                  ? 'Datos de desarrollo'
-                  : data
-                    ? 'Profit en vivo'
-                    : error
-                      ? 'Sin conexión'
-                      : 'Consultando'}
-              </Badge>
-            </span>
-            <button
-              type="button"
-              onClick={() => void refetch()}
-              aria-label="Actualizar ficha"
-              title="Actualizar ficha"
-              className="grid size-9 place-items-center rounded-full border border-outline-variant/50 text-on-surface-variant transition-colors hover:bg-surface-container-low hover:text-primary"
-            >
-              <RefreshCw aria-hidden className={cx('size-4', isFetching && 'animate-spin')} />
-            </button>
+                <RefreshCw aria-hidden className={cx('size-4', isFetching && 'animate-spin')} />
+              </button>
+            )}
             <button
               ref={closeRef}
               type="button"
@@ -1406,45 +1435,66 @@ export function CustomerInsightsModal({
         </header>
 
         <div className="flex flex-1 flex-col overflow-y-auto">
-          <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-space-sm border-b border-outline-variant/30 bg-surface-container-lowest/95 px-space-md py-space-sm backdrop-blur sm:px-space-lg">
-            <div className="max-w-full overflow-x-auto">
-              <Segmented<InsightTab>
-                value={tab}
-                onChange={setTab}
-                ariaLabel="Secciones de la ficha"
-                options={[
-                  { value: 'resumen', label: 'Resumen' },
-                  { value: 'productos', label: 'Productos' },
-                  { value: 'oportunidades', label: 'Oportunidades' },
-                  { value: 'pedidos', label: 'Pedidos' },
-                ]}
-              />
+          {!contextMode && (
+            <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-space-sm border-b border-outline-variant/30 bg-surface-container-lowest/95 px-space-md py-space-sm backdrop-blur sm:px-space-lg">
+              <div className="max-w-full overflow-x-auto">
+                <Segmented<InsightTab>
+                  value={tab}
+                  onChange={setTab}
+                  ariaLabel="Secciones de la ficha"
+                  options={[
+                    { value: 'resumen', label: 'Resumen' },
+                    { value: 'productos', label: 'Productos' },
+                    { value: 'oportunidades', label: 'Oportunidades' },
+                    { value: 'pedidos', label: 'Pedidos' },
+                  ]}
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-space-sm">
+                {context && (
+                  <button
+                    type="button"
+                    onClick={() => setShowFullFicha(false)}
+                    className="inline-flex h-9 items-center gap-1 rounded-xl border border-outline-variant/50 px-space-sm text-label-md font-semibold text-on-surface-variant transition-colors hover:border-primary-container/40 hover:text-primary"
+                  >
+                    <ArrowLeft aria-hidden className="size-4" />
+                    Volver al contexto
+                  </button>
+                )}
+                <Select
+                  value={months}
+                  onChange={(value) => setMonths(value as '12' | '24' | '36')}
+                  ariaLabel="Ventana de meses del informe"
+                  options={[
+                    { value: '12', label: '12 meses' },
+                    { value: '24', label: '24 meses' },
+                    { value: '36', label: '36 meses' },
+                  ]}
+                  className="w-32"
+                />
+                <Select
+                  value={currency}
+                  onChange={(value) => setCurrency(value as CustomerStatementCurrency)}
+                  ariaLabel="Moneda del informe"
+                  options={[
+                    { value: 'USD', label: 'USD' },
+                    { value: 'BS', label: 'Bs' },
+                  ]}
+                  className="w-24"
+                />
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-space-sm">
-              <Select
-                value={months}
-                onChange={(value) => setMonths(value as '12' | '24' | '36')}
-                ariaLabel="Ventana de meses del informe"
-                options={[
-                  { value: '12', label: '12 meses' },
-                  { value: '24', label: '24 meses' },
-                  { value: '36', label: '36 meses' },
-                ]}
-                className="w-32"
-              />
-              <Select
-                value={currency}
-                onChange={(value) => setCurrency(value as CustomerStatementCurrency)}
-                ariaLabel="Moneda del informe"
-                options={[
-                  { value: 'USD', label: 'USD' },
-                  { value: 'BS', label: 'Bs' },
-                ]}
-                className="w-24"
-              />
-            </div>
-          </div>
+          )}
 
+          {context && contextMode ? (
+            <div className="p-space-md sm:p-space-lg">
+              <SellerClientContextPanel
+                context={context}
+                customer={customer}
+                onShowFull={() => setShowFullFicha(true)}
+              />
+            </div>
+          ) : (
           <div className="flex flex-col gap-space-md p-space-md sm:p-space-lg">
             {error && !data && (
               <div className="flex flex-col items-center gap-space-sm rounded-xl border border-critical/40 bg-critical-container/30 p-space-lg text-center">
@@ -1616,19 +1666,26 @@ export function CustomerInsightsModal({
               </>
             ) : null}
           </div>
+          )}
         </div>
 
         <footer className="flex shrink-0 flex-wrap items-center justify-between gap-space-sm border-t border-outline-variant/30 bg-surface-container-low/40 px-space-md py-space-sm sm:px-space-lg">
           <span className="text-label-sm normal-case text-on-surface-variant">
-            {data
-              ? `${periodLabel(data.currentPeriod.from, data.currentPeriod.to)} · ${statementUpdatedAt(data.asOf)}`
-              : error
-                ? 'No se pudo consultar'
-                : 'Consultando ficha…'}
+            {context && contextMode
+              ? `${context.sellerName} · ${monthLabelFromDate(context.year, context.month)}`
+              : data
+                ? `${periodLabel(data.currentPeriod.from, data.currentPeriod.to)} · ${statementUpdatedAt(data.asOf)}`
+                : error
+                  ? 'No se pudo consultar'
+                  : 'Consultando ficha…'}
           </span>
           <div className="flex items-center gap-space-sm">
             <span className="text-label-sm normal-case text-on-surface-variant">
-              {data?.productBillingEstimated ? 'Facturado por producto estimado' : 'Solo lectura desde Profit'}
+              {context && contextMode
+                ? 'Notas del mes · solo lectura desde Profit'
+                : data?.productBillingEstimated
+                  ? 'Facturado por producto estimado'
+                  : 'Solo lectura desde Profit'}
             </span>
             <button
               type="button"

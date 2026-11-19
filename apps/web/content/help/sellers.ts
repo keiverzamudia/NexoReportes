@@ -11,9 +11,11 @@ import type { HelpTerm } from './types';
 export const SELLERS_HELP_TITLE = 'Cómo leer esta pantalla';
 
 export const SELLERS_HELP_RULES = [
-  'El criterio Cartera usa clientes.co_ven: cada cliente pertenece al vendedor que tiene asignado hoy en Profit. El criterio Nota de entrega usa not_ent.co_ven.',
+  'El criterio Cartera usa clientes.co_ven: cada cliente pertenece al vendedor que tiene asignado hoy en Profit. El criterio Facturado usa not_ent.co_ven: la venta se acredita a quien firmó la nota. La elección solo cambia la base de la cuota; la tabla y el expediente muestran siempre los dos libros.',
   'En Cartera la cartera se muestra completa, aunque el cliente no haya comprado. Los clientes inactivos se excluyen.',
   'Venta = nota de entrega no anulada, línea ABA y artículo activo; misma fuente que Ventas vs Forecast.',
+  'Facturado = notas firmadas por el vendedor, sea o no su cliente. Cartera = venta de los clientes asignados en Profit, la firme él u otro. Por otros = parte de su cartera facturada por un vendedor distinto al asignado.',
+  'La fuga separa a los vendedores reales de las cuentas internas 001/004: una venta de la cuenta interna no se cuenta como «otro vendedor».',
   'La meta de la empresa es la misma del informe Ventas vs Forecast: viva de Profit o snapshot guardado.',
   'La cuota de cada vendedor es su participación en los kg de los últimos meses cerrados del filtro Histórico.',
   'La meta del vendedor = meta de la empresa × su cuota. La suma de todas las metas cuadra al kilo con la meta de la empresa.',
@@ -25,8 +27,11 @@ export const SELLERS_HELP_RULES = [
   'Corte a ayer y días hábiles de lunes a sábado, igual que el informe de ventas.',
   'Si Profit no responde, la pantalla avisa y no pinta ceros como si fueran ventas.',
   'Las cuentas internas 001 LA EMPRESA y 004 EQUIPO DE VENTAS participan como un vendedor más y se marcan en la tabla.',
-  'En el expediente, la pestaña Cartera muestra la cartera completa (con venta y sin venta); la pestaña Nota muestra solo los clientes con notas firmadas por el vendedor.',
-  'La pestaña Productos cruza cada artículo: cartera asignada, firmado por el vendedor y cartera facturada por otros.',
+  'En el expediente, Mi cartera muestra la cartera completa (con venta y sin venta); Facturado muestra solo los clientes con notas firmadas por el vendedor; Facturado por otros muestra los clientes de su cartera que compraron y les facturó otro vendedor.',
+  'Clic en un cliente del expediente abre el detalle de sus notas del mes para la pestaña activa (Facturado / Mi cartera / Facturado por otros). Los kg y las notas cuadran con la fila; la ficha 360 completa queda a un botón.',
+  'Clic en una fila de producto del expediente despliega los clientes que lo compraron en el mes; desde ahí se puede abrir el detalle de cada cliente.',
+  'En el ranking, clic en una cifra abre el expediente en la pestaña del dato. Los KPI del encabezado filtran el ranking por facturado, cartera o meta.',
+  'La pestaña Productos cruza cada artículo: cartera asignada, facturado por el vendedor y cartera facturada por otros.',
   'El histórico del expediente arranca en 3 meses y se puede cambiar allí; ese cambio recalcula la cuota y la meta de todo el informe.',
   'Plan de cierre de brecha: la brecha del mes es meta − (proyección + cartera comprometida). Se reparte entre los clientes según su capacidad real (mejor mes de los últimos 12) y nunca se le pide a un cliente más de lo que ya vendió en su mejor mes.',
   'Si el margen real de la cartera no alcanza, los kg que faltan se muestran como «sin capacidad»: no se reparten a la fuerza ni se inventan clientes.',
@@ -40,10 +45,10 @@ export const SELLER_COLUMN_HELP = {
   vendedor: {
     id: 'vendedor',
     title: 'Vendedor',
-    short: 'Cartera asignada o nota',
+    short: 'Cartera asignada o facturado',
     what:
-      'En el criterio Cartera, el vendedor que tiene asignado el cliente en Profit. En Nota de entrega, quien firmó la venta. Agrupa la cartera, la venta y la cuota.',
-    formula: 'clientes.co_ven → vendedor.ven_des (o not_ent.co_ven)',
+      'El vendedor agrupa los dos libros: su cartera asignada en Profit y las notas que firmó. La columna Clientes indica cuántos tiene en cartera y cuántos le compraron.',
+    formula: 'clientes.co_ven → vendedor.ven_des; not_ent.co_ven → vendedor de la nota',
     source: 'clientes + not_ent + vendedor',
   },
   clientes: {
@@ -51,8 +56,8 @@ export const SELLER_COLUMN_HELP = {
     title: 'Clientes',
     short: 'Cartera y clientes con venta',
     what:
-      'Clientes de la lista según el criterio. En Cartera es la cartera completa asignada en Profit; en Nota, los que compraron a ese vendedor. La segunda cifra son los que tienen venta en el mes.',
-    formula: 'COUNT(clientes.co_cli) o COUNT(DISTINCT not_ent.co_cli)',
+      'Clientes asignados al vendedor en Profit (cartera) y, en la segunda cifra, los que tienen venta este mes. No cambia con la base de la cuota.',
+    formula: 'COUNT(clientes.co_cli) y COUNT(DISTINCT not_ent.co_cli) del mes',
     source: 'clientes / not_ent',
   },
   cuota: {
@@ -71,13 +76,32 @@ export const SELLER_COLUMN_HELP = {
     formula: 'meta de la empresa × cuota %',
     source: 'Forecast + reparto histórico',
   },
-  venta: {
-    id: 'venta',
-    title: 'Venta kg',
-    short: 'Kg despachados en el mes',
-    what: 'Kilogramos despachados por el vendedor en el mes, hasta el corte.',
-    formula: 'Σ unidades × kg por unidad',
+  facturado: {
+    id: 'facturado',
+    title: 'Facturado kg',
+    short: 'Notas firmadas por él',
+    what:
+      'Kilogramos de las notas de entrega firmadas por el vendedor, sea o no su cliente. Es el libro «lo que vendí yo».',
+    formula: 'Σ kg de not_ent donde not_ent.co_ven = vendedor',
     source: 'not_ent + reng_nde (solo ABA)',
+  },
+  cartera: {
+    id: 'cartera',
+    title: 'Cartera kg',
+    short: 'Venta de sus clientes',
+    what:
+      'Kilogramos que compraron los clientes asignados al vendedor en Profit, sin importar quién firmó la nota. Es el libro «lo que compró mi cartera».',
+    formula: 'Σ kg por clientes.co_ven (todos los vendedores de la nota)',
+    source: 'clientes + not_ent',
+  },
+  otros: {
+    id: 'otros',
+    title: 'Por otros kg',
+    short: 'Su cartera facturada por otros',
+    what:
+      'Parte de la cartera del vendedor que facturó otro vendedor. Es una oportunidad de recuperación: el cliente compra, pero la nota no es suya. Las cuentas internas 001/004 se muestran aparte.',
+    formula: 'Σ kg de su cartera donde not_ent.co_ven ≠ clientes.co_ven',
+    source: 'clientes + not_ent',
   },
   cumplimiento: {
     id: 'cumplimiento',
@@ -104,23 +128,6 @@ export const SELLER_COLUMN_HELP = {
     formula: 'proyección kg − meta kg',
     source: 'Cálculo del API',
   },
-  plan: {
-    id: 'plan',
-    title: 'Plan de cierre',
-    short: 'Kg extra para cerrar la brecha',
-    what:
-      'Kilogramos que el plan de cierre le pide por encima de lo esperado. Se reparte entre los clientes según su capacidad real (mejor mes de los últimos 12) y nunca supera esa marca.',
-    formula: 'margen del cliente ÷ margen de la red × brecha',
-    source: 'Cartera pendiente + mejor mes de 12 meses',
-  },
-  ritmo: {
-    id: 'ritmo',
-    title: 'Ritmo nec.',
-    short: 'Kg/día para llegar',
-    what: 'Kilogramos por día que debe vender en los días hábiles restantes para alcanzar su meta.',
-    formula: 'max(0, meta − venta) ÷ días hábiles restantes',
-    source: 'Solo mes en curso',
-  },
   reparto: {
     id: 'reparto',
     title: 'Reparto del mes',
@@ -145,7 +152,7 @@ export const SELLER_CLIENT_COLUMN_HELP = {
     title: 'Cliente',
     short: 'A quién le vendió',
     what:
-      'Cliente de la cartera del vendedor (o que le compró, según el criterio), con su segmento, sus kg históricos y la fecha de su última nota. Si lo facturó otro vendedor, se indica debajo.',
+      'Cliente de la cartera del vendedor o al que le firmó una nota, con su segmento, sus kg históricos y la fecha de su última nota. Si lo facturó otro vendedor, se indica debajo.',
     formula: 'clientes.co_cli → clientes.cli_des + tipo (o not_ent.co_cli)',
     source: 'clientes + not_ent',
   },

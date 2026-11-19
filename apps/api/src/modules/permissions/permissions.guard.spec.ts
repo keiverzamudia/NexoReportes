@@ -25,6 +25,7 @@ function access(permissions: string[], isAdmin = false): EffectiveAccess {
     roleName: isAdmin ? 'Administrador' : 'Consulta',
     baseRole: isAdmin ? 'ADMIN' : 'CONSULTA',
     isAdmin,
+    sellerCode: null,
     permissions,
   };
 }

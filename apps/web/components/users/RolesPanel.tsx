@@ -346,7 +346,7 @@ function RoleDialog({
         role="dialog"
         aria-modal="true"
         aria-label={form.mode === 'create' ? 'Nuevo rol' : `Rol ${form.code}`}
-        className="my-space-lg w-full max-w-3xl rounded-card border border-outline-variant/40 bg-surface-container-lowest shadow-float"
+        className="my-space-lg w-full max-w-5xl rounded-card border border-outline-variant/40 bg-surface-container-lowest shadow-float"
       >
         <header className="flex items-start justify-between gap-space-md border-b border-surface-container p-space-md">
           <div>
@@ -422,9 +422,16 @@ function RoleDialog({
         </div>
 
         <div className="border-t border-surface-container p-space-md">
-          <h3 className="mb-space-sm font-semibold text-on-surface">Matriz de permisos</h3>
+          <div className="mb-space-sm flex flex-wrap items-center justify-between gap-space-xs">
+            <h3 className="font-semibold text-on-surface">Matriz de permisos</h3>
+            <span className="rounded-full bg-surface-container px-space-sm py-0.5 text-label-sm font-semibold text-on-surface-variant">
+              {form.permissions.size} permiso(s) seleccionado(s)
+            </span>
+          </div>
           <p className="mb-space-sm text-label-sm normal-case text-on-surface-variant">
-            En Despacho, «Crear» habilita «Armar y enviar simulación»; «Editar» permite abrir la carga.
+            Cada tarjeta es un módulo: activa solo lo que el rol necesita. «Ver todos» permite ver los datos de
+            todas las personas; sin ese permiso, el usuario queda limitado a su propio ámbito cuando el módulo lo
+            admite (por ejemplo, su cartera en Vendedor).
           </p>
           <PermissionMatrix
             mode="role"
@@ -434,6 +441,14 @@ function RoleDialog({
               const permissions = new Set(form.permissions);
               if (next) permissions.add(key);
               else permissions.delete(key);
+              onChange({ ...form, permissions });
+            }}
+            onBulkToggle={(keys, next) => {
+              const permissions = new Set(form.permissions);
+              for (const key of keys) {
+                if (next) permissions.add(key);
+                else permissions.delete(key);
+              }
               onChange({ ...form, permissions });
             }}
           />

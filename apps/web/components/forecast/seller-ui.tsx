@@ -550,6 +550,139 @@ export function PerformanceList({
   );
 }
 
+// ============================================================
+// Facturación del vendedor: lista sin barra de cuota.
+//
+// Se usa en las pestañas «Facturado» y «Facturado por otros». La barra de dos
+// tramos muestra el reparto interno de cada cliente (de su cartera / fuera, o
+// tú / otros), no una meta.
+// ============================================================
+
+export interface BillingItem {
+  key: string;
+  name: string;
+  rank: number;
+  badge?: ReactNode;
+  metaLine: string;
+  primaryKg: number;
+  primaryLabel: string;
+  secondaryKg: number;
+  secondaryLabel: string;
+  /** % del importe secundario sobre el total (tramo de la barra). */
+  splitPct?: number | null;
+  /** Etiquetas del tramo; por defecto, las mismas del importe. */
+  splitPrimaryLabel?: string;
+  splitSecondaryLabel?: string;
+  /** Oculta la cifra secundaria cuando no aplica (p. ej. cartera de otro). */
+  showSecondary?: boolean;
+  /** % del importe principal sobre el total del vendedor (cifra derecha). */
+  sharePct?: number | null;
+  shareLabel?: string;
+  onSelect?: () => void;
+  selectTitle?: string;
+}
+
+export function BillingList({
+  items,
+  empty,
+  maxHeightClass = 'max-h-[52vh]',
+}: {
+  items: BillingItem[];
+  empty?: ReactNode;
+  maxHeightClass?: string;
+}) {
+  if (items.length === 0) return <>{empty}</>;
+
+  return (
+    <ul className={cx('flex flex-col gap-space-2xs overflow-y-auto pr-1', maxHeightClass)}>
+      {items.map((item) => (
+        <BillingRow key={item.key} item={item} />
+      ))}
+    </ul>
+  );
+}
+
+function BillingRow({ item }: { item: BillingItem }) {
+  const split = item.splitPct;
+  const inner = (
+    <div className="flex items-start gap-space-sm">
+      <span className="mt-0.5 w-4 shrink-0 text-center tabular-nums text-label-sm font-black text-outline">
+        {item.rank}
+      </span>
+      <SellerAvatar name={item.name} rank={item.rank} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-space-sm">
+          <span className="flex min-w-0 items-center gap-1">
+            <span className="truncate font-semibold text-on-surface" title={item.name}>
+              {item.name}
+            </span>
+            {item.badge}
+          </span>
+          <span className="flex shrink-0 flex-col items-end leading-tight">
+            <span className="tabular-nums text-label-md font-bold text-on-surface">
+              {item.sharePct === null || item.sharePct === undefined ? '—' : fmtPct(item.sharePct)}
+            </span>
+            {item.shareLabel && <span className="text-label-sm text-outline">{item.shareLabel}</span>}
+          </span>
+        </div>
+        <p className="truncate text-label-sm text-outline" title={item.metaLine}>
+          {item.metaLine}
+        </p>
+        {split !== null && split !== undefined && (
+          <SplitMeter
+            className="mt-1.5"
+            label={`${item.splitPrimaryLabel ?? item.primaryLabel} ${fmtPct(100 - split)} · ${
+              item.splitSecondaryLabel ?? item.secondaryLabel
+            } ${fmtPct(split)}`}
+            segments={[
+              {
+                pct: 100 - split,
+                className: 'bg-primary-container',
+                label: item.splitPrimaryLabel ?? item.primaryLabel,
+              },
+              {
+                pct: split,
+                className: 'bg-warning/80',
+                label: item.splitSecondaryLabel ?? item.secondaryLabel,
+              },
+            ]}
+          />
+        )}
+        <div className="mt-1 flex flex-wrap items-baseline gap-x-space-sm gap-y-0.5 text-label-sm">
+          <span className="tabular-nums text-on-surface-variant">
+            {item.primaryLabel}{' '}
+            <strong className="text-on-surface">{fmtKg(item.primaryKg)}</strong> kg
+          </span>
+          {item.showSecondary !== false && (
+            <span className="tabular-nums text-on-surface-variant">
+              {item.secondaryLabel}{' '}
+              <strong className="text-on-surface">{fmtKg(item.secondaryKg)}</strong> kg
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <li>
+      {item.onSelect ? (
+        <button
+          type="button"
+          onClick={item.onSelect}
+          aria-haspopup="dialog"
+          title={item.selectTitle}
+          className="group w-full rounded-xl px-2 py-2 text-left transition-all duration-200 hover:bg-surface-container-low focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70"
+        >
+          {inner}
+        </button>
+      ) : (
+        <div className="w-full rounded-xl px-2 py-2">{inner}</div>
+      )}
+    </li>
+  );
+}
+
 function PerformanceRow({ item, showProjection }: { item: PerformanceItem; showProjection: boolean }) {
   const tone = salesTone(item.pct);
   const geometry = quotaGeometry({
@@ -859,15 +992,15 @@ export function monthlyHistoryOption(seller: ForecastSellerRow): Record<string, 
 }
 
 /**
- * Histórico mensual con las dos vistas del expediente: cartera asignada y
- * notas firmadas por el vendedor. Así el modo Nota no queda vacío cuando el
- * vendedor no firmó notas en la ventana.
+ * Histórico mensual con las tres series del expediente: cartera asignada,
+ * facturado por el vendedor y la parte de la cartera facturada por otros.
  */
 export function monthlyHistoryDualOption(seller: ForecastSellerRow): Record<string, unknown> {
   const base = seller.carteraHistory.length > 0 ? seller.carteraHistory : seller.history;
   const labels = base.map((entry) => `${entry.month}/${String(entry.year).slice(2)}`);
   const carteraValues = seller.carteraHistory.map((entry) => entry.actualKg);
   const noteValues = seller.noteHistory.map((entry) => entry.actualKg);
+  const othersValues = (seller.carteraByOthersHistory ?? []).map((entry) => entry.actualKg);
   const carteraTarget = seller.carteraTargetKg;
   const noteTarget = seller.noteTargetKg;
 
@@ -897,9 +1030,12 @@ export function monthlyHistoryDualOption(seller: ForecastSellerRow): Record<stri
         if (!cartera && !nota) return '';
         return `<div style="font-weight:700;margin-bottom:2px;">${labels[index!]}</div>
           <div style="display:flex;justify-content:space-between;gap:18px;"><span style="color:rgba(255,255,255,.72);">Cartera</span><strong>${fmtKg(cartera?.actualKg ?? 0)} kg</strong></div>
-          <div style="display:flex;justify-content:space-between;gap:18px;"><span style="color:rgba(255,255,255,.72);">Nota</span><strong>${fmtKg(nota?.actualKg ?? 0)} kg</strong></div>
+          <div style="display:flex;justify-content:space-between;gap:18px;"><span style="color:rgba(255,255,255,.72);">Facturado</span><strong>${fmtKg(nota?.actualKg ?? 0)} kg</strong></div>
+          <div style="display:flex;justify-content:space-between;gap:18px;"><span style="color:rgba(255,255,255,.72);">Por otros</span><strong>${fmtKg(
+            index !== undefined ? (seller.carteraByOthersHistory?.[index]?.actualKg ?? 0) : 0,
+          )} kg</strong></div>
           <div style="display:flex;justify-content:space-between;gap:18px;"><span style="color:rgba(255,255,255,.72);">Cuota cartera</span><strong>${fmtKg(carteraTarget)} kg</strong></div>
-          <div style="display:flex;justify-content:space-between;gap:18px;"><span style="color:rgba(255,255,255,.72);">Cuota nota</span><strong>${fmtKg(noteTarget)} kg</strong></div>`;
+          <div style="display:flex;justify-content:space-between;gap:18px;"><span style="color:rgba(255,255,255,.72);">Cuota facturado</span><strong>${fmtKg(noteTarget)} kg</strong></div>`;
       },
     },
     xAxis: {
@@ -933,7 +1069,7 @@ export function monthlyHistoryDualOption(seller: ForecastSellerRow): Record<stri
             : undefined,
       },
       {
-        name: 'Nota',
+        name: 'Facturado',
         type: 'bar',
         data: noteValues,
         barMaxWidth: 26,
@@ -944,10 +1080,20 @@ export function monthlyHistoryDualOption(seller: ForecastSellerRow): Record<stri
                 symbol: 'none',
                 silent: true,
                 lineStyle: { color: '#4b6700', type: 'dashed', width: 1.5, opacity: 0.7 },
-                label: { formatter: 'cuota nota', color: '#4b6700', fontSize: 9, position: 'insideEndTop' },
+                label: { formatter: 'cuota facturado', color: '#4b6700', fontSize: 9, position: 'insideEndTop' },
                 data: [{ yAxis: noteTarget }],
               }
             : undefined,
+      },
+      {
+        name: 'Por otros',
+        type: 'line',
+        data: othersValues,
+        smooth: false,
+        symbol: 'circle',
+        symbolSize: 6,
+        lineStyle: { color: '#d18700', width: 2 },
+        itemStyle: { color: '#d18700' },
       },
     ],
   };

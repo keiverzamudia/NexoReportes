@@ -118,6 +118,7 @@ export class AuthService {
       ...this.summary(user),
       roleName: access?.roleName ?? user.role,
       baseRole: access?.baseRole ?? 'CONSULTA',
+      sellerCode: access?.sellerCode ?? user.sellerCode ?? null,
       permissions: access?.permissions ?? [],
     };
   }

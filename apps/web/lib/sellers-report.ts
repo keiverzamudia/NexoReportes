@@ -1,4 +1,5 @@
 import type {
+  ForecastSellerBilling,
   ForecastSellerClientRow,
   ForecastSellerProductRow,
   ForecastSellerRow,
@@ -52,18 +53,28 @@ export function sellerInitials(name: string): string {
   return `${parts[0]![0]}${parts[parts.length - 1]![0]}`.toUpperCase();
 }
 
+export type SellerMetricFocus = 'facturado' | 'cartera' | 'meta' | null;
+
 export interface SellerFilters {
   search: string;
   onlyWithSales: boolean;
   onlyWithQuota: boolean;
+  /** Filtro aplicado desde una tarjeta KPI del encabezado. */
+  metricFocus?: SellerMetricFocus;
 }
 
 export function filterSellers(sellers: ForecastSellerRow[], filters: SellerFilters): ForecastSellerRow[] {
   const needle = filters.search.trim().toLowerCase();
   return sellers.filter(
     (seller) =>
-      (!filters.onlyWithSales || seller.actualKg > 0) &&
+      (!filters.onlyWithSales || seller.actualKg > 0 || sellerBilling(seller).facturadoKg > 0) &&
       (!filters.onlyWithQuota || seller.targetKg > 0) &&
+      (!filters.metricFocus ||
+        (filters.metricFocus === 'facturado'
+          ? sellerBilling(seller).facturadoKg > 0
+          : filters.metricFocus === 'cartera'
+            ? sellerBilling(seller).carteraKg > 0
+            : seller.targetKg > 0)) &&
       (!needle ||
         seller.sellerName.toLowerCase().includes(needle) ||
         seller.sellerCode.toLowerCase().includes(needle)),
@@ -95,6 +106,86 @@ export function filterSellerClients(
 export function topQuotaSeller(report: ForecastSellersResponse): ForecastSellerRow | null {
   return [...report.sellers].sort((a, b) => b.targetKg - a.targetKg)[0] ?? null;
 }
+
+// ============================================================
+// Facturación del vendedor: dos libros y una fuga.
+//
+// El API calcula los splits; estas funciones solo los resuelven con un
+// respaldo para una respuesta cacheada de una versión anterior (sin `billing`).
+// ============================================================
+
+export const EMPTY_BILLING: ForecastSellerBilling = {
+  facturadoKg: 0,
+  facturadoOwnPortfolioKg: 0,
+  facturadoOutsideKg: 0,
+  carteraKg: 0,
+  carteraByOthersKg: 0,
+  carteraByOthersExternalKg: 0,
+  carteraByOthersInternalKg: 0,
+  carteraByOthersPct: null,
+  facturadoClients: 0,
+  leakedClients: 0,
+  internalClients: 0,
+};
+
+function clientExternalKg(client: ForecastSellerClientRow): number {
+  return (client as { otherSellerExternalKg?: number }).otherSellerExternalKg ?? client.otherSellerKg;
+}
+
+function clientInternalKg(client: ForecastSellerClientRow): number {
+  return (client as { otherSellerInternalKg?: number }).otherSellerInternalKg ?? 0;
+}
+
+/** Resuelve la facturación del vendedor, con respaldo si el API es antiguo. */
+export function sellerBilling(seller: ForecastSellerRow): ForecastSellerBilling {
+  const raw = (seller as { billing?: ForecastSellerBilling }).billing;
+  if (raw) return raw;
+
+  const carteraKg = seller.carteraCurrentKg;
+  const byOthers = seller.otherSellerKg;
+  const external = seller.clients.reduce((acc, client) => acc + clientExternalKg(client), 0);
+  const internal = seller.clients.reduce((acc, client) => acc + clientInternalKg(client), 0);
+  const ownPortfolio = Math.max(0, carteraKg - byOthers);
+  const facturado = seller.noteCurrentKg;
+
+  return {
+    facturadoKg: facturado,
+    facturadoOwnPortfolioKg: Math.max(0, Math.min(facturado, ownPortfolio)),
+    facturadoOutsideKg: Math.max(0, facturado - ownPortfolio),
+    carteraKg,
+    carteraByOthersKg: byOthers,
+    carteraByOthersExternalKg: external,
+    carteraByOthersInternalKg: internal,
+    carteraByOthersPct: carteraKg > 0 ? roundTab((byOthers / carteraKg) * 100) : null,
+    facturadoClients: seller.clients.filter((client) => client.noteCurrentKg > 0).length,
+    leakedClients: seller.clients.filter((client) => clientExternalKg(client) > 0).length,
+    internalClients: seller.clients.filter((client) => clientInternalKg(client) > 0).length,
+  };
+}
+
+/** Clientes de la cartera del vendedor que compraron y les facturó otro. */
+export function clientsBilledByOthers(
+  seller: ForecastSellerRow,
+  options: { externalOnly?: boolean } = {},
+): ForecastSellerClientRow[] {
+  return seller.clients
+    .filter((client) =>
+      options.externalOnly ? clientExternalKg(client) > 0 : client.otherSellerKg > 0,
+    )
+    .sort(
+      (a, b) =>
+        b.otherSellerKg - a.otherSellerKg ||
+        b.carteraCurrentKg - a.carteraCurrentKg ||
+        a.clientName.localeCompare(b.clientName, 'es'),
+    );
+}
+
+/** % de un importe sobre un total (null si el total no es positivo). */
+export function pctOfTotal(value: number, total: number): number | null {
+  if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return null;
+  return roundTab((value / total) * 100);
+}
+
 
 /**
  * Frase ejecutiva del hero. Se arma con el propio payload para que nunca quede
@@ -132,10 +223,16 @@ export function buildSellerNarrative(report: ForecastSellersResponse): string {
     leader && leader.quotaPct !== null
       ? ` La mayor cuota es de ${leader.sellerName} (${fmtPct(leader.quotaPct)}).`
       : '';
+  const billing = report.totals.billing;
+  const billingText = billing
+    ? ` Facturado ${fmtKg(billing.facturadoKg)} kg · cartera ${fmtKg(billing.carteraKg)} kg · por otros ${fmtKg(
+        billing.carteraByOthersExternalKg,
+      )} kg.`
+    : '';
 
   return `${people} llevan ${fmtKg(totals.actualKg)} kg de ${fmtKg(totals.forecastKg)} kg; al ritmo actual cerrarían en ~${fmtKg(
     totals.projectedKg,
-  )} kg (${fmtPct(totals.projectedAttainmentPct)}), así que ${closing}.${leaderText}`;
+  )} kg (${fmtPct(totals.projectedAttainmentPct)}), así que ${closing}.${leaderText}${billingText}`;
 }
 
 export interface SellerShareSlice {
@@ -394,7 +491,9 @@ const SELLER_CSV_HEADERS = [
   'Cuota %',
   'Meta kg',
   'Venta kg',
-  'Venta firmada kg',
+  'Facturado kg',
+  'Cartera kg',
+  'Por otros kg',
   'Unidades',
   'Cumplimiento %',
   'Proyección kg',
@@ -444,6 +543,7 @@ export function buildSellersCsv(report: ForecastSellersResponse): string {
   const lines = [SELLER_CSV_HEADERS.map(csvCell).join(',')];
 
   for (const seller of report.sellers) {
+    const billing = sellerBilling(seller);
     lines.push(
       [
         seller.sellerName,
@@ -455,7 +555,9 @@ export function buildSellersCsv(report: ForecastSellersResponse): string {
         csvNumber(seller.quotaPct),
         csvNumber(seller.targetKg),
         csvNumber(seller.actualKg),
-        csvNumber(seller.executedKg),
+        csvNumber(billing.facturadoKg),
+        csvNumber(billing.carteraKg),
+        csvNumber(billing.carteraByOthersKg),
         csvNumber(seller.actualUnits),
         csvNumber(seller.attainmentPct),
         csvNumber(seller.projectedKg),
@@ -483,7 +585,9 @@ export function buildSellersCsv(report: ForecastSellersResponse): string {
       '',
       csvNumber(totals.forecastKg),
       csvNumber(totals.actualKg),
-      '',
+      csvNumber(totals.billing?.facturadoKg ?? 0),
+      csvNumber(totals.billing?.carteraKg ?? 0),
+      csvNumber(totals.billing?.carteraByOthersKg ?? 0),
       csvNumber(totals.actualUnits),
       csvNumber(totals.attainmentPct),
       csvNumber(totals.projectedKg),
@@ -558,24 +662,6 @@ const CARTERA_CSV_HEADERS = [
   'Última nota',
 ] as const;
 
-const NOTA_CSV_HEADERS = [
-  'Cliente',
-  'Código',
-  'Tipo',
-  'Venta firmada kg',
-  'Histórico nota kg',
-  'Meta nota kg',
-  '% de su cuota',
-  'Cumplimiento %',
-  'Proyección kg',
-  'Brecha kg',
-  'Aporte brecha %',
-  'Cartera asignada kg',
-  'Pendiente mes kg',
-  'Plan cierre kg',
-  'Última nota',
-] as const;
-
 const PRODUCT_CSV_HEADERS = [
   'Producto',
   'Código',
@@ -635,44 +721,95 @@ export function buildSellerCarteraCsv(seller: ForecastSellerRow, report: Forecas
   return `\uFEFF${lines.join('\r\n')}\r\n`;
 }
 
-/** CSV de la pestaña Nota del expediente. */
-export function buildSellerNotaCsv(seller: ForecastSellerRow, report: ForecastSellersResponse): string {
-  const lines = [NOTA_CSV_HEADERS.map(csvCell).join(',')];
-  const sellerGap =
-    seller.noteTargetKg > 0
-      ? roundTab(
-          seller.clients.reduce(
-            (acc, client) =>
-              acc + (tabRunRate(client.noteCurrentKg, client.noteTargetKg, report).gapKg ?? 0),
-            0,
-          ),
-        )
-      : null;
+/** CSV de la pestaña Facturado del expediente. */
+export function buildSellerFacturadoCsv(seller: ForecastSellerRow): string {
+  const billing = sellerBilling(seller);
+  const headers = [
+    'Cliente',
+    'Código',
+    'Tipo',
+    'Cartera asignada a',
+    'Facturado por él kg',
+    'De su cartera kg',
+    'Fuera de cartera kg',
+    'Notas',
+    '% de su facturación',
+    'Cartera del cliente kg',
+    'Última nota',
+  ] as const;
+  const lines = [headers.map(csvCell).join(',')];
 
-  for (const client of seller.clients.filter((row) => row.noteCurrentKg > 0 || row.noteHistoricalKg > 0)) {
-    const metrics = tabRunRate(client.noteCurrentKg, client.noteTargetKg, report);
+  for (const client of seller.clients.filter(
+    (row) => row.noteCurrentKg > 0 || row.noteHistoricalKg > 0,
+  )) {
+    const own = Math.max(0, client.carteraCurrentKg - client.otherSellerKg);
+    const outside = Math.max(0, client.noteCurrentKg - own);
     lines.push(
       [
         client.clientName,
         client.clientCode,
         client.customerType ?? '',
+        client.assignedSellerName || 'Sin cartera',
         csvNumber(client.noteCurrentKg),
-        csvNumber(client.noteHistoricalKg),
-        csvNumber(client.noteTargetKg),
-        csvNumber(clientQuotaSharePct(client.noteTargetKg, seller.noteTargetKg)),
-        csvNumber(metrics.projectedAttainmentPct ?? metrics.attainmentPct),
-        csvNumber(metrics.projectedKg),
-        csvNumber(metrics.gapKg),
-        csvNumber(clientGapContributionPct(metrics.gapKg, sellerGap)),
+        csvNumber(own),
+        csvNumber(outside),
+        client.noteInvoiceCount,
+        csvNumber(pctOfTotal(client.noteCurrentKg, billing.facturadoKg)),
         csvNumber(client.carteraCurrentKg),
-        csvNumber(client.pendingKg),
-        csvNumber(client.closingPlanKg),
         client.lastInvoiceDate ?? '',
       ]
         .map(csvCell)
         .join(','),
     );
   }
+
+  return `\uFEFF${lines.join('\r\n')}\r\n`;
+}
+
+/** CSV de la pestaña Facturado por otros: la fuga de la cartera. */
+export function buildSellerLeakCsv(seller: ForecastSellerRow): string {
+  const headers = [
+    'Cliente',
+    'Código',
+    'Tipo',
+    'Cartera del cliente kg',
+    'Facturado por él kg',
+    'Otros kg',
+    'Otros vendedores kg',
+    'Cuentas internas kg',
+    '% por otros',
+    'Otros vendedores',
+    'Última nota',
+  ] as const;
+  const lines = [headers.map(csvCell).join(',')];
+
+  for (const client of clientsBilledByOthers(seller)) {
+    const total = client.carteraCurrentKg;
+    const names =
+      client.otherSellers.length > 0
+        ? client.otherSellers
+            .map((entry) => `${entry.code} ${entry.name}${entry.internal ? ' (interna)' : ''}`)
+            .join(' / ')
+        : client.otherSellerNames.join(' / ');
+    lines.push(
+      [
+        client.clientName,
+        client.clientCode,
+        client.customerType ?? '',
+        csvNumber(total),
+        csvNumber(client.noteCurrentKg),
+        csvNumber(client.otherSellerKg),
+        csvNumber(clientExternalKg(client)),
+        csvNumber(clientInternalKg(client)),
+        csvNumber(pctOfTotal(client.otherSellerKg, total)),
+        names,
+        client.lastInvoiceDate ?? '',
+      ]
+        .map(csvCell)
+        .join(','),
+    );
+  }
+
   return `\uFEFF${lines.join('\r\n')}\r\n`;
 }
 

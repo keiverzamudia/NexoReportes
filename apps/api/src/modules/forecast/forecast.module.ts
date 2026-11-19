@@ -11,5 +11,8 @@ import { SellersService } from './sellers.service';
   imports: [AuditModule, SyncModule],
   controllers: [ForecastController],
   providers: [ForecastService, ForecastTargetScheduler, SellersService, SellerQuotasService],
+  // Producción reutiliza el plan de forecast (demanda, vendido y stock) para
+  // no duplicar la regla de negocio.
+  exports: [ForecastService],
 })
 export class ForecastModule {}

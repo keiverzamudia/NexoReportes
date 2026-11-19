@@ -127,7 +127,7 @@ export function UserPermissionsDialog({
         role="dialog"
         aria-modal="true"
         aria-label={`Permisos de ${user.displayName}`}
-        className="my-space-lg w-full max-w-3xl rounded-card border border-outline-variant/40 bg-surface-container-lowest shadow-float"
+        className="my-space-lg w-full max-w-4xl rounded-card border border-outline-variant/40 bg-surface-container-lowest shadow-float"
       >
         <header className="flex items-start justify-between gap-space-md border-b border-surface-container p-space-md">
           <div>

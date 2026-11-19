@@ -61,9 +61,9 @@ export class SellerQuotasService {
     private readonly audit: AuditService,
   ) {}
 
-  async list(year: number, month: number): Promise<ForecastSellerQuotasResponse> {
+  async list(year: number, month: number, sellerCode?: string): Promise<ForecastSellerQuotasResponse> {
     const rows = await this.prisma.sellerQuota.findMany({
-      where: { year, month },
+      where: { year, month, ...(sellerCode ? { sellerCode } : {}) },
       orderBy: { sellerCode: 'asc' },
     });
     return {

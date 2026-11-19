@@ -568,6 +568,14 @@ export class ForecastService {
     @Inject(PROFIT_ADAPTER) private readonly profit: ProfitAdapter,
   ) {}
 
+  /** Fuerza una nueva lectura de ventas/despachos (botón «Actualizar»). */
+  refreshCaches(): void {
+    this.salesCache.clear();
+    this.customerSalesCache.clear();
+    this.dayDetailCache.clear();
+    this.weeklyCache.clear();
+  }
+
   async list(year: number, month: number): Promise<ForecastResponse> {
     const { response } = await this.buildList(year, month);
     return response;

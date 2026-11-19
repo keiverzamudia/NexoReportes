@@ -24,6 +24,13 @@ export class UsersController {
     return this.users.list(query);
   }
 
+  @Get('sellers')
+  @RequirePermission('usuarios:read')
+  @ApiOperation({ summary: 'Catálogo de vendedores de Profit para vincular usuarios' })
+  sellers() {
+    return this.users.listSellers();
+  }
+
   @Post('sync')
   @RequirePermission('usuarios:update')
   @ApiOperation({ summary: 'Sincroniza los usuarios desde Profit (solo lectura)' })
@@ -61,7 +68,7 @@ export class UsersController {
   @ApiOperation({ summary: 'Cambia el rol o el acceso de un usuario' })
   update(
     @Param('id') id: string,
-    @Body(new ZodValidationPipe(zUpdateUserInput)) body: { role?: string; isActive?: boolean },
+    @Body(new ZodValidationPipe(zUpdateUserInput)) body: { role?: string; isActive?: boolean; sellerCode?: string | null },
     @Req() request: AuthenticatedRequest,
   ) {
     return this.users.update(id, body, { id: request.user?.sub });

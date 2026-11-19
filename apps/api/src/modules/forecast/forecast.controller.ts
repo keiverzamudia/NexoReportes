@@ -1,15 +1,17 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
   ForecastQuery,
   ForecastSalesDayQuery,
   ForecastSalesQuery,
+  ForecastSellerDetailQuery,
   ForecastSellerQuotaUpdate,
   ForecastSellersQuery,
   ForecastSetWeeks,
   zForecastQuery,
   zForecastSalesDayQuery,
   zForecastSalesQuery,
+  zForecastSellerDetailQuery,
   zForecastSellerQuotaUpdate,
   zForecastSellersQuery,
   zForecastSetWeeks,
@@ -20,7 +22,7 @@ import { RequirePermission } from '../permissions/permissions.decorator';
 import { PermissionsGuard } from '../permissions/permissions.guard';
 import { ForecastService } from './forecast.service';
 import { SellerQuotasService } from './seller-quotas.service';
-import { SellersService } from './sellers.service';
+import { SellersService, hasFullSellerScope } from './sellers.service';
 
 // Forecast (pronóstico de producción): el mensual se lee de Profit (solo lectura)
 // y en Nexo solo se capturan las cantidades por semana. Nunca escribe en Profit.
@@ -35,12 +37,32 @@ export class ForecastController {
     private readonly sellerQuotas: SellerQuotasService,
   ) {}
 
+  /**
+   * Un usuario sin `vendedor:view_all` solo puede consultar su propio código
+   * de vendedor. El guard ya lo autenticó; aquí se aplica el alcance de datos.
+   */
+  private assertSellerScope(request: AuthenticatedRequest, sellerCode?: string) {
+    const access = request.access;
+    if (!access || hasFullSellerScope(access)) return;
+    const own = (access.sellerCode ?? '').trim().toUpperCase();
+    const requested = sellerCode?.trim().toUpperCase();
+    if (!own || (requested !== undefined && requested !== own)) {
+      throw new ForbiddenException('Solo puedes consultar tu propio reporte de vendedor');
+    }
+  }
+
   // Cuotas mensuales de activación. La lectura es del módulo Vendedor; la
   // escritura exige el permiso especial y deja auditoría.
   @Get('sellers/quotas')
   @RequirePermission('vendedor:read')
-  sellerQuotasList(@Query(new ZodValidationPipe(zForecastQuery)) query: ForecastQuery) {
-    return this.sellerQuotas.list(query.year, query.month);
+  sellerQuotasList(@Query(new ZodValidationPipe(zForecastQuery)) query: ForecastQuery, @Req() request: AuthenticatedRequest) {
+    const access = request.access;
+    const scoped = access && !hasFullSellerScope(access);
+    return this.sellerQuotas.list(
+      query.year,
+      query.month,
+      scoped ? (access?.sellerCode ?? '__sin_vendedor__') : undefined,
+    );
   }
 
   @Put('sellers/quotas')
@@ -49,6 +71,7 @@ export class ForecastController {
     @Body(new ZodValidationPipe(zForecastSellerQuotaUpdate)) dto: ForecastSellerQuotaUpdate,
     @Req() request: AuthenticatedRequest,
   ) {
+    this.assertSellerScope(request, dto.sellerCode);
     return this.sellerQuotas.set(dto, { id: request.access?.userId });
   }
 
@@ -59,8 +82,40 @@ export class ForecastController {
   sellerProducts(
     @Param('sellerCode') sellerCode: string,
     @Query(new ZodValidationPipe(zForecastSellersQuery)) query: ForecastSellersQuery,
+    @Req() request: AuthenticatedRequest,
   ) {
+    this.assertSellerScope(request, sellerCode);
     return this.sellers.sellerProducts(sellerCode, query);
+  }
+
+  // Detalle contextual de un cliente en el expediente: notas individuales y
+  // productos del mes. Se pide al abrir la ficha contextual; no carga el
+  // informe completo. `sellerCode` acepta `__sin_vendedor__` para la fila de
+  // clientes sin cartera asignada.
+  @Get('sellers/:sellerCode/clients/:clientCode/detail')
+  @RequirePermission('vendedor:read')
+  sellerClientDetail(
+    @Param('sellerCode') sellerCode: string,
+    @Param('clientCode') clientCode: string,
+    @Query(new ZodValidationPipe(zForecastSellerDetailQuery)) query: ForecastSellerDetailQuery,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.assertSellerScope(request, sellerCode);
+    return this.sellers.clientDetail(sellerCode, clientCode, query);
+  }
+
+  // Drill-down de la pestaña Productos: clientes que compraron ese artículo en
+  // el mes, con cartera / firmado por él / otros.
+  @Get('sellers/:sellerCode/products/:productCode/clients')
+  @RequirePermission('vendedor:read')
+  sellerProductClients(
+    @Param('sellerCode') sellerCode: string,
+    @Param('productCode') productCode: string,
+    @Query(new ZodValidationPipe(zForecastSellerDetailQuery)) query: ForecastSellerDetailQuery,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    this.assertSellerScope(request, sellerCode);
+    return this.sellers.productClients(sellerCode, productCode, query);
   }
 
   // Vendedor vs Forecast: misma meta que «Ventas vs Forecast», repartida por
@@ -69,8 +124,11 @@ export class ForecastController {
   // permiso es del módulo `vendedor`, no del forecast de producción.
   @Get('sellers')
   @RequirePermission('vendedor:read')
-  sellersReport(@Query(new ZodValidationPipe(zForecastSellersQuery)) query: ForecastSellersQuery) {
-    return this.sellers.sellersReport(query);
+  sellersReport(
+    @Query(new ZodValidationPipe(zForecastSellersQuery)) query: ForecastSellersQuery,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.sellers.sellersReport(query, request.access);
   }
 
   @Get('plan')

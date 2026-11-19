@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ForecastSellersQuery } from '@nexo/contracts';
+import type { ForecastSellerDetailQuery, ForecastSellersQuery } from '@nexo/contracts';
 import { ForecastService } from './forecast.service';
 import { SellersService } from './sellers.service';
 import { ProfitAdapter } from '../sync/profit.adapter';
@@ -18,6 +18,14 @@ const QUERY: ForecastSellersQuery = {
   includeToday: false,
   attribution: 'PORTFOLIO',
   refresh: false,
+};
+
+const DETAIL_QUERY: ForecastSellerDetailQuery = {
+  year: QUERY.year,
+  month: QUERY.month,
+  basis: QUERY.basis,
+  includeToday: QUERY.includeToday,
+  attribution: QUERY.attribution,
 };
 
 function sale(input: {
@@ -100,9 +108,13 @@ function adapterWith(
     daily?: Record<string, unknown>[];
     portfolio?: Record<string, unknown>[];
     products?: Record<string, unknown>[];
+    clientNotes?: Record<string, unknown>[];
+    clientProducts?: Record<string, unknown>[];
+    productClients?: Record<string, unknown>[];
     sellerName?: string;
     fail?: boolean;
     portfolioFails?: boolean;
+    clientNotesFail?: boolean;
   } = {},
 ) {
   const calls = { monthly: 0, daily: 0, portfolio: 0, products: 0 };
@@ -114,10 +126,24 @@ function adapterWith(
     listViews: async () => [],
     describeView: async () => [],
     select: async () => [],
-    selectQuery: async (sqlText: string) => {
+    selectQuery: async (sqlText: string, _limit: number, params?: Record<string, unknown>) => {
       const lower = sqlText.toLowerCase();
       if (lower.includes('nexo:seller_name')) {
         return [{ ven_des: options.sellerName ?? 'VENDEDOR DE PRUEBA' }];
+      }
+      if (lower.includes('nexo:seller_client_notes')) {
+        if (options.clientNotesFail) throw new Error('Notas caídas');
+        const rows = options.clientNotes ?? [];
+        const coArt = params?.co_art === undefined ? null : String(params.co_art);
+        return coArt ? rows.filter((row) => String(row.co_art ?? '') === coArt) : rows;
+      }
+      if (lower.includes('nexo:seller_client_products')) {
+        const rows = options.clientProducts ?? [];
+        const coArt = params?.co_art === undefined ? null : String(params.co_art);
+        return coArt ? rows.filter((row) => String(row.co_art ?? '') === coArt) : rows;
+      }
+      if (lower.includes('nexo:seller_product_clients')) {
+        return options.productClients ?? [];
       }
       if (lower.includes('nexo:seller_products')) {
         calls.products += 1;
@@ -333,6 +359,13 @@ describe('SellersService', () => {
     expect(juiliard.actualKg).toBe(0);
     expect(juiliard.executedKg).toBe(50);
     expect(juiliard.executedHistoricalKg).toBe(100);
+    expect(liz.billing.facturadoKg).toBe(0);
+    expect(liz.billing.carteraKg).toBe(50);
+    expect(liz.billing.carteraByOthersKg).toBe(50);
+    expect(liz.billing.leakedClients).toBe(1);
+    expect(juiliard.billing.facturadoKg).toBe(50);
+    expect(juiliard.billing.facturadoOutsideKg).toBe(50);
+    expect(juiliard.billing.carteraKg).toBe(0);
 
     const client = liz.clients.find((row) => row.clientCode === 'C1')!;
     expect(client.actualKg).toBe(50);
@@ -340,6 +373,10 @@ describe('SellersService', () => {
     expect(client.otherSellerNames).toEqual(['JUILIARD ANGULO']);
     expect(client.assignedSellerCode).toBe('012');
     expect(report.totals.actualKg).toBe(50);
+    expect(report.totals.billing.facturadoKg).toBe(50);
+    expect(report.totals.billing.carteraKg).toBe(50);
+    expect(report.totals.billing.carteraByOthersKg).toBe(50);
+    expect(report.totals.billing.carteraByOthersExternalKg).toBe(50);
   });
 
   it('con attribution=NOTE conserva la venta del emisor y muestra la cartera del cliente', async () => {
@@ -378,11 +415,22 @@ describe('SellersService', () => {
     expect(report.attribution).toBe('NOTE');
     expect(report.totals.clientCount).toBe(1);
     expect(report.totals.assignedClientCount).toBe(2);
-    expect(report.sellers.map((seller) => seller.sellerCode)).toEqual(['031']);
-    const juiliard = report.sellers[0]!;
+    // La lista es la unión: LIZ sigue visible con su cartera, aunque la cuota
+    // se mida por facturado.
+    expect(report.sellers.map((seller) => seller.sellerCode).sort()).toEqual(['012', '031']);
+    const juiliard = report.sellers.find((seller) => seller.sellerCode === '031')!;
     expect(juiliard.actualKg).toBe(50);
     expect(juiliard.executedKg).toBe(50);
     expect(juiliard.assignedClientCount).toBe(1);
+    expect(juiliard.billing.facturadoKg).toBe(50);
+    expect(juiliard.billing.facturadoOutsideKg).toBe(50);
+    expect(juiliard.billing.carteraKg).toBe(0);
+    const liz = report.sellers.find((seller) => seller.sellerCode === '012')!;
+    expect(liz.actualKg).toBe(0);
+    expect(liz.billing.carteraKg).toBe(50);
+    expect(liz.billing.carteraByOthersKg).toBe(50);
+    expect(liz.billing.carteraByOthersExternalKg).toBe(50);
+    expect(liz.billing.leakedClients).toBe(1);
     const client = juiliard.clients.find((row) => row.clientCode === 'C1')!;
     expect(client.assignedSellerCode).toBe('012');
     expect(client.assignedSellerName).toBe('LIZ PEREZ');
@@ -627,5 +675,261 @@ describe('SellersService', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('detalla las notas del cliente y cuadra cartera, firmado y otros', async () => {
+    const clientNotes = [
+      {
+        nota: 'N1',
+        fecha: '2025-03-03',
+        cli_des: 'CLIENTE UNO',
+        co_art: 'P1',
+        co_ven_nota: '012',
+        ven_nota: 'LIZ PEREZ',
+        co_ven_cartera: '012',
+        ven_cartera: 'LIZ PEREZ',
+        kg: 40,
+        unid: 40,
+        lineas: 2,
+      },
+      {
+        nota: 'N2',
+        fecha: '2025-03-04',
+        cli_des: 'CLIENTE UNO',
+        co_art: 'P1',
+        co_ven_nota: '025',
+        ven_nota: 'MEIDY ARIAS',
+        co_ven_cartera: '012',
+        ven_cartera: 'LIZ PEREZ',
+        kg: 20,
+        unid: 20,
+        lineas: 1,
+      },
+      {
+        nota: 'N3',
+        fecha: '2025-03-05',
+        cli_des: 'CLIENTE UNO',
+        co_art: 'P2',
+        co_ven_nota: '012',
+        ven_nota: 'LIZ PEREZ',
+        co_ven_cartera: '030',
+        ven_cartera: 'OTRO VENDEDOR',
+        kg: 10,
+        unid: 10,
+        lineas: 1,
+      },
+      {
+        nota: 'N4',
+        fecha: '2025-03-06',
+        cli_des: 'CLIENTE UNO',
+        co_art: 'P1',
+        co_ven_nota: '001',
+        ven_nota: 'LA EMPRESA',
+        co_ven_cartera: '012',
+        ven_cartera: 'LIZ PEREZ',
+        kg: 5,
+        unid: 5,
+        lineas: 1,
+      },
+    ];
+    const clientProducts = [
+      {
+        co_art: 'P1',
+        art_des: 'PRODUCTO UNO',
+        uni_venta: 'KG',
+        co_ven_nota: '012',
+        co_ven_cartera: '012',
+        kg: 40,
+        unid: 40,
+        notas: 1,
+      },
+      {
+        co_art: 'P1',
+        art_des: 'PRODUCTO UNO',
+        uni_venta: 'KG',
+        co_ven_nota: '025',
+        co_ven_cartera: '012',
+        kg: 20,
+        unid: 20,
+        notas: 1,
+      },
+      {
+        co_art: 'P1',
+        art_des: 'PRODUCTO UNO',
+        uni_venta: 'KG',
+        co_ven_nota: '001',
+        co_ven_cartera: '012',
+        kg: 5,
+        unid: 5,
+        notas: 1,
+      },
+      {
+        co_art: 'P2',
+        art_des: 'PRODUCTO DOS',
+        uni_venta: 'KG',
+        co_ven_nota: '012',
+        co_ven_cartera: '030',
+        kg: 10,
+        unid: 10,
+        notas: 1,
+      },
+    ];
+    const { adapter } = adapterWith({ clientNotes, clientProducts });
+    const service = new SellersService(adapter, forecastStub());
+    const detail = await service.clientDetail('012', 'C1', DETAIL_QUERY);
+
+    expect(detail.available).toBe(true);
+    expect(detail.productsAvailable).toBe(true);
+    expect(detail.clientName).toBe('CLIENTE UNO');
+    expect(detail.notes).toHaveLength(4);
+    expect(detail.totals.allKg).toBe(75);
+    expect(detail.totals.allNotes).toBe(4);
+    expect(detail.totals.ownKg).toBe(50);
+    expect(detail.totals.ownNotes).toBe(2);
+    expect(detail.totals.otherKg).toBe(25);
+    expect(detail.totals.otherNotes).toBe(2);
+    expect(detail.totals.otherExternalKg).toBe(20);
+    expect(detail.totals.otherInternalKg).toBe(5);
+    expect(detail.totals.lastInvoiceDate).toBe('2025-03-06');
+
+    const p1 = detail.products.find((product) => product.productCode === 'P1')!;
+    expect(p1.kg).toBe(65);
+    expect(p1.notes).toBe(3);
+    expect(p1.ownKg).toBe(40);
+    expect(p1.ownNotes).toBe(1);
+    expect(p1.otherKg).toBe(25);
+    expect(p1.otherNotes).toBe(2);
+
+    const p2 = detail.products.find((product) => product.productCode === 'P2')!;
+    expect(p2.kg).toBe(10);
+    expect(p2.ownKg).toBe(10);
+    expect(p2.otherKg).toBe(0);
+  });
+
+  it('acota el detalle a un producto cuando se pide', async () => {
+    const clientNotes = [
+      {
+        nota: 'N1',
+        fecha: '2025-03-03',
+        cli_des: 'CLIENTE UNO',
+        co_art: 'P1',
+        co_ven_nota: '012',
+        ven_nota: 'LIZ PEREZ',
+        co_ven_cartera: '012',
+        ven_cartera: 'LIZ PEREZ',
+        kg: 40,
+        unid: 40,
+        lineas: 1,
+      },
+      {
+        nota: 'N2',
+        fecha: '2025-03-04',
+        cli_des: 'CLIENTE UNO',
+        co_art: 'P2',
+        co_ven_nota: '012',
+        ven_nota: 'LIZ PEREZ',
+        co_ven_cartera: '012',
+        ven_cartera: 'LIZ PEREZ',
+        kg: 20,
+        unid: 20,
+        lineas: 1,
+      },
+    ];
+    const { adapter } = adapterWith({ clientNotes });
+    const service = new SellersService(adapter, forecastStub());
+    const detail = await service.clientDetail('012', 'C1', { ...DETAIL_QUERY, productCode: 'P1' });
+
+    expect(detail.productCode).toBe('P1');
+    expect(detail.notes.map((note) => note.number)).toEqual(['N1']);
+    expect(detail.totals.allKg).toBe(40);
+  });
+
+  it('degrada el detalle si Profit no devuelve las notas', async () => {
+    const { adapter } = adapterWith({ clientNotesFail: true });
+    const service = new SellersService(adapter, forecastStub());
+    const detail = await service.clientDetail('012', 'C1', DETAIL_QUERY);
+
+    expect(detail.available).toBe(false);
+    expect(detail.notes).toHaveLength(0);
+    expect(detail.productsAvailable).toBe(true);
+  });
+
+  it('desglosa los clientes de un producto', async () => {
+    const productClients = [
+      {
+        co_cli: 'C1',
+        cli_des: 'CLIENTE UNO',
+        tipo: 'L2 DISTRIBUIDORES',
+        art_des: 'PRODUCTO UNO',
+        uni_venta: 'KG',
+        co_ven_nota: '012',
+        ven_nota: 'LIZ PEREZ',
+        co_ven_cartera: '012',
+        ven_cartera: 'LIZ PEREZ',
+        kg: 40,
+        unid: 40,
+        notas: 1,
+        ultima: '2025-03-03',
+      },
+      {
+        co_cli: 'C2',
+        cli_des: 'CLIENTE DOS',
+        tipo: 'L2 DISTRIBUIDORES',
+        art_des: 'PRODUCTO UNO',
+        uni_venta: 'KG',
+        co_ven_nota: '025',
+        ven_nota: 'MEIDY ARIAS',
+        co_ven_cartera: '012',
+        ven_cartera: 'LIZ PEREZ',
+        kg: 30,
+        unid: 30,
+        notas: 1,
+        ultima: '2025-03-04',
+      },
+      {
+        co_cli: 'C3',
+        cli_des: 'CLIENTE TRES',
+        tipo: 'L2 DISTRIBUIDORES',
+        art_des: 'PRODUCTO UNO',
+        uni_venta: 'KG',
+        co_ven_nota: '012',
+        ven_nota: 'LIZ PEREZ',
+        co_ven_cartera: '030',
+        ven_cartera: 'OTRO VENDEDOR',
+        kg: 10,
+        unid: 10,
+        notas: 1,
+        ultima: '2025-03-05',
+      },
+    ];
+    const { adapter } = adapterWith({ productClients });
+    const service = new SellersService(adapter, forecastStub());
+    const detail = await service.productClients('012', 'P1', DETAIL_QUERY);
+
+    expect(detail.available).toBe(true);
+    expect(detail.description).toBe('PRODUCTO UNO');
+    expect(detail.clients).toHaveLength(3);
+
+    const c1 = detail.clients.find((client) => client.clientCode === 'C1')!;
+    expect(c1.carteraKg).toBe(40);
+    expect(c1.ownKg).toBe(40);
+    expect(c1.otherKg).toBe(0);
+
+    const c2 = detail.clients.find((client) => client.clientCode === 'C2')!;
+    expect(c2.carteraKg).toBe(30);
+    expect(c2.ownKg).toBe(0);
+    expect(c2.otherKg).toBe(30);
+    expect(c2.otherExternalKg).toBe(30);
+
+    const c3 = detail.clients.find((client) => client.clientCode === 'C3')!;
+    expect(c3.carteraKg).toBe(0);
+    expect(c3.ownKg).toBe(10);
+
+    expect(detail.totals.carteraKg).toBe(70);
+    expect(detail.totals.ownKg).toBe(50);
+    expect(detail.totals.otherKg).toBe(30);
+    expect(detail.totals.clientCount).toBe(2);
+    expect(detail.totals.noteClientCount).toBe(2);
+    expect(detail.totals.lastInvoiceDate).toBe('2025-03-05');
   });
 });

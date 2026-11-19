@@ -14,13 +14,14 @@
 
 import type { ForecastSellerAttribution, ForecastSellersResponse } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CalendarDays, Info, RefreshCw, Trophy, Users } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { AlertTriangle, CalendarDays, Info, RefreshCw, ShieldCheck, Trophy } from 'lucide-react';
+import { useRef, useState, type ReactNode } from 'react';
 import { AppNav, LoginScreen } from '../../components/shell';
 import { SellerReport } from '../../components/forecast/SellerReport';
-import { Card, Kpi, PageHeader, Segmented, fmtQty } from '../../components/ui';
+import { Card, Kpi, PageHeader, Segmented, cx, fmtQty } from '../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
 import { hasPermission } from '../../lib/permissions';
+import type { SellerMetricFocus } from '../../lib/sellers-report';
 
 type SalesBasis = 'WORKING' | 'CALENDAR';
 
@@ -31,7 +32,7 @@ const BASIS_OPTIONS: { value: SalesBasis; label: string }[] = [
 
 const ATTRIBUTION_OPTIONS: { value: ForecastSellerAttribution; label: string }[] = [
   { value: 'PORTFOLIO', label: 'Cartera' },
-  { value: 'NOTE', label: 'Nota de entrega' },
+  { value: 'NOTE', label: 'Facturado' },
 ];
 
 function currentMonthValue(): string {
@@ -48,6 +49,7 @@ export default function SellersPage() {
   // expediente del vendedor.
   const [historyMonths, setHistoryMonths] = useState('3');
   const [attribution, setAttribution] = useState<ForecastSellerAttribution>('PORTFOLIO');
+  const [metricFocus, setMetricFocus] = useState<SellerMetricFocus>(null);
   // El botón «Actualizar» pide al API que ignore su caché de 5 minutos.
   const manualRefresh = useRef(false);
 
@@ -86,6 +88,8 @@ export default function SellersPage() {
 
   const totals = report.data?.totals;
   const sellers = report.data?.sellers.length ?? 0;
+  const scope = report.data?.scope ?? 'ALL';
+  const scopeSeller = report.data?.scopeSellerCode ?? '';
   const effectiveAttribution = report.data?.attribution ?? attribution;
   const portfolioFallback =
     attribution === 'PORTFOLIO' && report.data !== undefined && !report.data.assignmentAvailable;
@@ -105,21 +109,48 @@ export default function SellersPage() {
           eyebrow="Comercial · Fuerza de ventas"
           icon={Trophy}
           title="Vendedor"
-          subtitle="Cumplimiento de la meta por vendedor y su cartera asignada en Profit, con la cuota que a cada uno le toca del forecast de la empresa."
+          subtitle="Facturación por vendedor y su cartera asignada en Profit: quién vende, quién factura y qué clientes se están facturando por otros."
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
               <Kpi label="Vendedores" value={String(sellers)} icon={Trophy} />
-              <Kpi
-                label="Clientes en cartera"
-                value={totals ? fmtQty(totals.assignedClientCount, 0) : '—'}
-                icon={Users}
-              />
-              <Kpi
-                label="Meta del mes"
-                value={totals ? fmtQty(totals.forecastKg, 0) : '—'}
-                suffix="kg"
-                tone="primary"
-              />
+              <KpiFilterButton
+                active={metricFocus === 'facturado'}
+                onClick={() =>
+                  setMetricFocus((current) => (current === 'facturado' ? null : 'facturado'))
+                }
+                title="Filtrar el ranking por facturado"
+              >
+                <Kpi
+                  label="Facturado del mes"
+                  value={totals ? fmtQty(totals.billing?.facturadoKg ?? totals.actualKg, 0) : '—'}
+                  suffix="kg"
+                />
+              </KpiFilterButton>
+              <KpiFilterButton
+                active={metricFocus === 'cartera'}
+                onClick={() =>
+                  setMetricFocus((current) => (current === 'cartera' ? null : 'cartera'))
+                }
+                title="Filtrar el ranking por cartera"
+              >
+                <Kpi
+                  label="Cartera del mes"
+                  value={totals ? fmtQty(totals.billing?.carteraKg ?? totals.actualKg, 0) : '—'}
+                  suffix="kg"
+                />
+              </KpiFilterButton>
+              <KpiFilterButton
+                active={metricFocus === 'meta'}
+                onClick={() => setMetricFocus((current) => (current === 'meta' ? null : 'meta'))}
+                title="Filtrar el ranking por meta"
+              >
+                <Kpi
+                  label="Meta del mes"
+                  value={totals ? fmtQty(totals.forecastKg, 0) : '—'}
+                  suffix="kg"
+                  tone="primary"
+                />
+              </KpiFilterButton>
             </div>
           }
         />
@@ -146,9 +177,9 @@ export default function SellersPage() {
                 />
               </div>
               <div className="col-span-2 flex flex-col gap-space-2xs sm:col-span-1">
-                <span className="font-semibold uppercase text-label-sm text-outline">Atribución</span>
+                <span className="font-semibold uppercase text-label-sm text-outline">Cuota sobre</span>
                 <Segmented
-                  ariaLabel="Criterio de atribución de la venta"
+                  ariaLabel="Base de la cuota"
                   value={attribution}
                   onChange={setAttribution}
                   options={ATTRIBUTION_OPTIONS}
@@ -184,8 +215,8 @@ export default function SellersPage() {
           <p className="mt-space-sm flex items-start gap-space-2xs text-label-md text-on-surface-variant">
             <Info aria-hidden className="mt-0.5 size-3.5 shrink-0 text-outline" />
             {effectiveAttribution === 'PORTFOLIO'
-              ? 'Cartera: cada cliente cuenta para el vendedor que tiene asignado hoy en Profit. La cartera se muestra completa, aunque el cliente no haya comprado.'
-              : 'Nota de entrega: la venta se acredita a quien firmó la nota. La columna de cartera muestra el vendedor asignado en Profit.'}
+              ? 'Cuota sobre cartera: la meta se reparte por la venta histórica de los clientes asignados en Profit. La facturación y la cartera se muestran siempre.'
+              : 'Cuota sobre facturado: la meta se reparte por las notas históricas firmadas por cada vendedor, sea o no su cliente. La facturación y la cartera se muestran siempre.'}
           </p>
 
           {portfolioFallback && (
@@ -194,8 +225,8 @@ export default function SellersPage() {
               className="mt-space-sm flex items-start gap-space-sm rounded-xl bg-warning-container/50 px-space-md py-space-sm text-body-md text-on-warning-container"
             >
               <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-              No se pudo leer la cartera de Profit. El informe cae a la venta por nota de entrega; vuelve a intentar
-              con «Actualizar».
+              No se pudo leer la cartera de Profit: la cuota cae a la base facturado y la cartera queda en cero.
+              Vuelve a intentar con «Actualizar».
             </p>
           )}
         </Card>
@@ -204,6 +235,29 @@ export default function SellersPage() {
           <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
             <AlertTriangle aria-hidden className="size-4" />
             {report.error instanceof Error ? report.error.message : 'Error al consultar'}
+          </p>
+        )}
+
+        {scope === 'OWN' && (
+          <p
+            role="status"
+            className="flex items-start gap-space-sm rounded-xl bg-primary-fixed/40 px-space-md py-space-sm text-body-md text-primary"
+          >
+            <ShieldCheck aria-hidden className="mt-0.5 size-4 shrink-0" />
+            Estás viendo solo tu información: la cartera y la facturación del vendedor{' '}
+            <strong className="font-mono">{scopeSeller}</strong>. Para ver a toda la fuerza de ventas necesitas el
+            permiso «Ver todos los vendedores».
+          </p>
+        )}
+
+        {scope === 'UNASSIGNED' && (
+          <p
+            role="status"
+            className="flex items-start gap-space-sm rounded-xl bg-warning-container/50 px-space-md py-space-sm text-body-md text-on-warning-container"
+          >
+            <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+            Tu usuario no tiene un código de vendedor asignado en Profit. Pide a un administrador que lo vincule en
+            Usuarios → columna «Vendedor» (o que te conceda «Ver todos los vendedores»).
           </p>
         )}
 
@@ -216,8 +270,37 @@ export default function SellersPage() {
           onHistoryMonthsChange={(months) => setHistoryMonths(String(months))}
           includeToday={includeToday}
           canManageQuotas={canManageQuotas}
+          metricFocus={metricFocus}
+          onMetricFocusChange={setMetricFocus}
         />
       </main>
     </>
+  );
+}
+
+function KpiFilterButton({
+  active,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      title={title}
+      className={cx(
+        'rounded-card text-left transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-container',
+        active && 'ring-2 ring-primary-container',
+      )}
+    >
+      {children}
+    </button>
   );
 }

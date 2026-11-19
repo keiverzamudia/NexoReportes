@@ -31,8 +31,11 @@ import {
   buildSellersCsv,
   buildShareSlices,
   filterSellers,
+  pctOfTotal,
+  sellerBilling,
   sellersCsvFileName,
   topQuotaSeller,
+  type SellerMetricFocus,
 } from '../../lib/sellers-report';
 import {
   dayLabel,
@@ -82,6 +85,8 @@ export function SellerReport({
   onHistoryMonthsChange,
   includeToday,
   canManageQuotas = false,
+  metricFocus = null,
+  onMetricFocusChange,
 }: {
   report?: ForecastSellersResponse;
   isLoading: boolean;
@@ -92,11 +97,17 @@ export function SellerReport({
   includeToday: boolean;
   /** Permiso `vendedor_cuotas:update`: muestra el lápiz de cuotas. */
   canManageQuotas?: boolean;
+  /** Filtro aplicado desde una tarjeta KPI del encabezado. */
+  metricFocus?: SellerMetricFocus;
+  onMetricFocusChange?: (focus: SellerMetricFocus) => void;
 }) {
   const [search, setSearch] = useState('');
   const [onlyWithSales, setOnlyWithSales] = useState(false);
   const [onlyWithQuota, setOnlyWithQuota] = useState(false);
-  const [focus, setFocus] = useState<{ code: string; salesOnly: boolean } | null>(null);
+  const [focus, setFocus] = useState<{
+    code: string;
+    tab: 'facturado' | 'cartera' | 'otros';
+  } | null>(null);
   const [helpRow, setHelpRow] = useHelpRow();
   const deferredSearch = useDeferredValue(search);
 
@@ -107,9 +118,10 @@ export function SellerReport({
             search: deferredSearch,
             onlyWithSales,
             onlyWithQuota,
+            metricFocus,
           })
         : [],
-    [report, deferredSearch, onlyWithSales, onlyWithQuota],
+    [report, deferredSearch, onlyWithSales, onlyWithQuota, metricFocus],
   );
 
   const slices = useMemo(() => (report ? buildShareSlices(report) : []), [report]);
@@ -146,23 +158,28 @@ export function SellerReport({
   );
   const focusSeller = report && focus ? report.sellers.find((seller) => seller.sellerCode === focus.code) ?? null : null;
 
-  const hasFilters = Boolean(search.trim()) || onlyWithSales || onlyWithQuota;
+  const hasFilters = Boolean(search.trim()) || onlyWithSales || onlyWithQuota || Boolean(metricFocus);
   const clearFilters = useCallback(() => {
     setSearch('');
     setOnlyWithSales(false);
     setOnlyWithQuota(false);
-  }, []);
+    onMetricFocusChange?.(null);
+  }, [onMetricFocusChange]);
 
-  const openSeller = useCallback((code: string) => {
-    if (code === '__otras__') return;
-    setFocus({ code, salesOnly: false });
-  }, []);
-  // Doble clic en la tabla: abre el expediente ya filtrado a los clientes que
-  // le compraron este mes.
-  const openSellerClients = useCallback((code: string) => {
-    if (code === '__otras__') return;
-    setFocus({ code, salesOnly: true });
-  }, []);
+  const openSeller = useCallback(
+    (code: string, tab: 'facturado' | 'cartera' | 'otros' = 'cartera') => {
+      if (code === '__otras__') return;
+      setFocus({ code, tab });
+    },
+    [],
+  );
+  // Clic en «Por otros»: abre el expediente en la fuga de la cartera.
+  const openSellerLeak = useCallback(
+    (code: string) => {
+      openSeller(code, 'otros');
+    },
+    [openSeller],
+  );
   const closeSeller = useCallback(() => setFocus(null), []);
 
   if (isLoading && !report) return <SellerSkeleton />;
@@ -215,7 +232,6 @@ export function SellerReport({
   const projectedAttainment = totals.projectedAttainmentPct;
   const attainment = totals.attainmentPct;
   const tone = salesTone(projectedAttainment ?? attainment);
-  const gapKg = totals.gapKg;
   const leader = topQuotaSeller(report);
 
   const columns: Column<ForecastSellerRow>[] = [
@@ -244,17 +260,21 @@ export function SellerReport({
       align: 'right',
       kind: 'metric',
       help: SELLER_COLUMN_HELP.clientes,
-      sortValue: (row) => row.clientCount,
+      sortValue: (row) => row.assignedClientCount,
       render: (row) => (
-        <div className="text-right">
-          <p className="tabular-nums font-semibold text-on-surface">{fmtKg(row.clientCount, 0)}</p>
-          <p className="text-label-sm text-outline">
-            {fmtKg(row.activeClientCount, 0)} con venta
-            {row.assignedClientCount !== row.clientCount
-              ? ` · ${fmtKg(row.assignedClientCount, 0)} en cartera`
-              : ''}
-          </p>
-        </div>
+        <button
+          type="button"
+          onClick={() => openSeller(row.sellerCode, 'cartera')}
+          title={`Ver la cartera de ${row.sellerName}`}
+          className="w-full text-right transition-colors hover:text-primary"
+        >
+          <div className="text-right">
+            <p className="tabular-nums font-semibold text-on-surface">{fmtKg(row.assignedClientCount, 0)}</p>
+            <p className="text-label-sm text-outline">
+              {fmtKg(row.activeClientCount, 0)} con venta
+            </p>
+          </div>
+        </button>
       ),
     },
     {
@@ -265,7 +285,14 @@ export function SellerReport({
       help: SELLER_COLUMN_HELP.cuota,
       sortValue: (row) => row.quotaPct ?? -1,
       render: (row) => (
-        <span className="tabular-nums font-semibold text-primary">{row.quotaPct === null ? '—' : fmtPct(row.quotaPct)}</span>
+        <button
+          type="button"
+          onClick={() => openSeller(row.sellerCode, 'cartera')}
+          title={`Ver la cuota de ${row.sellerName}`}
+          className="tabular-nums font-semibold text-primary transition-colors hover:underline"
+        >
+          {row.quotaPct === null ? '—' : fmtPct(row.quotaPct)}
+        </button>
       ),
     },
     {
@@ -276,24 +303,96 @@ export function SellerReport({
       help: SELLER_COLUMN_HELP.meta,
       sortValue: (row) => row.targetKg,
       render: (row) => (
-        <span className="tabular-nums font-semibold text-on-surface">{row.targetKg > 0 ? fmtKg(row.targetKg) : '—'}</span>
+        <button
+          type="button"
+          onClick={() => openSeller(row.sellerCode, 'cartera')}
+          title={`Ver la meta de ${row.sellerName}`}
+          className="tabular-nums font-semibold text-on-surface transition-colors hover:underline"
+        >
+          {row.targetKg > 0 ? fmtKg(row.targetKg) : '—'}
+        </button>
       ),
     },
     {
-      key: 'venta',
-      header: 'Venta kg',
+      key: 'facturado',
+      header: 'Facturado kg',
       align: 'right',
       kind: 'metric',
-      help: SELLER_COLUMN_HELP.venta,
-      sortValue: (row) => row.actualKg,
-      render: (row) => (
-        <div className="text-right">
-          <p className="tabular-nums text-on-surface">{fmtKg(row.actualKg)}</p>
-          {row.executedKg !== row.actualKg && (
-            <p className="text-label-sm text-outline">nota {fmtKg(row.executedKg)}</p>
-          )}
-        </div>
-      ),
+      help: SELLER_COLUMN_HELP.facturado,
+      sortValue: (row) => sellerBilling(row).facturadoKg,
+      render: (row) => {
+        const billing = sellerBilling(row);
+        return (
+          <button
+            type="button"
+            onClick={() => openSeller(row.sellerCode, 'facturado')}
+            title={`Ver el facturado de ${row.sellerName}`}
+            className="w-full text-right transition-colors hover:text-primary"
+          >
+            <div className="text-right">
+              <p className="tabular-nums font-semibold text-on-surface">{fmtKg(billing.facturadoKg)}</p>
+              <p className="text-label-sm text-outline">
+                {fmtKg(billing.facturadoClients, 0)} clientes
+                {billing.facturadoOutsideKg > 0 ? ` · fuera ${fmtKg(billing.facturadoOutsideKg)}` : ''}
+              </p>
+            </div>
+          </button>
+        );
+      },
+    },
+    {
+      key: 'cartera',
+      header: 'Cartera kg',
+      align: 'right',
+      kind: 'metric',
+      help: SELLER_COLUMN_HELP.cartera,
+      sortValue: (row) => sellerBilling(row).carteraKg,
+      render: (row) => {
+        const billing = sellerBilling(row);
+        return (
+          <button
+            type="button"
+            onClick={() => openSeller(row.sellerCode, 'cartera')}
+            title={`Ver la cartera de ${row.sellerName}`}
+            className="w-full text-right transition-colors hover:text-primary"
+          >
+            <div className="text-right">
+              <p className="tabular-nums text-on-surface">{fmtKg(billing.carteraKg)}</p>
+              <p className="text-label-sm text-outline">
+                por él {fmtKg(billing.carteraKg - billing.carteraByOthersKg)}
+              </p>
+            </div>
+          </button>
+        );
+      },
+    },
+    {
+      key: 'otros',
+      header: 'Por otros kg',
+      align: 'right',
+      kind: 'metric',
+      help: SELLER_COLUMN_HELP.otros,
+      sortValue: (row) => sellerBilling(row).carteraByOthersExternalKg,
+      render: (row) => {
+        const billing = sellerBilling(row);
+        const external = billing.carteraByOthersExternalKg;
+        const internal = billing.carteraByOthersInternalKg;
+        if (external <= 0 && internal <= 0) return <span className="text-outline">—</span>;
+        return (
+          <button
+            type="button"
+            onClick={() => openSellerLeak(row.sellerCode)}
+            title="Ver el detalle de la cartera facturada por otros"
+            className="inline-flex flex-col items-end text-right text-warning transition-colors hover:text-on-warning-container"
+          >
+            <span className="tabular-nums font-semibold">{fmtKg(external)}</span>
+            <span className="text-label-sm text-outline">
+              {fmtKg(billing.leakedClients, 0)} {billing.leakedClients === 1 ? 'cliente' : 'clientes'}
+              {internal > 0 ? ` · interna ${fmtKg(internal)}` : ''}
+            </span>
+          </button>
+        );
+      },
     },
     {
       key: 'cumplimiento',
@@ -302,7 +401,16 @@ export function SellerReport({
       kind: 'status',
       help: SELLER_COLUMN_HELP.cumplimiento,
       sortValue: (row) => row.projectedAttainmentPct ?? row.attainmentPct ?? -1,
-      render: (row) => <PctPill pct={row.projectedAttainmentPct ?? row.attainmentPct} emptyLabel="—" />,
+      render: (row) => (
+        <button
+          type="button"
+          onClick={() => openSeller(row.sellerCode, 'cartera')}
+          title={`Ver el cumplimiento de ${row.sellerName}`}
+          className="inline-flex transition-colors hover:opacity-80"
+        >
+          <PctPill pct={row.projectedAttainmentPct ?? row.attainmentPct} emptyLabel="—" />
+        </button>
+      ),
     },
     {
       key: 'proyeccion',
@@ -312,7 +420,14 @@ export function SellerReport({
       help: SELLER_COLUMN_HELP.proyeccion,
       sortValue: (row) => row.projectedKg ?? -1,
       render: (row) => (
-        <span className="tabular-nums text-on-surface">{row.projectedKg === null ? '—' : fmtKg(row.projectedKg)}</span>
+        <button
+          type="button"
+          onClick={() => openSeller(row.sellerCode, 'cartera')}
+          title={`Ver la proyección de ${row.sellerName}`}
+          className="tabular-nums text-on-surface transition-colors hover:underline"
+        >
+          {row.projectedKg === null ? '—' : fmtKg(row.projectedKg)}
+        </button>
       ),
     },
     {
@@ -326,26 +441,20 @@ export function SellerReport({
         const gap = row.gapKg;
         if (gap === null) return <span className="text-outline">—</span>;
         return (
-          <span className={cx('tabular-nums font-semibold', gap < 0 ? 'text-critical' : 'text-success')}>
+          <button
+            type="button"
+            onClick={() => openSeller(row.sellerCode, 'cartera')}
+            title={`Ver la brecha de ${row.sellerName}`}
+            className={cx(
+              'tabular-nums font-semibold transition-colors hover:underline',
+              gap < 0 ? 'text-critical' : 'text-success',
+            )}
+          >
             {gap > 0 ? '+' : ''}
             {fmtKg(gap)} kg
-          </span>
+          </button>
         );
       },
-    },
-    {
-      key: 'plan',
-      header: 'Plan cierre',
-      align: 'right',
-      kind: 'detail',
-      help: SELLER_COLUMN_HELP.plan,
-      sortValue: (row) => row.closingPlanKg,
-      render: (row) =>
-        row.closingPlanKg > 0 ? (
-          <span className="tabular-nums font-semibold text-secondary">+{fmtKg(row.closingPlanKg)} kg</span>
-        ) : (
-          <span className="text-outline">—</span>
-        ),
     },
     {
       key: 'reparto',
@@ -355,22 +464,14 @@ export function SellerReport({
       help: SELLER_COLUMN_HELP.reparto,
       sortValue: (row) => row.currentSharePct ?? -1,
       render: (row) => (
-        <span className="tabular-nums text-on-surface-variant">
+        <button
+          type="button"
+          onClick={() => openSeller(row.sellerCode, 'facturado')}
+          title={`Ver el reparto de ${row.sellerName}`}
+          className="tabular-nums text-on-surface-variant transition-colors hover:underline"
+        >
           {row.currentSharePct === null ? '—' : fmtPct(row.currentSharePct)}
-        </span>
-      ),
-    },
-    {
-      key: 'ritmo',
-      header: 'Ritmo nec.',
-      align: 'right',
-      kind: 'detail',
-      help: SELLER_COLUMN_HELP.ritmo,
-      sortValue: (row) => row.requiredDailyKg ?? -1,
-      render: (row) => (
-        <span className="tabular-nums text-on-surface-variant">
-          {row.requiredDailyKg === null ? '—' : `${fmtKg(row.requiredDailyKg)} kg/día`}
-        </span>
+        </button>
       ),
     },
     {
@@ -379,7 +480,16 @@ export function SellerReport({
       kind: 'detail',
       help: SELLER_COLUMN_HELP.ultimaNota,
       sortValue: (row) => row.lastInvoiceDate ?? '',
-      render: (row) => <span className="text-label-md text-on-surface-variant">{fmtDate(row.lastInvoiceDate)}</span>,
+      render: (row) => (
+        <button
+          type="button"
+          onClick={() => openSeller(row.sellerCode, 'facturado')}
+          title={`Ver la última nota de ${row.sellerName}`}
+          className="text-label-md text-on-surface-variant transition-colors hover:text-primary"
+        >
+          {fmtDate(row.lastInvoiceDate)}
+        </button>
+      ),
     },
   ];
 
@@ -450,7 +560,7 @@ export function SellerReport({
                 )}
               </span>
               <span className="rounded-pill bg-white/10 px-space-sm py-1 text-label-sm font-semibold normal-case tracking-normal text-white/75">
-                {report.attribution === 'PORTFOLIO' ? 'Cartera Profit' : 'Nota de entrega'}
+                {report.attribution === 'PORTFOLIO' ? 'Cuota sobre cartera' : 'Cuota sobre facturado'}
               </span>
               <span className="text-label-md text-white/65">
                 Corte {report.asOf ? dayLabel(report.asOf) : 'sin ventas'} · {report.days.workingElapsed}/
@@ -458,11 +568,8 @@ export function SellerReport({
               </span>
               <span className="text-label-md text-white/45">·</span>
               <span className="text-label-md text-white/65">
-                {fmtKg(totals.sellerCount, 0)} vendedores ·{' '}
-                {report.attribution === 'PORTFOLIO'
-                  ? `${fmtKg(totals.assignedClientCount, 0)} en cartera`
-                  : `${fmtKg(totals.clientCount, 0)} clientes`}{' '}
-                · {fmtKg(totals.activeClientCount, 0)} con venta este mes
+                {fmtKg(totals.sellerCount, 0)} vendedores · {fmtKg(totals.assignedClientCount, 0)} en cartera ·{' '}
+                {fmtKg(totals.activeClientCount, 0)} con venta este mes
               </span>
               <span className="text-label-md text-white/45">·</span>
               <span className="text-label-md text-white/65">
@@ -490,31 +597,37 @@ export function SellerReport({
             </div>
 
             <div className="grid grid-cols-2 gap-space-sm sm:grid-cols-4">
-              <HeroStat label="Venta acumulada" value={`${fmtKg(totals.actualKg)} kg`} hint={`${fmtTonnes(totals.actualKg)} t`} />
+              <HeroStat
+                label="Facturado por la red"
+                value={`${fmtKg(totals.billing?.facturadoKg ?? 0)} kg`}
+                hint={`${fmtKg(totals.billing?.facturadoClients ?? totals.activeClientCount, 0)} clientes`}
+              />
+              <HeroStat
+                label="Cartera de la red"
+                value={`${fmtKg(totals.billing?.carteraKg ?? 0)} kg`}
+                hint={`${fmtKg(totals.assignedClientCount, 0)} clientes`}
+              />
+              <HeroStat
+                label="Facturado por otros"
+                value={`${fmtKg(totals.billing?.carteraByOthersExternalKg ?? 0)} kg`}
+                hint={
+                  pctOfTotal(
+                    totals.billing?.carteraByOthersExternalKg ?? 0,
+                    totals.billing?.carteraKg ?? 0,
+                  ) !== null
+                    ? `${fmtPct(
+                        pctOfTotal(
+                          totals.billing?.carteraByOthersExternalKg ?? 0,
+                          totals.billing?.carteraKg ?? 0,
+                        ) ?? 0,
+                      )} de la cartera`
+                    : 'sin fuga'
+                }
+              />
               <HeroStat
                 label="Forecast"
                 value={totals.forecastKg > 0 ? `${fmtKg(totals.forecastKg)} kg` : 'Sin meta'}
                 hint={totals.forecastKg > 0 ? `${fmtTonnes(totals.forecastKg)} t` : 'no hay meta repartible'}
-              />
-              <HeroStat
-                label="Brecha"
-                value={gapKg === null ? '—' : `${gapKg > 0 ? '+' : ''}${fmtKg(gapKg)} kg`}
-                hint={gapKg === null ? 'depende de la meta' : gapKg >= 0 ? 'por encima del forecast' : 'por debajo del forecast'}
-              />
-              <HeroStat
-                label={isOpen ? 'Ritmo necesario' : 'Entregas'}
-                value={
-                  isOpen
-                    ? totals.requiredDailyKg === null
-                      ? '—'
-                      : `${fmtKg(totals.requiredDailyKg)} kg/día`
-                    : fmtKg(totals.invoiceCount, 0)
-                }
-                hint={
-                  isOpen
-                    ? `${report.days.workingRemaining} días hábiles restantes`
-                    : `última ${totals.lastInvoiceDate ? dayLabel(totals.lastInvoiceDate) : '—'}`
-                }
               />
             </div>
           </div>
@@ -555,7 +668,7 @@ export function SellerReport({
                 </span>
               )}
             </div>
-            <ShareStrip slices={slices} onSelect={openSeller} />
+            <ShareStrip slices={slices} onSelect={(code) => openSeller(code, 'facturado')} />
           </div>
         )}
       </section>
@@ -764,30 +877,29 @@ export function SellerReport({
 
           <div className="px-space-md pb-space-md pt-space-sm">
             <PerformanceList
-              items={filtered.map((seller, index) => ({
-                key: seller.sellerCode || seller.sellerName,
-                name: seller.sellerName,
-                rank: index + 1,
-                badge: seller.isInternal ? <Badge tone="muted">Interna</Badge> : undefined,
-                metaLine: `Cuota ${
-                  seller.quotaPct === null ? '—' : fmtPct(seller.quotaPct)
-                } · ${
-                  report.attribution === 'PORTFOLIO'
-                    ? `${fmtKg(seller.assignedClientCount, 0)} en cartera`
-                    : `${fmtKg(seller.clientCount, 0)} clientes`
-                } · ${fmtKg(seller.activeClientCount, 0)} con venta · ${
-                  seller.currentSharePct === null ? '—' : fmtPct(seller.currentSharePct)
-                } del mes`,
-                targetKg: seller.targetKg,
-                actualKg: seller.actualKg,
-                noteKg: seller.executedKg,
-                projectedKg: seller.projectedKg,
-                gapKg: seller.gapKg,
-                pct: seller.projectedAttainmentPct ?? seller.attainmentPct,
-                planKg: seller.closingPlanKg,
-                onSelect: () => openSeller(seller.sellerCode),
-                selectTitle: `Abrir el expediente de ${seller.sellerName}`,
-              }))}
+              items={filtered.map((seller, index) => {
+                const billing = sellerBilling(seller);
+                return {
+                  key: seller.sellerCode || seller.sellerName,
+                  name: seller.sellerName,
+                  rank: index + 1,
+                  badge: seller.isInternal ? <Badge tone="muted">Interna</Badge> : undefined,
+                  metaLine: `Cuota ${
+                    seller.quotaPct === null ? '—' : fmtPct(seller.quotaPct)
+                  } · ${fmtKg(seller.assignedClientCount, 0)} en cartera · Facturado ${fmtKg(
+                    billing.facturadoKg,
+                  )} kg · Por otros ${fmtKg(billing.carteraByOthersKg)} kg`,
+                  targetKg: seller.targetKg,
+                  actualKg: seller.actualKg,
+                  noteKg: seller.actualKg,
+                  projectedKg: seller.projectedKg,
+                  gapKg: seller.gapKg,
+                  pct: seller.projectedAttainmentPct ?? seller.attainmentPct,
+                  planKg: seller.closingPlanKg,
+                  onSelect: () => openSeller(seller.sellerCode, 'cartera'),
+                  selectTitle: `Abrir el expediente de ${seller.sellerName}`,
+                };
+              })}
               showProjection={isOpen}
               empty={
                 <EmptyState
@@ -806,9 +918,16 @@ export function SellerReport({
         <div className="flex flex-wrap items-center justify-between gap-space-md border-b border-surface-container px-space-md py-space-sm">
           <div className="flex flex-wrap items-center gap-space-sm text-label-md text-on-surface-variant">
             <span>
-              <strong className="tabular-nums text-on-surface">{fmtKg(report.sellers.length, 0)}</strong> vendedores · Σ meta{' '}
-              <strong className="tabular-nums text-on-surface">{fmtKg(totals.forecastKg)} kg</strong> · Σ venta{' '}
-              <strong className="tabular-nums text-on-surface">{fmtKg(totals.actualKg)} kg</strong>
+              <strong className="tabular-nums text-on-surface">{fmtKg(report.sellers.length, 0)}</strong>{' '}
+              vendedores · Σ facturado{' '}
+              <strong className="tabular-nums text-on-surface">
+                {fmtKg(totals.billing?.facturadoKg ?? 0)} kg
+              </strong>{' '}
+              · Σ cartera{' '}
+              <strong className="tabular-nums text-on-surface">
+                {fmtKg(totals.billing?.carteraKg ?? 0)} kg
+              </strong>{' '}
+              · Σ meta <strong className="tabular-nums text-on-surface">{fmtKg(totals.forecastKg)} kg</strong>
             </span>
             <span className="hidden text-outline md:inline">
               La cuota de cada uno se calcula con su participación histórica.
@@ -835,20 +954,22 @@ export function SellerReport({
             </button>
             <ModuleHelp
               title={SELLERS_HELP_TITLE}
-              narrative="La venta se atribuye a la cartera asignada en Profit (o a la nota de entrega, según el criterio). La meta de la empresa se reparte por participación histórica y cada vendedor reparte la suya entre sus clientes."
+              narrative="El informe muestra dos libros: lo que facturó cada vendedor (nota de entrega) y lo que compró su cartera asignada en Profit. La base elegida en «Cuota sobre» solo decide cómo se reparte la meta."
               rules={SELLERS_HELP_RULES}
               terms={SELLERS_HELP_TERMS}
             />
           </div>
         </div>
         <p className="hidden items-center gap-1 px-space-md pb-space-2xs text-label-sm text-outline md:flex">
-          Doble clic en un vendedor para ver sus clientes y sus ventas.
+          Clic en un vendedor para abrir su expediente; clic en «Por otros» para ver la fuga de su cartera.
         </p>
         <DataTable
           columns={columns}
           rows={filtered}
           rowKey={(row) => row.sellerCode || row.sellerName}
-          onRowDoubleClick={(row) => openSellerClients(row.sellerCode)}
+          onRowClick={(row) => openSeller(row.sellerCode)}
+          defaultSortKey="facturado"
+          defaultSortDir="desc"
           showHelpRow={helpRow}
           empty={
             <EmptyState
@@ -867,15 +988,15 @@ export function SellerReport({
                 : 'Sin meta: no hay cuota que repartir.'}
           </span>
           <span>
-            Σ cuotas = 100 % · Σ metas = meta de la empresa · fuente:{' '}
-            {report.attribution === 'PORTFOLIO' ? 'cartera Profit (clientes.co_ven)' : 'notas de entrega ABA'}
+            Σ cuotas = 100 % · Σ metas = meta de la empresa · base:{' '}
+            {report.attribution === 'PORTFOLIO' ? 'cartera Profit (clientes.co_ven)' : 'notas firmadas (not_ent.co_ven)'}
           </span>
         </div>
       </Card>
 
       {focusSeller && (
         <SellerDetailDrawer
-          key={`${focusSeller.sellerCode}-${focus?.salesOnly ? 'venta' : 'todo'}`}
+          key={`${focusSeller.sellerCode}-${focus?.tab ?? 'cartera'}`}
           seller={focusSeller}
           report={report}
           onClose={closeSeller}
@@ -883,8 +1004,7 @@ export function SellerReport({
           onHistoryMonthsChange={onHistoryMonthsChange}
           includeToday={includeToday}
           canManageQuotas={canManageQuotas}
-          initialTab={report.attribution === 'NOTE' && focus?.salesOnly ? 'nota' : 'cartera'}
-          initialSalesFilter={focus?.salesOnly ? 'with' : 'all'}
+          initialTab={focus?.tab ?? 'cartera'}
         />
       )}
     </>

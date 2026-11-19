@@ -33,6 +33,16 @@ export interface ListUsersQuery {
   active?: 'true' | 'false';
 }
 
+// Catálogo de vendedores de Profit para vincular un usuario con su cartera.
+// Solo lectura y acotado: la tabla tiene decenas de filas.
+const PROFIT_SELLER_CATALOG_SQL = `
+SELECT /* nexo:seller_catalog */
+  RTRIM(ISNULL(co_ven, '')) AS code,
+  RTRIM(ISNULL(ven_des, '')) AS name
+FROM dbo.vendedor
+WHERE LTRIM(RTRIM(ISNULL(co_ven, ''))) <> ''
+`;
+
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
@@ -180,7 +190,7 @@ export class UsersService {
   /** Rol y acceso. Los cambios quedan auditados con el usuario que los hizo. */
   async update(
     id: string,
-    data: { role?: string; isActive?: boolean },
+    data: { role?: string; isActive?: boolean; sellerCode?: string | null },
     actor?: { id?: string },
   ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
@@ -191,6 +201,8 @@ export class UsersService {
     if (role && !(await this.permissionService.roleExists(role))) {
       throw new NotFoundException(`El rol ${role} no existe`);
     }
+    const sellerCode =
+      data.sellerCode === undefined ? undefined : data.sellerCode?.trim().toUpperCase() || null;
     // El administrador declarado por entorno no se puede degradar ni bloquear
     // desde la aplicación: si no, se podría dejar el sistema sin ADMIN.
     const isProtectedAdmin = this.adminCodes().has(user.profitCode.toUpperCase());
@@ -204,6 +216,7 @@ export class UsersService {
       data: {
         ...(role !== undefined ? { role } : {}),
         ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+        ...(sellerCode !== undefined ? { sellerCode } : {}),
       },
     });
     await this.audit.record({
@@ -216,9 +229,25 @@ export class UsersService {
         previousRole: user.role,
         role: role ?? null,
         isActive: data.isActive ?? null,
+        previousSellerCode: user.sellerCode ?? null,
+        sellerCode: sellerCode === undefined ? (user.sellerCode ?? null) : sellerCode,
       },
     });
     return updated;
+  }
+
+  /** Vendedores de Profit (`vendedor.co_ven`) para vincularlos a un usuario. */
+  async listSellers(): Promise<Array<{ code: string; name: string }>> {
+    const rows = await this.profit.selectQuery(PROFIT_SELLER_CATALOG_SQL, 500);
+    const seen = new Map<string, string>();
+    for (const raw of rows) {
+      const code = raw.code === null || raw.code === undefined ? '' : String(raw.code).trim();
+      const name = raw.name === null || raw.name === undefined ? '' : String(raw.name).trim();
+      if (code && !seen.has(code)) seen.set(code, name || code);
+    }
+    return [...seen.entries()]
+      .map(([code, name]) => ({ code, name }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'es'));
   }
 
   /**

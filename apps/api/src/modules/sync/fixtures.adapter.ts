@@ -1733,6 +1733,10 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     if (lower.includes('nexo:customer_products')) return customerProductSales(params, limit);
     // Meta por cliente: kg por cliente y mes de los 3 meses cerrados.
     if (lower.includes('nexo:customer_sales_monthly')) return customerSalesMonthly(params, limit);
+    // Catálogo de vendedores para vincular usuarios (Usuarios → Vendedor).
+    if (lower.includes('nexo:seller_catalog')) {
+      return FIXTURE_SELLERS.slice(0, limit).map((seller) => ({ code: seller.code, name: seller.name }));
+    }
     // Vendedor vs Forecast: se detecta por el marcador del SELECT y va antes
     // del bloque genérico de `reng_nde`.
     if (lower.includes('nexo:seller_name')) return sellerNameFixture(params, limit);

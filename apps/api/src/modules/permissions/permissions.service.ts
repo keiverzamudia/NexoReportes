@@ -31,6 +31,8 @@ export interface EffectiveAccess {
   /** Plantilla histórica: semántica fina de Despacho. */
   baseRole: Role;
   isAdmin: boolean;
+  /** Código de vendedor de Profit vinculado al usuario (null = sin vínculo). */
+  sellerCode: string | null;
   /** Claves planas «modulo:accion». */
   permissions: string[];
 }
@@ -105,6 +107,8 @@ export class PermissionsService implements OnModuleInit {
     // resucitar permisos que un administrador haya quitado a mano.
     await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'llegadas');
     await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'vendedor');
+    // Producción nace con lectura para todos y costos para gerencia/planificador.
+    await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'produccion');
     // Cuentas por cobrar nace como module de solo lectura para GERENCIA.
     await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'cxc');
     // Permiso especial de cuotas: ADMIN lo recibe por sistema al arrancar.
@@ -121,6 +125,41 @@ export class PermissionsService implements OnModuleInit {
     // a partir de ahí el administrador decide y una revocación no se resucita
     // en el siguiente arranque.
     await this.seedPedidosViews();
+
+    // «Ver todos los vendedores» nace concedido a quien ya veía el reporte
+    // completo: así la actualización no restringe a nadie de golpe. El
+    // administrador puede quitarlo por rol o por excepción de usuario.
+    await this.seedVendedorViewAll();
+  }
+
+  private async seedVendedorViewAll(): Promise<void> {
+    const markerKey = 'rbac.seed.vendedor_view_all.v1';
+    const marker = await this.prisma.systemSetting.findUnique({ where: { key: markerKey } });
+    if (marker) return;
+
+    const readers = await this.prisma.rolePermission.findMany({
+      where: { module: 'vendedor', action: 'read' },
+      select: { roleCode: true },
+    });
+    for (const { roleCode } of readers) {
+      await this.prisma.rolePermission.upsert({
+        where: {
+          roleCode_module_action: { roleCode, module: 'vendedor', action: 'view_all' },
+        },
+        update: {},
+        create: { roleCode, module: 'vendedor', action: 'view_all' },
+      });
+    }
+
+    await this.prisma.systemSetting.upsert({
+      where: { key: markerKey },
+      update: {},
+      create: {
+        key: markerKey,
+        value: new Date().toISOString(),
+        description: 'Siembra inicial del permiso «Ver todos los vendedores».',
+      },
+    });
   }
 
   private async seedPedidosViews(): Promise<void> {
@@ -302,6 +341,7 @@ export class PermissionsService implements OnModuleInit {
       roleName,
       baseRole,
       isAdmin,
+      sellerCode: user.sellerCode ?? null,
       permissions: permissions.sort(),
     };
   }
