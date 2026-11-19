@@ -33,6 +33,11 @@ export const PERMISSION_ACTIONS = [
   'view_summary',
   'view_history',
   'view_removals',
+  // Producción: acciones propias del módulo.
+  'optimize',
+  'view_costs',
+  'export',
+  'nutrition',
 ] as const;
 export const zPermissionAction = z.enum(PERMISSION_ACTIONS);
 export type PermissionAction = z.infer<typeof zPermissionAction>;
@@ -43,11 +48,19 @@ export interface ModuleActionDefinition {
   label: string;
 }
 
+/** Grupos de la matriz de permisos (solo presentación en la UI). */
+export const MODULE_GROUPS = ['Comercial', 'Operación', 'Administración'] as const;
+export type ModuleGroup = (typeof MODULE_GROUPS)[number];
+
 export interface AppModuleDefinition {
   key: string;
   label: string;
   /** Ruta del menú; null = sin pantalla propia (solo API/botón global). */
   href: string | null;
+  /** Grupo de la matriz: agrupa los módulos por área de trabajo. */
+  group: ModuleGroup;
+  /** Una línea que explica para qué sirve el módulo en la matriz. */
+  description: string;
   actions: ModuleActionDefinition[];
 }
 
@@ -57,28 +70,57 @@ export const APP_MODULES: AppModuleDefinition[] = [
     key: 'cxc',
     label: 'Cuentas por cobrar',
     href: '/por-cobrar',
+    group: 'Comercial',
+    description: 'Cartera vencida, cobranza y riesgo por cliente.',
     actions: [{ action: 'read', label: 'Ver' }],
   },
   {
     key: 'disponibilidad',
     label: 'Disponibilidad',
     href: '/disponibilidad',
+    group: 'Operación',
+    description: 'Existencias contra pedidos: qué se puede despachar y qué falta producir.',
     actions: [{ action: 'read', label: 'Ver' }],
   },
   {
     key: 'forecast',
     label: 'Forecast',
     href: '/forecast',
+    group: 'Operación',
+    description: 'Pronóstico de producción por artículo y reparto semanal.',
     actions: [
       { action: 'read', label: 'Ver' },
       { action: 'update', label: 'Editar semanas' },
     ],
   },
   {
+    key: 'produccion',
+    label: 'Producción',
+    href: '/produccion',
+    group: 'Operación',
+    description: 'Plan de producción, explosión de materiales, costos y nutrición.',
+    actions: [
+      { action: 'read', label: 'Ver plan y explosión' },
+      { action: 'update', label: 'Ajustar plan, reglas y escenarios' },
+      { action: 'optimize', label: 'Optimizar fórmulas y producción' },
+      { action: 'view_costs', label: 'Ver costos y márgenes' },
+      { action: 'export', label: 'Exportar plan, explosión y compras' },
+      { action: 'nutrition', label: 'Editar nutrición y especificaciones' },
+    ],
+  },
+  {
     key: 'vendedor',
     label: 'Vendedor',
     href: '/vendedor',
-    actions: [{ action: 'read', label: 'Ver' }],
+    group: 'Comercial',
+    description: 'Reporte por vendedor: facturación, cartera, clientes y cuota.',
+    actions: [
+      // Sin «Ver todos» el usuario queda limitado a su propio código de
+      // vendedor (se asigna en Usuarios). Es el permiso que separa «solo mi
+      // data» de «la fuerza de ventas completa».
+      { action: 'read', label: 'Entrar al reporte del vendedor' },
+      { action: 'view_all', label: 'Ver todos los vendedores' },
+    ],
   },
   {
     // Permiso especial, asignable por rol o excepción de usuario. No tiene
@@ -86,12 +128,16 @@ export const APP_MODULES: AppModuleDefinition[] = [
     key: 'vendedor_cuotas',
     label: 'Cuotas de vendedores',
     href: null,
+    group: 'Comercial',
+    description: 'Cuotas de reactivación y clientes nuevos por vendedor.',
     actions: [{ action: 'update', label: 'Fijar cuotas de reactivación y clientes nuevos' }],
   },
   {
     key: 'pedidos',
     label: 'Pedidos',
     href: '/pedidos',
+    group: 'Comercial',
+    description: 'Simulador de pedidos, ventas e historial.',
     actions: [
       { action: 'read', label: 'Ver simulador' },
       { action: 'create', label: 'Guardar simulación' },
@@ -109,12 +155,16 @@ export const APP_MODULES: AppModuleDefinition[] = [
     key: 'clientes',
     label: 'Clientes',
     href: '/clientes',
+    group: 'Comercial',
+    description: 'Padrón de clientes, ventas y ficha 360.',
     actions: [{ action: 'read', label: 'Ver' }],
   },
   {
     key: 'despacho',
     label: 'Despacho',
     href: '/despacho',
+    group: 'Operación',
+    description: 'Simulador de despacho, hojas de carga, retiros e historial.',
     actions: [
       { action: 'read', label: 'Ver' },
       { action: 'create', label: 'Armar y enviar simulación' },
@@ -132,6 +182,8 @@ export const APP_MODULES: AppModuleDefinition[] = [
     key: 'llegadas',
     label: 'Llegadas PCP',
     href: '/llegadas',
+    group: 'Operación',
+    description: 'Llegadas de clientes a planta e incidencias.',
     actions: [
       { action: 'read', label: 'Ver' },
       { action: 'create', label: 'Marcar llegada' },
@@ -143,6 +195,8 @@ export const APP_MODULES: AppModuleDefinition[] = [
     key: 'usuarios',
     label: 'Usuarios y roles',
     href: '/usuarios',
+    group: 'Administración',
+    description: 'Usuarios de Profit, roles y esta matriz de permisos.',
     actions: [
       { action: 'read', label: 'Ver' },
       { action: 'create', label: 'Crear roles' },
@@ -154,12 +208,16 @@ export const APP_MODULES: AppModuleDefinition[] = [
     key: 'auditoria',
     label: 'Auditoría (API)',
     href: null,
+    group: 'Administración',
+    description: 'Bitácora técnica de la API (solo lectura).',
     actions: [{ action: 'read', label: 'Ver' }],
   },
   {
     key: 'sincronizacion',
     label: 'Sincronización (botón global)',
     href: null,
+    group: 'Administración',
+    description: 'Botón global para sincronizar catálogos desde Profit.',
     actions: [{ action: 'update', label: 'Ejecutar' }],
   },
 ];
@@ -168,6 +226,7 @@ export type AppModuleKey =
   | 'cxc'
   | 'disponibilidad'
   | 'forecast'
+  | 'produccion'
   | 'vendedor'
   | 'vendedor_cuotas'
   | 'pedidos'
@@ -198,7 +257,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['disponibilidad', 'read'],
     ['forecast', 'read'],
     ['forecast', 'update'],
+    ['produccion', 'read'],
+    ['produccion', 'optimize'],
+    ['produccion', 'view_costs'],
+    ['produccion', 'export'],
     ['vendedor', 'read'],
+    ['vendedor', 'view_all'],
     ['pedidos', 'read'],
     ['pedidos', 'create'],
     ['pedidos', 'update'],
@@ -218,6 +282,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['disponibilidad', 'read'],
     ['forecast', 'read'],
     ['forecast', 'update'],
+    ['produccion', 'read'],
+    ['produccion', 'update'],
+    ['produccion', 'optimize'],
+    ['produccion', 'view_costs'],
+    ['produccion', 'export'],
+    ['produccion', 'nutrition'],
     ['pedidos', 'read'],
     ['pedidos', 'create'],
     ['pedidos', 'update'],
@@ -237,6 +307,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['disponibilidad', 'read'],
     ['forecast', 'read'],
     ['forecast', 'update'],
+    ['produccion', 'read'],
+    ['produccion', 'export'],
     ['pedidos', 'read'],
     ['pedidos', 'create'],
     ['pedidos', 'delete'],
@@ -250,6 +322,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
   CONSULTA: [
     ['disponibilidad', 'read'],
     ['forecast', 'read'],
+    ['produccion', 'read'],
     ['pedidos', 'read'],
     ['pedidos', 'create'],
     ['pedidos', 'delete'],
@@ -350,6 +423,9 @@ export const zUserSummary = z.object({
   // Código del rol efectivo (puede ser un rol dinámico: COMPRAS, SUPERVISOR…).
   role: zRoleCode,
   isActive: z.boolean(),
+  // Código de vendedor de Profit (`vendedor.co_ven`) cuando el usuario es una
+  // vendedora: limita los reportes a su propia cartera si no tiene `view_all`.
+  sellerCode: z.string().nullable().optional(),
   // Solo en /auth/me: nombre legible, plantilla y permisos efectivos.
   roleName: z.string().optional(),
   baseRole: zRole.optional(),
@@ -377,6 +453,9 @@ export const zUpdateUserInput = z.object({
   // Se valida contra la tabla de roles en el servicio (roles dinámicos).
   role: zRoleCode.optional(),
   isActive: z.boolean().optional(),
+  // Código de vendedor en Profit. null = sin vínculo (no se le limita a una
+  // sola cartera; solo debería pasar con usuarios que no son vendedores).
+  sellerCode: z.string().trim().max(10).nullable().optional(),
 });
 export type UpdateUserInput = z.infer<typeof zUpdateUserInput>;
 
@@ -794,7 +873,7 @@ export const zReceivablesQuery = z
     vendedor: z.string().trim().max(10).optional(),
     tipoCliente: z.string().trim().max(10).optional(),
     zona: z.string().trim().max(10).optional(),
-    segmento: z.string().trim().max(10).optional(),
+    tipoDoc: z.string().trim().max(10).optional(),
     // Rango sobre la fecha de emisión del documento.
     desde: zReceivablesDay.optional(),
     hasta: zReceivablesDay.optional(),
@@ -817,7 +896,7 @@ export const zReceivablesFilters = z.object({
   vendedor: z.string(),
   tipoCliente: z.string(),
   zona: z.string(),
-  segmento: z.string(),
+  tipoDoc: z.string(),
   desde: z.string().nullable(),
   hasta: z.string().nullable(),
   soloVencido: z.boolean(),
@@ -835,7 +914,7 @@ export const zReceivablesOptions = z.object({
   vendedores: z.array(zReceivablesOption),
   tipos: z.array(zReceivablesOption),
   zonas: z.array(zReceivablesOption),
-  segmentos: z.array(zReceivablesOption),
+  tiposDoc: z.array(zReceivablesOption),
 });
 export type ReceivablesOptions = z.infer<typeof zReceivablesOptions>;
 
@@ -3639,6 +3718,16 @@ export const zForecastSellersQuery = zForecastSalesQuery.extend({
 });
 export type ForecastSellersQuery = z.infer<typeof zForecastSellersQuery>;
 
+// Detalle contextual del expediente: notas y productos de un cliente en el
+// mes del informe. No necesita la ventana histórica (`months`), porque el
+// detalle es del mes clicado; la atribución se conserva para etiquetar.
+export const zForecastSellerDetailQuery = zForecastSalesQuery.omit({ months: true }).extend({
+  attribution: zForecastSellerAttribution.default('PORTFOLIO'),
+  // Opcional: acota las notas/productos a un artículo (drill-down de Productos).
+  productCode: z.string().trim().max(40).optional(),
+});
+export type ForecastSellerDetailQuery = z.infer<typeof zForecastSellerDetailQuery>;
+
 // Métricas de run-rate compartidas por vendedores y clientes (mismo motor que
 // el informe de ventas: corte a ayer y días hábiles lun–sáb).
 const zForecastRunRateFields = {
@@ -3671,6 +3760,35 @@ export const zForecastSellerDaily = z.object({
 });
 export type ForecastSellerDaily = z.infer<typeof zForecastSellerDaily>;
 
+// Facturación del vendedor: los dos libros del módulo.
+//
+//  · facturado: notas de entrega firmadas por el vendedor, sea o no su cliente.
+//  · cartera: venta de los clientes asignados en Profit, la firme él u otro.
+//  · carteraByOthers: parte de su cartera que facturó otro vendedor (la fuga).
+export const zForecastSellerBilling = z.object({
+  facturadoKg: z.number(),
+  /** Facturado por él a clientes de su propia cartera. */
+  facturadoOwnPortfolioKg: z.number(),
+  /** Facturado a clientes de otras carteras o sin cartera asignada. */
+  facturadoOutsideKg: z.number(),
+  carteraKg: z.number(),
+  /** Toda la cartera facturada por otros (incluye cuentas internas). */
+  carteraByOthersKg: z.number(),
+  /** Parte facturada por otros vendedores reales (la fuga accionable). */
+  carteraByOthersExternalKg: z.number(),
+  /** Parte facturada por cuentas internas de Profit (001/004). */
+  carteraByOthersInternalKg: z.number(),
+  /** % de la cartera que facturó otro (incluye internas). */
+  carteraByOthersPct: z.number().nullable(),
+  /** Clientes a los que les firmó al menos una nota en el mes. */
+  facturadoClients: z.number().int(),
+  /** Clientes de su cartera con venta de otro vendedor real. */
+  leakedClients: z.number().int(),
+  /** Clientes de su cartera con venta de una cuenta interna. */
+  internalClients: z.number().int(),
+});
+export type ForecastSellerBilling = z.infer<typeof zForecastSellerBilling>;
+
 export const zForecastSellerClientRow = z.object({
   clientCode: z.string(),
   clientName: z.string(),
@@ -3682,6 +3800,19 @@ export const zForecastSellerClientRow = z.object({
   // fila. En modo NOTE marca la cartera del cliente; en PORTFOLIO, la nota.
   otherSellerKg: z.number(),
   otherSellerNames: z.array(z.string()),
+  // Detalle de quién facturó: código, nombre y si es cuenta interna.
+  otherSellers: z
+    .array(
+      z.object({
+        code: z.string(),
+        name: z.string(),
+        internal: z.boolean(),
+      }),
+    )
+    .default([]),
+  // Kg de otros vendedores reales y de cuentas internas (suman otherSellerKg).
+  otherSellerExternalKg: z.number().default(0),
+  otherSellerInternalKg: z.number().default(0),
   // Vista Cartera: clientes asignados en Profit.
   carteraHistoricalKg: z.number(),
   carteraCurrentKg: z.number(),
@@ -3705,6 +3836,9 @@ export const zForecastSellerClientRow = z.object({
   actualKg: z.number(),
   actualUnits: z.number(),
   invoiceCount: z.number().int(),
+  // Notas del mes por cada libro (el elegido va en `invoiceCount`).
+  carteraInvoiceCount: z.number().int().default(0),
+  noteInvoiceCount: z.number().int().default(0),
   lastInvoiceDate: z.string().nullable(),
   // Cliente sin histórico que ya compró en el mes: suma venta, no tiene meta.
   isNew: z.boolean(),
@@ -3723,6 +3857,115 @@ export const zForecastSellerClientRow = z.object({
   ...zForecastRunRateFields,
 });
 export type ForecastSellerClientRow = z.infer<typeof zForecastSellerClientRow>;
+
+// ---------- Detalle contextual del cliente en el expediente ----------
+//
+// Devuelve las notas individuales del mes con los dos libros de la fila
+// (vendedor de la nota y vendedor de la cartera del cliente), más los
+// productos agregados. El frontend elige la vista (Facturado / Mi cartera /
+// Facturado por otros) y los totales cuadran con la fila clicada.
+export const zForecastSellerNoteRow = z.object({
+  number: z.string(),
+  date: z.string().nullable(),
+  kg: z.number(),
+  units: z.number(),
+  lines: z.number().int(),
+  noteSellerCode: z.string(),
+  noteSellerName: z.string(),
+  portfolioSellerCode: z.string(),
+  portfolioSellerName: z.string(),
+  noteSellerInternal: z.boolean(),
+});
+export type ForecastSellerNoteRow = z.infer<typeof zForecastSellerNoteRow>;
+
+export const zForecastSellerClientProductRow = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  kg: z.number(),
+  notes: z.number().int(),
+  ownKg: z.number(),
+  ownNotes: z.number().int(),
+  otherKg: z.number(),
+  otherNotes: z.number().int(),
+});
+export type ForecastSellerClientProductRow = z.infer<typeof zForecastSellerClientProductRow>;
+
+export const zForecastSellerClientDetailTotals = z.object({
+  allKg: z.number(),
+  allNotes: z.number().int(),
+  ownKg: z.number(),
+  ownNotes: z.number().int(),
+  otherKg: z.number(),
+  otherNotes: z.number().int(),
+  otherExternalKg: z.number(),
+  otherInternalKg: z.number(),
+  lastInvoiceDate: z.string().nullable(),
+});
+export type ForecastSellerClientDetailTotals = z.infer<typeof zForecastSellerClientDetailTotals>;
+
+export const zForecastSellerClientDetailResponse = z.object({
+  sellerCode: z.string(),
+  sellerName: z.string(),
+  clientCode: z.string(),
+  clientName: z.string(),
+  year: z.number().int(),
+  month: z.number().int(),
+  basis: zForecastSalesBasis,
+  includeToday: z.boolean(),
+  attribution: zForecastSellerAttribution,
+  productCode: z.string().nullable(),
+  notes: z.array(zForecastSellerNoteRow),
+  products: z.array(zForecastSellerClientProductRow),
+  // false = no se pudieron leer los productos; las notas siguen siendo válidas.
+  productsAvailable: z.boolean(),
+  totals: zForecastSellerClientDetailTotals,
+  available: z.boolean(),
+  source: z.enum(['profit', 'fixtures']),
+});
+export type ForecastSellerClientDetailResponse = z.infer<typeof zForecastSellerClientDetailResponse>;
+
+export const zForecastSellerProductClientRow = z.object({
+  clientCode: z.string(),
+  clientName: z.string(),
+  customerType: z.string().nullable(),
+  carteraKg: z.number(),
+  ownKg: z.number(),
+  otherKg: z.number(),
+  otherExternalKg: z.number(),
+  otherInternalKg: z.number(),
+  carteraNotes: z.number().int(),
+  ownNotes: z.number().int(),
+  lastInvoiceDate: z.string().nullable(),
+});
+export type ForecastSellerProductClientRow = z.infer<typeof zForecastSellerProductClientRow>;
+
+export const zForecastSellerProductClientsResponse = z.object({
+  sellerCode: z.string(),
+  sellerName: z.string(),
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  year: z.number().int(),
+  month: z.number().int(),
+  basis: zForecastSalesBasis,
+  includeToday: z.boolean(),
+  attribution: zForecastSellerAttribution,
+  clients: z.array(zForecastSellerProductClientRow),
+  totals: z.object({
+    carteraKg: z.number(),
+    ownKg: z.number(),
+    otherKg: z.number(),
+    carteraNotes: z.number().int(),
+    ownNotes: z.number().int(),
+    clientCount: z.number().int(),
+    noteClientCount: z.number().int(),
+    lastInvoiceDate: z.string().nullable(),
+  }),
+  available: z.boolean(),
+  source: z.enum(['profit', 'fixtures']),
+});
+export type ForecastSellerProductClientsResponse = z.infer<typeof zForecastSellerProductClientsResponse>;
 
 // Cobranza del mes del vendedor (solo lectura, Profit).
 // El % se pondera por monto en USD: no basta con contar facturas, porque una
@@ -3775,9 +4018,14 @@ export const zForecastSellerRow = z.object({
   noteCurrentKg: z.number(),
   noteQuotaPct: z.number().nullable(),
   noteTargetKg: z.number(),
+  // Los dos libros del módulo: facturado por él y cartera asignada.
+  billing: zForecastSellerBilling,
   carteraHistory: z.array(zForecastSellerHistory),
   noteHistory: z.array(zForecastSellerHistory),
-  // Clientes de la lista según el criterio elegido.
+  // Fuga histórica: cartera de la ventana facturada por otros (incluye internas).
+  carteraByOthersHistory: z.array(zForecastSellerHistory).default([]),
+  // Clientes de la unión: su cartera asignada + los clientes a los que les
+  // firmó una nota (pueden estar asignados a otro vendedor).
   clientCount: z.number().int(),
   // Clientes activos asignados en la cartera de Profit (aunque no compren).
   assignedClientCount: z.number().int(),
@@ -3825,6 +4073,11 @@ export const zForecastSellersResponse = z.object({
   year: z.number().int(),
   month: z.number().int(),
   asOf: z.string().nullable(),
+  // Alcance del informe para la sesión actual. «OWN» = el usuario solo ve su
+  // propia cartera (sin `vendedor:view_all`); «UNASSIGNED» = no tiene código
+  // de vendedor asignado y no puede ver datos de nadie.
+  scope: z.enum(['ALL', 'OWN', 'UNASSIGNED']).default('ALL'),
+  scopeSellerCode: z.string().nullable().default(null),
   basis: zForecastSalesBasis,
   status: zForecastSalesStatus,
   // false = Profit no respondió: la UI avisa, no muestra ceros como ventas.
@@ -3864,7 +4117,7 @@ export const zForecastSellersResponse = z.object({
     invoiceCount: z.number().int(),
     lastInvoiceDate: z.string().nullable(),
     sellerCount: z.number().int(),
-    // Clientes de la lista según el criterio elegido.
+    // Clientes de la unión (cartera + firmados) y desglose de la cartera.
     clientCount: z.number().int(),
     // Cartera activa completa de Profit.
     assignedClientCount: z.number().int(),
@@ -3872,6 +4125,10 @@ export const zForecastSellersResponse = z.object({
     windowClientCount: z.number().int(),
     // Clientes con venta en el mes del informe.
     activeClientCount: z.number().int(),
+    // Totales de los dos libros y de la fuga de cartera.
+    billing: zForecastSellerBilling,
+    // Fuga histórica de la red (Σ de los vendedores).
+    carteraByOthersHistory: z.array(zForecastSellerHistory).default([]),
   }),
   // Serie de la red completa (misma forma que el informe de ventas).
   daily: z.array(zForecastSalesDaily),
@@ -4085,6 +4342,7 @@ export const AUDIT_MODULES = [
   { key: 'sync', label: 'Sincronización' },
   { key: 'scenarios', label: 'Simulador' },
   { key: 'forecast', label: 'Forecast' },
+  { key: 'production', label: 'Producción' },
   { key: 'orders', label: 'Pedidos' },
   { key: 'system', label: 'Sistema' },
 ] as const;
@@ -4156,6 +4414,36 @@ export const AUDIT_ACTIONS: Record<string, AuditActionDefinition> = {
     label: 'Fijó cuotas de activación de un vendedor',
     severity: 'WARN',
   },
+  PRODUCTION_FORMULA_PREFERENCE_SET: {
+    module: 'production',
+    label: 'Cambió la cédula principal de un producto',
+    severity: 'INFO',
+  },
+  PRODUCTION_PACKAGING_SET: {
+    module: 'production',
+    label: 'Configuró el empaque de un producto',
+    severity: 'INFO',
+  },
+  PRODUCTION_NUTRITION_UPDATE: {
+    module: 'production',
+    label: 'Actualizó la nutrición de un ingrediente',
+    severity: 'INFO',
+  },
+  PRODUCTION_SPEC_UPDATE: {
+    module: 'production',
+    label: 'Actualizó la especificación nutricional de un producto',
+    severity: 'INFO',
+  },
+  PRODUCTION_SCENARIO_CREATE: {
+    module: 'production',
+    label: 'Guardó un escenario de producción',
+    severity: 'INFO',
+  },
+  PRODUCTION_SCENARIO_DELETE: {
+    module: 'production',
+    label: 'Eliminó un escenario de producción',
+    severity: 'WARN',
+  },
   DELIVERY_DATE_SET: { module: 'orders', label: 'Asignó fecha tentativa a pedidos', severity: 'INFO' },
   DELIVERY_DATE_RESTORE: { module: 'orders', label: 'Restauró la fecha tentativa', severity: 'INFO' },
   PROFIT_DELIVERY_DATE_SET: {
@@ -4177,6 +4465,7 @@ const ACTION_PREFIX_MODULE: Array<[string, AuditModuleKey]> = [
   ['SYNC', 'sync'],
   ['SCENARIO', 'scenarios'],
   ['FORECAST', 'forecast'],
+  ['PRODUCTION', 'production'],
   ['DELIVERY', 'orders'],
   ['ORDER', 'orders'],
 ];
@@ -4309,3 +4598,524 @@ export const zDbMirrorRestoreResult = z.object({
   durationMs: z.number().int(),
 });
 export type DbMirrorRestoreResult = z.infer<typeof zDbMirrorRestoreResult>;
+
+// ============================================================
+// Producción — plan semanal, explosión de materiales, fórmulas,
+// nutrición y escenarios.
+//
+// Profit sigue siendo la fuente de cédulas, componentes, costos y stock.
+// Nexo agrega la demanda (forecast + pedidos + vendido), el stock de
+// seguridad, la explosión y la comparación de recetas. Nunca escribe en
+// Profit desde este módulo.
+// ============================================================
+
+export const zProductionPolicy = z.enum(['MAX', 'FORECAST', 'ORDERS', 'SUM']);
+export type ProductionPolicy = z.infer<typeof zProductionPolicy>;
+
+export const zProductionCostBasis = z.enum(['LAST', 'AVG']);
+export type ProductionCostBasis = z.infer<typeof zProductionCostBasis>;
+
+export const zProductionCurrency = z.enum(['BS', 'USD']);
+export type ProductionCurrency = z.infer<typeof zProductionCurrency>;
+
+export const zProductionCurrencyQuery = z.object({
+  currency: zProductionCurrency.default('USD'),
+});
+export type ProductionCurrencyQuery = z.infer<typeof zProductionCurrencyQuery>;
+
+// Nutrición: la cédula es opcional. Sin `formulaId` se usa la principal del
+// producto; con él, la matriz refleja la cédula elegida en la UI.
+export const zProductionNutritionQuery = zProductionCurrencyQuery.extend({
+  formulaId: z.coerce.number().int().positive().optional(),
+});
+export type ProductionNutritionQuery = z.infer<typeof zProductionNutritionQuery>;
+
+export const zProductionQuery = z.object({
+  year: zYear,
+  month: zMonth,
+  // 0 = mes completo; 1..4 = bloque semanal del Forecast.
+  week: z.coerce.number().int().min(0).max(4).default(0),
+  policy: zProductionPolicy.default('MAX'),
+  costBasis: zProductionCostBasis.default('LAST'),
+  currency: zProductionCurrency.default('USD'),
+});
+export type ProductionQuery = z.infer<typeof zProductionQuery>;
+
+export const zProductionStockWarehouse = z.object({
+  warehouseCode: z.string(),
+  qty: z.number(),
+});
+
+export const zProductionPlanStatus = z.enum([
+  'CUBIERTO',
+  'PRODUCIR',
+  'SIN_FORMULA',
+  'SIN_COSTO',
+]);
+export type ProductionPlanStatus = z.infer<typeof zProductionPlanStatus>;
+
+export const zProductionFormulaKind = z.enum(['MASTER', 'BASE', 'BATCH']);
+export type ProductionFormulaKind = z.infer<typeof zProductionFormulaKind>;
+
+export const zProductionPlanRow = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  kgPerUom: z.number().nullable(),
+  category: z.string().nullable(),
+  // Stock en la unidad de venta del artículo y su equivalente en kg.
+  stockQty: z.number(),
+  stockKg: z.number(),
+  stockByWarehouse: z.array(zProductionStockWarehouse),
+  // Demanda del bloque/mes, en kg.
+  forecastKg: z.number(),
+  soldKg: z.number(),
+  ordersKg: z.number(),
+  forecastRemainingKg: z.number(),
+  safetyKg: z.number(),
+  availableKg: z.number(),
+  demandKg: z.number(),
+  // Producción sugerida.
+  toProduceKg: z.number(),
+  toProduceSacks: z.number().nullable(),
+  formulaId: z.number().nullable(),
+  formulaName: z.string().nullable(),
+  formulaKind: zProductionFormulaKind.nullable(),
+  baseProductCode: z.string().nullable(),
+  baseProductDescription: z.string().nullable(),
+  batchKg: z.number().nullable(),
+  batches: z.number(),
+  productionKg: z.number(),
+  productionSacks: z.number().nullable(),
+  // Costos (null si el usuario no tiene produccion:view_costs o falta costo).
+  costPerKg: z.number().nullable(),
+  costPerSack: z.number().nullable(),
+  totalCost: z.number().nullable(),
+  packagingCode: z.string().nullable(),
+  packagingQty: z.number().nullable(),
+  status: zProductionPlanStatus,
+  riskDate: z.string().nullable(),
+  alerts: z.array(z.string()),
+  closed: z.boolean(),
+});
+export type ProductionPlanRow = z.infer<typeof zProductionPlanRow>;
+
+export const zProductionPlanTotals = z.object({
+  products: z.number().int(),
+  forecastKg: z.number(),
+  soldKg: z.number(),
+  ordersKg: z.number(),
+  demandKg: z.number(),
+  toProduceKg: z.number(),
+  productionKg: z.number(),
+  totalCost: z.number().nullable(),
+  missingFormula: z.number().int(),
+  shortages: z.number().int(),
+});
+export type ProductionPlanTotals = z.infer<typeof zProductionPlanTotals>;
+
+export const zProductionPlanResponse = z.object({
+  year: z.number().int(),
+  month: z.number().int(),
+  week: z.number().int(),
+  asOf: z.string().nullable(),
+  policy: zProductionPolicy,
+  costBasis: zProductionCostBasis,
+  currency: zProductionCurrency,
+  exchangeRate: z.number().nullable(),
+  available: z.boolean(),
+  rows: z.array(zProductionPlanRow),
+  totals: zProductionPlanTotals,
+  alerts: z.array(z.string()),
+});
+export type ProductionPlanResponse = z.infer<typeof zProductionPlanResponse>;
+
+export const zProductionMaterialProduct = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  qty: z.number(),
+});
+
+export const zProductionMaterialRow = z.object({
+  code: z.string(),
+  description: z.string(),
+  type: z.string(),
+  uom: z.string(),
+  requiredQty: z.number(),
+  stockQty: z.number(),
+  incomingQty: z.number(),
+  availableQty: z.number(),
+  purchaseQty: z.number(),
+  unitCost: z.number().nullable(),
+  requiredCost: z.number().nullable(),
+  purchaseCost: z.number().nullable(),
+  coverageDays: z.number().nullable(),
+  expectedDate: z.string().nullable(),
+  supplier: z.string().nullable(),
+  products: z.array(zProductionMaterialProduct),
+  alerts: z.array(z.string()),
+});
+export type ProductionMaterialRow = z.infer<typeof zProductionMaterialRow>;
+
+export const zProductionExplosionProduct = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  productionKg: z.number(),
+  productionSacks: z.number().nullable(),
+  formulaId: z.number().nullable(),
+  formulaName: z.string().nullable(),
+  baseProductCode: z.string().nullable(),
+  costPerKg: z.number().nullable(),
+  totalCost: z.number().nullable(),
+  packagingCode: z.string().nullable(),
+  packagingQty: z.number().nullable(),
+});
+export type ProductionExplosionProduct = z.infer<typeof zProductionExplosionProduct>;
+
+export const zProductionExplosionTotals = z.object({
+  materials: z.number().int(),
+  requiredCost: z.number().nullable(),
+  purchaseCost: z.number().nullable(),
+  shortages: z.number().int(),
+});
+export type ProductionExplosionTotals = z.infer<typeof zProductionExplosionTotals>;
+
+export const zProductionExplosionResponse = z.object({
+  year: z.number().int(),
+  month: z.number().int(),
+  week: z.number().int(),
+  asOf: z.string().nullable(),
+  costBasis: zProductionCostBasis,
+  currency: zProductionCurrency,
+  exchangeRate: z.number().nullable(),
+  available: z.boolean(),
+  materials: z.array(zProductionMaterialRow),
+  products: z.array(zProductionExplosionProduct),
+  totals: zProductionExplosionTotals,
+  alerts: z.array(z.string()),
+});
+export type ProductionExplosionResponse = z.infer<typeof zProductionExplosionResponse>;
+
+export const zProductionOrderRisk = z.enum(['CUBIERTO', 'BAJO', 'MEDIO', 'ALTO', 'SIN_DEMANDA']);
+export type ProductionOrderRisk = z.infer<typeof zProductionOrderRisk>;
+
+export const zProductionOrderLine = z.object({
+  // Clave estable para seleccionar/deseleccionar: pedido + artículo + renglón.
+  selectionKey: z.string(),
+  orderNumber: z.string(),
+  orderDate: z.string().nullable(),
+  requestedDate: z.string().nullable(),
+  // Fecha efectiva: tentativa local si existe; si no, la de Profit.
+  effectiveDate: z.string().nullable(),
+  customerCode: z.string().nullable(),
+  customerName: z.string().nullable(),
+  customerType: z.string().nullable(),
+  vendor: z.string().nullable(),
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  pendingQty: z.number(),
+  pendingKg: z.number(),
+  warehouseCode: z.string().nullable(),
+  authorized: z.boolean().nullable(),
+  stockKg: z.number(),
+  coverageDays: z.number().nullable(),
+  risk: zProductionOrderRisk,
+  dispatchSheetNumber: z.string().nullable(),
+});
+export type ProductionOrderLine = z.infer<typeof zProductionOrderLine>;
+
+export const zProductionOrderGroup = z.object({
+  key: z.string(),
+  code: z.string().nullable(),
+  label: z.string(),
+  ordersCount: z.number().int(),
+  linesCount: z.number().int(),
+  productsCount: z.number().int(),
+  customersCount: z.number().int(),
+  totalPendingQty: z.number(),
+  totalPendingKg: z.number(),
+  // En grupos por producto es el stock PT del artículo; en clientes va null.
+  stockKg: z.number().nullable(),
+  coverageDays: z.number().nullable(),
+  risk: zProductionOrderRisk,
+  lines: z.array(zProductionOrderLine),
+});
+export type ProductionOrderGroup = z.infer<typeof zProductionOrderGroup>;
+
+export const zProductionOrdersQuery = z.object({
+  year: zYear,
+  month: zMonth,
+  week: z.coerce.number().int().min(0).max(4).default(0),
+  by: z.enum(['producto', 'cliente']).default('producto'),
+  productCode: z.string().trim().max(30).optional(),
+  customerCode: z.string().trim().max(20).optional(),
+  onlyRisk: z
+    .enum(['true', 'false'])
+    .transform((value) => value === 'true')
+    .optional(),
+});
+export type ProductionOrdersQuery = z.infer<typeof zProductionOrdersQuery>;
+
+export const zProductionOrdersResponse = z.object({
+  year: z.number().int(),
+  month: z.number().int(),
+  week: z.number().int(),
+  by: z.enum(['producto', 'cliente']),
+  asOf: z.string(),
+  groups: z.array(zProductionOrderGroup),
+  totals: z.object({
+    orders: z.number().int(),
+    lines: z.number().int(),
+    products: z.number().int(),
+    customers: z.number().int(),
+    pendingKg: z.number(),
+    riskLines: z.number().int(),
+  }),
+  alerts: z.array(z.string()),
+});
+export type ProductionOrdersResponse = z.infer<typeof zProductionOrdersResponse>;
+
+export const zProductionSimulationOverride = z.object({
+  productCode: z.string().trim().min(1).max(30),
+  // Ajuste local de la producción y/o del tamaño de lote. No escribe en Profit.
+  productionKg: z.coerce.number().min(0).optional(),
+  batchKg: z.coerce.number().min(0).optional(),
+});
+export type ProductionSimulationOverride = z.infer<typeof zProductionSimulationOverride>;
+
+export const zProductionSimulation = zProductionQuery.extend({
+  selectedKeys: z.array(z.string()).max(5000).default([]),
+  overrides: z.array(zProductionSimulationOverride).max(500).default([]),
+});
+export type ProductionSimulation = z.infer<typeof zProductionSimulation>;
+
+export const zProductionSimulationSelection = z.object({
+  keys: z.number().int(),
+  orders: z.number().int(),
+  lines: z.number().int(),
+  products: z.number().int(),
+  customers: z.number().int(),
+  pendingKg: z.number(),
+});
+export type ProductionSimulationSelection = z.infer<typeof zProductionSimulationSelection>;
+
+export const zProductionSimulationResponse = z.object({
+  plan: zProductionPlanResponse,
+  explosion: zProductionExplosionResponse,
+  selection: zProductionSimulationSelection,
+});
+export type ProductionSimulationResponse = z.infer<typeof zProductionSimulationResponse>;
+
+export const zProductionFormulaComponent = z.object({
+  line: z.number().int(),
+  code: z.string(),
+  description: z.string(),
+  type: z.string(),
+  uom: z.string(),
+  qty: z.number(),
+  unitCost: z.number().nullable(),
+  totalCost: z.number().nullable(),
+  costSharePct: z.number().nullable(),
+  stockQty: z.number(),
+  incomingQty: z.number(),
+});
+export type ProductionFormulaComponent = z.infer<typeof zProductionFormulaComponent>;
+
+export const zProductionNutrientStatus = z.enum(['OK', 'LOW', 'HIGH', 'NO_DATA']);
+export type ProductionNutrientStatus = z.infer<typeof zProductionNutrientStatus>;
+
+export const zProductionNutrientValue = z.object({
+  code: z.string(),
+  name: z.string(),
+  unit: z.string(),
+  category: z.string(),
+  sortOrder: z.number().int(),
+  value: z.number().nullable(),
+  specMin: z.number().nullable(),
+  specMax: z.number().nullable(),
+  specTarget: z.number().nullable(),
+  status: zProductionNutrientStatus,
+});
+export type ProductionNutrientValue = z.infer<typeof zProductionNutrientValue>;
+
+export const zProductionNutrition = z.object({
+  available: z.boolean(),
+  coveragePct: z.number(),
+  nutrients: z.array(zProductionNutrientValue),
+});
+export type ProductionNutrition = z.infer<typeof zProductionNutrition>;
+
+export const zProductionFormula = z.object({
+  id: z.number().int(),
+  kind: zProductionFormulaKind,
+  name: z.string(),
+  appliesToProductCode: z.string(),
+  productCode: z.string(),
+  productDescription: z.string(),
+  baseProductCode: z.string().nullable(),
+  baseProductDescription: z.string().nullable(),
+  outputQty: z.number(),
+  outputUom: z.string(),
+  batchKg: z.number().nullable(),
+  hoursPerBatch: z.number().nullable(),
+  isStandard: z.boolean(),
+  updatedAt: z.string().nullable(),
+  components: z.array(zProductionFormulaComponent),
+  costPerKg: z.number().nullable(),
+  costPerSack: z.number().nullable(),
+  totalCost: z.number().nullable(),
+  nutrition: zProductionNutrition,
+});
+export type ProductionFormula = z.infer<typeof zProductionFormula>;
+
+export const zProductionFormulaSummary = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  kgPerUom: z.number().nullable(),
+  formulaCount: z.number().int(),
+  mainFormulaId: z.number().nullable(),
+  mainFormulaName: z.string().nullable(),
+  formulaKind: zProductionFormulaKind.nullable(),
+  baseProductCode: z.string().nullable(),
+  batchKg: z.number().nullable(),
+  costPerKg: z.number().nullable(),
+  costPerSack: z.number().nullable(),
+  isStandard: z.boolean(),
+  lastBatchAt: z.string().nullable(),
+  packagingCode: z.string().nullable(),
+  alerts: z.array(z.string()),
+});
+export type ProductionFormulaSummary = z.infer<typeof zProductionFormulaSummary>;
+
+export const zProductionFormulaListResponse = z.object({
+  rows: z.array(zProductionFormulaSummary),
+  available: z.boolean(),
+  alerts: z.array(z.string()),
+});
+export type ProductionFormulaListResponse = z.infer<typeof zProductionFormulaListResponse>;
+
+export const zProductionFormulaDetailResponse = z.object({
+  productCode: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  kgPerUom: z.number().nullable(),
+  selectedFormulaId: z.number().nullable(),
+  formulas: z.array(zProductionFormula),
+  packagingCode: z.string().nullable(),
+  packagingDescription: z.string().nullable(),
+  packagingQtyPerUnit: z.number().nullable(),
+  packagingOptions: z.array(
+    z.object({
+      code: z.string(),
+      description: z.string(),
+    }),
+  ),
+  alerts: z.array(z.string()),
+});
+export type ProductionFormulaDetailResponse = z.infer<typeof zProductionFormulaDetailResponse>;
+
+export const zProductionPackagingUpdate = z.object({
+  materialCode: z.string().trim().min(1).max(30),
+  qtyPerUnit: z.coerce.number().min(0).max(1000).default(1),
+});
+export type ProductionPackagingUpdate = z.infer<typeof zProductionPackagingUpdate>;
+
+export const zProductionNutrientDefinition = z.object({
+  code: z.string(),
+  name: z.string(),
+  unit: z.string(),
+  category: z.string(),
+  sortOrder: z.number().int(),
+});
+export type ProductionNutrientDefinition = z.infer<typeof zProductionNutrientDefinition>;
+
+export const zProductionNutritionIngredient = z.object({
+  code: z.string(),
+  description: z.string(),
+  uom: z.string(),
+  qty: z.number(),
+  kg: z.number().nullable(),
+  values: z.array(
+    z.object({
+      nutrientCode: z.string(),
+      value: z.number().nullable(),
+      basis: z.string(),
+    }),
+  ),
+});
+export type ProductionNutritionIngredient = z.infer<typeof zProductionNutritionIngredient>;
+
+export const zProductionNutritionCatalogResponse = z.object({
+  productCode: z.string(),
+  formulaId: z.number().int().nullable(),
+  formulaName: z.string().nullable(),
+  nutrients: z.array(zProductionNutrientDefinition),
+  ingredients: z.array(zProductionNutritionIngredient),
+  specs: z.array(
+    z.object({
+      nutrientCode: z.string(),
+      min: z.number().nullable(),
+      max: z.number().nullable(),
+      target: z.number().nullable(),
+    }),
+  ),
+  nutrition: zProductionNutrition,
+  available: z.boolean(),
+  alerts: z.array(z.string()),
+});
+export type ProductionNutritionCatalogResponse = z.infer<typeof zProductionNutritionCatalogResponse>;
+
+export const zProductionNutritionValueInput = z.object({
+  nutrientCode: z.string().trim().min(1).max(40),
+  value: z.coerce.number().nullable(),
+  basis: z.enum(['AS_FED', 'DRY_MATTER']).default('AS_FED'),
+});
+
+export const zProductionNutritionUpdate = z.object({
+  values: z.array(zProductionNutritionValueInput).max(100),
+});
+export type ProductionNutritionUpdate = z.infer<typeof zProductionNutritionUpdate>;
+
+export const zProductionSpecInput = z.object({
+  nutrientCode: z.string().trim().min(1).max(40),
+  min: z.coerce.number().nullable(),
+  max: z.coerce.number().nullable(),
+  target: z.coerce.number().nullable(),
+});
+
+export const zProductionSpecUpdate = z.object({
+  values: z.array(zProductionSpecInput).max(100),
+});
+export type ProductionSpecUpdate = z.infer<typeof zProductionSpecUpdate>;
+
+export const zProductionScenario = z.object({
+  id: z.string(),
+  name: z.string(),
+  year: z.number().int(),
+  month: z.number().int(),
+  week: z.number().int(),
+  policy: zProductionPolicy,
+  currency: zProductionCurrency,
+  createdAt: z.string(),
+  createdByCode: z.string().nullable(),
+  totals: z.record(z.string(), z.number().nullable()),
+});
+export type ProductionScenario = z.infer<typeof zProductionScenario>;
+
+export const zProductionScenarioCreate = z.object({
+  name: z.string().trim().min(1).max(120),
+  year: zYear,
+  month: zMonth,
+  week: z.coerce.number().int().min(0).max(4).default(0),
+  policy: zProductionPolicy.default('MAX'),
+  currency: zProductionCurrency.default('USD'),
+  payload: z.unknown(),
+});
+export type ProductionScenarioCreate = z.infer<typeof zProductionScenarioCreate>;
+
+export const zProductionFormulaPreference = z.object({
+  formulaId: z.number().int().nullable(),
+});
+export type ProductionFormulaPreference = z.infer<typeof zProductionFormulaPreference>;

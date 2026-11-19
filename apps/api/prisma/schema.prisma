@@ -32,6 +32,9 @@ model User {
   displayName String
   // Roles: ADMIN | GERENCIA | PLANIFICADOR | ALMACEN | CONSULTA (validados en contracts)
   role        String    @default("CONSULTA")
+  // Código de vendedor de Profit (`vendedor.co_ven`). Vincula al usuario con
+  // su cartera: sin el permiso `vendedor:view_all` solo ve su propia data.
+  sellerCode  String?
   isActive    Boolean   @default(true)
   lastLoginAt DateTime?
   createdAt   DateTime  @default(now())
@@ -968,4 +971,142 @@ model Notification {
   createdAt   DateTime  @default(now())
 
   @@index([recipientId, readAt, createdAt])
+}
+
+// ============================================================
+// Producción — capa local (escenarios, preferencias, nutrición).
+// Las cédulas, componentes, costos y stock se leen de Profit en vivo.
+// ============================================================
+
+model ProductionScenario {
+  id            String   @id @default(cuid())
+  name          String
+  year          Int
+  month         Int
+  week          Int      @default(0)
+  policy        String   @default("MAX")
+  currency      String   @default("USD")
+  // Foto serializada del plan/explosión (JSON string; portabilidad SQLite/Postgres).
+  payload       String
+  totalsJson    String?
+  createdById   String?
+  createdByCode String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([year, month])
+  @@index([createdAt])
+}
+
+model FormulaPreference {
+  id                String   @id @default(cuid())
+  productCode       String   @unique
+  formulaExternalId Int
+  updatedById       String?
+  updatedByCode     String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model PackagingRule {
+  id            String   @id @default(cuid())
+  productCode   String   @unique
+  materialCode  String
+  qtyPerUnit    Decimal  @default(1)
+  // HISTORY = inferida de lotes; MANUAL = configurada por el usuario.
+  source        String   @default("MANUAL")
+  updatedById   String?
+  updatedByCode String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model SafetyStockPolicy {
+  id            String   @id @default(cuid())
+  productCode   String   @unique
+  // PERCENT | DAYS | FIXED
+  method        String   @default("PERCENT")
+  value         Decimal  @default(0)
+  serviceLevel  Decimal?
+  updatedById   String?
+  updatedByCode String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Nutrient {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  unit      String
+  category  String   @default("MACRO")
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model IngredientNutrient {
+  id             String   @id @default(cuid())
+  ingredientCode String
+  nutrientCode   String
+  value          Decimal
+  // AS_FED | DRY_MATTER
+  basis          String   @default("AS_FED")
+  source         String?
+  updatedById    String?
+  updatedByCode  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([ingredientCode, nutrientCode])
+  @@index([nutrientCode])
+}
+
+model NutritionalSpec {
+  id            String   @id @default(cuid())
+  productCode   String
+  nutrientCode  String
+  minValue      Decimal?
+  maxValue      Decimal?
+  targetValue   Decimal?
+  updatedById   String?
+  updatedByCode String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([productCode, nutrientCode])
+  @@index([nutrientCode])
+}
+
+model ProductionCapacity {
+  id                String   @id @default(cuid())
+  machineCode       String
+  shiftName         String   @default("DEFAULT")
+  hoursPerDay       Decimal  @default(8)
+  daysPerWeek       Int      @default(6)
+  efficiencyPct     Decimal  @default(100)
+  changeoverMinutes Int      @default(30)
+  updatedById       String?
+  updatedByCode     String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([machineCode, shiftName])
+}
+
+model SupplierLeadTime {
+  id            String   @id @default(cuid())
+  supplierCode  String
+  materialCode  String
+  leadTimeDays  Int      @default(0)
+  moq           Decimal?
+  packSize      Decimal?
+  updatedById   String?
+  updatedByCode String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([supplierCode, materialCode])
+  @@index([materialCode])
 }

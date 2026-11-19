@@ -772,6 +772,24 @@ necesita la cartera histórica, hay que guardar snapshots.
   nota. Cubre la ventana histórica + el mes del informe en una sola consulta.
 - `nexo:seller_sales_daily`: agrupa por fecha, vendedor de cartera y vendedor
   de nota para la serie y la proyección individual.
+- `nexo:seller_client_notes`: notas individuales del cliente en el mes, con
+  vendedor de la nota y vendedor de la cartera. Usa los mismos filtros que
+  `nexo:seller_sales_monthly` (anuladas fuera, línea ABA, artículo activo,
+  rango del informe) para que los kg cuadren con la fila del expediente.
+- `nexo:seller_client_products`: productos del cliente en el mes, agrupados por
+  artículo y vendedor de la nota.
+- `nexo:seller_product_clients`: clientes que compraron un artículo en el mes,
+  con cartera, firmado por él y otros. Es el drill-down de Productos.
+
+### Detalle contextual del expediente
+
+`GET /api/forecast/sellers/:sellerCode/clients/:clientCode/detail` y
+`GET /api/forecast/sellers/:sellerCode/products/:productCode/clients` usan
+`zForecastSellerDetailQuery` y permiso `vendedor:read`. La ruta acepta
+`__sin_vendedor__` para la fila de clientes sin cartera asignada. El detalle
+del cliente devuelve las notas de los dos libros y los productos; la UI elige
+la vista (Facturado / Mi cartera / Facturado por otros). La ficha 360 completa
+sigue usando `/customers/:code/insights` y su permiso `clientes:read`.
 
 ### Reglas de negocio
 
@@ -811,3 +829,89 @@ con `attribution` y `refresh`). Permiso `vendedor:read` (el antiguo
 `SALES_DAILY` entre cinco vendedores y siete clientes de desarrollo. La cartera
 del fixture asigna cada cliente a un vendedor distinto al de la nota para
 ejercitar el cruce.
+
+---
+
+## Producción — cédulas, explosión y costos (19/11/2026)
+
+El módulo **Producción** lee de Profit las cédulas, componentes, costos, stock
+de materias primas y órdenes de compra pendientes. Es **solo lectura**; el plan,
+los escenarios y la nutrición viven en la base local de Nexo.
+
+### Clasificación de `spced`
+
+| Condición | Tipo | Uso |
+|---|---|---|
+| `dias = 0` y `horas >= 2` | **Maestra** | Receta vigente o alternativa. `estandar = 1` es la principal. |
+| `dias = 1` o `horas < 2` | **Lote** | Receta ejecutada (histórico). Sirve para comparar costo real vs teórico. |
+
+`spced.campo1` guarda el tamaño de lote en kg (`2000`, `3000`, `1000`) y
+`spced.horas` las horas por lote. `spced.co_uni` distingue `KG` (granel) de
+`SAC` (presentación). `spced.cantidad` es la cantidad base de la cédula
+(normalmente 1).
+
+### Componentes y presentaciones
+
+| Tabla | Uso |
+|---|---|
+| `reng_mce` | Componentes de la cédula: `co_art`, `cantidad`, `co_uni`, `co_tar` (etapa). |
+| `reng_ace` | Productos (presentaciones) que usan una cédula base: resuelve `ABAGP13 -> ABAGP05` y su cédula. |
+| `art` | Descripción, `uni_venta`, `uni_relac` (kg/saco), `co_lin`, `co_subl` (`MACROS`/`MICROS`/`EMPAQ`/`REP`), `ult_cos_un`, `cos_pro_un`, `anulado`. |
+| `st_almac` | Stock por almacén. MP: `262`, `68`, `06`. PT: `03`, `9999`, `6804`, `PTP`. |
+| `ordenes` + `reng_ord` | OC pendientes: `pendiente`, `fec_venc`, `co_cli` (proveedor), `co_alma`. Es el **stock x llegar**. |
+| `tasas` | Tipo de cambio: `co_mone = 'US$'`, `tasa_v` (Bs/USD). |
+
+### Demanda y explosión
+
+```text
+forecastRestante = max(0, forecastPeriodo - vendidoPeriodo)
+demanda          = max(forecastRestante, pedidosPendientes)   # política MAX por defecto
+requerido        = max(0, demanda + stockSeguridad - stock)
+lotes            = ceil(requerido / loteKg)
+requeridoMP      = Σ (componente.cantidad × factor de producción)
+porComprar       = max(0, requeridoMP - stockMP - porLlegarMP)
+```
+
+- El **lote** se toma de `spced.campo1` de la cédula base; si no existe, se
+  produce lo requerido y se muestra «Sin lote configurado».
+- Los **reprocesos** (`co_subl = 'REP'` o códigos `REP...`) no se compran: se
+  muestran como requerimiento con alerta de producción interna.
+- El **empaque** se infiere del histórico de lotes (`reng_mce` con
+  `co_subl = 'EMPAQ'`), con fallback por color de la descripción
+  (`NARANJA -> MATPRI72`, `VERDE -> MATPRI76`, `AZUL -> MATPRI79`). Una regla
+  manual en `PackagingRule` tiene prioridad.
+
+### Costos
+
+- `ult_cos_un` = último costo; `cos_pro_un` = costo promedio.
+- Si el costo es `<= 0` o no existe, el material se marca «Sin costo unitario»
+  y no se inventa un valor. Ejemplo real: `MATPRI06` tiene un promedio negativo
+  en Profit (`-112.006,84`), por lo que se usa el último costo o se alerta.
+- Los costos se convierten a USD con `tasas.tasa_v` del día.
+
+### Validación de oro
+
+La explosión guardada `spexplosion` exp. 2 (20.000 sacos de `ABAGP13`,
+cédula `1038`) exige:
+
+| Material | Requerido |
+|---|---:|
+| `MATPRI01` MAIZ AMARILLO | 364.480 kg |
+| `MATPRI02` SOYA | 187.180 kg |
+| `MATPRI04` HARINA DE ARROZ | 40.480 kg |
+| `MATPRI06` SACOS | 20.000 und |
+
+El motor de Nexo reproduce esos valores en `production.engine.spec.ts`.
+
+### Vista de selección de pedidos
+
+La pestaña **Selección** no vuelve a sincronizar pedidos: usa `SalesOrder` +
+`SalesOrderLine` y `DeliveryDateOverride`.
+
+- `GET /api/production/orders?by=producto|cliente` agrupa la cartera del
+  periodo con pedido, cliente, fecha efectiva, kg, stock PT y riesgo.
+- La fecha efectiva es `tentativeDate` si existe; si no, `requestedDate`.
+- `POST /api/production/simulate` recibe `selectedKeys` (pedido + artículo +
+  renglón) y recalcula la demanda desde esas líneas. También acepta overrides
+  locales de `productionKg` y `batchKg`; nunca escribe en Profit.
+- El **Resumen** explica cada métrica con su fórmula (glosario en la UI).

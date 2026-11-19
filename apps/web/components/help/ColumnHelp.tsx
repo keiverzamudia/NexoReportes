@@ -237,12 +237,15 @@ export function ModuleHelp({
   rules = [],
   terms,
   triggerLabel = '¿Cómo se calcula?',
+  termsLabel = 'Columnas',
 }: {
   title: string;
   narrative?: ReactNode;
   rules?: string[];
   terms: HelpTerm[];
   triggerLabel?: string;
+  /** Título de la lista de términos. En informes que no son tablas, «Conceptos». */
+  termsLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -361,7 +364,7 @@ export function ModuleHelp({
                   )}
 
                   <section>
-                    <h3 className="text-[10px] font-bold uppercase tracking-[0.14em] text-outline">Columnas</h3>
+                    <h3 className="text-[10px] font-bold uppercase tracking-[0.14em] text-outline">{termsLabel}</h3>
                     <dl className="mt-space-xs divide-y divide-outline-variant/25">
                       {terms.map((term) => (
                         <div key={term.id} className="flex flex-col gap-space-2xs py-space-sm">
