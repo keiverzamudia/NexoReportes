@@ -10,7 +10,7 @@
 
 import { ArrowDownRight, ArrowUpRight, ChevronDown, ChevronUp, Inbox } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode } from 'react';
 import type { HelpTerm } from '../content/help/types';
 import { ColumnHelp } from './help/ColumnHelp';
 
@@ -91,6 +91,7 @@ export function TrendPill({ value, tone = 'up' }: { value: string; tone?: 'up' |
 
 export function Kpi({
   label,
+  labelTitle,
   value,
   suffix,
   hint,
@@ -101,6 +102,8 @@ export function Kpi({
   accent = false,
 }: {
   label: string;
+  /** Definición de la cifra; se muestra como tooltip nativo sobre el label. */
+  labelTitle?: string;
   value: string;
   suffix?: string;
   hint?: string;
@@ -117,7 +120,15 @@ export function Kpi({
       <div className="relative min-w-[180px] overflow-hidden rounded-card bg-hero p-space-md text-white shadow-hero">
         <span aria-hidden className="pointer-events-none absolute -right-10 -top-12 size-32 rounded-full bg-secondary-container/20 blur-2xl" />
         <div className="relative flex items-start justify-between gap-space-sm">
-          <span className="text-label-sm font-semibold uppercase tracking-[0.12em] text-white/70">{label}</span>
+          <span
+            title={labelTitle}
+            className={cx(
+              'text-label-sm font-semibold uppercase tracking-[0.12em] text-white/70',
+              labelTitle && 'cursor-help',
+            )}
+          >
+            {label}
+          </span>
           {Icon && (
             <span className="grid size-7 place-items-center rounded-lg bg-white/10 text-secondary-container">
               <Icon aria-hidden className="size-4" />
@@ -141,7 +152,15 @@ export function Kpi({
   return (
     <div className="group min-w-[150px] rounded-card border border-outline-variant/35 bg-surface-container-lowest p-space-md shadow-soft transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lift">
       <div className="flex items-start justify-between gap-space-sm">
-        <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">{label}</span>
+        <span
+          title={labelTitle}
+          className={cx(
+            'font-semibold uppercase tracking-wider text-label-sm text-outline',
+            labelTitle && 'cursor-help',
+          )}
+        >
+          {label}
+        </span>
         {Icon && (
           <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-primary-fixed/70 text-primary">
             <Icon aria-hidden className="size-4" />
@@ -162,9 +181,16 @@ export function Kpi({
   );
 }
 
-export function Card({ children, className }: { children: ReactNode; className?: string }) {
+export function Card({
+  children,
+  className,
+  ...rest
+}: { children: ReactNode; className?: string } & HTMLAttributes<HTMLElement>) {
   return (
-    <section className={cx('rounded-card border border-outline-variant/35 bg-surface-container-lowest shadow-soft', className ?? '')}>
+    <section
+      {...rest}
+      className={cx('rounded-card border border-outline-variant/35 bg-surface-container-lowest shadow-soft', className ?? '')}
+    >
       {children}
     </section>
   );

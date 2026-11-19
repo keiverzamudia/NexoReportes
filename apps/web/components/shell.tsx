@@ -15,6 +15,7 @@ import {
   DoorOpen,
   Eye,
   EyeOff,
+  Factory,
   HandCoins,
   Loader2,
   LogIn,
@@ -23,7 +24,6 @@ import {
   ShieldCheck,
   ShoppingCart,
   Trophy,
-  Truck,
   Users,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -34,7 +34,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, currentUser, login as apiLogin, logout, searchLoginCandidates } from '../lib/api';
 import { humanAge } from '../lib/dispatch-sheet';
 import { canSeePedidos, hasPermission } from '../lib/permissions';
-import { Logo, Isotype } from './Logo';
+import { Logo } from './Logo';
 import { NotificationsBell } from './NotificationsBell';
 import { useLoadingOverlay } from './loading/LoadingOverlayProvider';
 import { cx } from './ui';
@@ -103,16 +103,17 @@ export function LoginForm({ onSuccess }: { onSuccess: (user: UserSummary) => voi
   }
 
   const inputClass =
-    'h-10 w-full rounded-xl border border-outline-variant/50 bg-surface px-space-sm text-body-md normal-case text-on-surface transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-secondary-container/70';
+    'h-11 w-full rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-md text-body-md text-on-surface placeholder:text-outline transition-colors focus:border-transparent focus:outline-none focus:ring-2 focus:ring-secondary-container/70 disabled:opacity-60';
+  const labelClass = 'flex flex-col gap-space-xs text-body-md font-semibold text-on-surface-variant';
 
   return (
-    <form
-      onSubmit={submit}
-      className="mx-auto flex w-full max-w-sm flex-col gap-space-md rounded-card border border-outline-variant/40 bg-surface-container-lowest p-space-xl shadow-float"
-    >
-      <h2 className="text-title-md text-primary">Iniciar sesión</h2>
+    <form onSubmit={submit} className="flex w-full flex-col gap-space-lg">
+      <div className="mb-space-xs flex flex-col gap-space-xs">
+        <h2 className="font-display text-headline-lg leading-tight text-primary">Iniciar sesión</h2>
+        <p className="text-body-md text-on-surface-variant">Acceso con tu usuario y contraseña de Profit.</p>
+      </div>
 
-      <label className="flex flex-col gap-space-xs font-semibold uppercase text-label-md text-on-surface-variant">
+      <label className={labelClass}>
         Usuario
         <div className="relative">
           <input
@@ -135,7 +136,7 @@ export function LoginForm({ onSuccess }: { onSuccess: (user: UserSummary) => voi
               id="login-usuarios"
               role="listbox"
               aria-label="Usuarios encontrados"
-              className="absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-lg bg-surface-container-lowest p-space-2xs shadow-card ring-1 ring-surface-container"
+              className="absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded-xl border border-outline-variant/40 bg-surface-container-lowest p-space-2xs shadow-lift"
             >
               {candidates.map((candidate) => (
                 <li key={candidate.id}>
@@ -148,7 +149,7 @@ export function LoginForm({ onSuccess }: { onSuccess: (user: UserSummary) => voi
                       setText('');
                       setOpen(false);
                     }}
-                    className="flex w-full items-center justify-between gap-space-sm rounded-md px-space-sm py-space-2xs text-left text-body-md text-on-surface hover:bg-surface-container-low"
+                    className="flex w-full items-center justify-between gap-space-sm rounded-lg px-space-sm py-space-sm text-left text-body-md text-on-surface hover:bg-surface-container-low"
                   >
                     <span className="truncate">{candidate.displayName}</span>
                     <span className="shrink-0 font-mono text-label-sm text-outline">{candidate.profitCode}</span>
@@ -159,9 +160,9 @@ export function LoginForm({ onSuccess }: { onSuccess: (user: UserSummary) => voi
           )}
         </div>
       </label>
-      {searching && <span className="text-label-sm normal-case text-on-surface-variant">Buscando…</span>}
+      {searching && <span className="-mt-space-sm text-label-sm normal-case text-outline">Buscando…</span>}
 
-      <label className="flex flex-col gap-space-xs font-semibold uppercase text-label-md text-on-surface-variant">
+      <label className={labelClass}>
         Contraseña
         <div className="relative">
           <input
@@ -172,14 +173,14 @@ export function LoginForm({ onSuccess }: { onSuccess: (user: UserSummary) => voi
             onChange={(e) => setPassword(e.target.value)}
             disabled={!selected || busy}
             placeholder={selected ? 'Contraseña de Profit' : 'Elige tu usuario primero'}
-            className={`${inputClass} pr-10 disabled:opacity-60`}
+            className={`${inputClass} pr-12`}
           />
           <button
             type="button"
             onClick={() => setShowPassword((value) => !value)}
             aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
             aria-pressed={showPassword}
-            className="absolute right-1 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-outline hover:bg-surface-container-low"
+            className="absolute right-1.5 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-lg text-outline transition-colors hover:bg-surface-container-low hover:text-primary"
           >
             {showPassword ? <EyeOff aria-hidden className="size-4" /> : <Eye aria-hidden className="size-4" />}
           </button>
@@ -187,22 +188,22 @@ export function LoginForm({ onSuccess }: { onSuccess: (user: UserSummary) => voi
       </label>
 
       {error && (
-        <p role="alert" className="flex items-center gap-space-sm text-body-md text-error">
-          <AlertTriangle aria-hidden className="size-4" /> {error}
+        <p
+          role="alert"
+          className="flex items-start gap-space-sm rounded-xl border border-error-container/30 bg-error-container px-space-md py-space-sm text-body-md text-on-error-container"
+        >
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" /> {error}
         </p>
       )}
 
       <button
         type="submit"
         disabled={busy || !selected || !password}
-        className="flex h-10 items-center justify-center gap-space-sm rounded-xl bg-primary-container px-space-lg font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-60"
+        className="flex h-11 items-center justify-center gap-space-sm rounded-xl bg-primary-container px-space-lg font-semibold text-on-primary transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:opacity-50"
       >
         <LogIn aria-hidden className="size-4" />
         {busy ? 'Verificando…' : 'Entrar'}
       </button>
-      <p className="text-label-sm normal-case text-on-surface-variant">
-        Acceso con tu usuario y tu contraseña de Profit.
-      </p>
     </form>
   );
 }
@@ -213,11 +214,11 @@ function LoginChecking() {
     <div
       role="status"
       aria-live="polite"
-      className="mx-auto flex w-full max-w-sm flex-col items-center gap-space-md rounded-card border border-outline-variant/40 bg-surface-container-lowest p-space-xl shadow-float"
+      className="flex min-h-[18rem] w-full flex-col items-center justify-center gap-space-sm text-center"
     >
       <Loader2 aria-hidden className="size-6 animate-spin text-primary" />
       <p className="font-semibold text-primary">Comprobando sesión…</p>
-      <p className="text-center text-label-sm normal-case text-on-surface-variant">
+      <p className="max-w-[16rem] text-label-sm normal-case text-on-surface-variant">
         Estamos viendo si ya tienes una sesión activa.
       </p>
     </div>
@@ -233,11 +234,6 @@ export function LoginScreen({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const benefits = [
-    { icon: Boxes, title: 'Existencias y pedidos al día', text: 'Lo disponible, lo comprometido y lo que falta.' },
-    { icon: Truck, title: 'Despacho con acuse', text: 'Del plan a la carga, con bitácora de cada paso.' },
-    { icon: DoorOpen, title: 'Llegadas de clientes', text: 'PCP marca la hora y registra cada incidencia.' },
-  ];
 
   // Tras autenticar, el usuario solo se queda si el módulo actual está en sus
   // permisos; si no, entra por el primero que sí puede ver.
@@ -250,67 +246,34 @@ export function LoginScreen({
   }
 
   return (
-    <main className="grid min-h-screen bg-surface lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+    <main className="grid min-h-dvh grid-rows-[auto_minmax(0,1fr)] bg-surface-container-lowest lg:grid-cols-2 lg:grid-rows-1">
       <h1 className="sr-only">Iniciar sesión — Corpoagro</h1>
 
-      {/* Panel de marca: solo escritorio. */}
-      <aside className="relative hidden overflow-hidden bg-hero text-white lg:flex lg:flex-col lg:justify-between lg:p-space-2xl">
-        <span
-          aria-hidden
-          className="pointer-events-none absolute -right-32 -top-32 size-96 rounded-full bg-secondary-container/10 blur-3xl"
-        />
-        <span
-          aria-hidden
-          className="pointer-events-none absolute -bottom-28 -left-20 size-80 rounded-full bg-secondary-container/[0.06] blur-3xl"
-        />
-        <Isotype
+      {/* Mitad de marca: navy plano, sin degradados. En móvil queda como banda. */}
+      <aside className="relative flex items-center justify-center bg-primary-container px-space-lg py-space-xl lg:p-space-2xl">
+        <Logo
+          size="full"
           variant="negative"
-          height={380}
-          className="pointer-events-none absolute -bottom-20 -right-16 opacity-[0.05]"
+          height={104}
+          heightClassName="h-14 lg:h-20 xl:h-[6.5rem]"
+          priority
         />
-
-        <div className="relative flex flex-col gap-space-lg">
-          <Logo size="full" variant="negative" height={92} priority />
-          <p className="max-w-md text-body-lg text-white/75">
-            Toda la operación en un solo lugar: existencias, pedidos, despacho y la llegada de tus clientes.
-          </p>
-        </div>
-
-        <ul className="relative flex max-w-md flex-col gap-space-sm">
-          {benefits.map(({ icon: Icon, title, text }) => (
-            <li key={title} className="flex items-start gap-space-sm">
-              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-white/10 text-secondary-container">
-                <Icon aria-hidden className="size-4" />
-              </span>
-              <span>
-                <span className="block font-semibold text-white">{title}</span>
-                <span className="block text-label-md normal-case text-white/60">{text}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-
-        <div className="relative flex flex-wrap items-center justify-between gap-space-sm">
-          <span className="inline-flex items-center gap-space-xs rounded-pill bg-white/10 px-space-sm py-1 text-label-sm font-semibold uppercase tracking-[0.12em] text-white/80">
-            <ShieldCheck aria-hidden className="size-3.5" />
-            Sincronizado con Profit
-          </span>
-          <span className="text-label-sm normal-case text-white/50">Corpoagro · Nutrición Animal</span>
-        </div>
+        <p className="absolute inset-x-0 bottom-space-lg hidden text-center text-label-sm normal-case text-white/40 lg:block">
+          Corpoagro · Nutrición Animal
+        </p>
       </aside>
 
-      {/* Formulario. */}
-      <section className="relative flex min-h-screen flex-col items-center justify-center gap-space-lg p-space-lg sm:p-space-2xl">
-        <span
-          aria-hidden
-          className="pointer-events-none absolute -top-40 right-0 size-[26rem] rounded-full bg-secondary-container/15 blur-3xl"
-        />
-        <div className="relative w-full max-w-sm">
-          <div className="mb-space-lg flex justify-center lg:hidden">
-            <Logo size="full" height={64} priority />
-          </div>
+      {/* Formulario sobre blanco, alineado al lenguaje de los módulos. */}
+      <section className="flex flex-col items-center justify-center px-space-lg py-space-2xl sm:px-space-2xl">
+        <div className="animate-fade flex w-full max-w-[23rem] flex-col">
+          <span className="mb-space-md inline-flex w-fit items-center gap-space-2xs rounded-pill bg-primary-container/10 px-space-sm py-1 text-label-sm font-bold uppercase tracking-[0.14em] text-primary">
+            <ShieldCheck aria-hidden className="size-3.5" />
+            Acceso al sistema
+          </span>
+
           {checking ? <LoginChecking /> : <LoginForm onSuccess={handleSuccess} />}
-          <p className="mt-space-md text-center text-label-sm normal-case text-outline lg:hidden">
+
+          <p className="mt-space-lg text-center text-label-sm normal-case text-outline lg:hidden">
             Corpoagro · Nutrición Animal
           </p>
         </div>
@@ -332,8 +295,9 @@ interface NavLink {
 const NAV_LINKS: NavLink[] = [
   { href: '/disponibilidad', label: 'Disponibilidad', icon: Boxes, module: 'disponibilidad' },
   { href: '/forecast', label: 'Forecast', icon: CalendarRange, module: 'forecast' },
+  { href: '/produccion', label: 'Producción', icon: Factory, module: 'produccion' },
   { href: '/vendedor', label: 'Vendedor', icon: Trophy, module: 'vendedor' },
-  { href: '/por-cobrar', label: 'Por cobrar', icon: HandCoins, module: 'cxc' },
+  { href: '/por-cobrar', label: 'CXC', icon: HandCoins, module: 'cxc' },
   { href: '/pedidos', label: 'Pedidos', icon: ShoppingCart, module: 'pedidos' },
   { href: '/despacho', label: 'Despacho', icon: ClipboardList, module: 'despacho' },
   { href: '/llegadas', label: 'Llegadas', icon: DoorOpen, module: 'llegadas' },

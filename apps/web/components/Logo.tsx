@@ -36,12 +36,15 @@ export function Logo({
   size = 'compact',
   variant = 'color',
   className,
+  heightClassName,
   priority = false,
 }: {
   height?: number;
   size?: LogoSize;
   variant?: LogoVariant;
   className?: string;
+  /** Altura responsive por clases (p. ej. `h-16 sm:h-24`); sustituye a `height`. */
+  heightClassName?: string;
   /** true en el login: la marca está sobre el pliegue. */
   priority?: boolean;
 }) {
@@ -55,8 +58,8 @@ export function Logo({
       decoding="async"
       loading={priority ? 'eager' : 'lazy'}
       // eslint-disable-next-line @next/next/no-img-element
-      className={`w-auto shrink-0 ${className ?? ''}`}
-      style={{ height }}
+      className={`w-auto shrink-0 ${heightClassName ?? ''} ${className ?? ''}`}
+      style={heightClassName ? undefined : { height }}
     />
   );
 }
