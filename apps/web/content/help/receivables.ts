@@ -14,7 +14,7 @@ export const RECEIVABLES_HELP_RULES = [
   'La cobranza de 90 días cuenta abonos aplicados a facturas; no incluye adelantos. El último pago también sale de los recibos de Profit.',
   'La cobranza se toma de los recibos en US$ o USD de Profit; los recibos en Bs no se convierten. Cada abono usa la tasa con la que fue registrado.',
   'El cobrado de 12 meses y el % de cobranza a tiempo usan una ventana móvil de 12 meses sobre la fecha de cobro. El % se pondera por monto: cobrado a tiempo ÷ cobrado de 12 meses.',
-  'Los filtros de cliente, vendedor, tipo, zona y segmento acotan los clientes visibles; las cifras de cobranza se recalculan con ese mismo subconjunto.',
+  'Los filtros de búsqueda, vendedor, tipo de cliente, zona, tipo de documento y fechas acotan los documentos visibles; el resumen y las cifras de cobranza se recalculan con ese mismo subconjunto.',
 ];
 
 export const RECEIVABLES_COLUMN_HELP: Record<string, HelpTerm> = {

@@ -221,7 +221,7 @@ export interface ReceivablesFilterInput {
   vendedor?: string;
   tipoCliente?: string;
   zona?: string;
-  segmento?: string;
+  tipoDoc?: string;
   desde?: string;
   hasta?: string;
   soloVencido?: boolean;
@@ -239,7 +239,7 @@ export function filterDocs(docs: ReceivablesDoc[], filters: ReceivablesFilterInp
     if (filters.vendedor && doc.vendedorCarteraCodigo !== filters.vendedor) return false;
     if (filters.tipoCliente && doc.tipoCliente !== filters.tipoCliente) return false;
     if (filters.zona && doc.zona !== filters.zona) return false;
-    if (filters.segmento && doc.segmento !== filters.segmento) return false;
+    if (filters.tipoDoc && doc.tipoDoc !== filters.tipoDoc) return false;
     if (filters.desde && dayOf(doc.fechaEmision) < filters.desde) return false;
     if (filters.hasta && dayOf(doc.fechaEmision) > filters.hasta) return false;
     if (filters.soloVencido && (doc.esCredito || doc.diasVencimiento <= 0)) return false;
@@ -573,7 +573,7 @@ export function optionsFromDocs(docs: ReceivablesDoc[]): ReceivablesOptions {
   const vendors = new Map<string, string>();
   const tipos = new Map<string, string>();
   const zonas = new Map<string, string>();
-  const segmentos = new Map<string, string>();
+  const tiposDoc = new Map<string, string>();
 
   for (const doc of docs) {
     if (doc.vendedorCarteraCodigo) {
@@ -581,7 +581,7 @@ export function optionsFromDocs(docs: ReceivablesDoc[]): ReceivablesOptions {
     }
     if (doc.tipoCliente) tipos.set(doc.tipoCliente, doc.tipoClienteLabel || doc.tipoCliente);
     if (doc.zona) zonas.set(doc.zona, doc.zonaLabel || doc.zona);
-    if (doc.segmento) segmentos.set(doc.segmento, doc.segmentoLabel || doc.segmento);
+    if (doc.tipoDoc) tiposDoc.set(doc.tipoDoc, doc.tipoDoc);
   }
 
   const toOptions = (map: Map<string, string>, withCode: boolean) =>
@@ -593,7 +593,7 @@ export function optionsFromDocs(docs: ReceivablesDoc[]): ReceivablesOptions {
     vendedores: toOptions(vendors, true),
     tipos: toOptions(tipos, true),
     zonas: toOptions(zonas, true),
-    segmentos: toOptions(segmentos, true),
+    tiposDoc: toOptions(tiposDoc, false),
   };
 }
 

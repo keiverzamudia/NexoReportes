@@ -65,7 +65,7 @@ const report = {
     vendedor: '',
     tipoCliente: '',
     zona: '',
-    segmento: '',
+    tipoDoc: '',
     desde: null,
     hasta: null,
     soloVencido: false,
@@ -160,7 +160,7 @@ const report = {
       segmento: '09',
     },
   ],
-  opciones: { vendedores: [], tipos: [], zonas: [], segmentos: [] },
+  opciones: { vendedores: [], tipos: [], zonas: [], tiposDoc: [] },
 } as unknown as ReceivablesResponse;
 
 describe('formatCompactMoney', () => {

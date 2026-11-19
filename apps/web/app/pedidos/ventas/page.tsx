@@ -756,7 +756,8 @@ export default function PedidosVentasPage() {
                       icon={report.comparison.ytdPct !== null && report.comparison.ytdPct < 0 ? ArrowDownRight : TrendingUp}
                     />
                     <Kpi
-                      label="Facturado YTD"
+                      label="Facturado del año"
+                      labelTitle="Facturado del año a la fecha (YTD): documentos de CxC en Profit —facturas y notas de débito menos notas de crédito— emitidos del 1 de enero a hoy, en la moneda seleccionada. Es facturación emitida, no caja cobrada: puede diferir 1–2 % del despacho."
                       value={report.billingAvailable ? fmtMoney(report.comparison.ytdBilled, currency) : '—'}
                       hint={
                         !report.billingAvailable

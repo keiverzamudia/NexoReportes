@@ -78,7 +78,7 @@ export default function ReceivablesPage() {
   const [vendor, setVendor] = useState('');
   const [clientType, setClientType] = useState('');
   const [zone, setZone] = useState('');
-  const [segment, setSegment] = useState('');
+  const [docType, setDocType] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [onlyOverdue, setOnlyOverdue] = useState(false);
@@ -97,13 +97,13 @@ export default function ReceivablesPage() {
     if (vendor) search.set('vendedor', vendor);
     if (clientType) search.set('tipoCliente', clientType);
     if (zone) search.set('zona', zone);
-    if (segment) search.set('segmento', segment);
+    if (docType) search.set('tipoDoc', docType);
     if (from) search.set('desde', from);
     if (to) search.set('hasta', to);
     if (onlyOverdue) search.set('soloVencido', 'true');
     if (includeCredit) search.set('incluirAFavor', 'true');
     return search.toString();
-  }, [currency, debouncedQ, vendor, clientType, zone, segment, from, to, onlyOverdue, includeCredit]);
+  }, [currency, debouncedQ, vendor, clientType, zone, docType, from, to, onlyOverdue, includeCredit]);
 
   const report = useQuery<ReceivablesResponse>({
     queryKey: ['receivables', params, tick],
@@ -122,7 +122,7 @@ export default function ReceivablesPage() {
   const data = report.data;
   const totals = data?.totals;
   const hasFilters = Boolean(
-    q.trim() || vendor || clientType || zone || segment || from || to || onlyOverdue || includeCredit,
+    q.trim() || vendor || clientType || zone || docType || from || to || onlyOverdue || includeCredit,
   );
 
   const vendorOptions = useMemo(
@@ -137,9 +137,9 @@ export default function ReceivablesPage() {
     () => [{ value: '', label: 'Zona: todas' }, ...(data?.opciones.zonas ?? [])],
     [data?.opciones.zonas],
   );
-  const segmentOptions = useMemo(
-    () => [{ value: '', label: 'Segmento: todos' }, ...(data?.opciones.segmentos ?? [])],
-    [data?.opciones.segmentos],
+  const docTypeOptions = useMemo(
+    () => [{ value: '', label: 'Tipo de doc: todos' }, ...(data?.opciones.tiposDoc ?? [])],
+    [data?.opciones.tiposDoc],
   );
 
   if (report.error instanceof AuthRequiredError) {
@@ -151,7 +151,7 @@ export default function ReceivablesPage() {
     setVendor('');
     setClientType('');
     setZone('');
-    setSegment('');
+    setDocType('');
     setFrom('');
     setTo('');
     setOnlyOverdue(false);
@@ -186,7 +186,7 @@ export default function ReceivablesPage() {
         <PageHeader
           eyebrow="Comercial · Cuentas por cobrar"
           icon={HandCoins}
-          title="Por cobrar"
+          title="Cuentas por Cobrar"
           subtitle="Cartera viva de Profit por cliente, con la matriz completa de vencimiento (1–30, 31–60, 61–90, 91–120, 121–150 y +150), saldo a favor, concentración y cobranza de los últimos 12 meses con su cumplimiento."
           greeting={greeting}
           actions={
@@ -335,10 +335,16 @@ export default function ReceivablesPage() {
                       ariaLabel="Filtrar por zona"
                     />
                     <Select
-                      value={segment}
-                      onChange={setSegment}
-                      options={segmentOptions}
-                      ariaLabel="Filtrar por segmento"
+                      value={docType}
+                      onChange={(value) => {
+                        setDocType(value);
+                        if (value) {
+                          setView('documentos');
+                          setExpanded(null);
+                        }
+                      }}
+                      options={docTypeOptions}
+                      ariaLabel="Filtrar por tipo de documento"
                     />
                     <label className="flex flex-col gap-space-2xs">
                       <span className="text-label-sm font-semibold uppercase tracking-wide text-outline">Emisión desde</span>

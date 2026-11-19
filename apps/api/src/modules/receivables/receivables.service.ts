@@ -163,14 +163,17 @@ export class ReceivablesService {
       vendedor: query.vendedor,
       tipoCliente: query.tipoCliente,
       zona: query.zona,
-      segmento: query.segmento,
+      tipoDoc: query.tipoDoc,
       desde: query.desde,
       hasta: query.hasta,
       soloVencido: solVencido,
     });
 
     const result = aggregate(filtered, snapshot.payments, currency);
-    const documentos = documentsForOutput(filtered, currency, incluirAFavor);
+    // Un tipo de documento explícito siempre se lista: el filtro ya restringe
+    // a ese tipo, así que ocultar sus créditos (ADEL, N/CR) dejaría la tabla
+    // vacía aunque el usuario los haya pedido.
+    const documentos = documentsForOutput(filtered, currency, incluirAFavor || Boolean(query.tipoDoc));
 
     return {
       asOf: snapshot.asOf,
@@ -183,7 +186,7 @@ export class ReceivablesService {
         vendedor: query.vendedor ?? '',
         tipoCliente: query.tipoCliente ?? '',
         zona: query.zona ?? '',
-        segmento: query.segmento ?? '',
+        tipoDoc: query.tipoDoc ?? '',
         desde: query.desde ?? null,
         hasta: query.hasta ?? null,
         soloVencido: solVencido,

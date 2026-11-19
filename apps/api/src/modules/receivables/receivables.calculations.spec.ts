@@ -260,7 +260,7 @@ describe('filterDocs', () => {
       vendedorCarteraCodigo: '025',
       tipoCliente: 'L2',
       zona: '014',
-      segmento: '05',
+      tipoDoc: 'ADEL',
       fechaEmision: '2026-09-01T00:00:00.000Z',
       esCredito: true,
       tramo: null,
@@ -272,11 +272,11 @@ describe('filterDocs', () => {
     expect(filterDocs(docs, { q: 'agro' })[0]?.clienteCodigo).toBe('505835220');
   });
 
-  it('filtra por vendedor, tipo, zona, segmento y fecha', () => {
+  it('filtra por vendedor, tipo, zona, tipo de documento y fecha', () => {
     expect(filterDocs(docs, { vendedor: '025' })[0]?.clienteCodigo).toBe('505835220');
     expect(filterDocs(docs, { tipoCliente: 'L1' })).toHaveLength(1);
     expect(filterDocs(docs, { zona: '014' })).toHaveLength(1);
-    expect(filterDocs(docs, { segmento: '05' })).toHaveLength(1);
+    expect(filterDocs(docs, { tipoDoc: 'ADEL' })[0]?.clienteCodigo).toBe('505835220');
     expect(filterDocs(docs, { desde: '2026-09-02' })).toHaveLength(1);
     expect(filterDocs(docs, { hasta: '2026-09-02' })).toHaveLength(1);
   });
@@ -315,10 +315,12 @@ describe('optionsFromDocs', () => {
       doc(),
       doc({ vendedorCarteraCodigo: '031', vendedorCartera: 'JUILIARD ANGULO' }),
       doc({ tipoCliente: 'L2', tipoClienteLabel: 'DISTRIBUIDORES' }),
+      doc({ tipoDoc: 'ADEL' }),
     ]);
     expect(options.vendedores).toHaveLength(1);
     expect(options.vendedores[0]?.label).toContain('JUILIARD ANGULO');
     expect(options.tipos.map((option) => option.value)).toContain('L2');
     expect(options.zonas[0]?.label).toContain('LARA');
+    expect(options.tiposDoc.map((option) => option.value)).toEqual(['ADEL', 'FACT']);
   });
 });

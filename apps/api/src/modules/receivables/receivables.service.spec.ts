@@ -197,6 +197,12 @@ describe('ReceivablesService', () => {
     const search = await service.report({ moneda: 'USD', q: 'josef' });
     expect(search.clientes).toHaveLength(1);
     expect(search.clientes[0]?.codigo).toBe('153064128');
+
+    const credits = await service.report({ moneda: 'USD', tipoDoc: 'ADEL' });
+    expect(credits.documentos).toHaveLength(1);
+    expect(credits.documentos[0]?.esCredito).toBe(true);
+    expect(credits.totals.cartera).toBe(0);
+    expect(credits.totals.aFavor).toBe(5);
   });
 
   it('marca truncamiento cuando la lectura supera el tope', async () => {
