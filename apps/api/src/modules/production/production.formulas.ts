@@ -16,6 +16,9 @@ function componentFromRow(row: ProfitFormulaRow): FormulaComponent {
     kgPerUom: row.componentKgPerUom,
     lastCost: row.lastCost,
     avgCost: row.avgCost,
+    lastCostUsd: row.lastCostUsd,
+    avgCostUsd: row.avgCostUsd,
+    replacementCost: row.replacementCost,
     inactive: row.componentInactive,
   };
 }

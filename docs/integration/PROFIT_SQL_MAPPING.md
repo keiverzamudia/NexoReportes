@@ -216,6 +216,7 @@ solo para presentación (nunca se suman entre artículos). Por artículo y bloqu
 forecastKg   = ForecastWeek.qty (kg) · por defecto mensual × días del bloque ÷ días del mes
 demandKg     = Σ pendingKg de pedidos activos con entrega efectiva en la semana
 soldKg       = Σ notas de entrega (not_ent/reng_nde) de la semana
+soldUsd      = Σ (reng_nde.reng_neto ÷ not_ent.tasa) · importe de la nota SIN IVA
 stockKg      = existencia (uom × kg/saco en SAC) al inicio de la semana planificada
 objetivoKg   = max(forecastKg, demandKg)
 requeridoKg  = max(0, objetivoKg − soldKg)       la venta ya despachada de la semana no se produce dos veces
@@ -229,6 +230,12 @@ stockSiguiente = max(0, stockKg + aProducirKg − requeridoKg)
   entre pestañas.
 - El stock **arrastra** lo producido y consumido de las semanas anteriores: el
   mes no repite la misma brecha cuatro veces.
+- **Importe vendido (`soldUsd`)**: `reng_nde.reng_neto` es el neto de la línea
+  **sin IVA** y `not_ent.tasa` la tasa Bs/US$ del documento, así que el USD no
+  depende de la tasa del día. La respuesta incluye `exchangeRate` (última fila
+  US$ de `dbo.tasas`) **solo** para que la UI muestre el equivalente en bolívares
+  a la tasa vigente; si esa lectura falla, `exchangeRate = null` y la UI se queda
+  en USD.
 - Corte (`asOf`) en America/Caracas: hoy en el mes en curso, último día en un
   mes cerrado y `null` en un mes futuro. Una semana es `closed` si su último día
   es anterior al corte; las cerradas no sugieren producción.
@@ -690,6 +697,16 @@ productos perdidos, surtido del segmento y diagnóstico comercial. Permiso
   segmento (`RTRIM(clientes.tipo) + ' ' + RTRIM(tipo_cli.des_tipo)`) en los
   últimos 12 meses. El servicio excluye los que el cliente ya compró en el
   histórico consultado.
+- `nexo:customer_last_purchase`: última nota de entrega del cliente
+  (`not_ent.fec_emis` máxima), con `tot_neto` convertido por su `tasa`. Es el
+  monto que acompaña a «Última compra» en la ficha.
+- `nexo:customer_insights_payments`: cobranza del año en curso desde
+  `cobros` + `reng_cob` (recibos no anulados, aplicados a `FACT`/`N/DB`/`AJPM`/
+  `GIRO`, moneda US$). Devuelve último pago, días sin pagar, cobrado y número
+  de pagos del año; el «promedio de pago semanal» divide ese cobrado entre las
+  semanas transcurridas del año.
+- **Días de crédito**: `dbo.clientes.plaz_pag`, leído junto al límite en la
+  consulta agregada de cartera (`cartera_resumen`).
 
 ### Reglas de negocio
 
@@ -725,7 +742,9 @@ productos, perdidos, surtido comparable, cadencia, cartera, pedidos y alertas.
 `nexo:customer_insights_products`, `nexo:customer_insights_billing` y
 `nexo:customer_insights_similar` generan datos deterministas a partir de
 `CUSTOMER_SALES_PROFILES` (producto principal, producto perdido, producto en
-caída y producto nuevo).
+caída y producto nuevo). `nexo:customer_last_purchase` reutiliza esos totales
+por nota y `nexo:customer_insights_payments` toma
+`FIXTURE_RECEIVABLES_PAYMENTS`.
 
 ---
 
@@ -819,8 +838,10 @@ Mij = Mi × (Hij / Hi)                       → meta del cliente
 ### Contrato
 
 `zForecastSellersResponse` en `@nexo/contracts` (extiende `zForecastSalesQuery`
-con `attribution` y `refresh`). Permiso `vendedor:read` (el antiguo
-`vendedoras:read` se migra al arrancar la API).
+con `attribution` y `refresh`). Permiso `vendedor:read` (visible como
+«Unitario»; el antiguo `vendedoras:read` se migra al arrancar la API).
+`vendedor:view_all` («Ver todo») amplía el informe a toda la fuerza de ventas e
+implica el acceso al módulo.
 
 ### Fixtures
 
@@ -856,7 +877,7 @@ los escenarios y la nutrición viven en la base local de Nexo.
 |---|---|
 | `reng_mce` | Componentes de la cédula: `co_art`, `cantidad`, `co_uni`, `co_tar` (etapa). |
 | `reng_ace` | Productos (presentaciones) que usan una cédula base: resuelve `ABAGP13 -> ABAGP05` y su cédula. |
-| `art` | Descripción, `uni_venta`, `uni_relac` (kg/saco), `co_lin`, `co_subl` (`MACROS`/`MICROS`/`EMPAQ`/`REP`), `ult_cos_un`, `cos_pro_un`, `anulado`. |
+| `art` | Descripción, `uni_venta`, `uni_relac` (kg/saco), `co_lin`, `co_subl` (`MACROS`/`MICROS`/`EMPAQ`/`REP`), `ult_cos_un`, `cos_pro_un`, `ult_cos_om`, `cos_pro_om`, `cos_merc`, `anulado`. |
 | `st_almac` | Stock por almacén. MP: `262`, `68`, `06`. PT: `03`, `9999`, `6804`, `PTP`. |
 | `ordenes` + `reng_ord` | OC pendientes: `pendiente`, `fec_venc`, `co_cli` (proveedor), `co_alma`. Es el **stock x llegar**. |
 | `tasas` | Tipo de cambio: `co_mone = 'US$'`, `tasa_v` (Bs/USD). |
@@ -883,11 +904,29 @@ porComprar       = max(0, requeridoMP - stockMP - porLlegarMP)
 
 ### Costos
 
-- `ult_cos_un` = último costo; `cos_pro_un` = costo promedio.
+- `ult_cos_un` = último costo en Bs histórico; `cos_pro_un` = costo promedio en Bs.
+- `ult_cos_om` = **último costo en dólares** («Último OM» de la ficha del
+  artículo); `cos_pro_om` = promedio en dólares («Prom. OM»). El módulo los usa
+  como **base canónica**: suma en USD y para Bs multiplica por la tasa del día.
+  Si el campo OM viene en 0, cae al Bs histórico `÷ tasa`.
+- No usar `ult_cos_un / tasa` como fuente principal: el Bs es histórico y, si
+  el material no se compra desde hace meses, el USD queda subvalorado. Caso
+  real `MATPRI36 MELAZA`: `ult_cos_un` 32,02 Bs ÷ 919,82 = 0,0348 USD, pero
+  Profit tiene `ult_cos_om` 0,0717 USD.
+- `cos_merc` = **costo de reposición** (la fila «Reposición» de la ficha de
+  artículo en Profit, con fecha `fec_cos_me`). Solo existe en Bs; se convierte
+  con la tasa. Suele estar en `0`; en ese caso Nexo usa el último costo y avisa
+  en la pestaña Fórmulas. Se confirmó comparando las 8 fechas de la ficha:
+  Último = `fec_ult_co`, Promedio = `fec_cos_pr`, Reposición = `fec_cos_me`,
+  Proveedor = `fec_cos_p2`, Anterior = `fec_cos_an`, Último OM = `fec_ult_om`,
+  Prom. OM = `fec_pro_om`, Anterior OM = `fec_cos_do`.
 - Si el costo es `<= 0` o no existe, el material se marca «Sin costo unitario»
   y no se inventa un valor. Ejemplo real: `MATPRI06` tiene un promedio negativo
   en Profit (`-112.006,84`), por lo que se usa el último costo o se alerta.
-- Los costos se convierten a USD con `tasas.tasa_v` del día.
+- Validación con la cédula 2025016 (`ABABOV28`, saco 40 kg) y tasa 919,8227:
+  Σ materias primas = 0,3683 USD/kg (14,73/saco) + empaque MATPRI06
+  0,375 USD/saco = **0,3777 USD/kg · 15,11 USD/saco**. El artículo en Profit
+  (`ult_cos_do` 15,40752/saco, 2024) difiere -2%, lo que confirma el cálculo.
 
 ### Validación de oro
 

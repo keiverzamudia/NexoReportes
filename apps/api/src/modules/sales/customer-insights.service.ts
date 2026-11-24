@@ -3,6 +3,7 @@ import {
   CustomerDeliveryChangeSummary,
   CustomerInsightAccount,
   CustomerInsightOrders,
+  CustomerInsightPayments,
   CustomerInsightQuery,
   CustomerInsightResponse,
   CustomerInsightSimilar,
@@ -116,6 +117,45 @@ WHERE f.anulada = 0
 GROUP BY RTRIM(r.co_art), RTRIM(a.art_des), RTRIM(ISNULL(a.uni_venta, '')), a.uni_relac
 `;
 
+// Última nota de entrega del cliente: monto real de la compra más reciente.
+// Mismo criterio que el panel de Notas de entrega (`not_ent.tot_neto` con la
+// tasa del documento), pero solo la última fecha.
+export const CUSTOMER_INSIGHTS_LAST_PURCHASE_SQL = `
+SELECT TOP (1) /* nexo:customer_last_purchase */
+  CAST(f.fact_num AS varchar(30)) AS nota,
+  MAX(f.fec_emis) AS fecha,
+  CASE WHEN @moneda = 'USD'
+       THEN ROUND(MAX(f.tot_neto) / NULLIF(MAX(f.tasa), 0), 2)
+       ELSE ROUND(MAX(f.tot_neto), 2) END AS monto
+FROM dbo.not_ent AS f
+WHERE f.anulada = 0
+  AND RTRIM(f.co_cli) = @co_cli
+  AND f.fec_emis >= @desde
+  AND f.fec_emis < @hasta
+GROUP BY CAST(f.fact_num AS varchar(30))
+ORDER BY MAX(f.fec_emis) DESC, CAST(f.fact_num AS varchar(30)) DESC
+`;
+
+// Cobranza del año en curso. `docum_cc` no guarda la fecha de pago: los
+// recibos viven en `cobros` y `reng_cob` aplica cada uno a una factura.
+export const CUSTOMER_INSIGHTS_PAYMENTS_SQL = `
+SELECT /* nexo:customer_insights_payments */
+  MAX(c.fec_cob) AS ultimo_pago,
+  DATEDIFF(DAY, MAX(c.fec_cob), CAST(GETDATE() AS date)) AS dias_sin_pago,
+  SUM(CASE WHEN c.fec_cob >= @desde_anio
+    THEN CASE WHEN @moneda = 'USD' THEN rc.mont_cob / NULLIF(rc.tasa, 0) ELSE rc.mont_cob END
+    ELSE 0 END) AS cobrado_anio,
+  SUM(CASE WHEN c.fec_cob >= @desde_anio THEN 1 ELSE 0 END) AS pagos_anio
+FROM dbo.cobros AS c
+INNER JOIN dbo.reng_cob AS rc ON rc.cob_num = c.cob_num
+WHERE c.anulado = 0
+  AND RTRIM(c.co_cli) = @co_cli
+  AND rc.mont_cob > 0
+  AND rc.tp_doc_cob IN ('FACT', 'N/DB', 'AJPM', 'GIRO')
+  AND (rc.moneda LIKE 'US$%' OR rc.moneda LIKE 'USD%')
+  AND (@moneda <> 'USD' OR rc.tasa > 0)
+`;
+
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 300;
 const VOLUME_QUERY_LIMIT = 20_000;
@@ -157,6 +197,25 @@ function lastDayOfMonth(key: string): string {
 
 function emptyOrders(): CustomerInsightOrders {
   return { activeCount: 0, pendingQty: 0, pendingKg: 0, nextDeliveryDate: null };
+}
+
+function emptyPayments(): CustomerInsightPayments {
+  return {
+    ultimoPago: null,
+    diasSinPago: null,
+    cobradoAnio: 0,
+    pagosAnio: 0,
+    semanasAnio: Math.min(53, Math.max(1, weeksElapsedThisYear(new Date()))),
+    promedioSemanal: null,
+  };
+}
+
+/** Semanas transcurridas del año en curso (1..53), en UTC como el resto de la ficha. */
+function weeksElapsedThisYear(now: Date): number {
+  const start = Date.UTC(now.getUTCFullYear(), 0, 1);
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const days = Math.floor((today - start) / 86_400_000) + 1;
+  return Math.ceil(days / 7);
 }
 
 function emptyDeliveryChanges(): CustomerDeliveryChangeSummary {
@@ -216,8 +275,16 @@ export class CustomerInsightsService {
 
     const customerType = local?.customerType?.trim() || null;
 
-    const [volumeRes, billingRes, similarRes, ordersRes, accountRes, reputationRes] =
-      await Promise.allSettled([
+    const [
+      volumeRes,
+      billingRes,
+      similarRes,
+      ordersRes,
+      accountRes,
+      paymentsRes,
+      lastPurchaseRes,
+      reputationRes,
+    ] = await Promise.allSettled([
       this.profit.selectQuery(CUSTOMER_INSIGHTS_VOLUME_SQL, VOLUME_QUERY_LIMIT, {
         co_cli: code,
         desde: windows.from,
@@ -238,6 +305,13 @@ export class CustomerInsightsService {
         : Promise.resolve([] as Record<string, unknown>[]),
       this.loadOrders(code),
       this.loadAccount(code, currency),
+      this.loadPayments(code, currency),
+      this.profit.selectQuery(CUSTOMER_INSIGHTS_LAST_PURCHASE_SQL, 1, {
+        co_cli: code,
+        desde: windows.from,
+        hasta: windows.to,
+        moneda: currency,
+      }),
       this.reputation.summarize(code),
     ]);
 
@@ -288,6 +362,25 @@ export class CustomerInsightsService {
       );
     }
 
+    const payments = paymentsRes.status === 'fulfilled' ? paymentsRes.value : emptyPayments();
+    if (paymentsRes.status === 'rejected') {
+      this.logger.warn(
+        `No se pudo leer la cobranza de ${code}: ${
+          paymentsRes.reason instanceof Error ? paymentsRes.reason.message : String(paymentsRes.reason)
+        }`,
+      );
+    }
+
+    const purchaseRows = lastPurchaseRes.status === 'fulfilled' ? lastPurchaseRes.value : [];
+    if (lastPurchaseRes.status === 'rejected') {
+      this.logger.warn(
+        `No se pudo leer la última compra de ${code}: ${
+          lastPurchaseRes.reason instanceof Error ? lastPurchaseRes.reason.message : String(lastPurchaseRes.reason)
+        }`,
+      );
+    }
+    const lastSaleAmount = toNumberOrNull(purchaseRows[0]?.monto);
+
     const deliveryChanges =
       reputationRes.status === 'fulfilled' ? reputationRes.value : emptyDeliveryChanges();
     if (reputationRes.status === 'rejected') {
@@ -314,6 +407,7 @@ export class CustomerInsightsService {
       account,
       similar: similarProducts,
       truncated: rows.length >= VOLUME_QUERY_LIMIT,
+      lastSaleAmount,
     });
 
     const result: CustomerInsightResponse = {
@@ -348,6 +442,7 @@ export class CustomerInsightsService {
       similarProducts,
       cadence: built.cadence,
       account,
+      payments,
       orders,
       deliveryChanges,
       alerts: built.alerts,
@@ -511,8 +606,37 @@ export class CustomerInsightsService {
       saldoVencido: round2(item.saldoVencido),
       credito: round2(item.credito),
       limiteCredito: item.limiteCredito,
+      plazoPago: item.plazoPago ?? null,
       documentos: item.documentos,
       vencidos: item.vencidos,
+    };
+  }
+
+  // Cobranza del año en curso: los recibos de Profit aplicados a facturas.
+  // El promedio semanal divide entre las semanas transcurridas, no entre las
+  // semanas con cobro, para que un cliente que paga en pocas semanas no
+  // aparezca con un pago semanal irreal.
+  private async loadPayments(
+    code: string,
+    currency: CustomerInsightQuery['currency'],
+  ): Promise<CustomerInsightPayments> {
+    const now = new Date();
+    const semanasAnio = Math.min(53, Math.max(1, weeksElapsedThisYear(now)));
+    const rows = await this.profit.selectQuery(CUSTOMER_INSIGHTS_PAYMENTS_SQL, 1, {
+      co_cli: code,
+      desde_anio: `${now.getUTCFullYear()}-01-01`,
+      moneda: currency,
+    });
+    const raw = rows[0] ?? {};
+    const cobradoAnio = round2(toNumber(raw.cobrado_anio));
+    const diasSinPago = toNumberOrNull(raw.dias_sin_pago);
+    return {
+      ultimoPago: day(raw.ultimo_pago),
+      diasSinPago: diasSinPago === null ? null : Math.trunc(diasSinPago),
+      cobradoAnio,
+      pagosAnio: Math.trunc(toNumber(raw.pagos_anio)),
+      semanasAnio,
+      promedioSemanal: cobradoAnio > 0 ? round2(cobradoAnio / semanasAnio) : null,
     };
   }
 }

@@ -18,7 +18,7 @@ describe('primer módulo permitido', () => {
     expect(firstAllowedHref(['disponibilidad:read'])).toBe('/disponibilidad');
     expect(firstAllowedHref(['pedidos:read', 'despacho:read'])).toBe('/pedidos');
     expect(firstAllowedHref(['despacho:read'])).toBe('/despacho');
-    expect(firstAllowedHref(['reportes:read', 'llegadas:read'])).toBe('/llegadas');
+    expect(firstAllowedHref(['reportes:read', 'llegadas:read'])).toBe('/pcp');
   });
 
   it('ignora permisos de módulos sin pantalla', () => {
@@ -31,6 +31,15 @@ describe('primer módulo permitido', () => {
     expect(hasPermission(['otro:read'], 'vendedor')).toBe(false);
   });
 
+  it('acepta los permisos legados de Llegadas y Romana en PCP', () => {
+    expect(hasPermission(['llegadas:read'], 'pcp')).toBe(true);
+    expect(hasPermission(['romana:read'], 'pcp', 'read')).toBe(true);
+    expect(hasPermission(['romana:create'], 'pcp', 'upload')).toBe(true);
+    expect(hasPermission(['romana:validate'], 'pcp', 'validate')).toBe(true);
+    expect(hasPermission(['llegadas:create'], 'pcp', 'create')).toBe(true);
+    expect(hasPermission(['romana:create'], 'pcp', 'create')).toBe(false);
+  });
+
   it('con todo el catálogo entra por Disponibilidad', () => {
     expect(
       firstAllowedHref([
@@ -38,7 +47,7 @@ describe('primer módulo permitido', () => {
         'forecast:read',
         'pedidos:read',
         'despacho:read',
-        'llegadas:read',
+        'pcp:read',
         'clientes:read',
         'usuarios:read',
       ]),

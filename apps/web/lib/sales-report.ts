@@ -209,20 +209,40 @@ export interface CumulativePoint {
   actual: number | null;
   projected: number | null;
   pace: number | null;
+  /**
+   * Real + pedidos acumulados: la venta al corte más la cartera con entrega
+   * hasta ese día. Null antes del corte (el pasado no se reescribe) y en un
+   * mes futuro.
+   */
+  committed: number | null;
 }
 
 /**
  * Serie lista para ECharts: etiqueta del día, acumulado real (null tras el
  * corte), proyección (null antes del corte) y ritmo uniforme del forecast.
+ *
+ * `committed` arranca en el corte con la venta real + los pedidos vencidos y
+ * va sumando cada fecha de entrega pendiente; al final del mes coincide con
+ * `actualKg + pendingKg`. Es un techo de lo ya comprometido, no una
+ * proyección: no se suma a la línea de ritmo.
  */
 export function buildCumulativeSeries(report: ForecastSalesResponse): CumulativePoint[] {
-  return report.daily.map((day) => ({
-    label: String(Number(day.date.slice(8, 10))),
-    date: day.date,
-    actual: day.cumulativeKg,
-    projected: day.projectedCumulativeKg,
-    pace: day.forecastCumulativeKg,
-  }));
+  const cut = report.asOf;
+  const actualToCut = report.totals.actualKg;
+  let pendingRunning = 0;
+
+  return report.daily.map((day) => {
+    pendingRunning += Number.isFinite(day.pendingKg) ? day.pendingKg : 0;
+    return {
+      label: String(Number(day.date.slice(8, 10))),
+      date: day.date,
+      actual: day.cumulativeKg,
+      projected: day.projectedCumulativeKg,
+      pace: day.forecastCumulativeKg,
+      // Antes del corte no se pinta: los pedidos se leen como cartera de hoy.
+      committed: cut === null || day.date >= cut ? roundKg(actualToCut + pendingRunning) : null,
+    };
+  });
 }
 
 // ---------- Ventas del día (panel bajo la gráfica) ----------
@@ -370,23 +390,102 @@ export interface SalesGapSnapshot {
  * forecast (con signo); el corte responde la pregunta del día: si el mes
  * terminara hoy con la venta registrada, cuántos kg faltarían para el forecast
  * y qué porcentaje de la meta se lleva.
+ *
+ * Con `includePending` la base pasa a ser la venta + la cartera pendiente del
+ * mes: es el escenario «si facturo todos los pedidos», no la venta real.
  */
-export function salesGap(report: ForecastSalesResponse): SalesGapSnapshot {
+export function salesGap(
+  report: ForecastSalesResponse,
+  options: { includePending?: boolean } = {},
+): SalesGapSnapshot {
   const forecastKg = report.totals.forecastKg;
-  const actualKg = report.totals.actualKg;
+  const actualKg = report.totals.actualKg + (options.includePending ? report.totals.pendingKg : 0);
   const hasForecast = forecastKg > 0;
 
   return {
-    monthGapKg: hasForecast ? actualKg - forecastKg : null,
-    monthPct: hasForecast ? report.totals.attainmentPct : null,
+    monthGapKg: hasForecast ? roundKg(actualKg - forecastKg) : null,
+    monthPct: hasForecast ? roundPct((actualKg / forecastKg) * 100) : null,
     // Meta ya cubierta = 0: no se muestra un faltante negativo.
-    cutGapKg: hasForecast ? Math.max(0, forecastKg - actualKg) : null,
+    cutGapKg: hasForecast ? Math.max(0, roundKg(forecastKg - actualKg)) : null,
     cutPct: hasForecast ? roundPct((actualKg / forecastKg) * 100) : null,
   };
 }
 
 function roundPct(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function roundKg(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+// ---------- Cierre comprometido (venta + pedidos) ----------
+
+export interface CommittedSnapshot {
+  /** Venta real del mes + cartera pendiente del mes (kg). */
+  kg: number;
+  /** % del forecast que representa el cierre comprometido. */
+  pctOfForecast: number | null;
+  /** kg del cierre comprometido menos el forecast (negativo = falta). */
+  gapKg: number | null;
+  /** Ritmo diario a vender, además de la cartera, para llegar al forecast. */
+  requiredDailyKg: number | null;
+}
+
+/**
+ * Escenario «si facturo todos los pedidos pendientes»: no es una proyección,
+ * es el techo de lo ya comprometido con la cartera del mes. Devuelve null
+ * cuando no hay cartera o el mes no está en curso: así la UI no ofrece el
+ * interruptor sin datos.
+ */
+export function committedSnapshot(report: ForecastSalesResponse): CommittedSnapshot | null {
+  if (report.status !== 'OPEN' || report.totals.pendingKg <= 0) return null;
+
+  const kg = roundKg(report.totals.actualKg + report.totals.pendingKg);
+  const forecastKg = report.totals.forecastKg;
+  const hasForecast = forecastKg > 0;
+  const remaining = report.basis === 'WORKING' ? report.days.workingRemaining : report.days.remaining;
+
+  return {
+    kg,
+    pctOfForecast: hasForecast ? roundPct((kg / forecastKg) * 100) : null,
+    gapKg: hasForecast ? roundKg(kg - forecastKg) : null,
+    requiredDailyKg: hasForecast
+      ? roundPct(Math.max(0, forecastKg - kg) / Math.max(1, remaining))
+      : null,
+  };
+}
+
+/**
+ * Frase del cierre comprometido para el hero: cartera pendiente, total al que
+ * llegarías y brecha contra el forecast. Reemplaza a `buildNarrative` mientras
+ * el interruptor «Sumar pedidos» está activo.
+ */
+export function buildCommittedNarrative(
+  report: ForecastSalesResponse,
+  committed: CommittedSnapshot | null = committedSnapshot(report),
+): string {
+  if (!committed) return buildNarrative(report);
+
+  const month = monthLabel(report.year, report.month);
+  const pending = fmtKg(report.totals.pendingKg);
+  const total = fmtKg(committed.kg);
+
+  if (report.totals.forecastKg <= 0) {
+    return `Con los ${pending} kg de pedidos pendientes llegarías a ${total} kg en ${month}.`;
+  }
+
+  const gap = committed.gapKg ?? 0;
+  const closing =
+    gap < 0
+      ? `faltarían ~${fmtKg(Math.abs(gap))} kg para la meta`
+      : gap > 0
+        ? `irías ~${fmtKg(gap)} kg por encima de la meta`
+        : 'la meta quedaría cubierta';
+
+  return `Con los ${pending} kg de pedidos pendientes llegarías a ${total} kg (${fmtPct(
+    committed.pctOfForecast,
+  )}); ${closing}.`;
 }
 
 // ---------- Desglose del día (tabla del panel) ----------

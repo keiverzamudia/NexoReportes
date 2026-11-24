@@ -77,6 +77,8 @@ export interface BuildInsightInput {
   account: CustomerInsightAccount | null;
   similar: CustomerInsightSimilar[];
   truncated: boolean;
+  // Monto de la última nota de entrega (moneda del informe).
+  lastSaleAmount?: number | null;
 }
 
 export interface BuildInsightResult {
@@ -457,6 +459,7 @@ function buildCadence(
   rows: InsightVolumeRow[],
   windows: InsightWindows,
   totals: CustomerInsightTotals,
+  lastSaleAmount: number | null,
 ): CustomerInsightCadence {
   const allDates = [...new Set(rows.map((row) => row.date))].sort();
   const currentDates = [
@@ -509,6 +512,7 @@ function buildCadence(
           : null,
     purchasesPerMonth: round1(totals.notes / 12),
     segment,
+    lastSaleAmount: allDates.length === 0 ? null : lastSaleAmount,
   };
 }
 
@@ -709,7 +713,7 @@ export function buildCustomerInsights(input: BuildInsightInput): BuildInsightRes
   const monthly = buildMonthly(input.rows, input.windows, billingByMonth);
   const annual = buildAnnual(input.rows, monthly, billingByMonth);
   const { products, lostProducts } = buildProducts(input.rows, input.windows, totals, previousTotals);
-  const cadence = buildCadence(input.rows, input.windows, totals);
+  const cadence = buildCadence(input.rows, input.windows, totals, input.lastSaleAmount ?? null);
   const alerts = buildAlerts(input, totals, previousTotals, products, lostProducts, cadence, trend);
 
   return {

@@ -8,13 +8,14 @@ export const RECEIVABLES_HELP_TITLE = 'Cómo leer la cartera';
 export const RECEIVABLES_HELP_RULES = [
   'La cartera son los documentos débito abiertos (FACT, N/DB, AJPM y GIRO). Los adelantos y notas de crédito (ADEL, N/CR) no son deuda: se muestran aparte como «a favor» y se restan para obtener la cartera neta.',
   'Un documento se considera vencido al día siguiente de su fecha de vencimiento. El tramo «Por vencer» incluye los que vencen hoy o todavía no vencen.',
-  'Los tramos son 1–30, 31–60, 61–90, 91–120, 121–150 y más de 150 días. Cada documento cae en un solo tramo.',
+  'Los tramos son 1–30, 31–60, 61–90, 91–120, 121–150 y más de 150 días. Dentro de la mora extrema se separa lo vencido hasta el 01/01/2025 del resto. Cada documento cae en un solo tramo.',
   'En USD cada documento se convierte con la tasa con la que nació; no se usa una tasa de hoy. En Bs se muestra el saldo nativo.',
   'El vendedor del resumen es el de la cartera del cliente (clientes.co_ven). El del detalle es el vendedor que firmó la factura (docum_cc.co_ven).',
   'La cobranza de 90 días cuenta abonos aplicados a facturas; no incluye adelantos. El último pago también sale de los recibos de Profit.',
   'La cobranza se toma de los recibos en US$ o USD de Profit; los recibos en Bs no se convierten. Cada abono usa la tasa con la que fue registrado.',
   'El cobrado de 12 meses y el % de cobranza a tiempo usan una ventana móvil de 12 meses sobre la fecha de cobro. El % se pondera por monto: cobrado a tiempo ÷ cobrado de 12 meses.',
   'Los filtros de búsqueda, vendedor, tipo de cliente, zona, tipo de documento y fechas acotan los documentos visibles; el resumen y las cifras de cobranza se recalculan con ese mismo subconjunto.',
+  'En las barras de concentración y cartera por vendedor, el color identifica el tramo de antigüedad y los chips muestran el porcentaje de la deuda de esa fila. El largo total de la barra sigue midiendo el saldo: así se ve a la vez quién debe más y cómo está compuesta su deuda.',
 ];
 
 export const RECEIVABLES_COLUMN_HELP: Record<string, HelpTerm> = {
@@ -105,11 +106,17 @@ export const RECEIVABLES_COLUMN_HELP: Record<string, HelpTerm> = {
     short: 'Mora de 121 a 150 días',
     what: 'Documentos débito vencidos entre 121 y 150 días.',
   },
-  d150Mas: {
-    id: 'd150Mas',
-    title: 'Más de 150 días',
-    short: 'Mora extrema',
-    what: 'Documentos débito vencidos hace más de 150 días. Es la cartera de mayor riesgo.',
+  d150Desde2025: {
+    id: 'd150Desde2025',
+    title: 'Más de 150 días · desde 02/01/2025',
+    short: 'Mora extrema reciente',
+    what: 'Documentos débito vencidos hace más de 150 días con vencimiento posterior al 01/01/2025.',
+  },
+  d150Hasta2025: {
+    id: 'd150Hasta2025',
+    title: 'Más de 150 días · hasta 01/01/2025',
+    short: 'Cartera vieja',
+    what: 'Documentos débito vencidos hasta el 01/01/2025 (incluye ese día). Es la cartera de mayor antigüedad y riesgo.',
   },
   vencido: {
     id: 'vencido',

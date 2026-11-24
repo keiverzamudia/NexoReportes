@@ -15,6 +15,16 @@ const nextConfig: NextConfig = {
   ...(standalone ? { output: 'standalone' as const } : {}),
   // NOTA: `output: 'standalone'` se habilita en el despliegue Docker/Linux;
   // en Windows los symlinks del standalone rompen el build.
+  async redirects() {
+    // Llegadas y Romana se unificaron en PCP: los enlaces viejos (notificaciones,
+    // bitácora, favoritos) siguen funcionando.
+    return [
+      { source: '/llegadas', destination: '/pcp', permanent: false },
+      { source: '/llegadas/:id', destination: '/pcp/:id', permanent: false },
+      { source: '/romana', destination: '/pcp', permanent: false },
+      { source: '/romana/:id', destination: '/pcp/:id', permanent: false },
+    ];
+  },
   async rewrites() {
     const api = process.env.API_URL ?? 'http://localhost:4000';
     return [{ source: '/api/:path*', destination: `${api}/api/:path*` }];

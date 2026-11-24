@@ -12,7 +12,8 @@
 //  · Pestaña «Reporte»: se elige la SEMANA a evaluar (o «Todas»). Todo se
 //    calcula en kg: forecast, vendido (notas de entrega), cartera pendiente y
 //    a producir con el stock arrastrado de la semana anterior. Los sacos se
-//    derivan solo para presentación.
+//    derivan solo para presentación y el VENDIDO expone además su importe real
+//    en USD (notas sin IVA, tasa de cada nota).
 //
 //  Forecast mensual: Profit. Semanas: Nexo. NUNCA se escribe en Profit.
 // ============================================================
@@ -50,6 +51,7 @@ import {
   Select,
   TextInput,
   fmtQty,
+  fmtUsd,
 } from '../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
 import { hasPermission } from '../../lib/permissions';
@@ -705,6 +707,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
       weeks.map((week) => {
         let demand = 0;
         let sold = 0;
+        let soldUsd = 0;
         let toProduce = 0;
         let forecast = 0;
         for (const row of rows) {
@@ -712,10 +715,11 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           if (!weekRow) continue;
           demand += weekRow.demandKg;
           sold += weekRow.soldKg;
+          soldUsd += weekRow.soldUsd;
           toProduce += weekRow.toProduceKg;
           forecast += weekRow.forecastKg;
         }
-        return { week, demand, sold, toProduce, forecast };
+        return { week, demand, sold, soldUsd, toProduce, forecast };
       }),
     [rows, weeks],
   );
@@ -768,18 +772,20 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           const first = params[0];
           const entry = first ? chartData[first.dataIndex] : undefined;
           if (!entry) return '';
-          const line = (label: string, value: number, color: string) =>
+          const line = (label: string, value: number, color: string, usd?: number) =>
             `<div style="display:flex;justify-content:space-between;gap:20px;margin-top:5px;">
               <span style="display:inline-flex;align-items:center;gap:6px;color:#43474f;">
                 <span style="width:8px;height:8px;border-radius:2px;background:${color};"></span>${label}
               </span>
-              <strong style="font-variant-numeric:tabular-nums;color:${C.ink};">${fmtQty(value, 0)} kg</strong>
+              <strong style="font-variant-numeric:tabular-nums;color:${C.ink};">${fmtQty(value, 0)} kg${
+                usd !== undefined ? ` · ≈ ${fmtUsd(usd)}` : ''
+              }</strong>
             </div>`;
           return `<div style="min-width:230px;">
             <div style="font-weight:700;color:#001e40;margin-bottom:2px;">Semana ${entry.week.weekIndex}
               <span style="font-weight:400;color:${C.outline};font-size:11px;">(${entry.week.from.slice(8)}-${entry.week.to.slice(8)})</span>
             </div>
-            ${line('Vendido', entry.sold, C.navy)}
+            ${line('Vendido', entry.sold, C.navy, entry.soldUsd > 0 ? entry.soldUsd : undefined)}
             ${line('Solicitado (cartera)', entry.demand, C.navySoft)}
             ${line('A producir', entry.toProduce, C.red)}
             ${hasForecast ? line('Forecast', entry.forecast, C.limeDark) : ''}
@@ -899,6 +905,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
       return {
         forecast: rows.reduce((a, r) => a + r.forecastMonthKg, 0),
         sold: rows.reduce((a, r) => a + r.soldMonthKg, 0),
+        soldUsd: rows.reduce((a, r) => a + r.soldMonthUsd, 0),
         demand: rows.reduce((a, r) => a + r.demandMonthKg, 0),
         toProduce: rows.reduce((a, r) => a + r.productionMonthKg, 0),
         toProduceSacks: rows.reduce((a, r) => a + (r.productionMonthSacks ?? 0), 0),
@@ -916,6 +923,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
     return {
       forecast,
       sold,
+      soldUsd: ws.reduce((a, x) => a + x.week.soldUsd, 0),
       demand: ws.reduce((a, x) => a + x.week.demandKg, 0),
       toProduce: ws.reduce((a, x) => a + x.week.toProduceKg, 0),
       toProduceSacks: ws.reduce((a, x) => a + (x.week.toProduceSacks ?? 0), 0),
@@ -932,6 +940,21 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
     weekIndex !== null && totals.objective > 0
       ? Math.min(1, (totals.available + totals.sold) / totals.objective)
       : 0;
+
+  // Importe vendido en bolívares a la tasa VIGENTE (no la de cada nota): es la
+  // lectura que pidió el usuario para contrastar el valor de hoy.
+  const soldBs = data.exchangeRate !== null && data.exchangeRate > 0 ? totals.soldUsd * data.exchangeRate : null;
+  const soldSecondary =
+    totals.soldUsd > 0
+      ? {
+          value: fmtUsd(totals.soldUsd),
+          hint: soldBs !== null ? `Bs ${fmtQty(soldBs, 0)} a la tasa de hoy` : undefined,
+          title:
+            soldBs !== null && data.exchangeRate !== null
+              ? `Bs ${fmtQty(soldBs, 0)} a la tasa de hoy (${fmtQty(data.exchangeRate, 2)} Bs/US$). Importe de las notas de entrega, sin IVA.`
+              : 'Importe de las notas de entrega, sin IVA, a la tasa de cada nota.',
+        }
+      : undefined;
 
   // Filas con la semana elegida (las que no la tienen se omiten, como antes).
   const weekEntries = useMemo(
@@ -1025,10 +1048,11 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             sortValue: (r: ForecastPlanRow) => weekOf(r)?.soldKg ?? 0,
             render: (r: ForecastPlanRow) => {
               const sold = weekOf(r)?.soldKg ?? 0;
+              const usd = weekOf(r)?.soldUsd ?? 0;
               return (
                 <span
                   className={sold > 0 ? 'font-semibold text-primary' : 'text-outline'}
-                  title={`${w.label} · kg despachados`}
+                  title={`${w.label} · ${fmtQty(sold, 0)} kg despachados${usd > 0 ? ` · ≈ ${fmtUsd(usd)}` : ''}`}
                 >
                   {fmtQty(sold, 0)}
                 </span>
@@ -1070,6 +1094,19 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         className: 'border-l border-surface-container',
         sortValue: (r) => r.productionMonthKg,
         render: (r) => <span className="font-bold text-primary">{fmtQty(r.productionMonthKg, 0)}</span>,
+      },
+      {
+        key: 'vendidoMesUsd',
+        header: 'Vendido mes ($)',
+        align: 'right',
+        kind: 'metric',
+        className: 'border-l border-surface-container',
+        sortValue: (r) => r.soldMonthUsd,
+        render: (r) => (
+          <span className={r.soldMonthUsd > 0 ? 'font-bold text-primary' : 'text-outline'}>
+            {r.soldMonthUsd > 0 ? fmtUsd(r.soldMonthUsd) : '—'}
+          </span>
+        ),
       },
     ],
     [weeks, productCode],
@@ -1147,6 +1184,21 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         render: (e) => (
           <span className={e.week.soldKg > 0 ? 'font-bold text-primary' : 'text-outline'}>
             {fmtQty(e.week.soldKg, 0)}
+          </span>
+        ),
+      },
+      {
+        key: 'vendidoUsd',
+        header: 'Vendido ($)',
+        align: 'right',
+        kind: 'metric',
+        sortValue: (e) => e.week.soldUsd,
+        render: (e) => (
+          <span
+            className={e.week.soldUsd > 0 ? 'font-semibold text-primary' : 'text-outline'}
+            title="Importe de las notas de entrega de la semana, sin IVA y a la tasa de cada nota"
+          >
+            {e.week.soldUsd > 0 ? fmtUsd(e.week.soldUsd) : '—'}
           </span>
         ),
       },
@@ -1251,12 +1303,13 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
   function exportCsv() {
     const header = ['Codigo', 'Descripcion', 'Unid', 'Stock 03', 'Stock 9999', 'Stock 68', 'Existencia (unid)', 'Existencia (kg)'];
     if (weekIndex === null) {
-      for (const w of weeks) header.push(`${w.label} Forecast (kg)`, `${w.label} Vendido (kg)`, `${w.label} A producir (kg)`);
+      for (const w of weeks) header.push(`${w.label} Forecast (kg)`, `${w.label} Vendido (kg)`, `${w.label} Vendido (USD)`, `${w.label} A producir (kg)`);
     } else {
       header.push(
         `S${weekIndex} Forecast (kg)`,
         `S${weekIndex} Solicitado (kg)`,
         `S${weekIndex} Vendido (kg)`,
+        `S${weekIndex} Vendido (USD)`,
         'Objetivo (kg)',
         'Despachable (kg)',
         'A producir (kg)',
@@ -1266,7 +1319,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
         'Estado',
       );
     }
-    header.push('Prod mes (kg)', 'Prod mes (sacos)');
+    header.push('Prod mes (kg)', 'Prod mes (sacos)', 'Vendido mes (USD)');
     const body = rows.map((r) => {
       const out: string[] = [
         r.productCode,
@@ -1281,7 +1334,12 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
       if (weekIndex === null) {
         for (const w of weeks) {
           const wk = r.weeks.find((x) => x.weekIndex === w.weekIndex);
-          out.push(String(wk?.forecastKg ?? 0), String(wk?.soldKg ?? 0), String(wk?.toProduceKg ?? 0));
+          out.push(
+            String(wk?.forecastKg ?? 0),
+            String(wk?.soldKg ?? 0),
+            String(wk?.soldUsd ?? 0),
+            String(wk?.toProduceKg ?? 0),
+          );
         }
       } else {
         const wk = r.weeks.find((x) => x.weekIndex === weekIndex);
@@ -1289,6 +1347,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           String(wk?.forecastKg ?? 0),
           String(wk?.demandKg ?? 0),
           String(wk?.soldKg ?? 0),
+          String(wk?.soldUsd ?? 0),
           String(wk?.objectiveKg ?? 0),
           String(wk?.availableKg ?? 0),
           String(wk?.toProduceKg ?? 0),
@@ -1298,7 +1357,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
           wk ? STATUS_LABEL[wk.status] : '',
         );
       }
-      out.push(String(r.productionMonthKg), String(r.productionMonthSacks ?? ''));
+      out.push(String(r.productionMonthKg), String(r.productionMonthSacks ?? ''), String(r.soldMonthUsd));
       return out;
     });
     const csv = [header, ...body].map((line) => line.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -1371,7 +1430,15 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
                 : 'Vendido, solicitado y producción por semana (todos los artículos)'
             }
             className="mt-space-sm"
+            pointerCategories={weeks.map((_, index) => index)}
+            onIndexDoubleClick={(index) => {
+              const week = weeks[index];
+              if (week) setSelected(String(week.weekIndex));
+            }}
           />
+          <p className="mt-space-xs text-label-sm text-on-surface-variant">
+            Doble clic en una semana de la gráfica para cargar su detalle en el panel y en la tabla.
+          </p>
         </Card>
 
         <Card className="flex min-w-0 flex-col gap-space-md p-space-md lg:col-span-5">
@@ -1407,7 +1474,12 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
 
           <div className="grid grid-cols-1 gap-space-sm sm:grid-cols-2">
             <Kpi label={weekIndex === null ? 'Forecast del mes' : 'Forecast de la semana'} value={fmtQty(totals.forecast, 0)} suffix="kg" tone="primary" />
-            <Kpi label={weekIndex === null ? 'Vendido del mes' : 'Vendido de la semana'} value={fmtQty(totals.sold, 0)} suffix="kg" />
+            <Kpi
+              label={weekIndex === null ? 'Vendido del mes' : 'Vendido de la semana'}
+              value={fmtQty(totals.sold, 0)}
+              suffix="kg"
+              secondary={soldSecondary}
+            />
             <Kpi label={weekIndex === null ? 'Solicitado del mes' : 'Solicitado de la semana'} value={fmtQty(totals.demand, 0)} suffix="kg" />
             <Kpi label="A producir" value={fmtQty(totals.toProduce, 0)} suffix="kg" tone="danger" />
           </div>
@@ -1469,6 +1541,10 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             objetivo − stock al inicio); el stock arrastra lo producido y lo vendido en las semanas anteriores, así que
             el mes no repite la misma brecha. Si sobra stock se muestra como <strong>Excedente</strong>.
           </p>
+          <p className="text-label-sm text-on-surface-variant">
+            <strong>Vendido ($)</strong> = notas de entrega no anuladas, importe neto sin IVA y a la tasa de cada nota.
+            El equivalente en Bs usa la tasa de hoy.
+          </p>
         </Card>
       </div>
 
@@ -1506,6 +1582,9 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
                 <td className="border-l border-surface-container px-space-sm py-space-xs text-right tabular-nums text-primary">
                   {fmtQty(totals.toProduce, 0)}
                 </td>
+                <td className="border-l border-surface-container px-space-sm py-space-xs text-right tabular-nums text-primary">
+                  {fmtUsd(totals.soldUsd)}
+                </td>
               </tr>
             }
           />
@@ -1530,6 +1609,7 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
                 <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtQty(totals.demand, 0)}</td>
                 <td className="px-space-sm py-space-xs text-right tabular-nums">{fmtQty(totals.forecast, 0)}</td>
                 <td className="px-space-sm py-space-xs text-right tabular-nums text-primary">{fmtQty(totals.sold, 0)}</td>
+                <td className="px-space-sm py-space-xs text-right tabular-nums text-primary">{fmtUsd(totals.soldUsd)}</td>
                 <td className="px-space-sm py-space-xs text-right tabular-nums">
                   {totals.attainment === null ? '—' : `${fmtQty(totals.attainment, 0)}%`}
                 </td>
@@ -1544,7 +1624,8 @@ function PlanReport({ data, unit }: { data: ForecastPlanResponse; unit: UnitFilt
             }
           />
           <div className="border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
-            Todo en <strong>kg</strong>; los sacos se derivan con el kg por saco y solo aplican a artículos SAC.{' '}
+            Las cantidades van en <strong>kg</strong>; el vendido añade su importe en <strong>$</strong> (notas sin IVA,
+            tasa de cada nota). Los sacos se derivan con el kg por saco y solo aplican a artículos SAC.{' '}
             <span className="font-semibold text-error">Rojo</span> = falta producir ·{' '}
             <span className="font-semibold text-success">Verde</span> = sobra stock. El objetivo de la semana es el{' '}
             <strong>mayor entre el forecast y el solicitado</strong>, y el stock es el que queda tras producir y consumir

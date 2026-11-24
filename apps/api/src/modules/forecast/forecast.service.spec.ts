@@ -42,8 +42,11 @@ function adapterWith(options: {
   customerHistory?: Record<string, unknown>[];
   weekly?: Record<string, unknown>[];
   forecast?: Record<string, unknown>[];
+  /** Tasa Bs/US$ que devuelve `dbo.tasas`; sin ella la consulta viene vacía. */
+  rate?: number;
   fail?: boolean;
   failWeekly?: boolean;
+  failRate?: boolean;
   failDailyProducts?: boolean;
   failDayCustomers?: boolean;
   failCustomerProducts?: boolean;
@@ -59,6 +62,10 @@ function adapterWith(options: {
     selectQuery: async (sqlText: string) => {
       calls.total += 1;
       const lower = sqlText.toLowerCase();
+      if (lower.includes('dbo.tasas')) {
+        if (options.fail || options.failRate) throw new Error('Profit caído');
+        return options.rate === undefined ? [] : [{ tasa: options.rate }];
+      }
       if (lower.includes('dbo.forecast')) {
         calls.forecast += 1;
         // El servicio agrupa por `fecha`; por defecto las filas de prueba son
@@ -1200,6 +1207,39 @@ describe('ForecastService.plan (despachos semanales)', () => {
     expect(row.soldMonthKg).toBe(1_500);
     expect(row.weeks.map((week) => week.soldKg)).toEqual([1_000, 0, 500, 0]);
     expect(row.demandMonthKg).toBe(0); // sin pedidos activos en el fixture
+  });
+
+  it('suma el importe USD de las notas por semana y mes, y expone la tasa de hoy', async () => {
+    const { adapter } = adapterWith({
+      forecast: [{ co_art: 'ABAGP13', forecast_mes: 480_000 }],
+      rate: 919.8227,
+      weekly: [
+        { co_art: 'ABAGP13', semana: 1, kg: 1_000, usd: 350.5 },
+        { co_art: 'ABAGP13', semana: 3, kg: 500, usd: 175.25 },
+      ],
+    });
+
+    const report = await service(adapter, createFakePrisma([], [PRODUCT])).plan(2026, 10);
+    const row = report.rows.find((entry) => entry.productCode === 'ABAGP13')!;
+
+    expect(row.weeks.map((week) => week.soldUsd)).toEqual([350.5, 0, 175.25, 0]);
+    expect(row.soldMonthUsd).toBe(525.75);
+    expect(report.totals.soldUsd).toBe(525.75);
+    expect(report.exchangeRate).toBe(919.8227);
+  });
+
+  it('sin tasa disponible conserva el importe USD y deja exchangeRate en null', async () => {
+    const { adapter } = adapterWith({
+      forecast: [{ co_art: 'ABAGP13', forecast_mes: 480_000 }],
+      failRate: true,
+      weekly: [{ co_art: 'ABAGP13', semana: 1, kg: 1_000, usd: 350.5 }],
+    });
+
+    const report = await service(adapter, createFakePrisma([], [PRODUCT])).plan(2026, 10);
+
+    expect(report.exchangeRate).toBeNull();
+    expect(report.totals.soldUsd).toBe(350.5);
+    expect(report.salesAvailable).toBe(true);
   });
 
   it('lee el forecast del mes pedido aunque ya esté cerrado', async () => {

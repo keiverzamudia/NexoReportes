@@ -69,7 +69,8 @@ function contextNumber(context: Record<string, unknown> | null, ...keys: string[
 function entryLink(entityType: string, entityId: string | null): string | null {
   if (!entityId) return null;
   if (entityType === 'DispatchSheet') return `/despacho/${entityId}`;
-  if (entityType === 'CustomerArrival') return `/llegadas/${entityId}`;
+  if (entityType === 'CustomerArrival') return `/pcp/${entityId}`;
+  if (entityType === 'RomanaArrival') return `/pcp/${entityId}`;
   if (entityType === 'User' || entityType === 'Role' || entityType === 'UserPermission') return '/usuarios';
   if (entityType === 'SellerQuota') return '/vendedor';
   return null;
@@ -257,7 +258,7 @@ export class AuditService {
           entityId: note.arrivalId,
           title: `Nota de ${note.arrival.customerName}`,
           detail: note.body,
-          linkPath: `/llegadas/${note.arrivalId}`,
+          linkPath: `/pcp/${note.arrivalId}`,
           ip: null,
           userAgent: null,
           context: null,

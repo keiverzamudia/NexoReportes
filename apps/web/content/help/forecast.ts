@@ -22,6 +22,8 @@ export const SALES_HELP_RULES = [
   'El desglose del día trae dos vistas: productos (kg, sacos y % del día) y clientes (kg, sacos y % del día). Al expandir una fila se ven los clientes del producto o los productos del cliente, con su presentación en sacos cuando el artículo es SAC.',
   'Los porcentajes del desglose se calculan sobre el total vendido del día; las notas sin cliente se agrupan como «Sin cliente» para que sumen 100 %.',
   'La línea punteada de la tira diaria es la meta por día (forecast ÷ días del mes).',
+  '«Sumar pedidos» (acumulado del mes) añade la cartera pendiente: la línea ámbar muestra hasta dónde llegarías si facturas todos los pedidos del mes. Es un techo comprometido, no una proyección; la punteada de ritmo no incluye la cartera y no se suman.',
+  'Con «Sumar pedidos» activo, los KPIs superiores leen venta + cartera: el cierre comprometido, la brecha contra el forecast y el ritmo que faltaría vender después de los pedidos.',
   'La tarjeta «Brecha» alterna dos lecturas: Mes = venta acumulada contra el forecast (con signo); Día = lo que faltaría para el forecast si el mes terminara hoy, con el % de la meta ya vendido.',
   'El color de «Avance» y del semáforo mide el ritmo: compara el cierre proyectado con la meta, no lo vendido a la fecha. Un 25 % de avance a mitad de mes puede ir perfectamente en ritmo.',
   'La meta se captura una vez al mes y se conserva para el histórico.',

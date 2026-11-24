@@ -105,7 +105,9 @@ export class PermissionsService implements OnModuleInit {
     // Módulos agregados después de la instalación original: se siembran sus
     // permisos por defecto en los roles de sistema que aún no los tengan, sin
     // resucitar permisos que un administrador haya quitado a mano.
-    await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'llegadas');
+    // PCP fusiona los antiguos «llegadas» y «romana»: se migran sus permisos
+    // (roles y excepciones) una sola vez antes de sembrar el módulo nuevo.
+    await this.mergePcpPermissions();
     await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'vendedor');
     // Producción nace con lectura para todos y costos para gerencia/planificador.
     await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'produccion');
@@ -126,7 +128,7 @@ export class PermissionsService implements OnModuleInit {
     // en el siguiente arranque.
     await this.seedPedidosViews();
 
-    // «Ver todos los vendedores» nace concedido a quien ya veía el reporte
+    // «Ver todo» de Vendedor nace concedido a quien ya veía el reporte
     // completo: así la actualización no restringe a nadie de golpe. El
     // administrador puede quitarlo por rol o por excepción de usuario.
     await this.seedVendedorViewAll();
@@ -157,7 +159,7 @@ export class PermissionsService implements OnModuleInit {
       create: {
         key: markerKey,
         value: new Date().toISOString(),
-        description: 'Siembra inicial del permiso «Ver todos los vendedores».',
+        description: 'Siembra inicial del permiso «Ver todo» de Vendedor.',
       },
     });
   }
@@ -231,6 +233,96 @@ export class PermissionsService implements OnModuleInit {
       }
       await this.prisma.userPermission.delete({ where: { id: row.id } });
     }
+  }
+
+  /**
+   * Fusiona los módulos «llegadas» y «romana» en «pcp». Es una migración de
+   * datos de una sola vez (marcador en `systemSetting`): une las acciones en
+   * los roles —quien veía cualquiera de los dos ve PCP— y en las excepciones
+   * de usuario gana la denegación. Después siembra el módulo nuevo en los
+   * roles de sistema que quedaron sin permisos PCP.
+   */
+  private async mergePcpPermissions(): Promise<void> {
+    const markerKey = 'rbac.seed.pcp_merge.v1';
+    const marker = await this.prisma.systemSetting.findUnique({ where: { key: markerKey } });
+    if (marker) return;
+
+    // Acción vieja → acción nueva. «romana:create» cubría subir fotos y marcar
+    // la llegada en báscula; en PCP es la acción «upload».
+    const MODULE_MAP: Record<string, Record<string, string>> = {
+      llegadas: { read: 'read', create: 'create', update: 'update', delete: 'delete' },
+      romana: {
+        read: 'read',
+        create: 'upload',
+        update: 'update',
+        validate: 'validate',
+        delete: 'delete',
+      },
+    };
+    const legacyModules = Object.keys(MODULE_MAP);
+
+    // Roles: la unión de ambos módulos.
+    for (const from of legacyModules) {
+      const rows = await this.prisma.rolePermission.findMany({ where: { module: from } });
+      for (const row of rows) {
+        const action = MODULE_MAP[from]?.[row.action];
+        if (action) {
+          await this.prisma.rolePermission.upsert({
+            where: { roleCode_module_action: { roleCode: row.roleCode, module: 'pcp', action } },
+            update: {},
+            create: { roleCode: row.roleCode, module: 'pcp', action },
+          });
+        }
+        await this.prisma.rolePermission.delete({
+          where: {
+            roleCode_module_action: { roleCode: row.roleCode, module: from, action: row.action },
+          },
+        });
+      }
+    }
+
+    // Excepciones por usuario: si tenía denegado cualquiera de los dos, PCP
+    // queda denegado. Si tenía permitido en uno y nada en el otro, se concede.
+    const overrides = await this.prisma.userPermission.findMany({
+      where: { module: { in: legacyModules } },
+    });
+    const merged = new Map<string, { userId: string; action: string; allowed: boolean }>();
+    for (const row of overrides) {
+      const action = MODULE_MAP[row.module]?.[row.action];
+      await this.prisma.userPermission.delete({ where: { id: row.id } });
+      if (!action) continue;
+      const key = `${row.userId}:${action}`;
+      const current = merged.get(key);
+      merged.set(key, {
+        userId: row.userId,
+        action,
+        allowed: current ? current.allowed && row.allowed : row.allowed,
+      });
+    }
+    for (const entry of merged.values()) {
+      await this.prisma.userPermission.upsert({
+        where: { userId_module_action: { userId: entry.userId, module: 'pcp', action: entry.action } },
+        update: { allowed: entry.allowed },
+        create: {
+          userId: entry.userId,
+          module: 'pcp',
+          action: entry.action,
+          allowed: entry.allowed,
+        },
+      });
+    }
+
+    await this.seedMissingModule(DEFAULT_ROLE_PERMISSIONS, 'pcp');
+
+    await this.prisma.systemSetting.upsert({
+      where: { key: markerKey },
+      update: {},
+      create: {
+        key: markerKey,
+        value: new Date().toISOString(),
+        description: 'Fusión de los módulos Llegadas y Romana en PCP.',
+      },
+    });
   }
 
   private async seedMissingModule(
@@ -330,6 +422,11 @@ export class PermissionsService implements OnModuleInit {
       if (override.allowed) granted.add(key);
       else granted.delete(key);
     }
+
+    // Vendedor: «Ver todo» implica entrar al módulo. La matriz solo expone las
+    // dos vistas de datos (Unitario / Ver todo); no se obliga a marcar aparte
+    // el permiso de acceso.
+    if (granted.has('vendedor:view_all')) granted.add('vendedor:read');
 
     const permissions = isAdmin
       ? APP_MODULES.flatMap((module) => module.actions.map(({ action }) => permissionKey(module.key, action)))

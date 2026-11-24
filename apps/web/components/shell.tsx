@@ -27,7 +27,7 @@ import {
   Users,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { LoginCandidate, SyncStatusResponse, UserSummary } from '@nexo/contracts';
+import { LoginCandidate, SyncStatusResponse, SystemMetaResponse, UserSummary } from '@nexo/contracts';
 import Link, { useLinkStatus } from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
@@ -36,6 +36,7 @@ import { humanAge } from '../lib/dispatch-sheet';
 import { canSeePedidos, hasPermission } from '../lib/permissions';
 import { Logo } from './Logo';
 import { NotificationsBell } from './NotificationsBell';
+import { clearAnnouncementDismissals, SystemAnnouncementsModal, SystemVersionDialog } from './SystemAnnouncementsModal';
 import { useLoadingOverlay } from './loading/LoadingOverlayProvider';
 import { cx } from './ui';
 
@@ -92,6 +93,7 @@ export function LoginForm({ onSuccess }: { onSuccess: (user: UserSummary) => voi
       const logged = auth.user.permissions ? auth.user : ((await currentUser()) ?? auth.user);
       // No mezclar datos de una sesión anterior (p. ej. tras expirar la cookie).
       queryClient.clear();
+      clearAnnouncementDismissals();
       queryClient.setQueryData(['me'], logged);
       onSuccess(logged);
     } catch (e) {
@@ -300,7 +302,7 @@ const NAV_LINKS: NavLink[] = [
   { href: '/por-cobrar', label: 'CXC', icon: HandCoins, module: 'cxc' },
   { href: '/pedidos', label: 'Pedidos', icon: ShoppingCart, module: 'pedidos' },
   { href: '/despacho', label: 'Despacho', icon: ClipboardList, module: 'despacho' },
-  { href: '/llegadas', label: 'Llegadas', icon: DoorOpen, module: 'llegadas' },
+  { href: '/pcp', label: 'PCP', icon: DoorOpen, module: 'pcp' },
   { href: '/clientes', label: 'Clientes', icon: Users, module: 'clientes' },
   { href: '/usuarios', label: 'Usuarios', icon: ShieldCheck, module: 'usuarios' },
 ];
@@ -428,6 +430,7 @@ export function AppNav() {
   const pathname = usePathname();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const [versionDialogOpen, setVersionDialogOpen] = useState(false);
   // Quién soy y qué permisos tengo: define el menú y el acceso por URL.
   const { data: sessionUser } = useQuery({
     queryKey: ['me'],
@@ -435,6 +438,14 @@ export function AppNav() {
     staleTime: 15_000,
     retry: false,
   });
+  const { data: systemMeta } = useQuery<SystemMetaResponse>({
+    queryKey: ['system-meta'],
+    queryFn: () => apiFetch<SystemMetaResponse>('/system/meta'),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: true,
+    retry: false,
+  });
+  const isAdmin = sessionUser?.role === 'ADMIN';
   const permissionList = useMemo(() => sessionUser?.permissions ?? [], [sessionUser?.permissions]);
   const links = useMemo(() => linksFor(permissionList), [permissionList]);
   const home = links[0]?.href ?? '/';
@@ -453,18 +464,39 @@ export function AppNav() {
   }, [sessionUser, links, pathname, router]);
 
   return (
+    <>
     <header className="sticky top-0 z-30 border-b border-outline-variant/35 bg-surface-container-lowest/85 backdrop-blur-xl">
       <div className="mx-auto flex w-full max-w-[1680px] flex-wrap items-center gap-space-md px-space-md py-space-sm md:px-space-xl">
-        <Link
-          href={home}
-          prefetch
-          onMouseEnter={() => router.prefetch(home)}
-          onFocus={() => router.prefetch(home)}
-          className="flex shrink-0 items-center gap-space-sm"
-          aria-label="Corpoagro — inicio"
-        >
-          <Logo size="compact" height={28} />
-        </Link>
+        <div className="flex shrink-0 items-center gap-space-xs">
+          <Link
+            href={home}
+            prefetch
+            onMouseEnter={() => router.prefetch(home)}
+            onFocus={() => router.prefetch(home)}
+            className="flex shrink-0 items-center gap-space-sm"
+            aria-label="Corpoagro — inicio"
+          >
+            <Logo size="compact" height={28} />
+          </Link>
+          {systemMeta?.version &&
+            (isAdmin ? (
+              <button
+                type="button"
+                onClick={() => setVersionDialogOpen(true)}
+                title="Versión del sistema (clic para editar)"
+                className="rounded-pill border border-outline-variant/40 bg-surface-container-low px-2 py-0.5 font-mono text-[11px] font-semibold text-on-surface-variant transition-colors hover:border-primary/40 hover:bg-primary-fixed/40 hover:text-primary"
+              >
+                {systemMeta.version}
+              </button>
+            ) : (
+              <span
+                title={`Versión del sistema: ${systemMeta.version}`}
+                className="rounded-pill border border-outline-variant/40 bg-surface-container-low px-2 py-0.5 font-mono text-[11px] font-semibold text-on-surface-variant"
+              >
+                {systemMeta.version}
+              </span>
+            ))}
+        </div>
 
         <nav aria-label="Módulos" className="order-3 w-full md:order-none md:w-auto md:flex-1">
           <div className="flex items-center gap-1 overflow-x-auto rounded-pill bg-surface-container-low/80 p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -525,5 +557,10 @@ export function AppNav() {
         </div>
       </div>
     </header>
+    {sessionUser && <SystemAnnouncementsModal announcements={systemMeta?.activeAnnouncements ?? []} />}
+    {versionDialogOpen && systemMeta && (
+      <SystemVersionDialog currentVersion={systemMeta.version} onClose={() => setVersionDialogOpen(false)} />
+    )}
+    </>
   );
 }

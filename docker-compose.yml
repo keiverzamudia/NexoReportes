@@ -32,6 +32,9 @@ services:
       NODE_ENV: production
       API_PORT: "4000"
       DATABASE_URL: postgresql://${POSTGRES_USER:-nexo}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nexo}?schema=public
+      ROMANA_UPLOAD_DIR: /app/uploads/romana
+    volumes:
+      - romana_uploads:/app/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -71,3 +74,4 @@ services:
 
 volumes:
   pgdata:
+  romana_uploads:

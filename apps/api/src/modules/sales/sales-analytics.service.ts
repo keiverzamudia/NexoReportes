@@ -300,6 +300,19 @@ export class SalesAnalyticsService {
     const computed = await this.compute(query);
     const search = (query.q ?? '').trim().toLowerCase();
     let rows = computed.customers;
+
+    // Cruce CxC: acota la respuesta a los códigos que pidió el frontend.
+    const codes = new Set(
+      (query.codes ?? '')
+        .split(',')
+        .map((code) => code.trim())
+        .filter(Boolean)
+        .slice(0, 200),
+    );
+    if (codes.size > 0) {
+      rows = rows.filter((row) => codes.has(row.code));
+    }
+
     if (search) {
       rows = rows.filter(
         (row) =>

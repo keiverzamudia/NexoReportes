@@ -392,9 +392,9 @@ const NO_CLIENT_LABEL = 'Sin cliente';
 const INTERNAL_SELLER_CODES = new Set(['001', '004']);
 
 /**
- * Acceso de la sesión que consulta el informe. `vendedor:view_all` separa al
- * gerente que ve toda la fuerza de ventas de la vendedora que solo ve su
- * cartera (`sellerCode` asignado en Usuarios).
+ * Acceso de la sesión que consulta el informe. `vendedor:view_all` («Ver todo»)
+ * separa al gerente que ve toda la fuerza de ventas del vendedor con alcance
+ * «Unitario», que solo ve su cartera (`sellerCode` asignado en Usuarios).
  */
 export interface SellerReportAccess {
   isAdmin: boolean;

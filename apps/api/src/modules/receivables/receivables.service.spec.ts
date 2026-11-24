@@ -39,8 +39,10 @@ function rawDoc(overrides: Record<string, unknown> = {}): Record<string, unknown
 function adapterWith(options: {
   docs?: Record<string, unknown>[];
   payments?: Record<string, unknown>[];
+  paymentAging?: Record<string, unknown>[];
   failDocs?: boolean;
   failPayments?: boolean;
+  failPaymentAging?: boolean;
   onCall?: (sql: string) => void;
 }): ProfitAdapter {
   return {
@@ -50,6 +52,10 @@ function adapterWith(options: {
       if (sql.includes('nexo:receivables_docs')) {
         if (options.failDocs) throw new Error('Profit caído');
         return options.docs ?? [];
+      }
+      if (sql.includes('nexo:receivables_payments_aging')) {
+        if (options.failPaymentAging) throw new Error('Reparto de cobranza caído');
+        return options.paymentAging ?? [];
       }
       if (sql.includes('nexo:receivables_payments')) {
         if (options.failPayments) throw new Error('Cobros caídos');
@@ -73,6 +79,7 @@ describe('ReceivablesService', () => {
       tipo_doc: 'FACT',
       nro_doc: 50003102,
       dias_venc: 180,
+      fec_venc: '2026-05-01T00:00:00.000Z',
       saldo: 17600,
       monto_net: 17600,
       tipo_cli: 'L2',
@@ -106,9 +113,12 @@ describe('ReceivablesService', () => {
       pagos_12m_a_tiempo: 1,
     },
   ];
+  const paymentAging = [
+    { tramo: 'POR_VENCER', monto_bs: 8800, monto_usd: 10, pagos: 1 },
+  ];
 
   it('arma el reporte por cliente y excluye créditos de la lista por defecto', async () => {
-    const service = new ReceivablesService(adapterWith({ docs, payments }));
+    const service = new ReceivablesService(adapterWith({ docs, payments, paymentAging }));
     const report = await service.report({ moneda: 'USD' });
 
     expect(report.source).toBe('profit');
@@ -120,7 +130,10 @@ describe('ReceivablesService', () => {
     expect(report.totals.diasMaxVencido).toBe(180);
     expect(report.documentos).toHaveLength(2);
     expect(report.documentos.every((row) => !row.esCredito)).toBe(true);
-    expect(report.buckets.find((bucket) => bucket.key === 'D150_MAS')?.amount).toBe(20);
+    expect(report.buckets.find((bucket) => bucket.key === 'D150_DESDE_2025')?.amount).toBe(20);
+    expect(report.cobranzaBuckets ?? []).toHaveLength(1);
+    expect(report.cobranzaBuckets?.[0]?.amount).toBe(10);
+    expect(report.cobranzaBuckets?.[0]?.short).toBe('A tiempo');
     expect(report.opciones.vendedores.map((option) => option.value)).toContain('031');
     expect(report.risk.topCliente?.codigo).toBe('505835220');
     expect(report.filtros.moneda).toBe('USD');
@@ -147,9 +160,10 @@ describe('ReceivablesService', () => {
   });
 
   it('convierte a Bs sin usar la tasa y conserva el cobrado nativo', async () => {
-    const service = new ReceivablesService(adapterWith({ docs, payments }));
+    const service = new ReceivablesService(adapterWith({ docs, payments, paymentAging }));
     const report = await service.report({ moneda: 'BS' });
     expect(report.totals.cartera).toBe(26400);
+    expect(report.cobranzaBuckets?.[0]?.amount).toBe(8800);
     const josef = report.clientes.find((row) => row.codigo === '153064128');
     expect(josef?.cobrado90).toBe(8800);
     expect(josef?.cobrado12m).toBe(8800);
@@ -162,11 +176,11 @@ describe('ReceivablesService', () => {
       adapterWith({ docs, payments, onCall: () => (calls += 1) }),
     );
     await service.report({ moneda: 'USD' });
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
     await service.report({ moneda: 'USD' });
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
     await service.report({ moneda: 'USD', refresh: true });
-    expect(calls).toBe(4);
+    expect(calls).toBe(6);
   });
 
   it('si falla la cobranza la cartera sigue disponible', async () => {
@@ -179,6 +193,15 @@ describe('ReceivablesService', () => {
     expect(report.totals.cobrado12m).toBe(0);
     expect(report.totals.pctCobranzaATiempo).toBeNull();
     expect(report.totals.pagos12m).toBe(0);
+  });
+
+  it('si falla el reparto de cobranza la card lo informa sin tumbar la cartera', async () => {
+    const service = new ReceivablesService(
+      adapterWith({ docs, payments, failPaymentAging: true }),
+    );
+    const report = await service.report({ moneda: 'USD' });
+    expect(report.totals.cartera).toBe(30);
+    expect(report.cobranzaBuckets).toBeNull();
   });
 
   it('si falla la cartera responde 503 con un mensaje claro', async () => {

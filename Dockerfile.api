@@ -27,6 +27,9 @@ RUN sed 's/provider = "sqlite"/provider = "postgresql"/' prisma/schema.prisma > 
 
 ENV NODE_ENV=production
 
+# Fotos de Romana: se monta un volumen sobre esta carpeta en docker-compose.
+RUN mkdir -p /app/uploads/romana
+
 EXPOSE 4000
 
 # `db push` es aditivo: si detecta un cambio destructivo falla, no borra datos.

@@ -77,6 +77,9 @@ const LIMITES_CREDITO: Record<string, number> = {
   '505835220': 12000,
 };
 
+// Días de crédito de desarrollo (`dbo.clientes.plaz_pag`).
+const FIXTURE_PLAZO_PAGO = 15;
+
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -96,6 +99,7 @@ function statementRows(params: Record<string, unknown> = {}, limit = 1000): Reco
         co_cli: row.co_cli,
         cli_des: row.cli_des,
         limite_credito: LIMITES_CREDITO[row.co_cli] ?? null,
+        plazo_pago: FIXTURE_PLAZO_PAGO,
         tipo_doc: row.tipo_doc,
         nro_doc: row.nro_doc,
         fec_emis: row.fec_emis,
@@ -128,6 +132,7 @@ function statementSummaries(params: Record<string, unknown> = {}, limit = 1000):
       co_cli: code,
       cli_des: docs[0]?.cli_des ?? code,
       limite_credito: LIMITES_CREDITO[code] ?? null,
+      plazo_pago: FIXTURE_PLAZO_PAGO,
       saldo: round2(saldo),
       saldo_vencido: round2(vencidos.reduce((acc, row) => acc + row.saldo_us * factor, 0)),
       credito: round2(credito),
@@ -195,7 +200,7 @@ function receivableDoc(input: FixtureReceivableInput): Record<string, unknown> {
     co_seg: input.segmento,
     seg_des: input.segmentoDes,
     mont_cre: input.limite ?? null,
-    plaz_pag: 15,
+    plaz_pag: FIXTURE_PLAZO_PAGO,
     as_of: new Date().toISOString(),
   };
 }
@@ -263,6 +268,8 @@ const FIXTURE_RECEIVABLES_DOCS: Record<string, unknown>[] = [
   receivableDoc({ ...RECEIVABLE_153, tipo_doc: 'N/CR', nro_doc: 60002, dias: 1, usd: 1 }),
   receivableDoc({ ...RECEIVABLE_505, tipo_doc: 'FACT', nro_doc: 50003101, dias: 20, usd: 25 }),
   receivableDoc({ ...RECEIVABLE_505, tipo_doc: 'FACT', nro_doc: 50003102, dias: 180, usd: 35 }),
+  // Vencida en 2024: alimenta el tramo viejo de +150 días (hasta 01/01/2025).
+  receivableDoc({ ...RECEIVABLE_505, tipo_doc: 'FACT', nro_doc: 50003103, dias: 800, usd: 15 }),
   receivableDoc({ ...RECEIVABLE_505, tipo_doc: 'ADEL', nro_doc: 60003, dias: 2, usd: 3 }),
   receivableDoc({ ...RECEIVABLE_900, tipo_doc: 'FACT', nro_doc: 50003201, dias: 5, usd: 18 }),
   receivableDoc({ ...RECEIVABLE_900, tipo_doc: 'FACT', nro_doc: 50003202, dias: 160, usd: 28 }),
@@ -311,6 +318,16 @@ const FIXTURE_RECEIVABLES_PAYMENTS: Record<string, unknown>[] = [
     pagos_12m: 2,
     pagos_12m_a_tiempo: 1,
   },
+];
+
+// Reparto de la cobranza de 12 meses por atraso al pagar. Suma los mismos
+// 110 USD / 96.800 Bs / 7 aplicaciones que `FIXTURE_RECEIVABLES_PAYMENTS`,
+// para que la segunda barra de «Cartera + venta» cuadre con sus totales.
+const FIXTURE_RECEIVABLES_PAYMENT_AGING: Record<string, unknown>[] = [
+  { tramo: 'POR_VENCER', monto_bs: 52800, monto_usd: 60, pagos: 4 },
+  { tramo: 'D1_30', monto_bs: 17600, monto_usd: 20, pagos: 1 },
+  { tramo: 'D31_60', monto_bs: 13200, monto_usd: 15, pagos: 1 },
+  { tramo: 'D61_90', monto_bs: 13200, monto_usd: 15, pagos: 1 },
 ];
 
 // Forecast mensual de desarrollo (equivalente a `dbo.forecast`).
@@ -392,6 +409,13 @@ function buildDailySales(): Record<string, unknown>[] {
 }
 
 const SALES_DAILY = buildDailySales();
+
+// Tipo de cambio de desarrollo (Bs/US$): mismo orden de magnitud que Profit.
+// Lo usa el plan de producción para el equivalente en bolívares del vendido.
+const FIXTURE_EXCHANGE_RATE = 920;
+
+// Precio medio de desarrollo (USD/kg) para que el vendido tenga importe.
+const FIXTURE_PRICE_PER_KG = 0.45;
 
 // ============================================================
 // Vendedoras de desarrollo: asignación determinista de cada venta a una
@@ -1336,6 +1360,28 @@ function customerNoteRows(
     }));
 }
 
+// Cobranza de desarrollo para la ficha 360: reutiliza el agregado de
+// `FIXTURE_RECEIVABLES_PAYMENTS`. En fixtures no hay recibos separados del año
+// en curso, así que el acumulado de 12 meses hace de «cobrado este año».
+function customerInsightPayments(params: Record<string, unknown>): Record<string, unknown>[] {
+  const code = String(params.co_cli ?? '').trim().toUpperCase();
+  const moneda = String(params.moneda ?? 'USD').toUpperCase();
+  const item = FIXTURE_RECEIVABLES_PAYMENTS.find(
+    (row) => String(row.co_cli ?? '').toUpperCase() === code,
+  );
+  if (!item) {
+    return [{ ultimo_pago: null, dias_sin_pago: null, cobrado_anio: 0, pagos_anio: 0 }];
+  }
+  return [
+    {
+      ultimo_pago: item.ultimo_pago,
+      dias_sin_pago: item.dias_sin_pago,
+      cobrado_anio: moneda === 'BS' ? item.cobrado_12m_bs : item.cobrado_12m_usd,
+      pagos_anio: item.pagos_12m,
+    },
+  ];
+}
+
 // Detalle de artículos de cada nota: mismo origen sintético que los totales,
 // agregado por producto para que el desplegable muestre una línea por artículo.
 function customerNoteItems(
@@ -1518,6 +1564,34 @@ function salesDailyProducts(params: Record<string, unknown>, limit: number): Rec
 
   return [...buckets.values()]
     .sort((a, b) => a.fecha.localeCompare(b.fecha) || b.kg - a.kg)
+    .slice(0, limit);
+}
+
+// Kg e importe por artículo y bloque de semana (plan de producción): misma
+// data determinista que `salesDaily`, agrupada por `semana` 1-7 / 8-14 /
+// 15-21 / 22-fin. El importe es kg × precio medio de desarrollo.
+function salesWeekly(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const from = paramDay(params.desde);
+  const to = paramDay(params.hasta);
+  const buckets = new Map<string, { co_art: string; semana: number; kg: number; usd: number }>();
+
+  for (const row of SALES_DAILY) {
+    const day = String(row.fecha);
+    if (from && day < from) continue;
+    if (to && day >= to) continue;
+    const dayOfMonth = Number(day.slice(8, 10));
+    const semana = dayOfMonth <= 7 ? 1 : dayOfMonth <= 14 ? 2 : dayOfMonth <= 21 ? 3 : 4;
+    const code = String(row.co_art);
+    const key = `${code}|${semana}`;
+    const bucket = buckets.get(key) ?? { co_art: code, semana, kg: 0, usd: 0 };
+    const kg = Number(row.kg);
+    bucket.kg += kg;
+    bucket.usd += kg * FIXTURE_PRICE_PER_KG;
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.values()]
+    .map((bucket) => ({ ...bucket, usd: Math.round(bucket.usd * 100) / 100 }))
     .slice(0, limit);
 }
 
@@ -1706,7 +1780,11 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     params: Record<string, unknown> = {},
   ): Promise<Record<string, unknown>[]> {
     const lower = sqlText.toLowerCase();
+    if (lower.includes('dbo.tasas')) return [{ tasa: FIXTURE_EXCHANGE_RATE, fecha: new Date() }];
     if (lower.includes('dbo.forecast')) return forecastRows(params, limit);
+    // Despachos por artículo y bloque de semana (plan de producción): el
+    // marcador va antes del bloque genérico de `reng_nde`.
+    if (lower.includes('nexo:sales_weekly')) return salesWeekly(params, limit);
     // Analítica comercial de Pedidos (pestaña «Ventas»).
     if (lower.includes('nexo:sales_analytics_monthly')) return analyticsMonthly(params, limit);
     if (lower.includes('nexo:sales_analytics_billing')) return analyticsBilling(params, limit);
@@ -1720,6 +1798,10 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     if (lower.includes('nexo:customer_insights_products')) return customerInsightRows(params, limit);
     if (lower.includes('nexo:customer_insights_billing')) return customerInsightBilling(params, limit);
     if (lower.includes('nexo:customer_insights_similar')) return customerInsightSimilar(params, limit);
+    // Monto y cobranza de la ficha 360. La última compra reutiliza los totales
+    // por nota (ya ordenados por fecha descendente).
+    if (lower.includes('nexo:customer_last_purchase')) return customerNoteRows(params, 1);
+    if (lower.includes('nexo:customer_insights_payments')) return customerInsightPayments(params);
     // Detalle de notas de entrega con su pedido de origen (ficha 360).
     if (lower.includes('nexo:customer_notes_totals')) return customerNoteRows(params, limit);
     if (lower.includes('nexo:customer_notes_orders')) return customerNoteOrders(params, limit);
@@ -1764,6 +1846,10 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     // Cuentas por cobrar: se detecta por el marcador y va antes del bloque
     // genérico de `docum_cc` (la consulta también menciona esa tabla).
     if (lower.includes('nexo:receivables_docs')) return FIXTURE_RECEIVABLES_DOCS.slice(0, limit);
+    // El marcador de aging contiene el de payments: va primero.
+    if (lower.includes('nexo:receivables_payments_aging')) {
+      return FIXTURE_RECEIVABLES_PAYMENT_AGING.slice(0, limit);
+    }
     if (lower.includes('nexo:receivables_payments')) {
       return FIXTURE_RECEIVABLES_PAYMENTS.slice(0, limit);
     }

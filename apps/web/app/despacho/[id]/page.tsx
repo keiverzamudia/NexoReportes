@@ -7,10 +7,10 @@
 //   · Guía de carga del camión y comentarios del planificador.
 //   · Tiempos por cliente: «Iniciar carga» arranca los relojes sin marcar
 //     productos; «Cargar» detiene el reloj de cada producto y
-//     «Factura entregada» cierra el de facturación. La carga es exclusiva del
-//     operador que tomó la hoja; la factura la puede entregar cualquier
-//     operador de almacén. El cliente se puede facturar individualmente o con
-//     «Facturar todo».
+//     «Factura entregada» cierra el de facturación. La carga la opera cualquier
+//     almacén que tenga el permiso (se registra quién la inició); la factura la
+//     puede entregar cualquier operador de almacén. El cliente se puede facturar
+//     individualmente o con «Facturar todo».
 //   · Carga por renglón: el input «Cargado» se edita en la fila. Si baja del
 //     plan se marca parcial y pide el motivo; si queda en 0, no cargado.
 //     Las diferencias dejan su motivo en el reporte.
@@ -20,7 +20,8 @@
 //     antes y después de cerrar.
 //   · Bitácora solo para ADMIN (drawer con filtros y detalle por producto).
 //
-// Al iniciar la carga o cerrar el primer producto el operador toma la hoja.
+// Al iniciar la carga o cerrar el primer producto queda registrado quién la
+// inició; cualquier almacén con el permiso puede continuar cargando.
 // No hay acuse previo.
 // La única escritura en Profit es la fecha de entrega (permiso
 // `pedidos:change_date` y auditoría); el resto del despacho no genera
@@ -604,13 +605,13 @@ export default function DispatchSheetPage() {
             </p>
             <p className="text-label-sm normal-case text-on-surface-variant">
               {formatDateTime(sheet.sentAt)} · destino {sheet.assignedToName ?? 'todo el almacén'}
-              {sheet.claimedByName ? ` · tomado por ${sheet.claimedByName}` : ''}
+              {sheet.claimedByName ? ` · carga iniciada por ${sheet.claimedByName}` : ''}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-space-xs">
             {!closed && !sheet.claimedByName && (
               <Badge tone="muted" dot>
-                sin tomar
+                sin iniciar
               </Badge>
             )}
           </div>
@@ -628,10 +629,12 @@ export default function DispatchSheetPage() {
               </p>
               <p className="text-label-sm normal-case text-on-surface-variant">
                 {editable
-                  ? '«Iniciar carga» toma la hoja y arranca T1. Digita la cantidad real y usa «Cargar» en cada artículo. Al entregar la última factura, el despacho se cierra solo y pasa al historial.'
-                  : sheet.claimedByName && !closed
-                    ? `Lo tomó ${sheet.claimedByName}: solo esa persona lo carga.${sheet.canInvoice ? ' Tú sí puedes entregar la factura.' : ''}`
-                    : 'Solo lectura.'}
+                  ? '«Iniciar carga» arranca T1. Digita la cantidad real y usa «Cargar» en cada artículo. Al entregar la última factura, el despacho se cierra solo y pasa al historial.'
+                  : closed
+                    ? 'Solo lectura.'
+                    : sheet.canInvoice
+                      ? 'Solo lectura: te falta el permiso «Abrir y cargar» en Despacho. Tú sí puedes entregar la factura.'
+                      : 'Solo lectura.'}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-space-sm tabular-nums">

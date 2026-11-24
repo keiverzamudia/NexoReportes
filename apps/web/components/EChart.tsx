@@ -12,9 +12,9 @@
 //   3. se re-mide tras aplicar la opción y al rotar el teléfono,
 //   4. se libera el chart al desmontar para no filtrar listeners ni canvas.
 //
-// Interacción opcional por índice del eje X (`onIndexHover` / `onIndexClick`):
-// se resuelve con `convertFromPixel`, así funciona en cualquier punto del
-// área de dibujo y no sólo sobre la línea de la serie.
+// Interacción opcional por índice del eje X (`onIndexHover` / `onIndexClick` /
+// `onIndexDoubleClick`): se resuelve con `convertFromPixel`, así funciona en
+// cualquier punto del área de dibujo y no sólo sobre la línea de la serie.
 //
 // `onCategoryClick` hace lo mismo pero con el eje que sea de tipo `category`
 // (X o Y). Sirve para las barras horizontales, donde las categorías están en
@@ -32,6 +32,8 @@ interface EChartProps {
   onIndexHover?: (index: number | null) => void;
   /** Índice del eje X donde se hizo clic. */
   onIndexClick?: (index: number) => void;
+  /** Índice del eje X donde se hizo doble clic. */
+  onIndexDoubleClick?: (index: number) => void;
   /** Índice de la categoría (eje X o Y, el que sea de tipo `category`) donde se hizo clic. */
   onCategoryClick?: (index: number) => void;
   /** Categorías que muestran cursor de mano (p. ej. una fila que abre detalle). */
@@ -45,6 +47,7 @@ export function EChart({
   className,
   onIndexHover,
   onIndexClick,
+  onIndexDoubleClick,
   onCategoryClick,
   pointerCategories,
 }: EChartProps) {
@@ -52,6 +55,7 @@ export function EChart({
   const chart = useRef<import('echarts').EChartsType | null>(null);
   const hoverRef = useRef<((index: number | null) => void) | null>(null);
   const clickRef = useRef<((index: number) => void) | null>(null);
+  const doubleClickRef = useRef<((index: number) => void) | null>(null);
   const categoryClickRef = useRef<((index: number) => void) | null>(null);
   const pointerCategoriesRef = useRef<number[] | null>(null);
   const countRef = useRef(0);
@@ -64,9 +68,10 @@ export function EChart({
   useEffect(() => {
     hoverRef.current = onIndexHover ?? null;
     clickRef.current = onIndexClick ?? null;
+    doubleClickRef.current = onIndexDoubleClick ?? null;
     categoryClickRef.current = onCategoryClick ?? null;
     pointerCategoriesRef.current = pointerCategories ?? null;
-  }, [onIndexHover, onIndexClick, onCategoryClick, pointerCategories]);
+  }, [onIndexHover, onIndexClick, onIndexDoubleClick, onCategoryClick, pointerCategories]);
 
   // Eje de categoría y cuántos valores tiene: lo usan los listeners ya
   // vinculados. Se prefiere Y porque las barras horizontales viven ahí.
@@ -170,6 +175,12 @@ export function EChart({
           }
           const index = indexAt(offsetX, offsetY);
           if (index !== null) clickRef.current?.(index);
+        });
+
+        zr.on('dblclick', (event: unknown) => {
+          const { offsetX, offsetY } = event as { offsetX: number; offsetY: number };
+          const index = indexAt(offsetX, offsetY);
+          if (index !== null) doubleClickRef.current?.(index);
         });
 
         zr.on('globalout', () => {

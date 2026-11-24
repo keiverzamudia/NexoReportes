@@ -25,11 +25,11 @@ const anton = Anton({
 export const metadata: Metadata = {
   title: 'Corpoagro — Gestión de producción',
   description:
-    'Sistema de gestión de producción de Corpoagro (Nutrición Animal): inventarios, pedidos, despacho, llegadas de clientes y reportes sincronizados con Profit.',
+    'Sistema de gestión de producción de Corpoagro (Nutrición Animal): inventarios, pedidos, despacho, PCP (llegadas de clientes) y reportes sincronizados con Profit.',
   applicationName: 'Corpoagro',
   openGraph: {
     title: 'Corpoagro — Gestión de producción',
-    description: 'Inventarios, pedidos, despacho y llegadas de clientes sincronizados con Profit.',
+    description: 'Inventarios, pedidos, despacho, PCP (llegadas) y reportes sincronizados con Profit.',
     images: [{ url: '/brand/corpoagro-og.jpg', width: 1200, height: 630, alt: 'Corpoagro' }],
     locale: 'es_VE',
     type: 'website',

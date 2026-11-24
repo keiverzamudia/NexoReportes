@@ -9,6 +9,7 @@ import {
   aggregate,
   documentsForOutput,
   filterDocs,
+  mapPaymentAging,
   mapPayments,
   mapRawDoc,
   optionsFromDocs,
@@ -130,9 +131,52 @@ WHERE c.anulado = 0
 GROUP BY RTRIM(c.co_cli)
 `;
 
+// Reparto de la cobranza de 12 meses por atraso al pagar. Usa la fecha del
+// recibo contra el vencimiento que Profit copia en `reng_cob`: a tiempo
+// (incluye pagos adelantados), 1–30, 31–60, 61–90, 91–120, 121–150 y +150.
+// Las aplicaciones sin vencimiento válido no se pueden clasificar y quedan
+// fuera del reparto. Las sumas se devuelven en Bs nativos y en USD con la tasa
+// del recibo, igual que la cobranza por cliente.
+const PROFIT_RECEIVABLES_PAYMENT_AGING_SQL = `
+SELECT /* nexo:receivables_payments_aging */
+  CASE
+    WHEN c.fec_cob <= rc.fec_venc THEN 'POR_VENCER'
+    WHEN DATEDIFF(DAY, rc.fec_venc, c.fec_cob) <= 30 THEN 'D1_30'
+    WHEN DATEDIFF(DAY, rc.fec_venc, c.fec_cob) <= 60 THEN 'D31_60'
+    WHEN DATEDIFF(DAY, rc.fec_venc, c.fec_cob) <= 90 THEN 'D61_90'
+    WHEN DATEDIFF(DAY, rc.fec_venc, c.fec_cob) <= 120 THEN 'D91_120'
+    WHEN DATEDIFF(DAY, rc.fec_venc, c.fec_cob) <= 150 THEN 'D121_150'
+    ELSE 'D150_DESDE_2025'
+  END AS tramo,
+  SUM(rc.mont_cob) AS monto_bs,
+  SUM(CASE WHEN rc.tasa > 0 THEN rc.mont_cob / NULLIF(rc.tasa, 0) ELSE 0 END) AS monto_usd,
+  COUNT(*) AS pagos
+FROM dbo.cobros AS c
+INNER JOIN dbo.reng_cob AS rc ON rc.cob_num = c.cob_num
+WHERE c.anulado = 0
+  AND rc.mont_cob > 0
+  AND rc.tp_doc_cob IN ('FACT', 'N/DB', 'AJPM', 'GIRO')
+  AND (rc.moneda LIKE 'US$%' OR rc.moneda LIKE 'USD%')
+  AND rc.fec_venc IS NOT NULL
+  AND rc.fec_venc > '1990-01-01'
+  AND c.fec_cob IS NOT NULL
+  AND c.fec_cob >= DATEADD(MONTH, -12, CAST(GETDATE() AS date))
+GROUP BY
+  CASE
+    WHEN c.fec_cob <= rc.fec_venc THEN 'POR_VENCER'
+    WHEN DATEDIFF(DAY, rc.fec_venc, c.fec_cob) <= 30 THEN 'D1_30'
+    WHEN DATEDIFF(DAY, rc.fec_venc, c.fec_cob) <= 60 THEN 'D31_60'
+    WHEN DATEDIFF(DAY, rc.fec_venc, c.fec_cob) <= 90 THEN 'D61_90'
+    WHEN DATEDIFF(DAY, rc.fec_venc, c.fec_cob) <= 120 THEN 'D91_120'
+    WHEN DATEDIFF(DAY, rc.fec_venc, c.fec_cob) <= 150 THEN 'D121_150'
+    ELSE 'D150_DESDE_2025'
+  END
+`;
+
 interface Snapshot {
   docs: ReceivablesDoc[];
   payments: PaymentMap;
+  paymentAging: Record<string, unknown>[] | null;
   asOf: string;
   truncated: boolean;
   loadedAt: number;
@@ -194,6 +238,10 @@ export class ReceivablesService {
       },
       totals: result.totals,
       buckets: result.buckets,
+      cobranzaBuckets:
+        snapshot.paymentAging === null
+          ? null
+          : mapPaymentAging(snapshot.paymentAging, currency),
       risk: result.risk,
       quality: {
         sinTasa: result.totals.sinTasa,
@@ -249,6 +297,21 @@ export class ReceivablesService {
       );
     }
 
+    let rawPaymentAging: Record<string, unknown>[] | null = null;
+    try {
+      rawPaymentAging = await this.profit.selectQuery(
+        PROFIT_RECEIVABLES_PAYMENT_AGING_SQL,
+        QUERY_LIMIT,
+      );
+    } catch (error) {
+      // La segunda barra de la card informará que no pudo leer el reparto.
+      this.logger.warn(
+        `No se pudo leer el reparto de cobranza en Profit: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
     const docs = rawDocs.map((row) => mapRawDoc(row));
     const truncated = rawDocs.length > MAX_DOCUMENTS;
     const asOf =
@@ -257,6 +320,7 @@ export class ReceivablesService {
     return {
       docs,
       payments: mapPayments(rawPayments),
+      paymentAging: rawPaymentAging,
       asOf,
       truncated,
       loadedAt: Date.now(),

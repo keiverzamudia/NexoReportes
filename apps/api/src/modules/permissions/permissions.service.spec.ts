@@ -70,6 +70,39 @@ describe('PermissionsService', () => {
     expect(access?.permissions).toEqual(expect.arrayContaining(['pedidos:read', 'usuarios:read']));
   });
 
+  it('«Ver todo» de Vendedor implica el acceso al módulo', async () => {
+    const service = serviceFor({
+      user: { id: 'u5', role: 'VENDEDOR', permissionOverrides: [] },
+      role: {
+        code: 'VENDEDOR',
+        name: 'Vendedor',
+        baseRole: 'CONSULTA',
+        isSystem: false,
+        permissions: [{ module: 'vendedor', action: 'view_all' }],
+      },
+    });
+
+    const access = await service.resolve('u5');
+    expect(access?.permissions).toEqual(expect.arrayContaining(['vendedor:read', 'vendedor:view_all']));
+  });
+
+  it('«Unitario» conserva el alcance propio sin conceder «Ver todo»', async () => {
+    const service = serviceFor({
+      user: { id: 'u6', role: 'VENDEDOR', permissionOverrides: [] },
+      role: {
+        code: 'VENDEDOR',
+        name: 'Vendedor',
+        baseRole: 'CONSULTA',
+        isSystem: false,
+        permissions: [{ module: 'vendedor', action: 'read' }],
+      },
+    });
+
+    const access = await service.resolve('u6');
+    expect(access?.permissions).toContain('vendedor:read');
+    expect(access?.permissions).not.toContain('vendedor:view_all');
+  });
+
   it('ADMIN siempre tiene todos los permisos, aunque el rol esté vacío', async () => {
     const service = serviceFor({
       user: { id: 'u3', role: 'ADMIN', permissionOverrides: [] },

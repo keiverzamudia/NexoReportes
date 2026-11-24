@@ -33,6 +33,10 @@ export const PERMISSION_ACTIONS = [
   'view_summary',
   'view_history',
   'view_removals',
+  // PCP: subir las fotos de los documentos y marcar la llegada en Romana.
+  'upload',
+  // PCP: validar documentos y borrar las fotos de la llegada.
+  'validate',
   // Producción: acciones propias del módulo.
   'optimize',
   'view_costs',
@@ -71,7 +75,7 @@ export const APP_MODULES: AppModuleDefinition[] = [
     label: 'Cuentas por cobrar',
     href: '/por-cobrar',
     group: 'Comercial',
-    description: 'Cartera vencida, cobranza y riesgo por cliente.',
+    description: 'Cartera vencida, ventas cruzadas con la deuda, cobranza y riesgo por cliente.',
     actions: [{ action: 'read', label: 'Ver' }],
   },
   {
@@ -113,13 +117,15 @@ export const APP_MODULES: AppModuleDefinition[] = [
     label: 'Vendedor',
     href: '/vendedor',
     group: 'Comercial',
-    description: 'Reporte por vendedor: facturación, cartera, clientes y cuota.',
+    description:
+      'Reporte por vendedor: facturación, cartera, clientes y cuota. «Unitario» limita al código de vendedor vinculado en Usuarios; «Ver todo» muestra la fuerza de ventas completa e incluye el acceso.',
     actions: [
-      // Sin «Ver todos» el usuario queda limitado a su propio código de
-      // vendedor (se asigna en Usuarios). Es el permiso que separa «solo mi
-      // data» de «la fuerza de ventas completa».
-      { action: 'read', label: 'Entrar al reporte del vendedor' },
-      { action: 'view_all', label: 'Ver todos los vendedores' },
+      // «Unitario» es el permiso propio: sin «Ver todo» el usuario queda
+      // limitado a su código de vendedor (se asigna en Usuarios) y ve su
+      // cartera y su facturado. «Ver todo» separa «solo mi data» de «la fuerza
+      // de ventas completa» e implica el acceso al módulo.
+      { action: 'read', label: 'Unitario (mis clientes y mi facturado)' },
+      { action: 'view_all', label: 'Ver todo (incluye acceso)' },
     ],
   },
   {
@@ -168,7 +174,7 @@ export const APP_MODULES: AppModuleDefinition[] = [
     actions: [
       { action: 'read', label: 'Ver' },
       { action: 'create', label: 'Armar y enviar simulación' },
-      { action: 'update', label: 'Abrir' },
+      { action: 'update', label: 'Abrir y cargar' },
       { action: 'delete', label: 'Anular' },
       { action: 'view_all', label: 'Ver todos los despachos' },
       { action: 'view_summary', label: 'Ver indicadores' },
@@ -179,15 +185,18 @@ export const APP_MODULES: AppModuleDefinition[] = [
     ],
   },
   {
-    key: 'llegadas',
-    label: 'Llegadas PCP',
-    href: '/llegadas',
+    key: 'pcp',
+    label: 'PCP',
+    href: '/pcp',
     group: 'Operación',
-    description: 'Llegadas de clientes a planta e incidencias.',
+    description:
+      'Clientes esperados por despacho: llegada a planta, fotos de cédula y carnet, y validación en Romana.',
     actions: [
       { action: 'read', label: 'Ver' },
-      { action: 'create', label: 'Marcar llegada' },
+      { action: 'create', label: 'Marcar llegada en planta' },
+      { action: 'upload', label: 'Subir fotos y marcar en Romana' },
       { action: 'update', label: 'Incidencias y cierre' },
+      { action: 'validate', label: 'Validar documentos y borrar fotos' },
       { action: 'delete', label: 'Corregir registros' },
     ],
   },
@@ -232,7 +241,7 @@ export type AppModuleKey =
   | 'pedidos'
   | 'clientes'
   | 'despacho'
-  | 'llegadas'
+  | 'pcp'
   | 'usuarios'
   | 'auditoria'
   | 'sincronizacion';
@@ -275,7 +284,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['despacho', 'create'],
     ['despacho', 'delete'],
     ['despacho', 'view_all'],
-    ['llegadas', 'read'],
+    ['pcp', 'read'],
+    ['pcp', 'validate'],
     ['sincronizacion', 'update'],
   ],
   PLANIFICADOR: [
@@ -298,9 +308,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['despacho', 'read'],
     ['despacho', 'create'],
     ['despacho', 'delete'],
-    ['llegadas', 'read'],
-    ['llegadas', 'create'],
-    ['llegadas', 'update'],
+    ['pcp', 'read'],
+    ['pcp', 'create'],
+    ['pcp', 'upload'],
+    ['pcp', 'update'],
     ['sincronizacion', 'update'],
   ],
   ALMACEN: [
@@ -317,7 +328,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, Array<[AppModuleKey, Permiss
     ['despacho', 'read'],
     ['despacho', 'update'],
     ['despacho', 'view_all'],
-    ['llegadas', 'read'],
+    ['pcp', 'read'],
+    ['pcp', 'upload'],
+    ['pcp', 'update'],
+    ['pcp', 'validate'],
   ],
   CONSULTA: [
     ['disponibilidad', 'read'],
@@ -423,8 +437,9 @@ export const zUserSummary = z.object({
   // Código del rol efectivo (puede ser un rol dinámico: COMPRAS, SUPERVISOR…).
   role: zRoleCode,
   isActive: z.boolean(),
-  // Código de vendedor de Profit (`vendedor.co_ven`) cuando el usuario es una
-  // vendedora: limita los reportes a su propia cartera si no tiene `view_all`.
+  // Código de vendedor de Profit (`vendedor.co_ven`) cuando el usuario tiene
+  // alcance «Unitario»: limita los reportes a su propia cartera si no tiene
+  // «Ver todo» (`view_all`).
   sellerCode: z.string().nullable().optional(),
   // Solo en /auth/me: nombre legible, plantilla y permisos efectivos.
   roleName: z.string().optional(),
@@ -755,6 +770,8 @@ export const zCustomerStatementCustomer = z.object({
   // Límite de crédito del cliente (`dbo.clientes.mont_cre`). null = la fuente
   // no lo expone o el cliente no tiene límite configurado.
   limiteCredito: z.number().nullable(),
+  // Días de crédito pactados (`dbo.clientes.plaz_pag`). null = sin dato.
+  plazoPago: z.number().int().nullable(),
 });
 export type CustomerStatementCustomer = z.infer<typeof zCustomerStatementCustomer>;
 
@@ -795,6 +812,8 @@ export const zCustomerStatementSummary = z.object({
   credito: z.number(),
   // `dbo.clientes.mont_cre`. null = sin dato en Profit.
   limiteCredito: z.number().nullable(),
+  // `dbo.clientes.plaz_pag` (días de crédito). null = sin dato en Profit.
+  plazoPago: z.number().int().nullable(),
   documentos: z.number().int(),
   vencidos: z.number().int(),
 });
@@ -834,10 +853,15 @@ export const RECEIVABLES_BUCKET_KEYS = [
   'D61_90',
   'D91_120',
   'D121_150',
-  'D150_MAS',
+  'D150_DESDE_2025',
+  'D150_HASTA_2025',
 ] as const;
 export const zReceivablesBucketKey = z.enum(RECEIVABLES_BUCKET_KEYS);
 export type ReceivablesBucketKey = z.infer<typeof zReceivablesBucketKey>;
+
+// Corte de la mora extrema: el tramo de +150 días se parte en dos para separar
+// la cartera vieja (vencida hasta el 01/01/2025, incluido) del resto.
+export const RECEIVABLES_LEGACY_CUTOFF = '2025-01-01';
 
 export const RECEIVABLES_BUCKETS: Array<{
   key: ReceivablesBucketKey;
@@ -851,7 +875,18 @@ export const RECEIVABLES_BUCKETS: Array<{
   { key: 'D61_90', label: '61 a 90 días', short: '61–90', range: 'Vencido de 61 a 90 días' },
   { key: 'D91_120', label: '91 a 120 días', short: '91–120', range: 'Vencido de 91 a 120 días' },
   { key: 'D121_150', label: '121 a 150 días', short: '121–150', range: 'Vencido de 121 a 150 días' },
-  { key: 'D150_MAS', label: 'Más de 150 días', short: '+150', range: 'Vencido hace más de 150 días' },
+  {
+    key: 'D150_DESDE_2025',
+    label: 'Más de 150 días · desde 02/01/2025',
+    short: '+150 · 2025+',
+    range: 'Vencido hace más de 150 días, con vencimiento posterior al 01/01/2025',
+  },
+  {
+    key: 'D150_HASTA_2025',
+    label: 'Más de 150 días · hasta 01/01/2025',
+    short: '+150 · ≤ 2024',
+    range: 'Vencido hasta el 01/01/2025 (incluye ese día)',
+  },
 ];
 
 const zReceivablesBool = z
@@ -938,7 +973,8 @@ export const zReceivablesTotals = z.object({
   d61_90: z.number(),
   d91_120: z.number(),
   d121_150: z.number(),
-  d150Mas: z.number(),
+  d150Desde2025: z.number(),
+  d150Hasta2025: z.number(),
   vencido: z.number(),
   pctVencido: z.number(),
   clientes: z.number().int(),
@@ -988,7 +1024,8 @@ export const zReceivablesClientRow = z.object({
   d61_90: z.number(),
   d91_120: z.number(),
   d121_150: z.number(),
-  d150Mas: z.number(),
+  d150Desde2025: z.number(),
+  d150Hasta2025: z.number(),
   vencido: z.number(),
   pctVencido: z.number(),
   documentos: z.number().int(),
@@ -1067,6 +1104,10 @@ export const zReceivablesResponse = z.object({
   filtros: zReceivablesFilters,
   totals: zReceivablesTotals,
   buckets: z.array(zReceivablesBucket),
+  // Reparto de la cobranza de los últimos 12 meses por atraso al pagar.
+  // `documentos` cuenta aplicaciones de pago, no documentos de cartera.
+  // `null` cuando Profit no pudo leer los recibos.
+  cobranzaBuckets: z.array(zReceivablesBucket).nullable(),
   risk: zReceivablesRisk,
   quality: zReceivablesQuality,
   clientes: z.array(zReceivablesClientRow),
@@ -1175,6 +1216,9 @@ export const zCustomerInsightCadence = z.object({
   expectedNextDate: z.string().nullable(),
   purchasesPerMonth: z.number().nullable(),
   segment: zCustomerInsightSegment,
+  // Total neto de la última nota de entrega (`not_ent.tot_neto`), en la
+  // moneda del informe. null = sin notas legibles o sin tasa.
+  lastSaleAmount: z.number().nullable(),
 });
 export type CustomerInsightCadence = z.infer<typeof zCustomerInsightCadence>;
 
@@ -1183,10 +1227,27 @@ export const zCustomerInsightAccount = z.object({
   saldoVencido: z.number(),
   credito: z.number(),
   limiteCredito: z.number().nullable(),
+  // Días de crédito pactados (`dbo.clientes.plaz_pag`). null = sin dato.
+  plazoPago: z.number().int().nullable(),
   documentos: z.number().int(),
   vencidos: z.number().int(),
 });
 export type CustomerInsightAccount = z.infer<typeof zCustomerInsightAccount>;
+
+// Comportamiento de pago del cliente (`dbo.cobros` + `dbo.reng_cob`).
+// «Promedio semanal» = cobranza del año en curso ÷ semanas transcurridas.
+export const zCustomerInsightPayments = z.object({
+  ultimoPago: z.string().nullable(),
+  diasSinPago: z.number().int().nullable(),
+  // Cobranza del año en curso en la moneda del informe.
+  cobradoAnio: z.number(),
+  pagosAnio: z.number().int(),
+  // Semanas transcurridas del año en curso (1..53).
+  semanasAnio: z.number().int(),
+  // null cuando no hay cobros registrados en el año.
+  promedioSemanal: z.number().nullable(),
+});
+export type CustomerInsightPayments = z.infer<typeof zCustomerInsightPayments>;
 
 // ---------- Cambios de fecha de entrega y reputación del cliente ----------
 // Quién originó el cambio: la empresa (nosotros) o el cliente.
@@ -1296,6 +1357,7 @@ export const zCustomerInsightResponse = z.object({
   similarProducts: z.array(zCustomerInsightSimilar),
   cadence: zCustomerInsightCadence,
   account: zCustomerInsightAccount.nullable(),
+  payments: zCustomerInsightPayments,
   orders: zCustomerInsightOrders,
   // Historial de cambios de entrega del cliente (reputación de fechas).
   deliveryChanges: zCustomerDeliveryChangeSummary,
@@ -1594,6 +1656,10 @@ export const zSalesAnalyticsCustomersQuery = zSalesAnalyticsQuery.extend({
   sort: zSalesAnalyticsSort.default('kg_desc'),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
+  // Cruce CxC: devuelve solo estos códigos de cliente (separados por coma).
+  // El frontend pide los deudores de la cartera para no traer la fuerza de
+  // ventas completa. Se limita a 200 códigos por consulta.
+  codes: z.string().trim().max(4000).optional(),
 });
 export type SalesAnalyticsCustomersQuery = z.infer<typeof zSalesAnalyticsCustomersQuery>;
 
@@ -3111,6 +3177,11 @@ export const zArrivalQuery = z.object({
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
+  // La pestaña «Hoy» incluye además lo atrasado que sigue sin atenderse.
+  overdue: z
+    .enum(['0', '1', 'true', 'false'])
+    .optional()
+    .transform((value) => value === '1' || value === 'true'),
   status: zArrivalStatus.optional(),
   q: z.string().trim().max(80).optional(),
   // Tope para el histórico (evita traer años de registros).
@@ -3167,6 +3238,134 @@ export type ArrivalIncidentResolveInput = z.infer<typeof zArrivalIncidentResolve
 
 export const zArrivalMessageInput = z.object({ body: z.string().trim().min(1).max(500) });
 export type ArrivalMessageInput = z.infer<typeof zArrivalMessageInput>;
+
+// ============================================================
+// Romana (báscula).
+//
+// Reutiliza la llegada del despacho. Por cada pedido se exigen dos fotos
+// (cédula del chofer y carnet de circulación). Las fotos bloquean el marcado
+// de la llegada; al validar se borran del volumen y la base solo conserva
+// metadatos livianos.
+// ============================================================
+export const ROMANA_DOC_KINDS = ['CEDULA', 'CARNET'] as const;
+export const zRomanaDocKind = z.enum(ROMANA_DOC_KINDS);
+export type RomanaDocKind = z.infer<typeof zRomanaDocKind>;
+
+export const ROMANA_STATUSES = [
+  'PENDIENTE',
+  'LISTO',
+  'EN_ROMANA',
+  'VALIDADO',
+  'EXPIRADO',
+  'CANCELADO',
+] as const;
+export const zRomanaStatus = z.enum(ROMANA_STATUSES);
+export type RomanaStatus = z.infer<typeof zRomanaStatus>;
+
+export const ROMANA_LIMITS = {
+  /** Tope del archivo que llega al servidor (antes de recomprimir). */
+  maxUploadBytes: 12 * 1024 * 1024,
+  /** Tope del WebP final; por encima se vuelve a comprimir. */
+  maxFullBytes: 250 * 1024,
+  /** Lado máximo de la foto completa (legible al 100 %). */
+  maxEdge: 1440,
+  /** Lado máximo de la miniatura. */
+  thumbEdge: 400,
+  /** Tope de documentos por llegada (2 × pedidos, con margen). */
+  maxDocsPerArrival: 60,
+  /** Fotos que nunca se validaron se borran a los N días. */
+  retentionHours: 168,
+} as const;
+
+export const zRomanaDocument = z.object({
+  id: z.string(),
+  orderNumber: z.string(),
+  kind: zRomanaDocKind,
+  bytes: z.number().int(),
+  width: z.number().int().nullable(),
+  height: z.number().int().nullable(),
+  uploadedByName: z.string().nullable(),
+  createdAt: z.string(),
+  purgedAt: z.string().nullable(),
+  purgeReason: z.string().nullable(),
+  // Rutas autenticadas; null cuando la foto ya se borró.
+  url: z.string().nullable(),
+  thumbUrl: z.string().nullable(),
+});
+export type RomanaDocument = z.infer<typeof zRomanaDocument>;
+
+export const zRomanaOrderDocuments = z.object({
+  orderNumber: z.string(),
+  documents: z.array(zRomanaDocument),
+  // true cuando el pedido ya tiene CEDULA y CARNET.
+  complete: z.boolean(),
+});
+export type RomanaOrderDocuments = z.infer<typeof zRomanaOrderDocuments>;
+
+export const zRomanaState = z.object({
+  status: zRomanaStatus,
+  requiredDocs: z.number().int(),
+  uploadedDocs: z.number().int(),
+  pendingDocs: z.number().int(),
+  totalBytes: z.number().int(),
+  arrivedAt: z.string().nullable(),
+  arrivedByName: z.string().nullable(),
+  validatedAt: z.string().nullable(),
+  validatedByName: z.string().nullable(),
+  photosPurgedAt: z.string().nullable(),
+  orders: z.array(zRomanaOrderDocuments),
+  canCheckIn: z.boolean(),
+  canValidate: z.boolean(),
+  canUploadDocs: z.boolean(),
+});
+export type RomanaState = z.infer<typeof zRomanaState>;
+
+export const zRomanaArrivalSummary = zArrivalSummary.extend({ romana: zRomanaState });
+export type RomanaArrivalSummary = z.infer<typeof zRomanaArrivalSummary>;
+
+export const zRomanaArrivalDetail = zRomanaArrivalSummary.extend({
+  incidents: z.array(zArrivalIncident),
+  events: z.array(zArrivalEvent),
+});
+export type RomanaArrivalDetail = z.infer<typeof zRomanaArrivalDetail>;
+
+export const zRomanaListResponse = z.object({
+  items: z.array(zRomanaArrivalSummary),
+  total: z.number().int(),
+  counters: z.object({
+    expected: z.number().int(),
+    docsPending: z.number().int(),
+    ready: z.number().int(),
+    onSite: z.number().int(),
+    validated: z.number().int(),
+    withIncident: z.number().int(),
+    missed: z.number().int(),
+    kgExpected: z.number(),
+  }),
+});
+export type RomanaListResponse = z.infer<typeof zRomanaListResponse>;
+
+export const zRomanaQuery = zArrivalQuery.extend({
+  romanaStatus: zRomanaStatus.optional(),
+});
+export type RomanaQuery = z.infer<typeof zRomanaQuery>;
+
+export const zRomanaCheckInInput = z.object({
+  note: z.string().trim().max(240).optional(),
+});
+export type RomanaCheckInInput = z.infer<typeof zRomanaCheckInInput>;
+
+export const zRomanaValidateInput = z.object({
+  note: z.string().trim().max(240).optional(),
+});
+export type RomanaValidateInput = z.infer<typeof zRomanaValidateInput>;
+
+export const zRomanaDocumentResponse = z.object({
+  detail: zRomanaArrivalDetail,
+  document: zRomanaDocument,
+});
+export type RomanaDocumentResponse = z.infer<typeof zRomanaDocumentResponse>;
+
 
 // ---------- Notificaciones (campana + acuses) ----------
 export const zNotification = z.object({
@@ -3322,6 +3521,9 @@ export const zForecastPlanWeek = z.object({
   demandQty: z.number(),
   // Kg despachados en la semana según notas de entrega (0 si Profit no respondió).
   soldKg: z.number(),
+  // Importe despachado en la semana (USD): Σ reng_neto ÷ tasa de la nota.
+  // `reng_neto` es el neto de la línea SIN IVA. 0 si Profit no respondió.
+  soldUsd: z.number(),
   // Venta de la semana en sacos (solo SAC; null en granel).
   soldSacks: z.number().nullable(),
   // Existencia disponible al INICIO de la semana (kg), ya con el arrastre de
@@ -3364,6 +3566,8 @@ export const zForecastPlanRow = z.object({
   demandMonthKg: z.number(),
   // Kg despachados en el mes según notas de entrega.
   soldMonthKg: z.number(),
+  // Importe despachado en el mes (USD), con la tasa de cada nota.
+  soldMonthUsd: z.number(),
   // Producción planificada del mes: kg y sacos (solo artículos SAC).
   productionMonthKg: z.number(),
   productionMonthSacks: z.number().nullable(),
@@ -3382,10 +3586,15 @@ export const zForecastPlanResponse = z.object({
   currentWeekIndex: z.number().int().nullable(),
   // false si Profit no devolvió los despachos: la UI avisa y no pinta ceros falsos.
   salesAvailable: z.boolean(),
+  // Tasa Bs/US$ vigente hoy (`dbo.tasas`), para expresar el importe en Bs.
+  // null si no se pudo leer: la UI se queda en USD.
+  exchangeRate: z.number().nullable(),
   rows: z.array(zForecastPlanRow),
   totals: z.object({
     forecastKg: z.number(),
     soldKg: z.number(),
+    // Importe vendido del mes en USD (Σ notas de entrega ÷ tasa de la nota).
+    soldUsd: z.number(),
     demandKg: z.number(),
     productionKg: z.number(),
   }),
@@ -4074,8 +4283,8 @@ export const zForecastSellersResponse = z.object({
   month: z.number().int(),
   asOf: z.string().nullable(),
   // Alcance del informe para la sesión actual. «OWN» = el usuario solo ve su
-  // propia cartera (sin `vendedor:view_all`); «UNASSIGNED» = no tiene código
-  // de vendedor asignado y no puede ver datos de nadie.
+  // propia cartera (alcance «Unitario», sin `vendedor:view_all`); «UNASSIGNED»
+  // = no tiene código de vendedor asignado y no puede ver datos de nadie.
   scope: z.enum(['ALL', 'OWN', 'UNASSIGNED']).default('ALL'),
   scopeSellerCode: z.string().nullable().default(null),
   basis: zForecastSalesBasis,
@@ -4338,7 +4547,7 @@ export const AUDIT_MODULES = [
   { key: 'users', label: 'Usuarios' },
   { key: 'roles', label: 'Roles y permisos' },
   { key: 'dispatch', label: 'Despacho' },
-  { key: 'arrivals', label: 'Llegadas PCP' },
+  { key: 'arrivals', label: 'PCP' },
   { key: 'sync', label: 'Sincronización' },
   { key: 'scenarios', label: 'Simulador' },
   { key: 'forecast', label: 'Forecast' },
@@ -4919,6 +5128,11 @@ export const zProductionFormulaComponent = z.object({
   costSharePct: z.number().nullable(),
   stockQty: z.number(),
   incomingQty: z.number(),
+  /** Costo de reposición (`art.cos_merc`); null si Profit no lo tiene cargado. */
+  replacementUnitCost: z.number().nullable(),
+  replacementTotalCost: z.number().nullable(),
+  /** true = se usó el último costo porque la fila «Reposición» está en 0. */
+  replacementFallback: z.boolean(),
 });
 export type ProductionFormulaComponent = z.infer<typeof zProductionFormulaComponent>;
 
@@ -4964,10 +5178,47 @@ export const zProductionFormula = z.object({
   components: z.array(zProductionFormulaComponent),
   costPerKg: z.number().nullable(),
   costPerSack: z.number().nullable(),
+  /** Costo de las materias primas, sin el empaque configurado. */
+  ingredientCostPerKg: z.number().nullable(),
+  /** Parte del costo/kg que aporta el empaque configurado. */
+  packagingCostPerKg: z.number().nullable(),
+  packagingCostPerSack: z.number().nullable(),
   totalCost: z.number().nullable(),
+  replacementCostPerKg: z.number().nullable(),
+  replacementCostPerSack: z.number().nullable(),
+  replacementTotalCost: z.number().nullable(),
   nutrition: zProductionNutrition,
 });
 export type ProductionFormula = z.infer<typeof zProductionFormula>;
+
+/** Resumen de una cédula dentro del producto (tabla expandible y modal). */
+export const zProductionFormulaSummaryLine = z.object({
+  id: z.number().int(),
+  kind: zProductionFormulaKind,
+  name: z.string(),
+  isStandard: z.boolean(),
+  batchKg: z.number().nullable(),
+  outputQty: z.number(),
+  outputUom: z.string(),
+  presentationKg: z.number().nullable(),
+  isBulk: z.boolean(),
+  costPerKg: z.number().nullable(),
+  costPerSack: z.number().nullable(),
+  replacementCostPerKg: z.number().nullable(),
+  replacementCostPerSack: z.number().nullable(),
+  /** Materias primas de la cédula sin costo de reposición en Profit. */
+  missingReplacement: z.number().int(),
+  updatedAt: z.string().nullable(),
+});
+export type ProductionFormulaSummaryLine = z.infer<typeof zProductionFormulaSummaryLine>;
+
+export const zProductionMissingReplacement = z.object({
+  code: z.string(),
+  description: z.string(),
+  /** LAST = se calculó con último/promedio; NONE = tampoco hay costo. */
+  fallback: z.enum(['LAST', 'NONE']),
+});
+export type ProductionMissingReplacement = z.infer<typeof zProductionMissingReplacement>;
 
 export const zProductionFormulaSummary = z.object({
   productCode: z.string(),
@@ -4982,9 +5233,13 @@ export const zProductionFormulaSummary = z.object({
   batchKg: z.number().nullable(),
   costPerKg: z.number().nullable(),
   costPerSack: z.number().nullable(),
+  presentationKg: z.number().nullable(),
+  isBulk: z.boolean(),
+  replacementCostPerKg: z.number().nullable(),
   isStandard: z.boolean(),
   lastBatchAt: z.string().nullable(),
   packagingCode: z.string().nullable(),
+  formulas: z.array(zProductionFormulaSummaryLine),
   alerts: z.array(z.string()),
 });
 export type ProductionFormulaSummary = z.infer<typeof zProductionFormulaSummary>;
@@ -4993,6 +5248,7 @@ export const zProductionFormulaListResponse = z.object({
   rows: z.array(zProductionFormulaSummary),
   available: z.boolean(),
   alerts: z.array(z.string()),
+  missingReplacement: z.array(zProductionMissingReplacement),
 });
 export type ProductionFormulaListResponse = z.infer<typeof zProductionFormulaListResponse>;
 
@@ -5119,3 +5375,41 @@ export const zProductionFormulaPreference = z.object({
   formulaId: z.number().int().nullable(),
 });
 export type ProductionFormulaPreference = z.infer<typeof zProductionFormulaPreference>;
+
+// ---------- Configuración visible del sistema (versión y avisos globales) ----------
+export const zSystemAnnouncementType = z.enum(['INFO', 'WARNING', 'UPDATE']);
+export type SystemAnnouncementType = z.infer<typeof zSystemAnnouncementType>;
+
+export const zSystemAnnouncement = z.object({
+  id: z.string(),
+  title: z.string(),
+  message: z.string(),
+  type: zSystemAnnouncementType,
+  expiresAt: z.string(),
+  /** Minutos entre repeticiones mientras el usuario está en línea (0 = solo al iniciar sesión). */
+  repeatIntervalMinutes: z.number().int().min(0).default(0),
+  active: z.boolean(),
+  createdAt: z.string(),
+  createdByName: z.string().nullable(),
+});
+export type SystemAnnouncement = z.infer<typeof zSystemAnnouncement>;
+
+export const zSystemAnnouncementInput = z.object({
+  title: z.string().trim().min(1).max(120),
+  message: z.string().trim().min(1).max(1500),
+  type: zSystemAnnouncementType.default('INFO'),
+  expiresAt: z.string().datetime(),
+  repeatIntervalMinutes: z.coerce.number().int().min(0).max(1440).default(0),
+});
+export type SystemAnnouncementInput = z.infer<typeof zSystemAnnouncementInput>;
+
+export const zSystemVersionInput = z.object({
+  version: z.string().trim().min(1).max(32),
+});
+export type SystemVersionInput = z.infer<typeof zSystemVersionInput>;
+
+export const zSystemMetaResponse = z.object({
+  version: z.string(),
+  activeAnnouncements: z.array(zSystemAnnouncement),
+});
+export type SystemMetaResponse = z.infer<typeof zSystemMetaResponse>;

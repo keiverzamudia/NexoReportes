@@ -153,3 +153,92 @@ export const ANALYTICS_TOOLTIP = {
   textStyle: { color: '#ffffff', fontSize: 12 },
   extraCssText: 'border-radius:12px;box-shadow:0 16px 40px -20px rgba(0,30,64,.6);',
 };
+
+/** Opción ECharts de «Ventas por mes», compartida por Pedidos y CxC. */
+export function buildMonthlySalesOption(
+  report: SalesAnalyticsResponse,
+  unit: 'kg' | 'USD' | 'VES',
+  currency: SalesAnalyticsCurrency,
+): Record<string, unknown> {
+  const money = unit !== 'kg';
+  const currentIndex = report.monthly.findIndex((entry) => entry.isCurrent);
+  const values = report.monthly.map((entry) => (money ? entry.billed ?? 0 : entry.kg));
+  const previous = report.monthly.map((entry) =>
+    money ? entry.prevYearBilled ?? 0 : entry.prevYearKg ?? 0,
+  );
+  const formatter = (raw: unknown) => {
+    const params = raw as Array<{
+      axisValue: string;
+      seriesName: string;
+      value: number;
+      marker: string;
+    }>;
+    const first = params[0];
+    if (!first) return '';
+    const lines = params.map(
+      (entry) =>
+        `${entry.marker}${entry.seriesName}: <b>${
+          money ? fmtMoney(entry.value, currency) : fmtTonnes(entry.value)
+        }</b>`,
+    );
+    return `<div style="font-weight:700;margin-bottom:4px">${first.axisValue}</div>${lines.join('<br/>')}`;
+  };
+
+  return {
+    animationDuration: 420,
+    tooltip: { trigger: 'axis', ...ANALYTICS_TOOLTIP, formatter },
+    legend: {
+      top: 0,
+      right: 0,
+      icon: 'roundRect',
+      itemWidth: 10,
+      itemHeight: 10,
+      textStyle: { color: ANALYTICS_COLORS.ink, fontSize: 11 },
+      data: [String(report.year), String(report.year - 1)],
+    },
+    grid: { left: 8, right: 8, top: 38, bottom: 6, containLabel: true },
+    xAxis: {
+      type: 'category',
+      data: report.monthly.map((entry) => entry.label),
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: ANALYTICS_COLORS.grid } },
+      axisLabel: { color: ANALYTICS_COLORS.outline, fontSize: 10 },
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: {
+        color: ANALYTICS_COLORS.outline,
+        fontSize: 10,
+        formatter: (value: number) =>
+          money
+            ? `${currency === 'USD' ? '$' : 'Bs'}${Math.round(value / 1000)}k`
+            : `${Math.round(value / 1000)}t`,
+      },
+      splitLine: { lineStyle: { color: ANALYTICS_COLORS.grid } },
+    },
+    series: [
+      {
+        name: String(report.year),
+        type: 'bar',
+        barMaxWidth: 26,
+        data: values.map((value, index) => ({
+          value,
+          itemStyle: {
+            color: index === currentIndex ? ANALYTICS_COLORS.lime : ANALYTICS_COLORS.navy,
+            borderRadius: [4, 4, 0, 0],
+          },
+        })),
+      },
+      {
+        name: String(report.year - 1),
+        type: 'line',
+        data: previous,
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 5,
+        lineStyle: { width: 2, color: ANALYTICS_COLORS.lime, type: 'dashed' },
+        itemStyle: { color: ANALYTICS_COLORS.lime },
+      },
+    ],
+  };
+}

@@ -38,8 +38,8 @@ function createFakePrisma() {
       { id: 'u-pcp', profitCode: 'PCP1', displayName: 'PCP UNO', role: 'PLANIFICADOR', isActive: true },
     ] as Row[],
     rolePermissions: [
-      { roleCode: 'PLANIFICADOR', module: 'llegadas', action: 'read' },
-      { roleCode: 'ALMACEN', module: 'llegadas', action: 'read' },
+      { roleCode: 'PLANIFICADOR', module: 'pcp', action: 'read' },
+      { roleCode: 'ALMACEN', module: 'pcp', action: 'read' },
     ] as Row[],
   };
 
@@ -147,7 +147,7 @@ const audit = { record: async () => undefined } as never;
 const viewer = {
   id: 'u-pcp',
   code: 'PCP1',
-  permissions: ['llegadas:read', 'llegadas:create', 'llegadas:update', 'llegadas:delete'],
+  permissions: ['pcp:read', 'pcp:create', 'pcp:update', 'pcp:delete'],
 };
 
 const actor = { id: 'u-plan', code: 'KZ', name: 'KEIBER ZAMUDIA' };
@@ -219,7 +219,7 @@ describe('ArrivalsService — creación automática desde el despacho', () => {
     expect(state.arrivals).toHaveLength(0);
   });
 
-  it('notifica solo a quienes tienen llegadas:read y no al autor', async () => {
+  it('notifica solo a quienes tienen pcp:read y no al autor', async () => {
     const { service, state } = build();
 
     await service.notifyExpected({ id: 'sheet-1', number: 'DSP-2026-0001', title: 'Despacho lunes' }, { customers: 2, kg: 1300 }, {

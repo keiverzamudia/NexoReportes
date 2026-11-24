@@ -4,10 +4,14 @@ import {
   bucketAmount,
   buildDocumentsCsv,
   buildSummaryCsv,
+  clientAging,
   formatCompactMoney,
   formatCount,
   formatPct,
+  formatPctCompact,
   paymentLabel,
+  segmentsFromBuckets,
+  segmentsFromPaymentBuckets,
   vendorRows,
 } from './receivables';
 
@@ -34,7 +38,8 @@ function client(overrides: Partial<ReceivablesClientRow> = {}): ReceivablesClien
     d61_90: 100,
     d91_120: 100,
     d121_150: 100,
-    d150Mas: 400,
+    d150Desde2025: 150,
+    d150Hasta2025: 250,
     vencido: 900,
     pctVencido: 90,
     documentos: 7,
@@ -81,7 +86,8 @@ const report = {
     d61_90: 100,
     d91_120: 100,
     d121_150: 100,
-    d150Mas: 400,
+    d150Desde2025: 150,
+    d150Hasta2025: 250,
     vencido: 900,
     pctVencido: 90,
     clientes: 1,
@@ -171,6 +177,7 @@ describe('formatCompactMoney', () => {
     expect(formatCompactMoney(0, 'USD')).toBe('$ 0,00');
     expect(formatCompactMoney(null, 'USD')).toBe('—');
     expect(formatPct(80.7)).toBe('80,7 %');
+    expect(formatPctCompact(80.7)).toBe('80,7%');
     expect(formatCount(4388)).toBe('4.388');
     expect(formatCount(null)).toBe('—');
   });
@@ -181,7 +188,48 @@ describe('bucketAmount', () => {
     const row = client();
     expect(bucketAmount(row, 'POR_VENCER')).toBe(100);
     expect(bucketAmount(row, 'D1_30')).toBe(100);
-    expect(bucketAmount(row, 'D150_MAS')).toBe(400);
+    expect(bucketAmount(row, 'D150_DESDE_2025')).toBe(150);
+    expect(bucketAmount(row, 'D150_HASTA_2025')).toBe(250);
+  });
+});
+
+describe('clientAging', () => {
+  it('ordena los tramos y calcula el porcentaje de la barra', () => {
+    const segments = clientAging(client());
+    expect(segments.map((segment) => segment.key)).toEqual([
+      'POR_VENCER',
+      'D1_30',
+      'D31_60',
+      'D61_90',
+      'D91_120',
+      'D121_150',
+      'D150_DESDE_2025',
+      'D150_HASTA_2025',
+    ]);
+    expect(segments.map((segment) => segment.pct)).toEqual([10, 10, 10, 10, 10, 10, 15, 25]);
+    expect(segments.reduce((sum, segment) => sum + segment.pct, 0)).toBe(100);
+  });
+
+  it('omite los tramos en cero y arma la mezcla global', () => {
+    const row = client({
+      porVencer: 300,
+      d1_30: 0,
+      d31_60: 100,
+      d61_90: 0,
+      d91_120: 0,
+      d121_150: 0,
+      d150Desde2025: 0,
+      d150Hasta2025: 600,
+    });
+    expect(clientAging(row).map((segment) => segment.key)).toEqual([
+      'POR_VENCER',
+      'D31_60',
+      'D150_HASTA_2025',
+    ]);
+    expect(segmentsFromBuckets([
+      { key: 'POR_VENCER', label: 'Por vencer', short: 'Por vencer', amount: 300, pct: 30, documentos: 1 },
+      { key: 'D1_30', label: '1 a 30 días', short: '1–30', amount: 700, pct: 70, documentos: 2 },
+    ]).map((segment) => segment.pct)).toEqual([30, 70]);
   });
 });
 
@@ -191,6 +239,39 @@ describe('paymentLabel', () => {
       '01/11/2026 · hace 17 d',
     );
     expect(paymentLabel({ ultimoPago: null, diasSinPago: null })).toBe('Sin abonos');
+  });
+});
+
+describe('segmentsFromPaymentBuckets', () => {
+  it('conserva las etiquetas de cobranza y descarta tramos vacíos', () => {
+    const segments = segmentsFromPaymentBuckets([
+      {
+        key: 'POR_VENCER',
+        label: 'Pagado a tiempo o antes del vencimiento',
+        short: 'A tiempo',
+        amount: 60,
+        pct: 60,
+        documentos: 4,
+      },
+      {
+        key: 'D31_60',
+        label: 'Pagado con 31 a 60 días de atraso',
+        short: '31–60',
+        amount: 0,
+        pct: 0,
+        documentos: 0,
+      },
+      {
+        key: 'D1_30',
+        label: 'Pagado con 1 a 30 días de atraso',
+        short: '1–30',
+        amount: 40,
+        pct: 40,
+        documentos: 1,
+      },
+    ]);
+    expect(segments.map((segment) => segment.short)).toEqual(['A tiempo', '1–30']);
+    expect(segments.map((segment) => segment.pct)).toEqual([60, 40]);
   });
 });
 
@@ -207,6 +288,42 @@ describe('vendorRows', () => {
     expect(rows[1]?.vencido).toBe(200);
     expect(rows[1]?.pctVencido).toBe(50);
     expect(rows[1]?.clientes).toBe(2);
+  });
+
+  it('suma los tramos de antigüedad de todos sus clientes', () => {
+    const zero = {
+      porVencer: 0,
+      d1_30: 0,
+      d31_60: 0,
+      d61_90: 0,
+      d91_120: 0,
+      d121_150: 0,
+      d150Desde2025: 0,
+      d150Hasta2025: 0,
+    };
+    const rows = vendorRows([
+      client({
+        codigo: '1',
+        vendedorCodigo: '031',
+        vendedor: 'JUILIARD ANGULO',
+        cartera: 100,
+        vencido: 0,
+        ...zero,
+        porVencer: 100,
+      }),
+      client({
+        codigo: '2',
+        vendedorCodigo: '031',
+        vendedor: 'JUILIARD ANGULO',
+        cartera: 300,
+        vencido: 300,
+        ...zero,
+        d1_30: 300,
+      }),
+    ]);
+    expect(rows[0]?.buckets.POR_VENCER).toBe(100);
+    expect(rows[0]?.buckets.D1_30).toBe(300);
+    expect(rows[0]?.aging.map((segment) => segment.pct)).toEqual([25, 75]);
   });
 });
 

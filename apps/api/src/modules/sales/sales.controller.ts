@@ -135,7 +135,9 @@ export class SalesController {
   // ---------- Analítica comercial (pestaña «Ventas») ----------
 
   @Get('sales/analytics/customers')
-  @RequirePermission('pedidos:view_summary')
+  // CxC reutiliza la analítica para el cruce ventas + cartera. Quien puede
+  // ver la cartera puede leer los agregados comerciales (solo lectura).
+  @RequireAnyPermission('pedidos:view_summary', 'cxc:read')
   analyticsCustomers(
     @Query(new ZodValidationPipe(zSalesAnalyticsCustomersQuery)) query: SalesAnalyticsCustomersQuery,
   ) {
@@ -143,7 +145,7 @@ export class SalesController {
   }
 
   @Get('sales/analytics')
-  @RequirePermission('pedidos:view_summary')
+  @RequireAnyPermission('pedidos:view_summary', 'cxc:read')
   analyticsReport(@Query(new ZodValidationPipe(zSalesAnalyticsQuery)) query: SalesAnalyticsQuery) {
     return this.analytics.get(query);
   }

@@ -69,11 +69,13 @@ import {
 } from '../ui';
 import {
   META_MARKER_PCT,
+  buildCommittedNarrative,
   buildCumulativeSeries,
   buildCustomerSalesCsv,
   buildDayBars,
   buildNarrative,
   buildSalesCsv,
+  committedSnapshot,
   customerSalesCsvFileName,
   customerTargetGeometry,
   dailySalesScale,
@@ -264,11 +266,14 @@ const GAP_BAR_COLOR = HERO_TONE;
  * forecast, con signo) y el corte de hoy (lo que faltaría para el forecast si
  * el mes terminara con la venta registrada), y acompaña la cifra con su barra
  * de avance.
+ *
+ * Con «Sumar pedidos» activo la base es venta + cartera: solo tiene sentido la
+ * lectura del mes, así que se oculta el selector Mes/Día.
  */
-function GapStat({ report }: { report: ForecastSalesResponse }) {
+function GapStat({ report, withPending }: { report: ForecastSalesResponse; withPending: boolean }) {
   const [scope, setScope] = useState<SalesGapScope>('month');
-  const gap = useMemo(() => salesGap(report), [report]);
-  const canPickDay = report.status === 'OPEN' && gap.cutGapKg !== null;
+  const gap = useMemo(() => salesGap(report, { includePending: withPending }), [report, withPending]);
+  const canPickDay = !withPending && report.status === 'OPEN' && gap.cutGapKg !== null;
   const isDay = canPickDay && scope === 'day';
 
   const value = isDay ? gap.cutGapKg : gap.monthGapKg;
@@ -289,16 +294,25 @@ function GapStat({ report }: { report: ForecastSalesResponse }) {
     ? value === null
       ? 'depende de la meta'
       : `si el mes terminara hoy · ${fmtKg(report.totals.actualKg)} de ${fmtKg(report.totals.forecastKg)} kg`
-    : value === null
-      ? 'depende de la meta'
-      : value >= 0
-        ? 'por encima del forecast'
-        : 'por debajo del forecast';
+    : withPending
+      ? value === null
+        ? 'depende de la meta'
+        : `real + pedidos contra el forecast`
+      : value === null
+        ? 'depende de la meta'
+        : value > 0
+          ? 'por encima del forecast'
+          : value < 0
+            ? 'por debajo del forecast'
+            : 'meta cubierta';
 
   return (
     <div className="rounded-xl bg-white/10 px-space-sm py-space-xs backdrop-blur-sm">
       <div className="flex flex-wrap items-center justify-between gap-x-space-2xs gap-y-1">
-        <p className="text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-white/55">Brecha</p>
+        <p className="text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-white/55">
+          Brecha
+          {withPending && <span className="font-semibold normal-case tracking-normal text-white/45"> · con pedidos</span>}
+        </p>
         {canPickDay && (
           <div role="group" aria-label="Escala de la brecha" className="flex shrink-0 rounded-pill bg-white/10 p-0.5">
             {(
@@ -326,7 +340,13 @@ function GapStat({ report }: { report: ForecastSalesResponse }) {
       <p className="text-label-sm text-white/50">{hint}</p>
       <div
         role="progressbar"
-        aria-label={isDay ? 'Avance del forecast al corte' : 'Avance de la meta del mes'}
+        aria-label={
+          isDay
+            ? 'Avance del forecast al corte'
+            : withPending
+              ? 'Avance de la meta con pedidos'
+              : 'Avance de la meta del mes'
+        }
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(filled)}
@@ -340,7 +360,7 @@ function GapStat({ report }: { report: ForecastSalesResponse }) {
         />
       </div>
       <p className="mt-1 text-[0.6rem] text-white/45">
-        {isDay ? 'del forecast al corte' : 'de la meta del mes'} · {fmtPct(pct)}
+        {isDay ? 'del forecast al corte' : withPending ? 'de la meta con pedidos' : 'de la meta del mes'} · {fmtPct(pct)}
       </p>
     </div>
   );
@@ -402,6 +422,9 @@ export function SalesReport({
   const [focusCustomer, setFocusCustomer] = useState<string | null>(null);
   const [pinnedDay, setPinnedDay] = useState<string | null>(null);
   const [hoverDay, setHoverDay] = useState<string | null>(null);
+  // «Sumar pedidos»: añade la cartera pendiente al acumulado y a los KPIs del
+  // hero. Apagado por defecto; no toca la tabla ni el CSV (venta real).
+  const [withPending, setWithPending] = useState(false);
   // Día abierto en el modal de desglose (independiente del pin de la tira).
   const [detailDay, setDetailDay] = useState<string | null>(null);
   const [helpRow, setHelpRow] = useHelpRow();
@@ -471,7 +494,15 @@ export function SalesReport({
   }, []);
   const closeProduct = useCallback(() => setFocusCode(null), []);
 
-  const chartOption = useMemo(() => (report ? cumulativeOption(report, pinnedDay) : {}), [report, pinnedDay]);
+  // Cierre comprometido: venta + cartera. Null si no hay pedidos pendientes o
+  // el mes no está en curso; el interruptor solo se ofrece cuando hay datos.
+  const committedAvailable = useMemo(() => (report ? committedSnapshot(report) : null), [report]);
+  const committed = withPending ? committedAvailable : null;
+
+  const chartOption = useMemo(
+    () => (report ? cumulativeOption(report, pinnedDay, Boolean(committed)) : {}),
+    [report, pinnedDay, committed],
+  );
   const daysWithSales = useMemo(() => (report ? salesDaysWithSales(report) : []), [report]);
   // Una ranura por día del mes: la tira muestra también los días futuros.
   const dayBars = useMemo(() => (report ? buildDayBars(report) : []), [report]);
@@ -523,12 +554,19 @@ export function SalesReport({
     [openDay, report],
   );
 
+  // Si la cartera desaparece (se facturó o cambió el mes), el escenario deja de
+  // existir: se apaga para que el hero no quede en un estado sin datos.
+  useEffect(() => {
+    if (!committedAvailable) setWithPending(false);
+  }, [committedAvailable]);
+
   // Al cambiar de mes se limpia la selección (las fechas ya no aplican).
   useEffect(() => {
     setPinnedDay(null);
     setHoverDay(null);
     setDetailDay(null);
     setFocusCustomer(null);
+    setWithPending(false);
   }, [report?.year, report?.month]);
 
   // Al cambiar de producto a cliente (o al revés) no se arrastra el foco de la
@@ -625,10 +663,12 @@ export function SalesReport({
   );
 
   // Los hooks van SIEMPRE antes de los returns condicionales.
-  const projectedTonnes = useCountUp(
-    report && report.totals.projectedKg !== null ? report.totals.projectedKg / 1000 : null,
+  const heroKg = committed ? committed.kg : report?.totals.projectedKg ?? null;
+  const heroTonnes = useCountUp(heroKg !== null ? heroKg / 1000 : null);
+  const narrative = useMemo(
+    () => (report ? (committed ? buildCommittedNarrative(report, committed) : buildNarrative(report)) : ''),
+    [report, committed],
   );
-  const narrative = useMemo(() => (report ? buildNarrative(report) : ''), [report]);
 
   const hasDeviationFilters =
     Boolean(search.trim()) || onlyWithSales || onlyWithForecast || onlyWithData;
@@ -703,8 +743,22 @@ export function SalesReport({
   const projected = totals.projectedKg;
   const attainment = totals.attainmentPct;
   const projectedAttainment = totals.projectedAttainmentPct;
+  // El hero sigue la venta real; con «Sumar pedidos» pasa al cierre
+  // comprometido (real + cartera) y lo dice en las etiquetas.
+  const heroPct = committed ? committed.pctOfForecast : projectedAttainment;
+  const heroValue = committed ? committed.kg : projected;
+  const heroTone = salesTone(heroPct ?? attainment);
+  const heroLabel = committed
+    ? 'Cierre comprometido'
+    : isFuture
+      ? 'Meta del mes'
+      : isOpen
+        ? 'Proyección de cierre'
+        : 'Venta del mes';
   const tone = salesTone(projectedAttainment ?? attainment);
   const basisLabel = report.basis === 'WORKING' ? 'día hábil (lun–sáb)' : 'día calendario';
+  const remainingDays = report.basis === 'WORKING' ? report.days.workingRemaining : report.days.remaining;
+  const remainingLabel = report.basis === 'WORKING' ? 'días hábiles' : 'días';
 
   // Parte del mes ya transcurrida: la vara del ritmo con la que se pinta el
   // «Avance» (en mes cerrado es 100 % y el color vuelve a leerse como cumplimiento).
@@ -1262,6 +1316,9 @@ export function SalesReport({
                 {report.forecastSource === 'CAPTURED' && (
                   <span className="font-semibold normal-case tracking-normal text-white/60">· meta capturada</span>
                 )}
+                {committed && (
+                  <span className="font-semibold normal-case tracking-normal text-amber-200/90">· con pedidos</span>
+                )}
               </span>
               <span className="text-label-md text-white/65">
                 Corte {report.asOf ? dayLabel(report.asOf) : 'sin ventas'} · {report.days.workingElapsed}/{report.days.workingInMonth} días hábiles
@@ -1278,25 +1335,33 @@ export function SalesReport({
 
             <div>
               <p className="text-label-sm font-semibold uppercase tracking-[0.16em] text-white/55">
-                {isFuture ? 'Meta del mes' : isOpen ? 'Proyección de cierre' : 'Venta del mes'}
+                {heroLabel}
               </p>
               <div className="mt-space-2xs flex flex-wrap items-end gap-space-sm">
                 <span
                   className="font-display tabular-nums text-[3.4rem] font-black leading-none tracking-tight"
-                  style={{ color: tone === 'none' ? 'rgb(255 255 255 / 0.75)' : HERO_TONE[tone] }}
+                  style={{ color: heroTone === 'none' ? 'rgb(255 255 255 / 0.75)' : HERO_TONE[heroTone] }}
                 >
-                  {projected === null ? '—' : fmtKg(projectedTonnes, 1)}
+                  {heroValue === null ? '—' : fmtKg(heroTonnes, 1)}
                 </span>
                 <span className="pb-2 text-title-md font-semibold text-white/55">t</span>
                 <span className="mb-1.5 rounded-pill bg-white/10 px-space-sm py-1 text-label-md font-semibold text-white/75">
-                  {projected === null ? 'sin proyección' : `${fmtKg(projected)} kg`}
+                  {heroValue === null ? 'sin proyección' : `${fmtKg(heroValue)} kg`}
                 </span>
               </div>
               <p className="mt-space-xs max-w-xl text-body-md text-white/60">{narrative}</p>
             </div>
 
             <div className="grid grid-cols-2 gap-space-sm sm:grid-cols-4">
-              <HeroStat label="Venta acumulada" value={`${fmtKg(totals.actualKg)} kg`} hint={`${fmtTonnes(totals.actualKg)} t`} />
+              <HeroStat
+                label={committed ? 'Venta + pedidos' : 'Venta acumulada'}
+                value={`${fmtKg(committed ? committed.kg : totals.actualKg)} kg`}
+                hint={
+                  committed
+                    ? `${fmtKg(totals.actualKg)} vendidos + ${fmtKg(totals.pendingKg)} pedidos`
+                    : `${fmtTonnes(totals.actualKg)} t`
+                }
+              />
               <HeroStat
                 label="Forecast"
                 value={totals.forecastKg > 0 ? `${fmtKg(totals.forecastKg)} kg` : 'Sin meta'}
@@ -1306,29 +1371,53 @@ export function SalesReport({
                     : `${fmtTonnes(totals.forecastKg)} t`
                 }
               />
-              <GapStat report={report} />
+              <GapStat report={report} withPending={Boolean(committed)} />
               <HeroStat
                 label={isOpen ? 'Ritmo necesario' : 'Entregas'}
-                value={isOpen ? (totals.requiredDailyKg === null ? '—' : `${fmtKg(totals.requiredDailyKg)} kg/día`) : fmtKg(totals.invoiceCount, 0)}
-                hint={isOpen ? `${report.days.workingRemaining} días hábiles restantes` : `última ${totals.lastInvoiceDate ? dayLabel(totals.lastInvoiceDate) : '—'}`}
+                value={
+                  isOpen
+                    ? committed
+                      ? committed.gapKg !== null && committed.gapKg <= 0
+                        ? 'Meta cubierta'
+                        : committed.requiredDailyKg === null
+                          ? '—'
+                          : `${fmtKg(committed.requiredDailyKg)} kg/día`
+                      : totals.requiredDailyKg === null
+                        ? '—'
+                        : `${fmtKg(totals.requiredDailyKg)} kg/día`
+                    : fmtKg(totals.invoiceCount, 0)
+                }
+                hint={
+                  isOpen
+                    ? committed
+                      ? `${remainingDays} ${remainingLabel} · sobre la cartera`
+                      : `${remainingDays} ${remainingLabel} restantes`
+                    : `última ${totals.lastInvoiceDate ? dayLabel(totals.lastInvoiceDate) : '—'}`
+                }
               />
             </div>
           </div>
 
           <div className="flex flex-col items-center gap-space-sm justify-self-center rounded-2xl border border-white/10 bg-white/5 p-space-md">
-            <AttainmentRing pct={isFuture ? null : projectedAttainment} tone={tone} />
+            <AttainmentRing pct={isFuture ? null : heroPct} tone={heroTone} />
             <div className="flex flex-col items-center gap-space-2xs text-center">
               <span className="text-label-sm font-semibold uppercase tracking-[0.14em] text-white/50">
-                Cumplimiento proyectado
+                {committed ? 'Cumplimiento comprometido' : 'Cumplimiento proyectado'}
               </span>
-              <span className={cx('tabular-nums text-title-md font-bold', tone === 'good' ? 'text-secondary-container' : 'text-white/85')}>
-                {fmtPct(projectedAttainment)}
+              <span className={cx('tabular-nums text-title-md font-bold', heroTone === 'good' ? 'text-secondary-container' : 'text-white/85')}>
+                {fmtPct(heroPct)}
               </span>
               <span className="text-label-sm text-white/45">Meta {fmtKg(totals.forecastKg)} kg</span>
               <span className="mt-1 flex items-center gap-1 text-label-sm text-white/55">
                 Actual
                 <strong className="tabular-nums text-white/85">{fmtPct(attainment)}</strong>
               </span>
+              {committed && (
+                <span className="flex items-center gap-1 text-label-sm text-white/55">
+                  Ritmo forecast
+                  <strong className="tabular-nums text-white/85">{fmtPct(projectedAttainment)}</strong>
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -1344,26 +1433,75 @@ export function SalesReport({
                 {isOpen
                   ? 'Real hasta el corte · proyección punteada · ritmo uniforme del forecast'
                   : 'Venta real acumulada · ritmo uniforme del forecast'}
+                {withPending ? ' · línea ámbar = real + pedidos' : ''}
                 {report.daily.length > 0 && (totals.actualKg > 0 || totals.pendingKg > 0)
                   ? ' · pasa el mouse o haz clic en un día: la barra de abajo se sincroniza'
                   : ''}
               </p>
             </div>
-            {totals.actualKg > 0 && (
-              <div className="flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
-                <span className="inline-flex items-center gap-1.5">
-                  <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.navy }} /> Real
-                </span>
-                {isOpen && (
-                  <span className="inline-flex items-center gap-1.5">
-                    <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.lime }} /> Proyección
+            <div className="flex flex-wrap items-center gap-space-sm">
+              {committedAvailable && (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={withPending}
+                  onClick={() => setWithPending((value) => !value)}
+                  title="Suma la cartera pendiente del mes al acumulado y a los KPIs: si facturas todos los pedidos, ¿a cuánto llegarías?"
+                  className={cx(
+                    'inline-flex h-8 items-center gap-2 rounded-pill border px-space-sm text-label-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-secondary-container/70',
+                    withPending
+                      ? 'border-warning/50 bg-warning-container/70 text-on-warning-container'
+                      : 'border-outline-variant/50 bg-surface-container-lowest text-on-surface-variant hover:border-primary-container/40 hover:text-primary',
+                  )}
+                >
+                  <span
+                    aria-hidden
+                    className={cx(
+                      'relative inline-block h-3.5 w-6 shrink-0 rounded-pill transition-colors',
+                      withPending ? 'bg-warning' : 'bg-outline/30',
+                    )}
+                  >
+                    <span
+                      className={cx(
+                        'absolute top-0.5 size-2.5 rounded-full bg-white shadow-sm transition-[left]',
+                        withPending ? 'left-3' : 'left-0.5',
+                      )}
+                    />
                   </span>
-                )}
-                <span className="inline-flex items-center gap-1.5">
-                  <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.outline }} /> Ritmo forecast
-                </span>
-              </div>
-            )}
+                  Sumar pedidos
+                  <span
+                    className={cx(
+                      'hidden rounded-pill px-1.5 py-0.5 text-[0.65rem] font-bold tabular-nums sm:inline',
+                      withPending
+                        ? 'bg-white/60 text-on-warning-container'
+                        : 'bg-surface-container text-on-surface-variant',
+                    )}
+                  >
+                    {fmtKg(totals.pendingKg)} kg
+                  </span>
+                </button>
+              )}
+              {totals.actualKg > 0 && (
+                <div className="flex flex-wrap items-center gap-space-sm text-label-sm text-on-surface-variant">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.navy }} /> Real
+                  </span>
+                  {withPending && committed && (
+                    <span className="inline-flex items-center gap-1.5">
+                      <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.amber }} /> Real + pedidos
+                    </span>
+                  )}
+                  {isOpen && (
+                    <span className="inline-flex items-center gap-1.5">
+                      <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.lime }} /> Proyección
+                    </span>
+                  )}
+                  <span className="inline-flex items-center gap-1.5">
+                    <span aria-hidden className="h-0.5 w-4 rounded-pill" style={{ background: C.outline }} /> Ritmo forecast
+                  </span>
+                </div>
+              )}
+            </div>
           </header>
           <div className="px-space-sm pb-space-sm">
             {report.daily.length > 0 && (totals.actualKg > 0 || totals.pendingKg > 0) ? (
@@ -1371,10 +1509,31 @@ export function SalesReport({
                 <EChart
                   option={chartOption}
                   height={280}
-                  ariaLabel="Acumulado del mes: venta real, proyección y ritmo del forecast"
+                  ariaLabel={
+                    withPending
+                      ? 'Acumulado del mes: venta real, real más pedidos, proyección y ritmo del forecast'
+                      : 'Acumulado del mes: venta real, proyección y ritmo del forecast'
+                  }
                   onIndexHover={handleIndexHover}
                   onIndexClick={handleIndexClick}
                 />
+
+                {committed && (
+                  <p className="mx-space-xs mt-space-xs flex flex-wrap items-center gap-x-space-xs gap-y-1 rounded-lg border border-warning/25 bg-warning-container/35 px-space-sm py-space-2xs text-label-md text-on-warning-container">
+                    <span aria-hidden className="inline-block size-2 shrink-0 rounded-full" style={{ background: C.amber }} />
+                    <span>
+                      Si facturas los <strong className="tabular-nums">{fmtKg(totals.pendingKg)} kg</strong> de pedidos pendientes
+                      llegarías a <strong className="tabular-nums">{fmtKg(committed.kg)} kg</strong> (
+                      {fmtPct(committed.pctOfForecast)} del forecast)
+                      {committed.gapKg !== null && committed.gapKg < 0
+                        ? `; faltarían ${fmtKg(Math.abs(committed.gapKg))} kg.`
+                        : committed.gapKg !== null && committed.gapKg > 0
+                          ? `; irías ${fmtKg(committed.gapKg)} kg por encima.`
+                          : '; la meta quedaría cubierta.'}
+                    </span>
+                    <span className="text-on-warning-container/70">La proyección de ritmo no incluye la cartera.</span>
+                  </p>
+                )}
 
                 {/* Tira de barras sincronizada con el acumulado: un día por columna. */}
                 <DailySalesBars
@@ -2947,13 +3106,20 @@ const DeviationBars = memo(function DeviationBars({
   );
 });
 
-function cumulativeOption(report: ForecastSalesResponse, pinnedDate: string | null = null): Record<string, unknown> {
+function cumulativeOption(
+  report: ForecastSalesResponse,
+  pinnedDate: string | null = null,
+  withPending = false,
+): Record<string, unknown> {
   const points = buildCumulativeSeries(report);
   const forecastKg = report.totals.forecastKg;
   const labels = points.map((point) => point.label);
   const actual = points.map((point) => point.actual);
   const projected = points.map((point) => point.projected);
   const pace = points.map((point) => point.pace);
+  const committed = points.map((point) => point.committed);
+  const committedKg = report.totals.actualKg + report.totals.pendingKg;
+  const showCommitted = withPending && report.totals.pendingKg > 0;
   const cutDay = report.asOf ? String(Number(report.asOf.slice(8, 10))) : null;
   const today = String(Number(report.days.today.slice(8, 10)));
   const labelStep = Math.max(1, Math.ceil(labels.length / 10));
@@ -2998,7 +3164,7 @@ function cumulativeOption(report: ForecastSalesResponse, pinnedDate: string | nu
   return {
     animationDuration: 600,
     animationEasing: 'cubicOut',
-    grid: { left: 8, right: 16, top: 14, bottom: 4, containLabel: true },
+    grid: { left: 8, right: showCommitted ? 86 : 16, top: 14, bottom: 4, containLabel: true },
     tooltip: {
       trigger: 'axis',
       confine: true,
@@ -3103,6 +3269,34 @@ function cumulativeOption(report: ForecastSalesResponse, pinnedDate: string | nu
         markLine: highlightLine,
         z: 2,
       },
+      ...(showCommitted
+        ? [
+            {
+              // Techo comprometido: real + cartera por fecha de entrega. Es una
+              // lectura aparte de la proyección de ritmo, no se suman.
+              name: 'Real + pedidos',
+              type: 'line',
+              step: 'end',
+              showSymbol: false,
+              connectNulls: false,
+              data: committed,
+              lineStyle: { width: 2.5, color: C.amber, type: 'solid' },
+              itemStyle: { color: C.amber },
+              endLabel: {
+                show: true,
+                formatter: () => `${compact(committedKg)} kg`,
+                color: C.amber,
+                fontSize: 10,
+                fontWeight: 'bold',
+                backgroundColor: 'rgba(255,255,255,0.92)',
+                borderRadius: 4,
+                padding: [2, 4],
+                distance: 4,
+              },
+              z: 5,
+            },
+          ]
+        : []),
     ],
   };
 }

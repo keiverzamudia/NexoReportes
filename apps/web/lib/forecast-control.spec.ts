@@ -10,6 +10,7 @@ function week(weekIndex: number, overrides: Partial<ForecastPlanRow['weeks'][num
     demandKg: 0,
     demandQty: 0,
     soldKg: 0,
+    soldUsd: 0,
     soldSacks: null,
     stockKg: 400_000,
     objectiveKg: 30_000,
@@ -40,6 +41,7 @@ function row(overrides: Partial<ForecastPlanRow> = {}): ForecastPlanRow {
     demandMonthQty: 500,
     demandMonthKg: 20_000,
     soldMonthKg: 100_000,
+    soldMonthUsd: 45_000,
     productionMonthKg: 0,
     productionMonthSacks: null,
     weeks: [

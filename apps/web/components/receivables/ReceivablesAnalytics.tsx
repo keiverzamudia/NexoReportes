@@ -1,5 +1,6 @@
 'use client';
 
+import { RECEIVABLES_BUCKETS } from '@nexo/contracts';
 import type { ReceivablesCurrency, ReceivablesResponse } from '@nexo/contracts';
 import {
   AlertTriangle,
@@ -15,11 +16,15 @@ import {
 import { useMemo } from 'react';
 import { EChart } from '../EChart';
 import { Badge, Card, HeroCard, Kpi } from '../ui';
+import { AgingLegend, AgingMixRow } from './AgingBars';
 import {
   BUCKET_COLORS,
+  BUCKET_LABEL_COLORS,
+  bucketAmount,
   formatCompactMoney,
   formatCount,
   formatPct,
+  formatPctCompact,
   formatReceivablesMoney,
   vendorRows,
 } from '../../lib/receivables';
@@ -53,6 +58,7 @@ export function ReceivablesPulse({
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'shadow' },
+        appendToBody: true,
         formatter: (params: unknown) => {
           const list = params as Array<{ dataIndex: number }>;
           const bucket = report.buckets[list[0]?.dataIndex ?? 0];
@@ -241,29 +247,77 @@ export function ReceivablesAnalysis({
     () => report.clientes.filter((row) => row.cartera > 0).slice(0, 8),
     [report.clientes],
   );
-  const vendors = useMemo(() => vendorRows(report.clientes).slice(0, 6), [report.clientes]);
+  const vendors = useMemo(
+    () => vendorRows(report.clientes).filter((vendor) => vendor.cartera > 0).slice(0, 6),
+    [report.clientes],
+  );
   const maxVendor = vendors[0]?.cartera ?? 0;
+  const maxClient = topClients[0]?.cartera ?? 0;
 
   const topOption = useMemo(() => {
     const labels = topClients.map((row) =>
       row.nombre.length > 30 ? `${row.nombre.slice(0, 29)}…` : row.nombre,
     );
+    const bucketSeries: Record<string, unknown>[] = RECEIVABLES_BUCKETS.map((bucket) => ({
+      name: bucket.short,
+      type: 'bar',
+      stack: 'aging',
+      barWidth: 18,
+      data: topClients.map((row) => ({
+        value: bucketAmount(row, bucket.key),
+        itemStyle: { color: BUCKET_COLORS[bucket.key] },
+      })),
+      itemStyle: { borderColor: '#ffffff', borderWidth: 0.5 },
+      label: {
+        show: true,
+        position: 'inside',
+        color: BUCKET_LABEL_COLORS[bucket.key],
+        fontSize: 9,
+        fontWeight: 700,
+        formatter: (params: { dataIndex?: number }) => {
+          const row = topClients[params.dataIndex ?? 0];
+          if (!row || row.cartera <= 0 || maxClient <= 0) return '';
+          const amount = bucketAmount(row, bucket.key);
+          const trackShare = (amount / maxClient) * 100;
+          const pct = (amount / row.cartera) * 100;
+          return trackShare >= 8 && pct >= 4 ? formatPctCompact(pct) : '';
+        },
+      },
+    }));
+
     return {
-      animationDuration: 400,
+      animationDuration: 450,
       grid: { left: 4, right: 56, top: 6, bottom: 4, containLabel: true },
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'shadow' },
+        appendToBody: true,
         formatter: (params: unknown) => {
-          const list = params as Array<{ dataIndex: number; value: number }>;
+          const list = params as Array<{ dataIndex: number; seriesName?: string }>;
           const row = topClients[list[0]?.dataIndex ?? 0];
           if (!row) return '';
-          return `<strong>${row.nombre}</strong><br/>${formatReceivablesMoney(
+          const lines = RECEIVABLES_BUCKETS.map((bucket) => {
+            const amount = bucketAmount(row, bucket.key);
+            if (amount <= 0) return '';
+            const pct = row.cartera > 0 ? (amount / row.cartera) * 100 : 0;
+            return `<div style="display:flex;justify-content:space-between;gap:16px;white-space:nowrap"><span style="color:#c3c6d1">${
+              bucket.short
+            }</span><span><b>${formatReceivablesMoney(
+              amount,
+              currency,
+            )}</b> · ${formatPct(pct)}</span></div>`;
+          })
+            .filter(Boolean)
+            .join('');
+          return `<div style="font-weight:700;margin-bottom:4px">${row.nombre}</div><div style="margin-bottom:6px">${formatReceivablesMoney(
             row.cartera,
             currency,
-          )}<br/>${formatPct(row.pctVencido)} vencido · ${row.vendedor}`;
+          )} · <span style="color:#fca5a5">${formatPct(row.pctVencido)} vencido</span> · ${
+            row.vendedor
+          }</div>${lines}`;
         },
       },
+      legend: { show: false },
       xAxis: {
         type: 'value',
         splitLine: { lineStyle: { color: 'rgba(195,198,209,.3)' } },
@@ -282,16 +336,19 @@ export function ReceivablesAnalysis({
         axisLabel: { color: '#43474f', fontSize: 10, width: 190, overflow: 'truncate' },
       },
       series: [
+        ...bucketSeries,
+        // Barra transparente superpuesta: coloca el monto total al final de la
+        // pila sin sumar otro segmento ni alterar el tooltip.
         {
+          name: 'Total',
           type: 'bar',
-          barMaxWidth: 18,
-          data: topClients.map((row, index) => ({
-            value: row.cartera,
-            itemStyle: {
-              color: index === 0 ? '#dc2626' : '#003366',
-              borderRadius: [0, 4, 4, 0],
-            },
-          })),
+          barWidth: 18,
+          barGap: '-100%',
+          silent: true,
+          z: 10,
+          tooltip: { show: false },
+          data: topClients.map((row) => row.cartera),
+          itemStyle: { color: 'transparent' },
           label: {
             show: true,
             position: 'right',
@@ -303,94 +360,87 @@ export function ReceivablesAnalysis({
         },
       ],
     };
-  }, [topClients, currency]);
+  }, [topClients, maxClient, currency]);
 
   return (
-    <section className="grid gap-space-md xl:grid-cols-12">
-      <Card className="xl:col-span-5">
-        <div className="flex items-start justify-between gap-space-sm px-space-md pt-space-md">
-          <div>
-            <h2 className="text-title-md font-bold text-on-surface">Concentración por cliente</h2>
-            <p className="text-label-md text-on-surface-variant">
-              Los mayores saldos. Haz clic en una barra para abrir el detalle de ese cliente.
-            </p>
-          </div>
-          <Badge tone={report.risk.top5Pct >= 80 ? 'danger' : 'warning'}>
-            Top 5: {formatPct(report.risk.top5Pct)}
-          </Badge>
-        </div>
-        {topClients.length > 0 ? (
-          <div className="px-space-sm pb-space-sm">
-            <EChart
-              option={topOption}
-              height={280}
-              ariaLabel="Clientes con mayor cartera"
-              pointerCategories={topClients.map((_, index) => index)}
-              onCategoryClick={(index) => {
-                const row = topClients[index];
-                if (row) onClient(row.codigo);
-              }}
-            />
-          </div>
-        ) : (
-          <p className="px-space-md py-space-lg text-body-md text-on-surface-variant">
-            Sin clientes con deuda para los filtros actuales.
-          </p>
-        )}
+    <div className="flex flex-col gap-space-md">
+      <Card className="flex flex-wrap items-center justify-between gap-space-sm px-space-md py-space-sm">
+        <AgingLegend buckets={report.buckets} />
+        <p className="text-label-sm normal-case text-on-surface-variant">
+          Color = antigüedad · largo = deuda total
+        </p>
       </Card>
 
-      <Card className="xl:col-span-4">
-        <div className="flex items-start justify-between gap-space-sm px-space-md pt-space-md">
-          <div>
-            <h2 className="text-title-md font-bold text-on-surface">Cartera por vendedor</h2>
-            <p className="text-label-md text-on-surface-variant">
-              Responsable de la cartera del cliente. Haz clic para filtrar.
-            </p>
+      <section className="grid gap-space-md xl:grid-cols-12">
+        <Card className="xl:col-span-5">
+          <div className="flex items-start justify-between gap-space-sm px-space-md pt-space-md">
+            <div>
+              <h2 className="text-title-md font-bold text-on-surface">Concentración por cliente</h2>
+              <p className="text-label-md text-on-surface-variant">
+                Los mayores saldos, con su mezcla de antigüedad. Pasa el cursor para ver el
+                desglose y haz clic para abrir el cliente.
+              </p>
+            </div>
+            <Badge tone={report.risk.top5Pct >= 80 ? 'danger' : 'warning'}>
+              Top 5: {formatPct(report.risk.top5Pct)}
+            </Badge>
           </div>
-          <Landmark aria-hidden className="size-4 text-primary" />
-        </div>
-        <ul className="mt-space-sm flex flex-col divide-y divide-outline-variant/20 px-space-md pb-space-md">
-          {vendors.map((vendor) => {
-            const width = maxVendor > 0 ? Math.max(3, Math.round((vendor.cartera / maxVendor) * 100)) : 0;
-            return (
-              <li key={`${vendor.codigo}-${vendor.vendedor}`}>
-                <button
-                  type="button"
-                  onClick={() => onVendor(vendor.codigo)}
-                  className="flex w-full flex-col gap-1 py-space-sm text-left transition-colors hover:text-primary"
-                  title={`Filtrar por ${vendor.vendedor}`}
-                >
-                  <span className="flex items-baseline justify-between gap-space-sm">
-                    <span className="truncate text-label-md font-semibold text-on-surface">
-                      {vendor.vendedor}
-                    </span>
-                    <span className="shrink-0 tabular-nums text-label-md font-bold text-primary">
-                      {formatCompactMoney(vendor.cartera, currency)}
-                    </span>
-                  </span>
-                  <span className="flex items-center gap-space-sm">
-                    <span className="h-1.5 flex-1 overflow-hidden rounded-pill bg-surface-container-high">
-                      <span
-                        className="block h-full rounded-pill bg-primary-container"
-                        style={{ width: `${width}%` }}
-                      />
-                    </span>
-                    <span className="shrink-0 text-label-sm tabular-nums text-on-surface-variant">
-                      {vendor.clientes} cli. · {formatPct(vendor.pctVencido)}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-          {vendors.length === 0 && (
-            <li className="py-space-md text-body-md text-on-surface-variant">Sin vendedores con cartera.</li>
+          {topClients.length > 0 ? (
+            <div className="px-space-sm pb-space-sm">
+              <EChart
+                option={topOption}
+                height={300}
+                ariaLabel="Clientes con mayor cartera, repartida por tramos de antigüedad"
+                pointerCategories={topClients.map((_, index) => index)}
+                onCategoryClick={(index) => {
+                  const row = topClients[index];
+                  if (row) onClient(row.codigo);
+                }}
+              />
+            </div>
+          ) : (
+            <p className="px-space-md py-space-lg text-body-md text-on-surface-variant">
+              Sin clientes con deuda para los filtros actuales.
+            </p>
           )}
-        </ul>
-      </Card>
+        </Card>
 
-      <RiskCards report={report} currency={currency} />
-    </section>
+        <Card className="xl:col-span-4">
+          <div className="flex items-start justify-between gap-space-sm px-space-md pt-space-md">
+            <div>
+              <h2 className="text-title-md font-bold text-on-surface">Cartera por vendedor</h2>
+              <p className="text-label-md text-on-surface-variant">
+                Cómo se reparte la deuda de cada vendedor por antigüedad. Haz clic para filtrar.
+              </p>
+            </div>
+            <Landmark aria-hidden className="size-4 text-primary" />
+          </div>
+          <ul className="mt-space-sm flex flex-col divide-y divide-outline-variant/20 px-space-md pb-space-md">
+            {vendors.map((vendor) => (
+              <li key={`${vendor.codigo}-${vendor.vendedor}`}>
+                <AgingMixRow
+                  title={vendor.vendedor}
+                  subtitle={`${vendor.clientes} clientes · ${formatPct(vendor.pctVencido)} vencido`}
+                  amount={vendor.cartera}
+                  segments={vendor.aging}
+                  max={maxVendor}
+                  currency={currency}
+                  onClick={() => onVendor(vendor.codigo)}
+                  ariaLabel={`Filtrar por ${vendor.vendedor}`}
+                />
+              </li>
+            ))}
+            {vendors.length === 0 && (
+              <li className="py-space-md text-body-md text-on-surface-variant">
+                Sin vendedores con cartera.
+              </li>
+            )}
+          </ul>
+        </Card>
+
+        <RiskCards report={report} currency={currency} />
+      </section>
+    </div>
   );
 }
 

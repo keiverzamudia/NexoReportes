@@ -32,6 +32,7 @@ import {
   cx,
 } from '../../components/ui';
 import { RolesPanel } from '../../components/users/RolesPanel';
+import { SystemAdminPanel } from '../../components/users/SystemAdminPanel';
 import { UserPermissionsDialog } from '../../components/users/UserPermissionsDialog';
 import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
 import { hasPermission } from '../../lib/permissions';
@@ -81,7 +82,7 @@ function fmtDateTime(iso: string | null): string {
 export default function UsuariosPage() {
   const queryClient = useQueryClient();
   const [tick, setTick] = useState(0);
-  const [tab, setTab] = useState<'usuarios' | 'roles' | 'bitacoras'>('usuarios');
+  const [tab, setTab] = useState<'usuarios' | 'roles' | 'bitacoras' | 'sistema'>('usuarios');
   const [q, setQ] = useState('');
   const [role, setRole] = useState('');
   const [active, setActive] = useState('');
@@ -206,7 +207,7 @@ export default function UsuariosPage() {
           aria-label={`Vendedor de Profit para ${user.displayName}`}
           title={
             canManage
-              ? 'Vincula la cuenta con su código de vendedor en Profit. Sin «Ver todos los vendedores», solo verá su cartera.'
+              ? 'Vincula la cuenta con su código de vendedor en Profit. Sin «Ver todo», solo verá su información.'
               : 'No tienes permiso para cambiar la vinculación'
           }
           className="h-8 max-w-[13rem] cursor-pointer rounded-md bg-surface px-space-xs text-label-md text-on-surface focus:outline-none focus:ring-2 focus:ring-primary-container disabled:cursor-not-allowed disabled:opacity-60"
@@ -328,7 +329,12 @@ export default function UsuariosPage() {
               { value: 'usuarios', label: 'Usuarios' },
               { value: 'roles', label: 'Roles y permisos' },
               // La bitácora es solo para administradores (el API lo revalida).
-              ...(isAdmin ? [{ value: 'bitacoras' as const, label: 'Bitácoras' }] : []),
+              ...(isAdmin
+                ? [
+                    { value: 'bitacoras' as const, label: 'Bitácoras' },
+                    { value: 'sistema' as const, label: 'Avisos y versión' },
+                  ]
+                : []),
             ]}
           />
           <p className="text-label-sm text-on-surface-variant">
@@ -427,14 +433,15 @@ export default function UsuariosPage() {
               <div className="flex items-center gap-space-sm border-t border-surface-container px-space-md py-space-sm text-label-sm text-on-surface-variant">
                 <Lock aria-hidden className="size-4" />
                 El candado marca a los administradores declarados por configuración: no se pueden degradar desde aquí.
-                La columna «Vendedor» vincula la cuenta con su código de Profit: sin el permiso «Ver todos los
-                vendedores» solo verá su propia cartera. El botón «Permisos» permite conceder o denegar acciones
-                puntuales sobre el rol.
+                La columna «Vendedor» vincula la cuenta con su código de Profit: sin el permiso «Ver todo» solo verá
+                su propia información. El botón «Permisos» permite conceder o denegar acciones puntuales sobre el rol.
               </div>
             </Card>
           </>
         ) : tab === 'bitacoras' && isAdmin ? (
           <BitacorasPanel />
+        ) : tab === 'sistema' && isAdmin ? (
+          <SystemAdminPanel />
         ) : (
           <RolesPanel permissions={sessionPermissions} />
         )}

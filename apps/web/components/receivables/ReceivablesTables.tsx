@@ -17,6 +17,7 @@ import {
   BUCKET_TEXT_COLORS,
   bucketAmount,
   bucketMeta,
+  bucketTotalAmount,
   formatDays,
   formatPct,
   formatReceivablesMoney,
@@ -362,20 +363,7 @@ export function ReceivablesSummaryTable({
       <td className="px-space-sm py-2.5" />
       <td className="px-space-sm py-2.5 text-right tabular-nums text-primary">{formatReceivablesMoney(totals.cartera, currency)}</td>
       {RECEIVABLES_BUCKETS.map((bucket) => {
-        const value =
-          bucket.key === 'POR_VENCER'
-            ? totals.porVencer
-            : bucket.key === 'D1_30'
-              ? totals.d1_30
-              : bucket.key === 'D31_60'
-                ? totals.d31_60
-                : bucket.key === 'D61_90'
-                  ? totals.d61_90
-                  : bucket.key === 'D91_120'
-                    ? totals.d91_120
-                    : bucket.key === 'D121_150'
-                      ? totals.d121_150
-                      : totals.d150Mas;
+        const value = bucketTotalAmount(totals, bucket.key);
         return (
           <td key={bucket.key} className="px-space-sm py-2.5 text-right tabular-nums text-on-surface-variant">
             {value > 0 ? formatReceivablesMoney(value, currency) : '—'}
@@ -393,7 +381,7 @@ export function ReceivablesSummaryTable({
         {totals.pctCobranzaATiempo === null ? '—' : formatPct(totals.pctCobranzaATiempo)}
       </td>
       <td className="px-space-sm py-2.5" />
-      {Array.from({ length: totalCols - 20 }).map((_, index) => (
+      {Array.from({ length: totalCols - (13 + RECEIVABLES_BUCKETS.length) }).map((_, index) => (
         <td key={`extra-${index}`} className="px-space-sm py-2.5" />
       ))}
     </tr>

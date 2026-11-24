@@ -75,6 +75,7 @@ function baseInput() {
       saldoVencido: 500,
       credito: 0,
       limiteCredito: 2000,
+      plazoPago: 30,
       documentos: 2,
       vencidos: 1,
     },

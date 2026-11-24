@@ -22,6 +22,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../../common/prisma.module';
 import { AuditService } from '../audit/audit.service';
+import { arrivalDateFilter } from './arrival-date-filter';
 
 // ============================================================
 // Llegadas de clientes (PCP).
@@ -118,6 +119,9 @@ export class ArrivalsService {
       plannedSacks: group.sacks,
       plannedKg: group.kg,
       status: 'ESPERADO',
+      // Desde el módulo Romana, cada llegada nueva exige cédula y carnet por
+      // pedido. El histórico anterior queda fuera con el default false.
+      romanaRequired: true,
       createdById: input.actor.id,
       createdByCode: input.actor.code,
       createdByName: input.actor.name,
@@ -148,7 +152,7 @@ export class ArrivalsService {
       body: `${input.customers} cliente(s) · ${input.kg} kg · ${sheet.title}`,
       entityType: 'DispatchSheet',
       entityId: sheet.id,
-      linkPath: '/llegadas',
+      linkPath: '/pcp',
       actorId: actor.id,
       actorName: actor.name,
     });
@@ -197,7 +201,7 @@ export class ArrivalsService {
 
   async list(viewer: ArrivalViewer, query: ArrivalQuery): Promise<ArrivalListResponse> {
     const rows = await this.prisma.customerArrival.findMany({
-      where: query.date ? { expectedDate: query.date } : {},
+      where: arrivalDateFilter(query.date, query.overdue),
       include: { incidents: { select: { status: true } } },
       orderBy: [{ expectedDate: 'asc' }, { customerName: 'asc' }],
       take: query.limit,
@@ -657,15 +661,15 @@ export class ArrivalsService {
     return Array.from({ length: count }, (_, index) => `${prefix}${String(start + index).padStart(4, '0')}`);
   }
 
-  /** Usuarios activos con `llegadas:read` (rol o excepción) + administradores. */
+  /** Usuarios activos con `pcp:read` (rol o excepción) + administradores. */
   private async pcpRecipients(): Promise<string[]> {
     const [granted, overrides, admins] = await Promise.all([
       this.prisma.rolePermission.findMany({
-        where: { module: 'llegadas', action: 'read' },
+        where: { module: 'pcp', action: 'read' },
         select: { roleCode: true },
       }),
       this.prisma.userPermission.findMany({
-        where: { module: 'llegadas', action: 'read', allowed: true },
+        where: { module: 'pcp', action: 'read', allowed: true },
         select: { userId: true },
       }),
       this.prisma.user.findMany({ where: { isActive: true, role: 'ADMIN' }, select: { id: true } }),
@@ -707,7 +711,7 @@ export class ArrivalsService {
       body: input.body,
       entityType: 'CustomerArrival',
       entityId: row.id,
-      linkPath: `/llegadas/${row.id}`,
+      linkPath: `/pcp/${row.id}`,
       actorId: input.actorId,
       actorName: input.actorName,
     });
@@ -748,7 +752,7 @@ export class ArrivalsService {
   }
 
   private toSummary(row: ArrivalWithIncidents, viewer: ArrivalViewer): ArrivalSummary {
-    const can = (action: string) => viewer.permissions.includes(`llegadas:${action}`);
+    const can = (action: string) => viewer.permissions.includes(`pcp:${action}`);
     const openIncidents = row.incidents.filter((incident) => incident.status === 'ABIERTA').length;
     return {
       id: row.id,

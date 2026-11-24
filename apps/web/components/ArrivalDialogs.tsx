@@ -28,7 +28,7 @@ import { Badge, Select, cx } from './ui';
 
 // ---------- Hoja base ----------
 
-function Sheet({
+export function Sheet({
   open,
   onClose,
   title,
@@ -236,11 +236,16 @@ export function IncidentDialog({
   arrival,
   onClose,
   onSaved,
+  basePath = '/arrivals',
+  scope = 'PCP',
 }: {
   open: boolean;
   arrival: ArrivalSummary | null;
   onClose: () => void;
   onSaved: (detail: ArrivalDetail) => void;
+  /** Ruta base del módulo (PCP o Romana). */
+  basePath?: string;
+  scope?: string;
 }) {
   const [kind, setKind] = useState<ArrivalIncidentKind>('FALTANTE');
   const [severity, setSeverity] = useState<ArrivalIncidentSeverity>('MEDIA');
@@ -266,7 +271,7 @@ export function IncidentDialog({
     setBusy(true);
     setError(null);
     try {
-      const detail = await apiFetch<ArrivalDetail>(`/arrivals/${arrival.id}/incidents`, {
+      const detail = await apiFetch<ArrivalDetail>(`${basePath}/${arrival.id}/incidents`, {
         method: 'POST',
         body: JSON.stringify({ kind, severity, body: body.trim() }),
       });
@@ -283,7 +288,7 @@ export function IncidentDialog({
     <Sheet
       open={open && Boolean(arrival)}
       onClose={onClose}
-      eyebrow="PCP · Novedad"
+      eyebrow={`${scope} · Novedad`}
       title="Registrar incidencia"
       description={`${arrival?.customerName ?? 'Cliente'} · ${arrival?.sheetNumber ?? ''}. Queda en la bitácora y avisa al despacho.`}
       icon={AlertTriangle}
@@ -379,12 +384,17 @@ export function CloseArrivalDialog({
   mode,
   onClose,
   onSaved,
+  basePath = '/arrivals',
+  scope = 'PCP',
 }: {
   open: boolean;
   arrival: ArrivalSummary | null;
   mode: 'ATENDIDO' | 'AUSENTE';
   onClose: () => void;
   onSaved: (detail: ArrivalDetail) => void;
+  /** Ruta base del módulo (PCP o Romana). */
+  basePath?: string;
+  scope?: string;
 }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -402,7 +412,7 @@ export function CloseArrivalDialog({
     setBusy(true);
     setError(null);
     try {
-      const detail = await apiFetch<ArrivalDetail>(`/arrivals/${arrival.id}/close`, {
+      const detail = await apiFetch<ArrivalDetail>(`${basePath}/${arrival.id}/close`, {
         method: 'POST',
         body: JSON.stringify({ status: mode, note: note.trim() || undefined }),
       });
@@ -421,7 +431,7 @@ export function CloseArrivalDialog({
     <Sheet
       open={open && Boolean(arrival)}
       onClose={onClose}
-      eyebrow="PCP · Cierre"
+      eyebrow={`${scope} · Cierre`}
       title={isAttended ? 'Cerrar como atendido' : 'Marcar como no presentado'}
       description={
         isAttended

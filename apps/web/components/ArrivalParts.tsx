@@ -16,6 +16,9 @@ import {
   DoorOpen,
   MessageSquare,
   PencilLine,
+  Scale,
+  ShieldCheck,
+  Trash2,
   UserX,
   Truck,
 } from 'lucide-react';
@@ -47,6 +50,11 @@ const EVENT_STYLE: Record<string, { icon: typeof CircleDot; className: string; l
   EDICION: { icon: PencilLine, className: 'bg-secondary-container text-on-secondary', label: 'Corrección' },
   CANCELADO: { icon: Ban, className: 'bg-surface-container-high text-on-surface-variant', label: 'Cancelado' },
   DESPACHO_ANULADO: { icon: Ban, className: 'bg-surface-container-high text-on-surface-variant', label: 'Despacho anulado' },
+  ROMANA_LLEGADA: { icon: Scale, className: 'bg-secondary-container text-on-secondary', label: 'Llegada Romana' },
+  ROMANA_VALIDADA: { icon: ShieldCheck, className: 'bg-success-container text-on-success-container', label: 'Documentos validados' },
+  ROMANA_FOTOS_ELIMINADAS: { icon: Trash2, className: 'bg-surface-container-high text-on-surface-variant', label: 'Fotos eliminadas' },
+  ROMANA_FOTOS_CANCELADAS: { icon: Trash2, className: 'bg-surface-container-high text-on-surface-variant', label: 'Fotos canceladas' },
+  ROMANA_FOTOS_EXPIRADAS: { icon: Trash2, className: 'bg-surface-container-high text-on-surface-variant', label: 'Fotos expiradas' },
   NOTA: { icon: MessageSquare, className: 'bg-surface-container-low text-primary', label: 'Nota' },
   MENSAJE: { icon: MessageSquare, className: 'bg-surface-container-low text-primary', label: 'Mensaje' },
 };

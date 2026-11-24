@@ -17,6 +17,8 @@ import { ReceivablesModule } from './modules/receivables/receivables.module';
 import { ScenariosModule } from './modules/scenarios/scenarios.module';
 import { DispatchModule } from './modules/dispatch/dispatch.module';
 import { ArrivalsModule } from './modules/arrivals/arrivals.module';
+import { RomanaModule } from './modules/romana/romana.module';
+import { SystemModule } from './modules/system/system.module';
 import { DbMirrorModule } from './modules/db-mirror/db-mirror.module';
 
 @Module({
@@ -39,6 +41,8 @@ import { DbMirrorModule } from './modules/db-mirror/db-mirror.module';
     ScenariosModule,
     DispatchModule,
     ArrivalsModule,
+    RomanaModule,
+    SystemModule,
     // Espejo de la BD local (main → pruebas). La condición se evalúa DESPUÉS
     // de ConfigModule.forRoot, que es quien carga el .env en process.env.
     ...(process.env.NODE_ENV !== 'production' && process.env.DB_MIRROR_ENABLED === '1'

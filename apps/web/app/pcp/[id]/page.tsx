@@ -1,51 +1,124 @@
 'use client';
 
-// ============================================================
-// Detalle de una llegada (PCP).
-//
-// Izquierda: la ficha del cliente y el botón grande con la hora. Derecha:
-// incidencias y bitácora. Marcar la llegada es un solo gesto; corregir lo ya
-// hecho exige permiso y motivo, y queda firmado.
-// ============================================================
-
-import type { ArrivalDetail, ArrivalIncident } from '@nexo/contracts';
+import type { ArrivalDetail, ArrivalIncident, RomanaArrivalDetail } from '@nexo/contracts';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
   ArrowLeft,
+  Camera,
   CheckCheck,
   ClipboardList,
   DoorOpen,
   Loader2,
   MessageSquare,
   PencilLine,
+  Scale,
   Send,
+  ShieldCheck,
   Truck,
   UserX,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { ArrivalStamp, ArrivalStatusBadge, ArrivalTimeline, IncidentKindBadge } from '../../../components/ArrivalParts';
 import {
   CheckInDialog,
   CloseArrivalDialog,
   EditArrivalDialog,
   IncidentDialog,
 } from '../../../components/ArrivalDialogs';
+import { ArrivalStamp, ArrivalStatusBadge, ArrivalTimeline, IncidentKindBadge } from '../../../components/ArrivalParts';
+import { RomanaCheckInDialog, RomanaValidateDialog } from '../../../components/romana/RomanaDialogs';
+import { RomanaDocuments } from '../../../components/romana/RomanaDocuments';
 import { AppNav, LoginScreen } from '../../../components/shell';
 import { Badge, Card, EmptyState, PageHeader, Skeleton, cx } from '../../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../../lib/api';
 import { INCIDENT_KIND_META, INCIDENT_SEVERITY_META, arrivalStatusMeta } from '../../../lib/arrival';
 import { formatNumber, relativeTime } from '../../../lib/dispatch-sheet';
 import { hasPermission } from '../../../lib/permissions';
+import { ROMANA_STATUS_META, formatBytes } from '../../../lib/romana';
 
-export default function LlegadaPage() {
+// ============================================================
+// Detalle de una llegada en PCP.
+//
+// Izquierda: ficha del cliente, hora de planta y hora de Romana. Derecha:
+// documentos por pedido (cédula + carnet), incidencias y bitácora. Las fotos
+// se comprimen al subir y se borran cuando Romana valida.
+// ============================================================
+
+function RomanaStamp({ arrival }: { arrival: RomanaArrivalDetail }) {
+  const meta = ROMANA_STATUS_META[arrival.romana.status];
+  const at = arrival.romana.validatedAt ?? arrival.romana.arrivedAt;
+
+  if (arrival.romana.requiredDocs === 0 && !at) {
+    return (
+      <div className="rounded-2xl border border-dashed border-outline-variant/60 bg-surface-container-low/60 px-space-md py-space-sm">
+        <p className="text-label-sm font-bold uppercase tracking-wider text-outline">Llegada a Romana</p>
+        <p className="text-headline-md text-on-surface-variant">Sin documentos</p>
+        <p className="text-label-sm normal-case text-on-surface-variant">
+          Llegada anterior a Romana: no exige cédula ni carnet. Puedes subirlos si hacen falta.
+        </p>
+      </div>
+    );
+  }
+
+  if (!at) {
+    return (
+      <div className="rounded-2xl border border-dashed border-outline-variant/60 bg-surface-container-low/60 px-space-md py-space-sm">
+        <p className="text-label-sm font-bold uppercase tracking-wider text-outline">Llegada a Romana</p>
+        <p className="text-headline-md text-on-surface-variant">Sin marcar</p>
+        <p className="text-label-sm normal-case text-on-surface-variant">
+          {arrival.romana.pendingDocs > 0
+            ? `Faltan ${arrival.romana.pendingDocs} foto(s): ${arrival.romana.uploadedDocs}/${arrival.romana.requiredDocs} subidas.`
+            : meta.hint}
+        </p>
+      </div>
+    );
+  }
+
+  const date = new Date(at);
+  const time = date.toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const day = date.toLocaleDateString('es-VE', { day: '2-digit', month: 'short' });
+  const validated = Boolean(arrival.romana.validatedAt);
+
+  return (
+    <div
+      className={cx(
+        'relative overflow-hidden rounded-2xl px-space-md py-space-sm shadow-hero',
+        validated ? 'bg-success-container text-on-success-container' : 'bg-hero text-white',
+      )}
+    >
+      <p className={cx('relative text-label-sm font-bold uppercase tracking-[0.14em]', validated ? 'text-on-success-container/70' : 'text-white/70')}>
+        {validated ? 'Documentos validados' : 'Llegada a Romana'}
+      </p>
+      <p
+        className={cx(
+          'relative flex items-baseline gap-2 tabular-nums text-headline-lg font-black',
+          validated ? 'text-on-success-container' : 'text-secondary-container',
+        )}
+      >
+        {time}
+        <span className={cx('text-label-sm font-semibold uppercase', validated ? 'text-on-success-container/60' : 'text-white/60')}>
+          {day}
+        </span>
+      </p>
+      <p className={cx('relative text-label-sm normal-case', validated ? 'text-on-success-container/80' : 'text-white/80')}>
+        {validated
+          ? `Validó ${arrival.romana.validatedByName ?? 'Romana'} · fotos eliminadas`
+          : `Marcó ${arrival.romana.arrivedByName ?? 'Romana'}`}
+      </p>
+    </div>
+  );
+}
+
+export default function PcpDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id ?? '';
   const queryClient = useQueryClient();
 
-  const [checkInOpen, setCheckInOpen] = useState(false);
+  const [checkInPcpOpen, setCheckInPcpOpen] = useState(false);
+  const [checkInRomanaOpen, setCheckInRomanaOpen] = useState(false);
+  const [validateOpen, setValidateOpen] = useState(false);
   const [incidentOpen, setIncidentOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [closeMode, setCloseMode] = useState<'ATENDIDO' | 'AUSENTE' | null>(null);
@@ -58,9 +131,9 @@ export default function LlegadaPage() {
   const { data: sessionUser } = useQuery({ queryKey: ['me'], queryFn: currentUser, staleTime: 60_000, retry: false });
   const permissions = sessionUser?.permissions;
 
-  const { data: arrival, isLoading, error } = useQuery<ArrivalDetail>({
-    queryKey: ['arrival', id],
-    queryFn: () => apiFetch<ArrivalDetail>(`/arrivals/${id}`),
+  const { data: arrival, isLoading, error } = useQuery<RomanaArrivalDetail>({
+    queryKey: ['pcp-arrival', id],
+    queryFn: () => apiFetch<RomanaArrivalDetail>(`/romana/arrivals/${id}`),
     enabled: Boolean(id),
     refetchInterval: 20_000,
     refetchIntervalInBackground: true,
@@ -73,17 +146,27 @@ export default function LlegadaPage() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  function apply(detail: ArrivalDetail) {
-    queryClient.setQueryData(['arrival', detail.id], detail);
-    queryClient.invalidateQueries({ queryKey: ['arrivals'] });
+  function apply(detail: RomanaArrivalDetail, text?: string) {
+    queryClient.setQueryData(['pcp-arrival', detail.id], detail);
+    queryClient.invalidateQueries({ queryKey: ['pcp-arrivals'] });
     queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    if (text) setToast(text);
+  }
+
+  // Los diálogos compartidos devuelven `ArrivalDetail` (sin el bloque Romana):
+  // se invalida la consulta para traer el detalle completo.
+  function applyShared(_detail: ArrivalDetail, text?: string) {
+    void queryClient.invalidateQueries({ queryKey: ['pcp-arrival', id] });
+    queryClient.invalidateQueries({ queryKey: ['pcp-arrivals'] });
+    queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    if (text) setToast(text);
   }
 
   async function sendMessage() {
     if (!arrival || !message.trim() || sending) return;
     setSending(true);
     try {
-      const detail = await apiFetch<ArrivalDetail>(`/arrivals/${arrival.id}/messages`, {
+      const detail = await apiFetch<RomanaArrivalDetail>(`/romana/arrivals/${arrival.id}/messages`, {
         method: 'POST',
         body: JSON.stringify({ body: message.trim() }),
       });
@@ -105,7 +188,7 @@ export default function LlegadaPage() {
     }
     setResolving(incident.id);
     try {
-      const detail = await apiFetch<ArrivalDetail>(`/arrivals/${arrival.id}/incidents/${incident.id}`, {
+      const detail = await apiFetch<RomanaArrivalDetail>(`/romana/arrivals/${arrival.id}/incidents/${incident.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ resolution: text }),
       });
@@ -121,6 +204,31 @@ export default function LlegadaPage() {
 
   if (error instanceof AuthRequiredError) {
     return <LoginScreen onSuccess={() => queryClient.invalidateQueries()} />;
+  }
+
+  if (error) {
+    return (
+      <>
+        <AppNav />
+        <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg md:p-space-xl">
+          <Card className="p-space-lg">
+            <EmptyState
+              icon={AlertTriangle}
+              title="No se pudo abrir esta llegada"
+              description={error instanceof Error ? error.message : 'Revisa tus permisos con un administrador.'}
+              action={
+                <Link
+                  href="/pcp"
+                  className="mt-space-sm inline-flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-on-surface-variant transition-colors hover:bg-surface-container-low"
+                >
+                  Volver a PCP
+                </Link>
+              }
+            />
+          </Card>
+        </main>
+      </>
+    );
   }
 
   if (isLoading || !arrival) {
@@ -139,9 +247,9 @@ export default function LlegadaPage() {
     );
   }
 
-  const closed = ['ATENDIDO', 'AUSENTE', 'CANCELADO'].includes(arrival.status);
   const meta = arrivalStatusMeta(arrival.status);
-  const canResolve = hasPermission(permissions, 'llegadas', 'update');
+  const romanaMeta = ROMANA_STATUS_META[arrival.romana.status];
+  const canResolve = hasPermission(permissions, 'pcp', 'update');
   const openIncidents = arrival.incidents.filter((incident) => incident.status === 'ABIERTA');
 
   return (
@@ -150,10 +258,10 @@ export default function LlegadaPage() {
       <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg pb-space-2xl md:p-space-xl">
         <div className="flex flex-wrap items-center justify-between gap-space-sm">
           <Link
-            href="/llegadas"
+            href="/pcp"
             className="inline-flex h-9 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-sm font-semibold text-body-md text-on-surface-variant transition-colors hover:bg-surface-container-low"
           >
-            <ArrowLeft aria-hidden className="size-4" /> Llegadas de hoy
+            <ArrowLeft aria-hidden className="size-4" /> PCP de hoy
           </Link>
           <div className="flex flex-wrap items-center gap-space-xs">
             <Link
@@ -179,12 +287,19 @@ export default function LlegadaPage() {
           icon={DoorOpen}
           title={arrival.customerName}
           subtitle={`${arrival.customerCode} · despacho ${arrival.sheetNumber} («${arrival.sheetTitle}») · ${arrival.orderNumbers.length} pedido(s)`}
-          actions={<ArrivalStatusBadge status={arrival.status} />}
+          actions={
+            <span className="flex flex-wrap items-center gap-space-xs">
+              <Badge tone={romanaMeta.tone} dot>
+                {romanaMeta.short}
+              </Badge>
+              <ArrivalStatusBadge status={arrival.status} />
+            </span>
+          }
         />
 
         <div className="grid gap-space-md lg:grid-cols-12">
-          {/* ---------- Ficha del cliente + acción principal ---------- */}
-          <div className="flex flex-col gap-space-md lg:col-span-5">
+          {/* ---------- Ficha del cliente + acciones ---------- */}
+          <div className="flex flex-col gap-space-md lg:col-span-4">
             <Card className="flex flex-col gap-space-md p-space-md">
               <ArrivalStamp
                 arrivedAt={arrival.arrivedAt}
@@ -192,6 +307,7 @@ export default function LlegadaPage() {
                 arrivedByCode={arrival.arrivedByCode}
                 status={arrival.status}
               />
+              <RomanaStamp arrival={arrival} />
 
               <div className="grid grid-cols-2 gap-space-sm">
                 <div className="rounded-xl bg-surface-container-low/70 p-space-sm">
@@ -234,14 +350,42 @@ export default function LlegadaPage() {
                 {arrival.canCheckIn && (
                   <button
                     type="button"
-                    onClick={() => setCheckInOpen(true)}
-                    className="flex h-12 items-center justify-center gap-space-sm rounded-pill bg-primary-container px-space-lg text-body-lg font-bold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary active:translate-y-0"
+                    onClick={() => setCheckInPcpOpen(true)}
+                    className="flex h-11 items-center justify-center gap-space-sm rounded-pill bg-secondary-container px-space-lg text-body-lg font-bold text-on-secondary shadow-soft transition-all hover:-translate-y-0.5"
                   >
-                    <DoorOpen aria-hidden className="size-5" /> Marcar llegada ahora
+                    <DoorOpen aria-hidden className="size-5" /> Marcar llegada en planta
                   </button>
                 )}
 
-                {!arrival.canCheckIn && arrival.arrivedAt && !closed && (
+                {arrival.romana.canCheckIn && (
+                  <button
+                    type="button"
+                    onClick={() => setCheckInRomanaOpen(true)}
+                    className="flex h-11 items-center justify-center gap-space-sm rounded-pill bg-primary-container px-space-lg text-body-lg font-bold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary active:translate-y-0"
+                  >
+                    <Scale aria-hidden className="size-5" /> Marcar llegada en Romana
+                  </button>
+                )}
+
+                {arrival.romana.canValidate && (
+                  <button
+                    type="button"
+                    onClick={() => setValidateOpen(true)}
+                    className="flex h-10 items-center justify-center gap-space-xs rounded-pill bg-success-container px-space-md font-semibold text-on-success-container shadow-soft transition-all hover:-translate-y-0.5"
+                  >
+                    <ShieldCheck aria-hidden className="size-4" /> Validar y borrar fotos
+                  </button>
+                )}
+
+                {!arrival.romana.canCheckIn && arrival.romana.status === 'PENDIENTE' && (
+                  <p className="flex items-start gap-space-xs rounded-xl border border-warning/40 bg-warning-container/30 px-space-sm py-space-xs text-body-md text-on-warning-container">
+                    <Camera aria-hidden className="mt-0.5 size-4 shrink-0" />
+                    Faltan {arrival.romana.pendingDocs} foto(s) para poder marcar la llegada en Romana. Súbelas en
+                    «Documentos por pedido».
+                  </p>
+                )}
+
+                {arrival.canClose && arrival.arrivedAt && (
                   <div className="flex flex-wrap gap-space-xs">
                     <button
                       type="button"
@@ -260,7 +404,7 @@ export default function LlegadaPage() {
                   </div>
                 )}
 
-                {arrival.status === 'ESPERADO' && !arrival.arrivedAt && (
+                {arrival.status === 'ESPERADO' && !arrival.arrivedAt && arrival.canClose && (
                   <button
                     type="button"
                     onClick={() => setCloseMode('AUSENTE')}
@@ -279,13 +423,6 @@ export default function LlegadaPage() {
                     <AlertTriangle aria-hidden className="size-4 text-warning" /> Registrar incidencia
                   </button>
                 )}
-
-                {!arrival.canCheckIn && !arrival.arrivedAt && !closed && (
-                  <p className="text-label-sm normal-case text-on-surface-variant">
-                    Tu rol puede ver la llegada, pero no marcarla. Pídele a PCP o a un administrador el permiso
-                    «Marcar llegada».
-                  </p>
-                )}
               </div>
             </Card>
 
@@ -298,7 +435,12 @@ export default function LlegadaPage() {
                   <ClipboardList aria-hidden className="size-4 text-primary" /> {arrival.lineCount} renglón(es) del plan
                 </li>
                 <li className="flex items-center gap-space-xs">
-                  <Truck aria-hidden className="size-4 text-primary" /> Publicado como {arrival.sheetNumber}
+                  <Camera aria-hidden className="size-4 text-primary" />{' '}
+                  {arrival.romana.requiredDocs === 0
+                    ? 'Sin documentos exigidos'
+                    : `${arrival.romana.uploadedDocs}/${arrival.romana.requiredDocs} fotos · ${formatBytes(
+                        arrival.romana.totalBytes,
+                      )}`}
                 </li>
                 <li className="flex items-center gap-space-xs">
                   <AlertTriangle aria-hidden className="size-4 text-warning" /> {arrival.incidentCount} incidencia(s),{' '}
@@ -309,8 +451,25 @@ export default function LlegadaPage() {
             </Card>
           </div>
 
-          {/* ---------- Incidencias + bitácora ---------- */}
-          <div className="flex flex-col gap-space-md lg:col-span-7">
+          {/* ---------- Documentos + incidencias + bitácora ---------- */}
+          <div className="flex flex-col gap-space-md lg:col-span-8">
+            <Card className="p-space-md">
+              <div className="mb-space-sm flex flex-wrap items-center justify-between gap-space-sm">
+                <div>
+                  <p className="font-bold uppercase tracking-wider text-label-md text-primary">Documentos por pedido</p>
+                  <p className="text-label-sm normal-case text-on-surface-variant">
+                    Cédula del chofer y carnet de circulación. Se comprimen al subir; al validar se borran.
+                  </p>
+                </div>
+                {arrival.romana.photosPurgedAt && (
+                  <Badge tone="success" dot>
+                    fotos eliminadas
+                  </Badge>
+                )}
+              </div>
+              <RomanaDocuments arrival={arrival} onSaved={(detail) => apply(detail)} />
+            </Card>
+
             <Card className="p-space-md">
               <div className="mb-space-sm flex flex-wrap items-center justify-between gap-space-sm">
                 <div>
@@ -432,15 +591,46 @@ export default function LlegadaPage() {
         </div>
       )}
 
-      <CheckInDialog open={checkInOpen} arrival={arrival} onClose={() => setCheckInOpen(false)} onSaved={apply} />
-      <IncidentDialog open={incidentOpen} arrival={arrival} onClose={() => setIncidentOpen(false)} onSaved={apply} />
-      <EditArrivalDialog open={editOpen} arrival={arrival} onClose={() => setEditOpen(false)} onSaved={apply} />
+      <CheckInDialog
+        open={checkInPcpOpen}
+        arrival={arrival}
+        onClose={() => setCheckInPcpOpen(false)}
+        onSaved={(detail) => applyShared(detail, 'Llegada marcada en planta.')}
+      />
+      <RomanaCheckInDialog
+        open={checkInRomanaOpen}
+        arrival={arrival}
+        onClose={() => setCheckInRomanaOpen(false)}
+        onSaved={(detail) => apply(detail, 'Llegada marcada en Romana.')}
+      />
+      <RomanaValidateDialog
+        open={validateOpen}
+        arrival={arrival}
+        onClose={() => setValidateOpen(false)}
+        onSaved={(detail) => apply(detail, 'Documentos validados y fotos eliminadas.')}
+      />
+      <IncidentDialog
+        open={incidentOpen}
+        arrival={arrival}
+        basePath="/romana/arrivals"
+        scope="PCP"
+        onClose={() => setIncidentOpen(false)}
+        onSaved={(detail) => applyShared(detail, 'Incidencia registrada.')}
+      />
+      <EditArrivalDialog
+        open={editOpen}
+        arrival={arrival}
+        onClose={() => setEditOpen(false)}
+        onSaved={(detail) => applyShared(detail, 'Registro corregido.')}
+      />
       <CloseArrivalDialog
         open={Boolean(closeMode)}
         arrival={arrival}
         mode={closeMode ?? 'ATENDIDO'}
+        basePath="/romana/arrivals"
+        scope="PCP"
         onClose={() => setCloseMode(null)}
-        onSaved={apply}
+        onSaved={(detail) => applyShared(detail, 'Atención cerrada.')}
       />
     </>
   );

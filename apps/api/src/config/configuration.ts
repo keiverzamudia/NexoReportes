@@ -79,6 +79,15 @@ const envSchema = z.object({
   SCENARIO_CLEANUP_INTERVAL_HOURS: z.coerce.number().int().min(1).max(168).default(6),
   SCENARIO_CLEANUP_DRY_RUN: z.enum(['true', 'false']).default('false'),
 
+  // Romana: fotos de cédula y carnet por pedido. El archivo vive en un
+  // volumen; la base solo guarda metadatos. Al validar se borran las fotos.
+  ROMANA_UPLOAD_DIR: z.string().default('uploads/romana'),
+  ROMANA_MAX_UPLOAD_MB: z.coerce.number().int().min(1).max(50).default(12),
+  ROMANA_RETENTION_HOURS: z.coerce.number().int().min(1).max(8760).default(168),
+  ROMANA_CLEANUP_ENABLED: z.enum(['true', 'false']).default('true'),
+  ROMANA_CLEANUP_INTERVAL_HOURS: z.coerce.number().int().min(1).max(168).default(6),
+  ROMANA_CLEANUP_DRY_RUN: z.enum(['true', 'false']).default('false'),
+
   CORS_ORIGINS: z.string().default('http://localhost:4100'),
 
   // Espejo de la BD local desde el worktree main (solo desarrollo).
@@ -166,6 +175,16 @@ export default function configuration() {
       hours: env.SCENARIO_CLEANUP_HOURS,
       intervalHours: env.SCENARIO_CLEANUP_INTERVAL_HOURS,
       dryRun: env.SCENARIO_CLEANUP_DRY_RUN === 'true',
+    },
+    romana: {
+      uploadDir: env.ROMANA_UPLOAD_DIR,
+      maxUploadBytes: env.ROMANA_MAX_UPLOAD_MB * 1024 * 1024,
+      retentionHours: env.ROMANA_RETENTION_HOURS,
+      cleanup: {
+        enabled: env.ROMANA_CLEANUP_ENABLED === 'true',
+        intervalHours: env.ROMANA_CLEANUP_INTERVAL_HOURS,
+        dryRun: env.ROMANA_CLEANUP_DRY_RUN === 'true',
+      },
     },
     forecast: {
       productionLine: 'ABA',

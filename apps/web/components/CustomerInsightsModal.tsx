@@ -38,7 +38,6 @@ import {
   TrendingDown,
   TrendingUp,
   Users,
-  Wallet,
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -444,6 +443,47 @@ function MetricCard({
   );
 }
 
+// Volumen consolidado: las toneladas mandan y sacos / $ por tonelada la
+// acompañan en la misma línea, sin repetir el periodo en tres tarjetas.
+function VolumeCard({
+  tonnes,
+  sacks,
+  perTonne,
+  hint,
+  available,
+}: {
+  tonnes: string;
+  sacks: string;
+  perTonne: string;
+  hint: string;
+  available: boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-outline-variant/30 bg-surface-container-low/60 p-space-md">
+      <div className="flex items-start justify-between gap-space-sm">
+        <span className="font-semibold uppercase tracking-wider text-label-sm text-outline">Volumen</span>
+        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-primary-fixed/70 text-primary">
+          <Package aria-hidden className="size-4" />
+        </span>
+      </div>
+      <p className="mt-space-xs flex flex-wrap items-baseline gap-x-space-xs gap-y-0.5">
+        <span className="text-headline-md font-black tabular-nums text-primary">
+          {available ? tonnes : '—'}
+        </span>
+        <span aria-hidden className="text-label-md text-outline">·</span>
+        <span className="text-label-lg font-semibold tabular-nums text-on-surface-variant">
+          {available ? sacks : '—'}
+        </span>
+        <span aria-hidden className="text-label-md text-outline">·</span>
+        <span className="text-label-lg font-semibold tabular-nums text-on-surface-variant">
+          {available ? perTonne : '—'}
+        </span>
+      </p>
+      <p className="mt-space-2xs text-label-sm normal-case text-on-surface-variant">{hint}</p>
+    </div>
+  );
+}
+
 function AlertIcon({ severity }: { severity: CustomerInsightAlert['severity'] }) {
   if (severity === 'critical' || severity === 'warning') return <AlertTriangle aria-hidden className="size-4" />;
   if (severity === 'success') return <CheckCircle2 aria-hidden className="size-4" />;
@@ -555,27 +595,234 @@ function AnnualTable({ data }: { data: CustomerInsightResponse }) {
   );
 }
 
-function ResumenTab({
+// Cadencia de compra y crédito: las dos tarjetas que el vendedor necesita al
+// abrir la ficha, arriba del gráfico y sin scroll.
+function CadenceCreditRow({
   data,
   customer,
   onOpenStatement,
-  onSeeProducts,
-  onSeeOrders,
 }: {
   data: CustomerInsightResponse;
   customer: Customer;
   onOpenStatement: (customer: Customer) => void;
+}) {
+  const segment = SEGMENT_META[data.cadence.segment];
+  const lastSale = data.totals.lastSaleDate ?? data.previousTotals?.lastSaleDate ?? null;
+  const account = data.account;
+  const payments = data.payments;
+  const creditAvailable =
+    account && account.limiteCredito !== null ? account.limiteCredito - account.saldo : null;
+  const usado = account?.saldo ?? 0;
+  const usagePct =
+    account && account.limiteCredito !== null && account.limiteCredito > 0
+      ? Math.max(0, (usado / account.limiteCredito) * 100)
+      : 0;
+  const overLimit = account?.limiteCredito != null && account.limiteCredito > 0 && usado > account.limiteCredito;
+  const usageWidth = Math.min(100, usagePct);
+
+  return (
+    <div className="grid gap-space-md xl:grid-cols-2">
+      <section className="flex flex-col rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-md shadow-soft">
+        <div className="flex items-start justify-between gap-space-sm">
+          <div>
+            <p className="text-title-md font-semibold text-primary">Cadencia de compra</p>
+            <p className="text-label-sm text-on-surface-variant">Ritmo y próxima compra esperada.</p>
+          </div>
+          <Badge tone={segment.tone}>{segment.label}</Badge>
+        </div>
+        <div className="mt-space-sm rounded-lg border border-outline-variant/25 bg-surface-container-low/60 px-space-sm py-2">
+          <p className="text-label-sm text-outline">Última compra</p>
+          <p className="flex flex-wrap items-baseline gap-x-space-sm">
+            <span className="text-title-md font-semibold tabular-nums text-primary">{fmtDate(lastSale)}</span>
+            <span className="font-black tabular-nums text-title-md text-primary">
+              {formatInsightMoney(data.cadence.lastSaleAmount, data.currency)}
+            </span>
+            {data.cadence.daysSinceLastSale !== null && (
+              <span className="text-label-sm text-on-surface-variant">
+                hace {data.cadence.daysSinceLastSale} día(s)
+              </span>
+            )}
+          </p>
+        </div>
+        <dl className="mt-space-sm grid grid-cols-2 gap-space-sm text-label-md">
+          <div>
+            <dt className="text-outline">Días sin comprar</dt>
+            <dd className="font-semibold tabular-nums text-primary">
+              {data.cadence.daysSinceLastSale ?? '—'}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-outline">Cadencia</dt>
+            <dd className="font-semibold tabular-nums text-primary">
+              {data.cadence.avgDaysBetweenNotes === null ? '—' : `${data.cadence.avgDaysBetweenNotes} días`}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-outline">Próxima esperada</dt>
+            <dd className="font-semibold tabular-nums text-primary">{fmtDate(data.cadence.expectedNextDate)}</dd>
+          </div>
+          <div>
+            <dt className="text-outline">Compras por mes</dt>
+            <dd className="font-semibold tabular-nums text-primary">
+              {data.cadence.purchasesPerMonth === null ? '—' : fmtQty(data.cadence.purchasesPerMonth, 1)}
+            </dd>
+          </div>
+        </dl>
+        <p className="mt-auto pt-space-sm text-label-sm normal-case text-on-surface-variant">{segment.hint}</p>
+      </section>
+
+      <section className="flex flex-col rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-md shadow-soft">
+        <div className="flex items-start justify-between gap-space-sm">
+          <div>
+            <p className="text-title-md font-semibold text-primary">Cuenta por cobrar</p>
+            <p className="text-label-sm text-on-surface-variant">Crédito, uso y ritmo de pago.</p>
+          </div>
+          <CircleDollarSign aria-hidden className="size-4 text-primary-container" />
+        </div>
+        {account ? (
+          <>
+            {/* Los dos datos que definen el crédito, con jerarquía propia. */}
+            <div className="mt-space-sm grid grid-cols-2 gap-space-sm">
+              <div>
+                <p className="text-label-sm text-outline">Límite de crédito</p>
+                <p className="text-headline-md font-black tabular-nums text-primary">
+                  {formatInsightMoney(account.limiteCredito, data.currency)}
+                </p>
+              </div>
+              <div>
+                <p className="text-label-sm text-outline">Días de crédito</p>
+                <p className="text-headline-md font-black tabular-nums text-primary">
+                  {account.plazoPago === null ? '—' : `${account.plazoPago} días`}
+                </p>
+              </div>
+            </div>
+
+            {/* Uso del límite: la única barra de la ficha, para que la mirada
+                aterrice en el riesgo de crédito. */}
+            <div className="mt-space-md">
+              <div className="flex items-baseline justify-between gap-space-sm">
+                <span className="text-label-sm text-outline">Uso del crédito</span>
+                <span
+                  className={cx(
+                    'text-label-md font-bold tabular-nums',
+                    overLimit ? 'text-error' : 'text-primary',
+                  )}
+                >
+                  {overLimit ? `${fmtQty(usagePct, 0)}% · excedido` : `${fmtQty(Math.min(100, usagePct), 0)}%`}
+                </span>
+              </div>
+              <div
+                role="progressbar"
+                aria-label="Uso del límite de crédito"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(usageWidth)}
+                className="mt-space-2xs h-2 w-full overflow-hidden rounded-pill bg-surface-container"
+              >
+                <div
+                  className={cx(
+                    'h-full rounded-pill transition-[width] duration-500 ease-out',
+                    overLimit ? 'bg-error' : 'bg-primary-container',
+                  )}
+                  style={{ width: `${usageWidth > 0 ? Math.max(3, usageWidth) : 0}%` }}
+                />
+              </div>
+              <div className="mt-space-xs flex flex-wrap items-baseline justify-between gap-x-space-md gap-y-1 text-label-md">
+                <span className="tabular-nums text-on-surface-variant">
+                  Usado{' '}
+                  <strong className={cx('font-bold', overLimit ? 'text-error' : 'text-primary')}>
+                    {formatInsightMoney(Math.max(0, usado), data.currency)}
+                  </strong>{' '}
+                  de {formatInsightMoney(account.limiteCredito, data.currency)}
+                  {usado < 0 && ' · saldo a favor'}
+                </span>
+                <span className="tabular-nums text-on-surface-variant">
+                  Disponible{' '}
+                  <strong
+                    className={cx(
+                      'font-bold',
+                      creditAvailable !== null && creditAvailable < 0 ? 'text-error' : 'text-primary',
+                    )}
+                  >
+                    {formatInsightMoney(creditAvailable, data.currency)}
+                  </strong>
+                </span>
+              </div>
+            </div>
+
+            {/* Riesgo y ritmo de pago: lectura secundaria, separada por hairline. */}
+            <div className="mt-space-md grid grid-cols-2 gap-space-sm border-t border-outline-variant/25 pt-space-sm text-label-md">
+              <div>
+                <p className="text-outline">Vencido</p>
+                <p className={cx('font-bold tabular-nums', account.saldoVencido > 0 ? 'text-error' : 'text-primary')}>
+                  {formatInsightMoney(account.saldoVencido, data.currency)}
+                </p>
+              </div>
+              <div>
+                <p className="text-outline">Promedio de pago semanal</p>
+                <p className="font-semibold tabular-nums text-primary">
+                  {formatInsightMoney(payments.promedioSemanal, data.currency)}
+                </p>
+                {payments.promedioSemanal !== null && (
+                  <p className="text-label-sm text-on-surface-variant">
+                    {formatInsightMoney(payments.cobradoAnio, data.currency)} en {payments.semanasAnio} semana(s)
+                  </p>
+                )}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="mt-space-sm flex flex-col gap-space-2xs text-body-md text-on-surface-variant">
+            <p>Sin datos de cartera en Profit para este cliente.</p>
+            {payments.promedioSemanal !== null && (
+              <p className="text-label-md normal-case text-on-surface-variant">
+                Promedio de pago semanal:{' '}
+                <strong className="tabular-nums text-primary">
+                  {formatInsightMoney(payments.promedioSemanal, data.currency)}
+                </strong>
+              </p>
+            )}
+          </div>
+        )}
+        <div className="mt-auto pt-space-sm">
+          <div className="flex flex-wrap items-center justify-between gap-space-xs text-label-sm text-on-surface-variant">
+            <span>
+              {account
+                ? `${account.documentos} documento(s) · ${account.vencidos} vencido(s)`
+                : 'Cartera no disponible'}
+            </span>
+            <span>
+              {payments.ultimoPago
+                ? `Último pago ${fmtDate(payments.ultimoPago)}${
+                    payments.diasSinPago !== null ? ` (hace ${payments.diasSinPago} día(s))` : ''
+                  }`
+                : 'Sin cobros registrados'}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => onOpenStatement(customer)}
+            className="mt-space-sm inline-flex h-9 items-center gap-space-2xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low"
+          >
+            <Receipt aria-hidden className="size-4" /> Abrir estado de cuenta
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ResumenTab({
+  data,
+  onSeeProducts,
+  onSeeOrders,
+}: {
+  data: CustomerInsightResponse;
   onSeeProducts: () => void;
   onSeeOrders: () => void;
 }) {
   const option = useMemo(() => buildMonthlyOption(data), [data]);
   const top = useMemo(() => topProducts(data.products, 5), [data.products]);
-  const segment = SEGMENT_META[data.cadence.segment];
-  const lastSale = data.totals.lastSaleDate ?? data.previousTotals?.lastSaleDate ?? null;
-  const creditAvailable =
-    data.account && data.account.limiteCredito !== null
-      ? data.account.limiteCredito - data.account.saldo
-      : null;
 
   // La gráfica usa la ventana seleccionada (12/24/36), no el periodo de 12
   // meses de los KPIs. El subtítulo debe decir el rango real que se está
@@ -642,106 +889,15 @@ function ResumenTab({
         )}
       </section>
 
-      <div className="grid gap-space-md xl:grid-cols-[1.15fr_0.85fr]">
-        <section className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-md shadow-soft">
-          <div className="mb-space-sm flex items-center justify-between gap-space-sm">
-            <div>
-              <p className="text-title-md font-semibold text-primary">Por año calendario</p>
-              <p className="text-label-sm text-on-surface-variant">Volumen, facturación y meses con actividad.</p>
-            </div>
+      <section className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-md shadow-soft">
+        <div className="mb-space-sm flex items-center justify-between gap-space-sm">
+          <div>
+            <p className="text-title-md font-semibold text-primary">Por año calendario</p>
+            <p className="text-label-sm text-on-surface-variant">Volumen, facturación y meses con actividad.</p>
           </div>
-          <AnnualTable data={data} />
-        </section>
-
-        <div className="flex flex-col gap-space-md">
-          <section className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-md shadow-soft">
-            <div className="flex items-start justify-between gap-space-sm">
-              <div>
-                <p className="text-title-md font-semibold text-primary">Cadencia de compra</p>
-                <p className="text-label-sm text-on-surface-variant">Ritmo y próxima compra esperada.</p>
-              </div>
-              <Badge tone={segment.tone}>{segment.label}</Badge>
-            </div>
-            <dl className="mt-space-sm grid grid-cols-2 gap-space-sm text-label-md">
-              <div>
-                <dt className="text-outline">Última compra</dt>
-                <dd className="font-semibold tabular-nums text-primary">{fmtDate(lastSale)}</dd>
-              </div>
-              <div>
-                <dt className="text-outline">Días sin comprar</dt>
-                <dd className="font-semibold tabular-nums text-primary">
-                  {data.cadence.daysSinceLastSale ?? '—'}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-outline">Cadencia</dt>
-                <dd className="font-semibold tabular-nums text-primary">
-                  {data.cadence.avgDaysBetweenNotes === null ? '—' : `${data.cadence.avgDaysBetweenNotes} días`}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-outline">Próxima esperada</dt>
-                <dd className="font-semibold tabular-nums text-primary">{fmtDate(data.cadence.expectedNextDate)}</dd>
-              </div>
-            </dl>
-            <p className="mt-space-sm text-label-sm normal-case text-on-surface-variant">{segment.hint}</p>
-          </section>
-
-          <section className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-md shadow-soft">
-            <div className="flex items-start justify-between gap-space-sm">
-              <div>
-                <p className="text-title-md font-semibold text-primary">Cuenta por cobrar</p>
-                <p className="text-label-sm text-on-surface-variant">Saldo y límite del cliente.</p>
-              </div>
-              <CircleDollarSign aria-hidden className="size-4 text-primary-container" />
-            </div>
-            {data.account ? (
-              <>
-                <div className="mt-space-sm grid grid-cols-2 gap-space-sm text-label-md">
-                  <div>
-                    <p className="text-outline">Saldo</p>
-                    <p className="font-bold tabular-nums text-primary">
-                      {formatInsightMoney(data.account.saldo, data.currency)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-outline">Vencido</p>
-                    <p className={cx('font-bold tabular-nums', data.account.saldoVencido > 0 ? 'text-error' : 'text-primary')}>
-                      {formatInsightMoney(data.account.saldoVencido, data.currency)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-outline">Límite</p>
-                    <p className="font-semibold tabular-nums text-primary">
-                      {formatInsightMoney(data.account.limiteCredito, data.currency)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-outline">Disponible</p>
-                    <p className={cx('font-semibold tabular-nums', creditAvailable !== null && creditAvailable < 0 ? 'text-error' : 'text-primary')}>
-                      {formatInsightMoney(creditAvailable, data.currency)}
-                    </p>
-                  </div>
-                </div>
-                <p className="mt-space-xs text-label-sm text-on-surface-variant">
-                  {data.account.documentos} documento(s) · {data.account.vencidos} vencido(s)
-                </p>
-              </>
-            ) : (
-              <p className="mt-space-sm text-body-md text-on-surface-variant">
-                Sin datos de cartera en Profit para este cliente.
-              </p>
-            )}
-            <button
-              type="button"
-              onClick={() => onOpenStatement(customer)}
-              className="mt-space-sm inline-flex h-9 items-center gap-space-2xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-label-md text-primary-container transition-colors hover:bg-surface-container-low"
-            >
-              <Receipt aria-hidden className="size-4" /> Abrir estado de cuenta
-            </button>
-          </section>
         </div>
-      </div>
+        <AnnualTable data={data} />
+      </section>
 
       <div className="grid gap-space-md xl:grid-cols-2">
         <section className="rounded-xl border border-outline-variant/30 bg-surface-container-lowest p-space-md shadow-soft">
@@ -1253,17 +1409,19 @@ function OpportunitiesTab({ data, currency }: { data: CustomerInsightResponse; c
 function InsightSkeleton() {
   return (
     <div className="flex flex-col gap-space-md" aria-hidden>
-      <div className="grid gap-space-sm sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-space-sm sm:grid-cols-2 xl:grid-cols-3">
         <Skeleton className="h-28 rounded-xl" />
         <Skeleton className="h-28 rounded-xl" />
         <Skeleton className="h-28 rounded-xl" />
         <Skeleton className="h-28 rounded-xl" />
+        <Skeleton className="h-28 rounded-xl" />
+        <Skeleton className="h-28 rounded-xl" />
+      </div>
+      <div className="grid gap-space-md xl:grid-cols-2">
+        <Skeleton className="h-52 rounded-xl" />
+        <Skeleton className="h-52 rounded-xl" />
       </div>
       <Skeleton className="h-72 rounded-xl" />
-      <div className="grid gap-space-md xl:grid-cols-2">
-        <Skeleton className="h-64 rounded-xl" />
-        <Skeleton className="h-64 rounded-xl" />
-      </div>
     </div>
   );
 }
@@ -1522,20 +1680,17 @@ export function CustomerInsightsModal({
               <InsightSkeleton />
             ) : data ? (
               <>
-                <div className="grid gap-space-sm sm:grid-cols-2 xl:grid-cols-4">
-                  <MetricCard
-                    label="Sacos"
-                    value={volumeValue(fmtQty(data.totals.sacks, 0))}
-                    hint="Renglones SAC de los últimos 12 meses"
-                    tone="primary"
-                    icon={Package}
-                  />
-                  <MetricCard
-                    label="Toneladas"
-                    value={volumeValue(fmtQty(data.totals.tonnes, 1))}
-                    hint={`${periodLabel(data.currentPeriod.from, data.currentPeriod.to)}`}
-                    tone="primary"
-                    icon={BarChart3}
+                <div className="grid gap-space-sm sm:grid-cols-2 xl:grid-cols-3">
+                  <VolumeCard
+                    tonnes={`${fmtQty(data.totals.tonnes, 1)} t`}
+                    sacks={`${fmtQty(data.totals.sacks, 0)} sacos`}
+                    perTonne={
+                      data.totals.billed !== null && data.totals.tonnes > 0
+                        ? `${formatInsightMoney(data.totals.billed / data.totals.tonnes, data.currency)}/t`
+                        : '—'
+                    }
+                    hint={`${periodLabel(data.currentPeriod.from, data.currentPeriod.to)} · sacos SAC y $/t`}
+                    available={data.available}
                   />
                   <MetricCard
                     label="Facturado"
@@ -1556,25 +1711,16 @@ export function CustomerInsightsModal({
                     icon={Receipt}
                   />
                   <MetricCard
-                    label="Facturado por tonelada"
-                    value={
-                      billingValue(
-                        data.totals.billed !== null && data.totals.tonnes > 0
-                          ? formatInsightMoney(data.totals.billed / data.totals.tonnes, data.currency)
-                          : '—',
-                      )
-                    }
-                    hint="Ingreso medio por tonelada"
-                    tone="success"
-                    icon={Wallet}
-                  />
-                  <MetricCard
                     label="Última compra"
                     value={fmtDate(data.totals.lastSaleDate ?? data.previousTotals?.lastSaleDate ?? null)}
                     hint={
                       data.cadence.daysSinceLastSale === null
                         ? 'Sin compras registradas'
-                        : `Hace ${data.cadence.daysSinceLastSale} día(s)`
+                        : `Hace ${data.cadence.daysSinceLastSale} día(s)${
+                            data.cadence.lastSaleAmount === null
+                              ? ''
+                              : ` · ${formatInsightMoney(data.cadence.lastSaleAmount, data.currency)}`
+                          }`
                     }
                     tone="primary"
                     icon={CalendarClock}
@@ -1609,14 +1755,16 @@ export function CustomerInsightsModal({
                   />
                 </div>
 
+                {tab === 'resumen' && (
+                  <CadenceCreditRow data={data} customer={customer} onOpenStatement={onOpenStatement} />
+                )}
+
                 <AlertsBlock alerts={data.alerts} currency={data.currency} />
 
                 <div role="tabpanel" aria-label="Contenido de la ficha">
                   {tab === 'resumen' && (
                     <ResumenTab
                       data={data}
-                      customer={customer}
-                      onOpenStatement={onOpenStatement}
                       onSeeProducts={() => setTab('productos')}
                       onSeeOrders={() => setTab('pedidos')}
                     />

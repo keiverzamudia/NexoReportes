@@ -246,7 +246,7 @@ export default function SellersPage() {
             <ShieldCheck aria-hidden className="mt-0.5 size-4 shrink-0" />
             Estás viendo solo tu información: la cartera y la facturación del vendedor{' '}
             <strong className="font-mono">{scopeSeller}</strong>. Para ver a toda la fuerza de ventas necesitas el
-            permiso «Ver todos los vendedores».
+            permiso «Ver todo».
           </p>
         )}
 
@@ -257,7 +257,7 @@ export default function SellersPage() {
           >
             <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
             Tu usuario no tiene un código de vendedor asignado en Profit. Pide a un administrador que lo vincule en
-            Usuarios → columna «Vendedor» (o que te conceda «Ver todos los vendedores»).
+            Usuarios → columna «Vendedor» (o que te conceda «Ver todo»).
           </p>
         )}
 

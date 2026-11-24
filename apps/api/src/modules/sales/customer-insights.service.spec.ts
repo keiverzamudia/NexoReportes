@@ -82,6 +82,14 @@ function createProfit(options: FakeOptions = {}) {
         if (options.similarFails) throw new Error('Sin surtido');
         return similar;
       }
+      if (sql.includes('customer_last_purchase')) {
+        return [{ nota: 'N-1', fecha: '2026-11-01', monto: 1250 }];
+      }
+      if (sql.includes('customer_insights_payments')) {
+        return [
+          { ultimo_pago: '2026-11-05', dias_sin_pago: 18, cobrado_anio: 5200, pagos_anio: 4 },
+        ];
+      }
       return [];
     },
     calls: () => calls,
@@ -186,6 +194,9 @@ describe('CustomerInsightsService', () => {
     expect(result.orders.pendingQty).toBe(5);
     expect(result.orders.nextDeliveryDate).toBe('2026-11-12');
     expect(result.account?.saldoVencido).toBe(50);
+    expect(result.cadence.lastSaleAmount).toBe(1250);
+    expect(result.payments).toMatchObject({ cobradoAnio: 5200, pagosAnio: 4, ultimoPago: '2026-11-05' });
+    expect(result.payments.promedioSemanal).toBeGreaterThan(0);
     expect(result.deliveryChanges).toMatchObject({ total: 3, reputation: 'FAIR', customerSharePct: 33.3 });
     expect(result.source).toBe('fixtures');
     expect(result.productBillingEstimated).toBe(true);

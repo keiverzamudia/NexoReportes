@@ -33,6 +33,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
   BarChart3,
+  ChevronDown,
   ChevronRight,
   Factory,
   FlaskConical,
@@ -48,6 +49,7 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import { ModuleHelp } from '../../components/help/ColumnHelp';
 import { ProductionTour } from '../../components/help/ProductionTour';
+import { FormulaDetailModal } from '../../components/production/FormulaDetailModal';
 import { AppNav, LoginScreen } from '../../components/shell';
 import {
   Badge,
@@ -461,85 +463,110 @@ const MATERIAL_COLUMNS: Column<ProductionMaterialRow>[] = [
   },
 ];
 
-const FORMULA_COLUMNS: Column<ProductionFormulaSummary>[] = [
-  {
-    key: 'code',
-    header: 'Código',
-    kind: 'id',
-    sortValue: (row) => row.productCode,
-    render: (row) => <span className="font-bold tabular-nums text-primary">{row.productCode}</span>,
-  },
-  {
-    key: 'description',
-    header: 'Producto',
-    title: (row) => row.description,
-    sortValue: (row) => row.description,
-    render: (row) => <span className="block max-w-[18rem] truncate">{row.description}</span>,
-  },
-  {
-    key: 'formula',
-    header: 'Cédula principal',
-    help: PROD_FORMULA_HELP.formula,
-    sortValue: (row) => row.mainFormulaName ?? '',
-    render: (row) => (
-      <span className="block max-w-[14rem] truncate text-label-sm">
-        {row.mainFormulaId ? `${row.mainFormulaId} · ${KIND_LABEL[row.formulaKind ?? ''] ?? row.formulaKind}` : '—'}
-        {row.mainFormulaName ? ` · ${row.mainFormulaName}` : ''}
-      </span>
-    ),
-  },
-  {
-    key: 'batch',
-    header: 'Lote kg',
-    align: 'right',
-    help: PROD_FORMULA_HELP.batch,
-    sortValue: (row) => row.batchKg ?? 0,
-    render: (row) => (row.batchKg === null ? '—' : fmtQty(row.batchKg, 0)),
-  },
-  {
-    key: 'costKg',
-    header: 'Costo/kg',
-    align: 'right',
-    help: PROD_FORMULA_HELP.costKg,
-    sortValue: (row) => row.costPerKg ?? Number.POSITIVE_INFINITY,
-    render: (row) => (row.costPerKg === null ? '—' : fmtQty(row.costPerKg, 2)),
-  },
-  {
-    key: 'costSack',
-    header: 'Costo/saco',
-    align: 'right',
-    help: PROD_FORMULA_HELP.costSack,
-    sortValue: (row) => row.costPerSack ?? Number.POSITIVE_INFINITY,
-    render: (row) => (row.costPerSack === null ? '—' : fmtQty(row.costPerSack, 2)),
-  },
-  {
-    key: 'count',
-    header: 'Cédulas',
-    align: 'right',
-    help: PROD_FORMULA_HELP.count,
-    sortValue: (row) => row.formulaCount,
-    render: (row) => String(row.formulaCount),
-  },
-  {
-    key: 'packaging',
-    header: 'Empaque',
-    help: PROD_FORMULA_HELP.packaging,
-    render: (row) => <span className="text-label-sm text-on-surface-variant">{row.packagingCode ?? '—'}</span>,
-  },
-  {
-    key: 'alerts',
-    header: 'Alertas',
-    help: PROD_FORMULA_HELP.alerts,
-    render: (row) =>
-      row.alerts.length === 0 ? (
-        <Badge tone="success">OK</Badge>
-      ) : (
-        <span title={row.alerts.join(' · ')}>
-          <Badge tone="warning">{row.alerts.length}</Badge>
+function formulaColumns(expandedProduct: string | null): Column<ProductionFormulaSummary>[] {
+  return [
+    {
+      key: 'code',
+      header: 'Código',
+      kind: 'id',
+      sortValue: (row) => row.productCode,
+      render: (row) => <span className="font-bold tabular-nums text-primary">{row.productCode}</span>,
+    },
+    {
+      key: 'description',
+      header: 'Producto',
+      title: (row) => row.description,
+      sortValue: (row) => row.description,
+      render: (row) => <span className="block max-w-[18rem] truncate">{row.description}</span>,
+    },
+    {
+      key: 'formula',
+      header: 'Cédula principal',
+      help: PROD_FORMULA_HELP.formula,
+      sortValue: (row) => row.mainFormulaName ?? '',
+      render: (row) => (
+        <span className="block max-w-[14rem] truncate text-label-sm">
+          {row.mainFormulaId ? `${row.mainFormulaId} · ${KIND_LABEL[row.formulaKind ?? ''] ?? row.formulaKind}` : '—'}
+          {row.mainFormulaName ? ` · ${row.mainFormulaName}` : ''}
         </span>
       ),
-  },
-];
+    },
+    {
+      key: 'batch',
+      header: 'Lote kg',
+      align: 'right',
+      help: PROD_FORMULA_HELP.batch,
+      sortValue: (row) => row.batchKg ?? 0,
+      render: (row) => (row.batchKg === null ? '—' : fmtQty(row.batchKg, 0)),
+    },
+    {
+      key: 'costKg',
+      header: 'Costo/kg',
+      align: 'right',
+      help: PROD_FORMULA_HELP.costKg,
+      sortValue: (row) => row.costPerKg ?? Number.POSITIVE_INFINITY,
+      render: (row) => (row.costPerKg === null ? '—' : fmtQty(row.costPerKg, 2)),
+    },
+    {
+      key: 'costSack',
+      header: 'Costo/saco',
+      align: 'right',
+      help: PROD_FORMULA_HELP.costSack,
+      sortValue: (row) => row.costPerSack ?? Number.POSITIVE_INFINITY,
+      render: (row) => (row.isBulk || row.costPerSack === null ? '—' : fmtQty(row.costPerSack, 2)),
+    },
+    {
+      key: 'replacement',
+      header: 'P/reposición',
+      align: 'right',
+      help: PROD_FORMULA_HELP.replacement,
+      sortValue: (row) => row.replacementCostPerKg ?? Number.POSITIVE_INFINITY,
+      render: (row) => (
+        <span className={cx('font-semibold', row.replacementCostPerKg === null ? 'text-on-surface-variant' : 'text-secondary')}>
+          {row.replacementCostPerKg === null ? '—' : fmtQty(row.replacementCostPerKg, 2)}
+        </span>
+      ),
+    },
+    {
+      key: 'count',
+      header: 'Cédulas',
+      align: 'right',
+      help: PROD_FORMULA_HELP.count,
+      sortValue: (row) => row.formulaCount,
+      render: (row) => (
+        <span className="inline-flex items-center justify-end gap-1">
+          <span className="font-semibold tabular-nums">{row.formulaCount}</span>
+          <ChevronDown
+            aria-hidden
+            className={cx(
+              'size-4 text-outline transition-transform',
+              expandedProduct === row.productCode && 'rotate-180 text-primary',
+            )}
+          />
+        </span>
+      ),
+    },
+    {
+      key: 'packaging',
+      header: 'Empaque',
+      help: PROD_FORMULA_HELP.packaging,
+      render: (row) => <span className="text-label-sm text-on-surface-variant">{row.packagingCode ?? '—'}</span>,
+    },
+    {
+      key: 'alerts',
+      header: 'Alertas',
+      help: PROD_FORMULA_HELP.alerts,
+      render: (row) =>
+        row.alerts.length === 0 ? (
+          <Badge tone="success">OK</Badge>
+        ) : (
+          <span title={row.alerts.join(' · ')}>
+            <Badge tone="warning">{row.alerts.length}</Badge>
+          </span>
+        ),
+    },
+  ];
+}
 
 export default function ProduccionPage() {
   const queryClient = useQueryClient();
@@ -553,6 +580,8 @@ export default function ProduccionPage() {
   const [onlyShortage, setOnlyShortage] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<string | null>(null);
   const [selectedFormulaId, setSelectedFormulaId] = useState<number | null>(null);
+  const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
+  const [formulaModalOpen, setFormulaModalOpen] = useState(false);
   // Cédula que alimenta la matriz de Nutrición. `null` = la principal del producto.
   const [nutritionFormulaId, setNutritionFormulaId] = useState<number | null>(null);
   const [expandedPlan, setExpandedPlan] = useState<string | null>(null);
@@ -579,6 +608,10 @@ export default function ProduccionPage() {
     setOverrides({});
   }, [ym, week]);
 
+  // El modal de la ficha de fórmulas solo vive en la pestaña Fórmulas.
+  useEffect(() => {
+    if (tab !== 'formulas') setFormulaModalOpen(false);
+  }, [tab]);
   const params = queryString(ym, week, policy, currency);
 
   const planQuery = useQuery<ProductionPlanResponse>({
@@ -753,6 +786,18 @@ export default function ProduccionPage() {
     );
   }, [formulasQuery.data, search]);
 
+  const formulaColumnsMemo = useMemo(() => formulaColumns(expandedProduct), [expandedProduct]);
+
+  const formulaStats = useMemo(() => {
+    const rows = formulasQuery.data?.rows ?? [];
+    return {
+      products: rows.length,
+      formulas: rows.reduce((acc, row) => acc + row.formulas.length, 0),
+      missingReplacement: formulasQuery.data?.missingReplacement?.length ?? 0,
+      alerts: rows.filter((row) => row.alerts.length > 0).length,
+    };
+  }, [formulasQuery.data]);
+
   const orderLines = useMemo(
     () => ordersQuery.data?.groups.flatMap((group) => group.lines) ?? [],
     [ordersQuery.data],
@@ -836,7 +881,6 @@ export default function ProduccionPage() {
   }
 
   const detail = formulaDetailQuery.data;
-  const selectedFormula = detail?.formulas.find((formula) => formula.id === selectedFormulaId) ?? detail?.formulas[0] ?? null;
 
   useEffect(() => {
     if (!detail || detail.formulas.length === 0) return;
@@ -859,6 +903,13 @@ export default function ProduccionPage() {
     setSelectedProduct(code);
     setSelectedFormulaId(null);
     setTab(nextTab);
+  }
+
+  function openFormulaModal(code: string, formulaId: number | null = null) {
+    setSelectedProduct(code);
+    setSelectedFormulaId(formulaId);
+    setFormulaModalOpen(true);
+    setExpandedProduct(code);
   }
 
   function openOrders(code: string) {
@@ -999,26 +1050,52 @@ export default function ProduccionPage() {
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
               <div data-tour="prod-kpis" className="flex flex-wrap items-center gap-space-sm">
-                <Kpi label="Productos" value={String(totals?.products ?? 0)} icon={Factory} />
-                <Kpi
-                  label="A producir"
-                  value={fmtQty((totals?.productionKg ?? 0) / 1000, 1)}
-                  suffix="t"
-                  tone="primary"
-                  hint={`${fmtQty(totals?.toProduceKg ?? 0, 0)} kg requeridos`}
-                />
-                <Kpi
-                  label="Faltantes"
-                  value={String(shortageCount)}
-                  tone={statusAlertTone(shortageCount)}
-                  hint="materiales o productos"
-                />
-                <Kpi
-                  label="Costo plan"
-                  value={moneyCompact(totals?.totalCost ?? null, currency)}
-                  tone="primary"
-                  hint={plan?.exchangeRate ? `Tasa ${fmtQty(plan.exchangeRate, 2)} Bs/USD` : undefined}
-                />
+                {tab === 'formulas' ? (
+                  <>
+                    <Kpi label="Productos" value={String(formulaStats.products)} icon={Factory} />
+                    <Kpi
+                      label="Cédulas"
+                      value={String(formulaStats.formulas)}
+                      tone="primary"
+                      hint="recetas maestras y bases"
+                    />
+                    <Kpi
+                      label="Sin reposición"
+                      value={String(formulaStats.missingReplacement)}
+                      tone={formulaStats.missingReplacement > 0 ? 'warning' : 'success'}
+                      hint="materias primas sin valor en Profit"
+                    />
+                    <Kpi
+                      label="Con alertas"
+                      value={String(formulaStats.alerts)}
+                      tone={statusAlertTone(formulaStats.alerts)}
+                      hint="cédulas incompletas"
+                    />
+                  </>
+                ) : (
+                  <>
+                    <Kpi label="Productos" value={String(totals?.products ?? 0)} icon={Factory} />
+                    <Kpi
+                      label="A producir"
+                      value={fmtQty((totals?.productionKg ?? 0) / 1000, 1)}
+                      suffix="t"
+                      tone="primary"
+                      hint={`${fmtQty(totals?.toProduceKg ?? 0, 0)} kg requeridos`}
+                    />
+                    <Kpi
+                      label="Faltantes"
+                      value={String(shortageCount)}
+                      tone={statusAlertTone(shortageCount)}
+                      hint="materiales o productos"
+                    />
+                    <Kpi
+                      label="Costo plan"
+                      value={moneyCompact(totals?.totalCost ?? null, currency)}
+                      tone="primary"
+                      hint={plan?.exchangeRate ? `Tasa ${fmtQty(plan.exchangeRate, 2)} Bs/USD` : undefined}
+                    />
+                  </>
+                )}
               </div>
               <ProductionTour activeTab={tab} onTabChange={setTab} />
               <div data-tour="prod-help">
@@ -1045,36 +1122,46 @@ export default function ProduccionPage() {
         />
 
         <Card className="p-space-md">
-          <div data-tour="prod-controls" className="grid grid-cols-1 gap-space-md lg:grid-cols-12">
-            <div className="lg:col-span-3">
-              <label className="mb-space-2xs block text-label-sm font-semibold uppercase tracking-wider text-outline">
-                Mes
-              </label>
-              <TextInput value={ym} onChange={setYm} placeholder="YYYY-MM" ariaLabel="Mes de producción" />
-            </div>
-            <div className="lg:col-span-3">
-              <label className="mb-space-2xs block text-label-sm font-semibold uppercase tracking-wider text-outline">
-                Periodo
-              </label>
-              <Select
-                value={String(week)}
-                onChange={(value) => setWeek(Number(value))}
-                options={WEEK_OPTIONS}
-                ariaLabel="Semana"
-              />
-            </div>
-            <div className="lg:col-span-3">
-              <label className="mb-space-2xs block text-label-sm font-semibold uppercase tracking-wider text-outline">
-                Política de demanda
-              </label>
-              <Select
-                value={policy}
-                onChange={(value) => setPolicy(value as ProductionPolicy)}
-                options={POLICY_OPTIONS}
-                ariaLabel="Política de demanda"
-              />
-            </div>
-            <div className="lg:col-span-3">
+          <div
+            data-tour="prod-controls"
+            className={cx(
+              'grid grid-cols-1 gap-space-md',
+              tab === 'formulas' ? 'sm:grid-cols-2 lg:grid-cols-4' : 'lg:grid-cols-12',
+            )}
+          >
+            {tab !== 'formulas' && (
+              <>
+                <div className="lg:col-span-3">
+                  <label className="mb-space-2xs block text-label-sm font-semibold uppercase tracking-wider text-outline">
+                    Mes
+                  </label>
+                  <TextInput value={ym} onChange={setYm} placeholder="YYYY-MM" ariaLabel="Mes de producción" />
+                </div>
+                <div className="lg:col-span-3">
+                  <label className="mb-space-2xs block text-label-sm font-semibold uppercase tracking-wider text-outline">
+                    Periodo
+                  </label>
+                  <Select
+                    value={String(week)}
+                    onChange={(value) => setWeek(Number(value))}
+                    options={WEEK_OPTIONS}
+                    ariaLabel="Semana"
+                  />
+                </div>
+                <div className="lg:col-span-3">
+                  <label className="mb-space-2xs block text-label-sm font-semibold uppercase tracking-wider text-outline">
+                    Política de demanda
+                  </label>
+                  <Select
+                    value={policy}
+                    onChange={(value) => setPolicy(value as ProductionPolicy)}
+                    options={POLICY_OPTIONS}
+                    ariaLabel="Política de demanda"
+                  />
+                </div>
+              </>
+            )}
+            <div className={tab === 'formulas' ? '' : 'lg:col-span-3'}>
               <label className="mb-space-2xs block text-label-sm font-semibold uppercase tracking-wider text-outline">
                 Moneda de costos
               </label>
@@ -1089,7 +1176,10 @@ export default function ProduccionPage() {
               <TextInput
                 icon={Search}
                 value={search}
-                onChange={setSearch}
+                onChange={(value) => {
+                  setSearch(value);
+                  setExpandedProduct(null);
+                }}
                 placeholder="Buscar código o descripción…"
                 ariaLabel="Buscar"
                 className="w-64"
@@ -1123,7 +1213,7 @@ export default function ProduccionPage() {
           </div>
         </Card>
 
-        {plan && (
+        {plan && tab !== 'formulas' && (
           <div className="flex flex-col gap-space-sm">
             {plan.alerts.map((alert) => (
               <p key={alert} role="alert" className="flex items-center gap-space-sm rounded-xl bg-warning-container/40 px-space-md py-space-sm text-body-md text-on-surface">
@@ -1717,11 +1807,37 @@ export default function ProduccionPage() {
           <div className="flex flex-col gap-space-lg">
             <Card data-tour="prod-formulas" className="overflow-hidden">
               <div className="border-b border-surface-container px-space-md py-space-sm">
-                <p className="font-semibold text-on-surface">Cédulas por producto</p>
-                <p className="text-label-sm text-on-surface-variant">
-                  Costo por kg y saco, lote y empaque de la cédula principal.
-                </p>
+                <div className="flex flex-wrap items-start justify-between gap-space-sm">
+                  <div>
+                    <p className="font-semibold text-on-surface">Cédulas por producto</p>
+                    <p className="text-label-sm text-on-surface-variant">
+                      Todas las recetas de cada producto, costo por kg, por saco y reposición. Doble clic para abrir el desglose.
+                    </p>
+                  </div>
+                  <Badge tone="muted">{formulaRows.length} productos</Badge>
+                </div>
               </div>
+              {formulasQuery.data && (formulasQuery.data.missingReplacement?.length ?? 0) > 0 && (
+                <details className="border-b border-warning/30 bg-warning-container/25 px-space-md py-space-sm">
+                  <summary className="cursor-pointer list-none text-label-md font-semibold text-warning">
+                    <AlertTriangle aria-hidden className="mr-1 inline size-4" />
+                    {formulasQuery.data.missingReplacement.length} materias primas sin costo de reposición en Profit — se
+                    calculó con el último costo
+                  </summary>
+                  <div className="mt-space-xs flex max-h-32 flex-wrap gap-1 overflow-y-auto">
+                    {formulasQuery.data.missingReplacement.map((item) => (
+                      <span
+                        key={item.code}
+                        className="rounded-md border border-outline-variant/30 bg-surface-container-lowest px-2 py-0.5 text-label-sm text-on-surface-variant"
+                        title={item.fallback === 'NONE' ? 'Tampoco tiene último costo en Profit' : 'Se usó el último costo'}
+                      >
+                        <span className="font-semibold text-on-surface">{item.code}</span> · {item.description}
+                        {item.fallback === 'NONE' && <span className="text-error"> · sin costo</span>}
+                      </span>
+                    ))}
+                  </div>
+                </details>
+              )}
               {formulasQuery.isLoading && <p className="p-space-md text-body-md text-on-surface-variant">Cargando cédulas…</p>}
               {formulasQuery.error && !(formulasQuery.error instanceof AuthRequiredError) && (
                 <p role="alert" className="p-space-md text-body-md text-error">
@@ -1730,194 +1846,47 @@ export default function ProduccionPage() {
               )}
               {formulasQuery.data && (
                 <DataTable
-                  columns={FORMULA_COLUMNS}
+                  columns={formulaColumnsMemo}
                   rows={formulaRows}
                   rowKey={(row) => row.productCode}
                   defaultSortKey="code"
-                  onRowClick={(row) => setSelectedProduct(row.productCode)}
+                  expandedKey={expandedProduct}
+                  renderExpanded={(row) => (
+                    <FormulaCedulasTable
+                      row={row}
+                      currency={currency}
+                      onOpen={(formulaId) => openFormulaModal(row.productCode, formulaId)}
+                    />
+                  )}
+                  onRowClick={(row) =>
+                    setExpandedProduct((current) => (current === row.productCode ? null : row.productCode))
+                  }
+                  onRowDoubleClick={(row) => openFormulaModal(row.productCode)}
+                  maxHeightClass="md:max-h-[min(66vh,860px)]"
                   empty={<EmptyState icon={FlaskConical} title="Sin cédulas para el filtro" />}
                 />
               )}
             </Card>
 
-            {selectedProduct && (
-              <Card className="p-space-md">
-                {formulaDetailQuery.isLoading && <p className="text-body-md text-on-surface-variant">Abriendo ficha…</p>}
-                {formulaDetailQuery.error && !(formulaDetailQuery.error instanceof AuthRequiredError) && (
-                  <p role="alert" className="text-body-md text-error">
-                    {formulaDetailQuery.error instanceof Error ? formulaDetailQuery.error.message : 'Error al abrir la ficha'}
-                  </p>
-                )}
-                {detail && (
-                  <div className="flex flex-col gap-space-md">
-                    <div className="flex flex-wrap items-start justify-between gap-space-sm">
-                      <div>
-                        <p className="text-label-sm font-semibold uppercase tracking-wider text-outline">Ficha de fórmulas</p>
-                        <h2 className="font-display text-title-lg text-primary">
-                          {detail.productCode} · {detail.description}
-                        </h2>
-                        <p className="text-label-sm text-on-surface-variant">
-                          {detail.uom} · {detail.kgPerUom ? `${fmtQty(detail.kgPerUom, 2)} kg/unidad` : 'sin relación de empaque'} · empaque{' '}
-                          {detail.packagingCode ?? 'sin configurar'}
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-space-sm">
-                        <Badge tone="primary">{detail.formulas.length} cédulas/lotes</Badge>
-                        <Badge tone="muted">Costos en {currency}</Badge>
-                        {detail.alerts.length > 0 && <Badge tone="warning">{detail.alerts.join(' · ')}</Badge>}
-                      </div>
-                    </div>
-
-                    <PackagingEditor detail={detail} />
-
-                    <div className="overflow-x-auto">
-                      <table className="w-full min-w-[900px] text-left text-body-md">
-                        <thead>
-                          <tr className="border-b border-surface-container text-label-sm uppercase tracking-wider text-outline">
-                            <th className="px-space-sm py-2">Cédula</th>
-                            <th className="px-space-sm py-2">Tipo</th>
-                            <th className="px-space-sm py-2">Salida</th>
-                            <th className="px-space-sm py-2 text-right">Lote kg</th>
-                            <th className="px-space-sm py-2 text-right">Costo/kg</th>
-                            <th className="px-space-sm py-2 text-right">Costo/saco</th>
-                            <th className="px-space-sm py-2 text-right">Actualizada</th>
-                            <th className="px-space-sm py-2" />
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {detail.formulas.map((formula) => (
-                            <tr
-                              key={`${formula.kind}-${formula.id}`}
-                              className={cx(
-                                'border-b border-surface-container/60',
-                                selectedFormula?.id === formula.id && selectedFormula?.kind === formula.kind && 'bg-primary-container/5',
-                              )}
-                            >
-                              <td className="px-space-sm py-space-xs font-semibold text-primary">
-                                {formula.id}
-                                {formula.isStandard && <Badge tone="success">Principal</Badge>}
-                              </td>
-                              <td className="px-space-sm py-space-xs">{KIND_LABEL[formula.kind]}</td>
-                              <td className="px-space-sm py-space-xs">
-                                {formula.outputQty} {formula.outputUom}
-                              </td>
-                              <td className="px-space-sm py-space-xs text-right">{formula.batchKg ? fmtQty(formula.batchKg, 0) : '—'}</td>
-                              <td className="px-space-sm py-space-xs text-right">{formula.costPerKg === null ? '—' : fmtQty(formula.costPerKg, 2)}</td>
-                              <td className="px-space-sm py-space-xs text-right">{formula.costPerSack === null ? '—' : fmtQty(formula.costPerSack, 2)}</td>
-                              <td className="px-space-sm py-space-xs text-right text-label-sm text-on-surface-variant">
-                                {formula.updatedAt ? formula.updatedAt.slice(0, 10) : '—'}
-                              </td>
-                              <td className="px-space-sm py-space-xs text-right">
-                                <div className="flex justify-end gap-space-xs">
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedFormulaId(formula.id)}
-                                    className="rounded-lg border border-outline-variant/50 px-space-sm py-1 text-label-sm font-semibold text-on-surface-variant hover:border-primary-container/40 hover:text-primary"
-                                  >
-                                    Ver
-                                  </button>
-                                  {formula.kind !== 'BATCH' && (
-                                    <button
-                                      type="button"
-                                      onClick={() => detail && preferenceMutation.mutate({ code: detail.productCode, formulaId: formula.id })}
-                                      disabled={preferenceMutation.isPending}
-                                      className="rounded-lg border border-primary-container/40 px-space-sm py-1 text-label-sm font-semibold text-primary disabled:opacity-60"
-                                    >
-                                      Principal
-                                    </button>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {selectedFormula && (
-                      <div className="grid gap-space-md xl:grid-cols-3">
-                        <Card className="overflow-hidden xl:col-span-2">
-                          <div className="flex items-center justify-between border-b border-surface-container px-space-md py-space-sm">
-                            <p className="font-semibold text-on-surface">
-                              Componentes de {selectedFormula.id} · {selectedFormula.name}
-                            </p>
-                            <span className="text-label-sm text-on-surface-variant">
-                              {selectedFormula.components.length} líneas
-                            </span>
-                          </div>
-                          <div className="max-h-[28rem] overflow-auto">
-                            <table className="w-full min-w-[760px] text-left text-body-md">
-                              <thead className="sticky top-0 bg-surface-container-lowest">
-                                <tr className="border-b border-surface-container text-label-sm uppercase tracking-wider text-outline">
-                                  <th className="px-space-sm py-2">#</th>
-                                  <th className="px-space-sm py-2">Código</th>
-                                  <th className="px-space-sm py-2">Descripción</th>
-                                  <th className="px-space-sm py-2">Tipo</th>
-                                  <th className="px-space-sm py-2 text-right">Cantidad</th>
-                                  <th className="px-space-sm py-2 text-right">Costo unit.</th>
-                                  <th className="px-space-sm py-2 text-right">Costo total</th>
-                                  <th className="px-space-sm py-2 text-right">% costo</th>
-                                  <th className="px-space-sm py-2 text-right">Stock MP</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {selectedFormula.components.map((component) => (
-                                  <tr key={`${component.line}-${component.code}`} className="border-b border-surface-container/60">
-                                    <td className="px-space-sm py-space-xs text-on-surface-variant">{component.line}</td>
-                                    <td className="px-space-sm py-space-xs font-semibold text-primary">{component.code}</td>
-                                    <td className="px-space-sm py-space-xs">{component.description}</td>
-                                    <td className="px-space-sm py-space-xs">
-                                      <Badge tone={component.type === 'EMPAQ' ? 'primary' : 'muted'}>{component.type}</Badge>
-                                    </td>
-                                    <td className="px-space-sm py-space-xs text-right">
-                                      {fmtQty(component.qty, 4)} {component.uom}
-                                    </td>
-                                    <td className="px-space-sm py-space-xs text-right">{component.unitCost === null ? '—' : fmtQty(component.unitCost, 2)}</td>
-                                    <td className="px-space-sm py-space-xs text-right">{component.totalCost === null ? '—' : fmtQty(component.totalCost, 2)}</td>
-                                    <td className="px-space-sm py-space-xs text-right">{component.costSharePct === null ? '—' : `${fmtQty(component.costSharePct, 1)}%`}</td>
-                                    <td className="px-space-sm py-space-xs text-right">{fmtQty(component.stockQty, 2)}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </Card>
-
-                        <Card className="p-space-md">
-                          <p className="font-semibold text-on-surface">Nutrición calculada</p>
-                          {selectedFormula.nutrition.available ? (
-                            <>
-                              <p className="text-label-sm text-on-surface-variant">
-                                Cobertura de datos: {fmtQty(selectedFormula.nutrition.coveragePct, 1)}%
-                              </p>
-                              <ul className="mt-space-sm flex flex-col gap-space-xs">
-                                {selectedFormula.nutrition.nutrients.map((nutrient) => (
-                                  <li key={nutrient.code} className="flex items-center justify-between gap-space-sm text-label-sm">
-                                    <span className="text-on-surface-variant">{nutrient.name}</span>
-                                    <span className="flex items-center gap-space-xs font-semibold tabular-nums text-on-surface">
-                                      {nutrient.value === null ? '—' : `${fmtQty(nutrient.value, 2)} ${nutrient.unit}`}
-                                      {nutrient.status !== 'OK' && (
-                                        <Badge tone={nutrient.status === 'NO_DATA' ? 'muted' : nutrient.status === 'LOW' ? 'warning' : 'danger'}>
-                                          {nutrient.status}
-                                        </Badge>
-                                      )}
-                                    </span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </>
-                          ) : (
-                            <p className="mt-space-sm text-label-sm text-on-surface-variant">
-                              Aún no hay valores de nutrientes para los ingredientes. Cárgalos en la pestaña Nutrición.
-                            </p>
-                          )}
-                        </Card>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </Card>
-            )}
+            <FormulaDetailModal
+              open={formulaModalOpen}
+              detail={detail}
+              loading={formulaDetailQuery.isLoading}
+              error={
+                formulaDetailQuery.error && !(formulaDetailQuery.error instanceof AuthRequiredError)
+                  ? formulaDetailQuery.error instanceof Error
+                    ? formulaDetailQuery.error.message
+                    : 'Error al abrir la ficha'
+                  : null
+              }
+              currency={currency}
+              onCurrencyChange={setCurrency}
+              selectedFormulaId={selectedFormulaId}
+              onSelectFormula={setSelectedFormulaId}
+              onClose={() => setFormulaModalOpen(false)}
+              onMakePrincipal={(formulaId) => detail && preferenceMutation.mutate({ code: detail.productCode, formulaId })}
+              principalPending={preferenceMutation.isPending}
+            />
           </div>
         )}
 
@@ -2245,83 +2214,102 @@ function SelectionTable({
   );
 }
 
-function PackagingEditor({ detail }: { detail: ProductionFormulaDetailResponse }) {
-  const queryClient = useQueryClient();
-  const [materialCode, setMaterialCode] = useState(detail.packagingCode ?? '');
-  const [qtyPerUnit, setQtyPerUnit] = useState(String(detail.packagingQtyPerUnit ?? 1));
-
-  useEffect(() => {
-    setMaterialCode(detail.packagingCode ?? '');
-    setQtyPerUnit(String(detail.packagingQtyPerUnit ?? 1));
-  }, [detail.productCode, detail.packagingCode, detail.packagingQtyPerUnit]);
-
-  const mutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ ok: true }>(`/production/packaging/${encodeURIComponent(detail.productCode)}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          materialCode: materialCode.trim().toUpperCase(),
-          qtyPerUnit: Number(qtyPerUnit.replace(',', '.')) || 1,
-        }),
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['production-formula'] });
-      queryClient.invalidateQueries({ queryKey: ['production-formulas'] });
-      queryClient.invalidateQueries({ queryKey: ['production-plan'] });
-      queryClient.invalidateQueries({ queryKey: ['production-explosion'] });
-    },
-  });
-
-  const options = detail.packagingOptions.length
-    ? detail.packagingOptions
-    : [
-        { code: 'MATPRI06', description: 'Saco sin impresión' },
-        { code: 'MATPRI72', description: 'Saco naranja' },
-        { code: 'MATPRI73', description: 'Saco naranja 74x50' },
-        { code: 'MATPRI76', description: 'Saco verde' },
-        { code: 'MATPRI79', description: 'Saco azul' },
-      ];
-
+function FormulaCedulasTable({
+  row,
+  currency,
+  onOpen,
+}: {
+  row: ProductionFormulaSummary;
+  currency: ProductionCurrency;
+  onOpen: (formulaId: number) => void;
+}) {
   return (
-    <div className="flex flex-wrap items-end gap-space-sm rounded-xl bg-surface-container/60 p-space-sm">
-      <div className="min-w-[16rem] flex-1">
-        <label className="mb-space-2xs block text-label-sm font-semibold uppercase tracking-wider text-outline">
-          Empaque del producto
-        </label>
-        <Select
-          value={materialCode}
-          onChange={setMaterialCode}
-          options={options.map((option) => ({ value: option.code, label: `${option.code} · ${option.description}` }))}
-          ariaLabel="Material de empaque"
-        />
+    <div className="flex flex-col gap-space-xs">
+      <p className="text-label-sm font-semibold uppercase tracking-wider text-outline">
+        Todas las cédulas de {row.productCode} · valores en {currency}
+      </p>
+      <div className="overflow-x-auto rounded-lg border border-outline-variant/30 bg-surface-container-lowest">
+        <table className="w-full min-w-[900px] text-left text-body-md">
+          <thead>
+            <tr className="border-b border-outline-variant/30 text-label-sm uppercase tracking-wider text-outline">
+              <th className="px-space-sm py-2">Cédula</th>
+              <th className="px-space-sm py-2">Tipo</th>
+              <th className="px-space-sm py-2 text-right">Lote kg</th>
+              <th className="px-space-sm py-2 text-right">Presentación</th>
+              <th className="px-space-sm py-2 text-right">Costo/kg</th>
+              <th className="px-space-sm py-2 text-right">Costo/saco</th>
+              <th className="px-space-sm py-2 text-right">P/reposición</th>
+              <th className="px-space-sm py-2 text-right">Actualizada</th>
+              <th className="px-space-sm py-2 text-right" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-outline-variant/20">
+            {row.formulas.map((line) => (
+              <tr key={`${line.kind}-${line.id}`} className="hover:bg-surface-container-low/60">
+                <td className="px-space-sm py-space-xs">
+                  <span className="inline-flex flex-wrap items-center gap-1 font-semibold text-primary">
+                    {line.id}
+                    {line.isStandard && <Badge tone="success">Principal</Badge>}
+                  </span>
+                  <p className="max-w-[16rem] truncate text-label-sm text-on-surface-variant" title={line.name}>
+                    {line.name || 'sin nombre'}
+                  </p>
+                </td>
+                <td className="px-space-sm py-space-xs">{KIND_LABEL[line.kind] ?? line.kind}</td>
+                <td className="px-space-sm py-space-xs text-right tabular-nums">
+                  {line.batchKg === null ? '—' : fmtQty(line.batchKg, 0)}
+                </td>
+                <td className="px-space-sm py-space-xs text-right tabular-nums">
+                  {line.isBulk || line.presentationKg === null
+                    ? 'Granel'
+                    : `${fmtQty(line.presentationKg, 0)} kg`}
+                </td>
+                <td className="px-space-sm py-space-xs text-right tabular-nums">
+                  {line.costPerKg === null ? '—' : fmtQty(line.costPerKg, 2)}
+                </td>
+                <td className="px-space-sm py-space-xs text-right tabular-nums">
+                  {line.costPerSack === null ? '—' : fmtQty(line.costPerSack, 2)}
+                </td>
+                <td className="px-space-sm py-space-xs text-right font-semibold tabular-nums text-secondary">
+                  <span className="inline-flex items-center justify-end gap-1">
+                    {line.replacementCostPerKg === null ? '—' : fmtQty(line.replacementCostPerKg, 2)}
+                    {line.missingReplacement > 0 && (
+                      <span
+                        className="rounded bg-warning-container/60 px-1 text-[10px] font-bold text-warning"
+                        title={`${line.missingReplacement} materia(s) prima(s) sin reposición en Profit: se usó el último costo`}
+                      >
+                        {line.missingReplacement}
+                      </span>
+                    )}
+                  </span>
+                </td>
+                <td className="px-space-sm py-space-xs text-right text-label-sm text-on-surface-variant">
+                  {line.updatedAt ? line.updatedAt.slice(0, 10) : '—'}
+                </td>
+                <td className="px-space-sm py-space-xs text-right">
+                  <button
+                    type="button"
+                    onClick={() => onOpen(line.id)}
+                    className="rounded-lg border border-primary-container/40 px-space-sm py-1 text-label-sm font-semibold text-primary hover:bg-primary-container/5"
+                  >
+                    Ver desglose
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
-      <div className="w-28">
-        <label className="mb-space-2xs block text-label-sm font-semibold uppercase tracking-wider text-outline">
-          Unid./saco
-        </label>
-        <input
-          value={qtyPerUnit}
-          onChange={(event) => setQtyPerUnit(event.target.value)}
-          inputMode="decimal"
-          className="h-10 w-full rounded-xl border border-outline-variant/50 bg-surface-container-lowest px-space-sm text-right text-body-md tabular-nums text-on-surface focus:border-transparent focus:outline-none focus:ring-2 focus:ring-secondary-container/70"
-          aria-label="Unidades de empaque por saco"
-        />
-      </div>
-      <button
-        type="button"
-        onClick={() => mutation.mutate()}
-        disabled={mutation.isPending || materialCode.trim().length === 0}
-        className="inline-flex h-10 items-center gap-space-2xs rounded-xl border border-primary-container/40 px-space-md text-label-md font-semibold text-primary disabled:opacity-60"
-      >
-        <Save aria-hidden className="size-4" />
-        Guardar empaque
-      </button>
-      {mutation.isError && (
-        <span className="text-label-sm text-error">{mutation.error instanceof Error ? mutation.error.message : 'No se pudo guardar'}</span>
+      {row.formulas.length > 1 && (
+        <p className="text-label-sm text-on-surface-variant">
+          La cédula marcada como principal es la que usa el plan de producción. Doble clic en el producto abre el
+          desglose completo de cualquier receta.
+        </p>
       )}
     </div>
   );
 }
+
 
 function NutritionPanel({
   selectedProduct,

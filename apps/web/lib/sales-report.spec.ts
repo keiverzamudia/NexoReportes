@@ -10,12 +10,14 @@ import {
   CUSTOMER_SALES_CSV_HEADERS,
   META_MARKER_PCT,
   SALES_CSV_HEADERS,
+  buildCommittedNarrative,
   buildCumulativeSeries,
   clientsForProduct,
   buildCustomerSalesCsv,
   buildDayBars,
   buildNarrative,
   buildSalesCsv,
+  committedSnapshot,
   customerSalesCsvFileName,
   customerTargetGeometry,
   dailySalesScale,
@@ -111,6 +113,72 @@ function report(overrides: Partial<ForecastSalesResponse> = {}): ForecastSalesRe
     history: [],
     rows: [row()],
     generatedAt: '2026-10-29T16:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/**
+ * Informe con cartera: 100.000 kg vendidos al corte, 30.000 kg pendientes
+ * repartidos en 4 días (5.000 + 10.000 vencidos/hoy y 8.000 + 7.000 futuros) y
+ * una meta de 200.000 kg.
+ */
+function pendingReport(overrides: Partial<ForecastSalesResponse> = {}): ForecastSalesResponse {
+  const base = report();
+  return {
+    ...base,
+    asOf: '2026-10-27',
+    days: { ...base.days, workingRemaining: 4, remaining: 4 },
+    totals: { ...base.totals, actualKg: 100_000, pendingKg: 30_000, forecastKg: 200_000 },
+    daily: [
+      {
+        date: '2026-10-26',
+        actualKg: 0,
+        actualUnits: 0,
+        invoiceCount: 0,
+        pendingKg: 5_000,
+        pendingOrders: 1,
+        products: [],
+        cumulativeKg: 95_000,
+        projectedCumulativeKg: 95_000,
+        forecastCumulativeKg: 180_000,
+      },
+      {
+        date: '2026-10-27',
+        actualKg: 5_000,
+        actualUnits: 100,
+        invoiceCount: 1,
+        pendingKg: 10_000,
+        pendingOrders: 2,
+        products: [],
+        cumulativeKg: 100_000,
+        projectedCumulativeKg: 100_000,
+        forecastCumulativeKg: 190_000,
+      },
+      {
+        date: '2026-10-28',
+        actualKg: 0,
+        actualUnits: 0,
+        invoiceCount: 0,
+        pendingKg: 8_000,
+        pendingOrders: 1,
+        products: [],
+        cumulativeKg: null,
+        projectedCumulativeKg: 120_000,
+        forecastCumulativeKg: 200_000,
+      },
+      {
+        date: '2026-10-29',
+        actualKg: 0,
+        actualUnits: 0,
+        invoiceCount: 0,
+        pendingKg: 7_000,
+        pendingOrders: 1,
+        products: [],
+        cumulativeKg: null,
+        projectedCumulativeKg: 140_000,
+        forecastCumulativeKg: 210_000,
+      },
+    ],
     ...overrides,
   };
 }
@@ -228,6 +296,22 @@ describe('serie acumulada para la gráfica', () => {
     expect(series[0]!.actual).toBe(480_000);
     expect(series[2]!.actual).toBeNull();
     expect(series[2]!.projected).toBeCloseTo(520_833.3, 1);
+  });
+
+  it('committed: real + pedidos desde el corte, con los vencidos incluidos al arrancar', () => {
+    const series = buildCumulativeSeries(pendingReport());
+
+    expect(series.map((point) => point.committed)).toEqual([null, 115_000, 123_000, 130_000]);
+    // Al final del mes coincide con venta + cartera.
+    expect(series.at(-1)!.committed).toBe(130_000);
+  });
+
+  it('committed sin cartera repite la venta real desde el corte', () => {
+    const series = buildCumulativeSeries(report());
+
+    expect(series[0]!.committed).toBeNull();
+    expect(series[1]!.committed).toBe(500_000);
+    expect(series[2]!.committed).toBe(500_000);
   });
 });
 
@@ -526,6 +610,48 @@ describe('brecha del mes y del corte', () => {
 
     expect(gap.cutGapKg).toBe(70_000);
     expect(gap.cutPct).toBeCloseTo(87.7, 1);
+  });
+
+  it('con pedidos, la brecha se mide contra venta + cartera', () => {
+    const data = pendingReport();
+    const real = salesGap(data);
+    const conPedidos = salesGap(data, { includePending: true });
+
+    expect(real.monthGapKg).toBe(-100_000);
+    expect(real.monthPct).toBe(50);
+    expect(conPedidos.monthGapKg).toBe(-70_000);
+    expect(conPedidos.monthPct).toBe(65);
+    expect(conPedidos.cutGapKg).toBe(70_000);
+    expect(conPedidos.cutPct).toBe(65);
+  });
+});
+
+describe('cierre comprometido — venta + pedidos', () => {
+  it('calcula total, % del forecast, brecha y ritmo restante', () => {
+    expect(committedSnapshot(pendingReport())).toEqual({
+      kg: 130_000,
+      pctOfForecast: 65,
+      gapKg: -70_000,
+      requiredDailyKg: 17_500,
+    });
+  });
+
+  it('sin cartera no ofrece el escenario', () => {
+    expect(committedSnapshot(report())).toBeNull();
+  });
+
+  it('un mes futuro no ofrece el escenario aunque tenga cartera', () => {
+    expect(committedSnapshot(pendingReport({ status: 'FUTURE' }))).toBeNull();
+  });
+
+  it('un mes cerrado no ofrece el escenario', () => {
+    expect(committedSnapshot(pendingReport({ status: 'CLOSED' }))).toBeNull();
+  });
+
+  it('la frase del hero menciona cartera, total y brecha', () => {
+    expect(buildCommittedNarrative(pendingReport())).toBe(
+      'Con los 30.000 kg de pedidos pendientes llegarías a 130.000 kg (65,0 %); faltarían ~70.000 kg para la meta.',
+    );
   });
 });
 

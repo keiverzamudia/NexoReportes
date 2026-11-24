@@ -92,6 +92,29 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   return (await response.json()) as T;
 }
 
+// Subida multipart (fotos de Romana). No fijar Content-Type: el navegador
+// añade el boundary del FormData.
+export async function apiUpload<T>(path: string, file: File): Promise<T> {
+  const body = new FormData();
+  body.append('file', file, file.name || 'foto.jpg');
+
+  const doFetch = (): Promise<Response> =>
+    fetch(`${API_BASE}${path}`, { method: 'PUT', body, credentials: 'include' });
+
+  let response = await doFetch();
+  if (response.status === 401 && (await tryRefresh())) {
+    response = await doFetch();
+  }
+  if (response.status === 401) {
+    throw new AuthRequiredError();
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(messageOf(payload, `Error ${response.status}`));
+  }
+  return (await response.json()) as T;
+}
+
 // Usuario de la sesión (null si no hay sesión). Lo usa la navegación para
 // mostrar módulos de administración.
 export async function currentUser(): Promise<UserSummary | null> {

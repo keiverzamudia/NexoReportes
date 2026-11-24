@@ -40,6 +40,13 @@ export interface ProfitFormulaRow {
   componentKgPerUom: number | null;
   lastCost: number | null;
   avgCost: number | null;
+  // Costos en dólares de Profit (`ult_cos_om` / `cos_pro_om`, columnas
+  // «Último OM» / «Prom. OM»). Son la base canónica del módulo; el Bs se
+  // obtiene multiplicando por la tasa del día.
+  lastCostUsd: number | null;
+  avgCostUsd: number | null;
+  // Costo de reposición (`art.cos_merc`, fila «Reposición»). Solo existe en Bs.
+  replacementCost: number | null;
   componentInactive: boolean;
 }
 
@@ -68,6 +75,9 @@ export interface ProfitPackagingRow {
   packagingDescription: string;
   lastCost: number | null;
   avgCost: number | null;
+  lastCostUsd: number | null;
+  avgCostUsd: number | null;
+  replacementCost: number | null;
   uses: number;
 }
 
@@ -122,6 +132,9 @@ SELECT
   a.uni_relac AS component_kg_per_uom,
   a.ult_cos_un AS last_cost,
   a.cos_pro_un AS avg_cost,
+  a.ult_cos_om AS last_cost_usd,
+  a.cos_pro_om AS avg_cost_usd,
+  a.cos_merc AS replacement_cost,
   a.anulado AS component_inactive
 FROM dbo.spced c
 JOIN dbo.reng_mce m ON m.co_ced = c.co_ced
@@ -173,13 +186,16 @@ SELECT
   RTRIM(a.art_des) AS packaging_description,
   a.ult_cos_un AS last_cost,
   a.cos_pro_un AS avg_cost,
+  a.ult_cos_om AS last_cost_usd,
+  a.cos_pro_om AS avg_cost_usd,
+  a.cos_merc AS replacement_cost,
   COUNT(*) AS uses
 FROM dbo.spced c
 JOIN dbo.reng_mce m ON m.co_ced = c.co_ced
 JOIN dbo.art a ON a.co_art = m.co_art
 WHERE (c.dias = 1 OR c.horas < 2)
   AND RTRIM(a.co_subl) = 'EMPAQ'
-GROUP BY RTRIM(c.co_art), RTRIM(m.co_art), RTRIM(a.art_des), a.ult_cos_un, a.cos_pro_un`;
+GROUP BY RTRIM(c.co_art), RTRIM(m.co_art), RTRIM(a.art_des), a.ult_cos_un, a.cos_pro_un, a.ult_cos_om, a.cos_pro_om, a.cos_merc`;
 
 const STOCK_SQL = `
 SELECT
@@ -267,6 +283,9 @@ function formulaFromRow(row: Record<string, unknown>): ProfitFormulaRow {
     componentKgPerUom: numberOrNull(row.component_kg_per_uom),
     lastCost: numberOrNull(row.last_cost),
     avgCost: numberOrNull(row.avg_cost),
+    lastCostUsd: numberOrNull(row.last_cost_usd),
+    avgCostUsd: numberOrNull(row.avg_cost_usd),
+    replacementCost: numberOrNull(row.replacement_cost),
     componentInactive: bool(row.component_inactive),
   };
 }
@@ -301,6 +320,9 @@ function packagingFromRow(row: Record<string, unknown>): ProfitPackagingRow {
     packagingDescription: text(row.packaging_description),
     lastCost: numberOrNull(row.last_cost),
     avgCost: numberOrNull(row.avg_cost),
+    lastCostUsd: numberOrNull(row.last_cost_usd),
+    avgCostUsd: numberOrNull(row.avg_cost_usd),
+    replacementCost: numberOrNull(row.replacement_cost),
     uses: numberOrZero(row.uses),
   };
 }

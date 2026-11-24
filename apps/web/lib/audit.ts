@@ -150,7 +150,8 @@ function text(value: unknown): string | null {
 function linkFor(entityType: string, entityId: string | null): string | null {
   if (!entityId) return null;
   if (entityType === 'DispatchSheet') return `/despacho/${entityId}`;
-  if (entityType === 'CustomerArrival') return `/llegadas/${entityId}`;
+  if (entityType === 'CustomerArrival') return `/pcp/${entityId}`;
+  if (entityType === 'RomanaArrival') return `/pcp/${entityId}`;
   if (entityType === 'User' || entityType === 'Role' || entityType === 'UserPermission') return '/usuarios';
   return null;
 }

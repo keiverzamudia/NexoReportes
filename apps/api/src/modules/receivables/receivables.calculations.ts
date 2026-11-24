@@ -1,6 +1,7 @@
 import {
   RECEIVABLES_BUCKETS,
   RECEIVABLES_BUCKET_KEYS,
+  RECEIVABLES_LEGACY_CUTOFF,
   ReceivablesBucket,
   ReceivablesBucketKey,
   ReceivablesClientRow,
@@ -22,6 +23,20 @@ import {
 // Mismos tipos débito que el estado de cuenta de Clientes. El resto
 // (ADEL, N/CR, …) resta: son adelantos o notas de crédito.
 export const DEBIT_DOCS = new Set(['FACT', 'N/DB', 'AJPM', 'GIRO']);
+
+// La barra de cobranza clasifica cada aplicación por el atraso con el que se
+// pagó, no por la fecha de corte de la cartera. Por eso +150 es un solo tramo
+// y no se separa en «hasta 2025 / desde 2025».
+const PAYMENT_AGING_BUCKETS = [
+  { key: 'POR_VENCER', short: 'A tiempo', label: 'Pagado a tiempo o antes del vencimiento' },
+  { key: 'D1_30', short: '1–30', label: 'Pagado con 1 a 30 días de atraso' },
+  { key: 'D31_60', short: '31–60', label: 'Pagado con 31 a 60 días de atraso' },
+  { key: 'D61_90', short: '61–90', label: 'Pagado con 61 a 90 días de atraso' },
+  { key: 'D91_120', short: '91–120', label: 'Pagado con 91 a 120 días de atraso' },
+  { key: 'D121_150', short: '121–150', label: 'Pagado con 121 a 150 días de atraso' },
+  { key: 'D150_DESDE_2025', short: '+150', label: 'Pagado con más de 150 días de atraso' },
+] as const;
+
 
 export type ReceivablesCurrency = 'USD' | 'BS';
 
@@ -99,7 +114,14 @@ export interface ReceivablesAggregate {
 
 const BUCKET_CLIENT_FIELD: Record<
   ReceivablesBucketKey,
-  'porVencer' | 'd1_30' | 'd31_60' | 'd61_90' | 'd91_120' | 'd121_150' | 'd150Mas'
+  | 'porVencer'
+  | 'd1_30'
+  | 'd31_60'
+  | 'd61_90'
+  | 'd91_120'
+  | 'd121_150'
+  | 'd150Desde2025'
+  | 'd150Hasta2025'
 > = {
   POR_VENCER: 'porVencer',
   D1_30: 'd1_30',
@@ -107,7 +129,8 @@ const BUCKET_CLIENT_FIELD: Record<
   D61_90: 'd61_90',
   D91_120: 'd91_120',
   D121_150: 'd121_150',
-  D150_MAS: 'd150Mas',
+  D150_DESDE_2025: 'd150Desde2025',
+  D150_HASTA_2025: 'd150Hasta2025',
 };
 
 export function round2(value: number): number {
@@ -165,7 +188,22 @@ export function bucketOfDays(days: number | null | undefined): ReceivablesBucket
   if (days <= 90) return 'D61_90';
   if (days <= 120) return 'D91_120';
   if (days <= 150) return 'D121_150';
-  return 'D150_MAS';
+  return 'D150_DESDE_2025';
+}
+
+/**
+ * Tramo real de un documento: la mora extrema (+150 días) se parte por la
+ * fecha de vencimiento para separar la cartera vieja (hasta 01/01/2025) del
+ * resto. Sin fecha de vencimiento cae en el tramo nuevo para no perder monto.
+ */
+export function bucketOfDoc(
+  days: number | null | undefined,
+  fechaVencimiento: string | null | undefined,
+): ReceivablesBucketKey {
+  const bucket = bucketOfDays(days);
+  if (bucket !== 'D150_DESDE_2025') return bucket;
+  const due = fechaVencimiento ? fechaVencimiento.slice(0, 10) : '';
+  return due && due <= RECEIVABLES_LEGACY_CUTOFF ? 'D150_HASTA_2025' : 'D150_DESDE_2025';
 }
 
 export function mapRawDoc(raw: Record<string, unknown>): ReceivablesDoc {
@@ -184,6 +222,7 @@ export function mapRawDoc(raw: Record<string, unknown>): ReceivablesDoc {
   const zonaLabel = text(raw.zona_des) || zona;
   const segmento = text(raw.co_seg);
   const segmentoLabel = text(raw.seg_des) || segmento;
+  const fechaVencimiento = isoDate(raw.fec_venc);
 
   return {
     clienteCodigo: text(raw.co_cli).toUpperCase(),
@@ -203,9 +242,9 @@ export function mapRawDoc(raw: Record<string, unknown>): ReceivablesDoc {
     tipoDoc,
     nroDoc: integerOrNull(raw.nro_doc) ?? 0,
     fechaEmision: isoDate(raw.fec_emis),
-    fechaVencimiento: isoDate(raw.fec_venc),
+    fechaVencimiento,
     diasVencimiento,
-    tramo: esCredito ? null : bucketOfDays(diasVencimiento),
+    tramo: esCredito ? null : bucketOfDoc(diasVencimiento, fechaVencimiento),
     esCredito,
     sinTasa,
     sinVencimiento,
@@ -412,7 +451,8 @@ export function aggregate(
       d61_90: round2(item.buckets.amounts.D61_90),
       d91_120: round2(item.buckets.amounts.D91_120),
       d121_150: round2(item.buckets.amounts.D121_150),
-      d150Mas: round2(item.buckets.amounts.D150_MAS),
+      d150Desde2025: round2(item.buckets.amounts.D150_DESDE_2025),
+      d150Hasta2025: round2(item.buckets.amounts.D150_HASTA_2025),
       vencido,
       pctVencido,
       documentos: item.documentos,
@@ -470,8 +510,11 @@ function buildTotals(
   const d61_90 = round2(rows.reduce((sum, row) => sum + row.d61_90, 0));
   const d91_120 = round2(rows.reduce((sum, row) => sum + row.d91_120, 0));
   const d121_150 = round2(rows.reduce((sum, row) => sum + row.d121_150, 0));
-  const d150Mas = round2(rows.reduce((sum, row) => sum + row.d150Mas, 0));
-  const vencido = round2(d1_30 + d31_60 + d61_90 + d91_120 + d121_150 + d150Mas);
+  const d150Desde2025 = round2(rows.reduce((sum, row) => sum + row.d150Desde2025, 0));
+  const d150Hasta2025 = round2(rows.reduce((sum, row) => sum + row.d150Hasta2025, 0));
+  const vencido = round2(
+    d1_30 + d31_60 + d61_90 + d91_120 + d121_150 + d150Desde2025 + d150Hasta2025,
+  );
   const documentos = rows.reduce((sum, row) => sum + row.documentos, 0);
   const notasCredito = rows.reduce((sum, row) => sum + row.notasCredito, 0);
   const diasMax = rows.reduce<number | null>(
@@ -510,7 +553,8 @@ function buildTotals(
     d61_90,
     d91_120,
     d121_150,
-    d150Mas,
+    d150Desde2025,
+    d150Hasta2025,
     vencido,
     pctVencido: cartera > 0 ? round2((vencido / cartera) * 100) : 0,
     clientes: rows.length,
@@ -541,8 +585,10 @@ function buildRisk(rows: ReceivablesClientRow[]): ReceivablesRisk {
   const sorted = [...rows].filter((row) => row.cartera > 0).sort((a, b) => b.cartera - a.cartera);
   const top = sorted[0] ?? null;
   const top5 = sorted.slice(0, 5).reduce((sum, row) => sum + row.cartera, 0);
-  const mas90 = rows.filter((row) => row.d91_120 + row.d121_150 + row.d150Mas > 0);
-  const mas150 = rows.filter((row) => row.d150Mas > 0);
+  const mas90 = rows.filter(
+    (row) => row.d91_120 + row.d121_150 + row.d150Desde2025 + row.d150Hasta2025 > 0,
+  );
+  const mas150 = rows.filter((row) => row.d150Desde2025 + row.d150Hasta2025 > 0);
   const sinPago = rows.filter(
     (row) => row.cartera > 0 && (row.diasSinPago === null || row.diasSinPago > 30),
   );
@@ -559,9 +605,16 @@ function buildRisk(rows: ReceivablesClientRow[]): ReceivablesRisk {
       : null,
     top5Pct: cartera > 0 ? round2((top5 / cartera) * 100) : 0,
     clientesMas90: mas90.length,
-    montoMas90: round2(mas90.reduce((sum, row) => sum + row.d91_120 + row.d121_150 + row.d150Mas, 0)),
+    montoMas90: round2(
+      mas90.reduce(
+        (sum, row) => sum + row.d91_120 + row.d121_150 + row.d150Desde2025 + row.d150Hasta2025,
+        0,
+      ),
+    ),
     clientesMas150: mas150.length,
-    montoMas150: round2(mas150.reduce((sum, row) => sum + row.d150Mas, 0)),
+    montoMas150: round2(
+      mas150.reduce((sum, row) => sum + row.d150Desde2025 + row.d150Hasta2025, 0),
+    ),
     clientesSinPago30: sinPago.length,
     montoSinPago30: round2(sinPago.reduce((sum, row) => sum + row.cartera, 0)),
     clientesSobreLimite: sobreLimite.length,
@@ -616,4 +669,48 @@ export function mapPayments(rows: Record<string, unknown>[]): PaymentMap {
     });
   }
   return map;
+}
+
+/**
+ * Reparte lo cobrado en los últimos 12 meses por atraso al pagar. Cada fila
+ * viene agregada por tramo desde `cobros` + `reng_cob`; al cambiar de moneda
+ * se elige el monto nativo en Bs o el convertido a USD.
+ */
+export function mapPaymentAging(
+  rows: Record<string, unknown>[],
+  currency: ReceivablesCurrency,
+): ReceivablesBucket[] {
+  const accum = new Map<string, { amount: number; pagos: number }>();
+  for (const raw of rows) {
+    const key = text(raw.tramo);
+    if (!PAYMENT_AGING_BUCKETS.some((bucket) => bucket.key === key)) continue;
+    const amount = currency === 'USD' ? num(raw.monto_usd) : num(raw.monto_bs);
+    if (amount <= 0) continue;
+    const current = accum.get(key) ?? { amount: 0, pagos: 0 };
+    current.amount += amount;
+    current.pagos += Math.trunc(num(raw.pagos));
+    accum.set(key, current);
+  }
+
+  const total = PAYMENT_AGING_BUCKETS.reduce(
+    (sum, bucket) => sum + (accum.get(bucket.key)?.amount ?? 0),
+    0,
+  );
+  if (total <= 0) return [];
+
+  return PAYMENT_AGING_BUCKETS.flatMap((bucket) => {
+    const item = accum.get(bucket.key);
+    if (!item || item.amount <= 0) return [];
+    const amount = round2(item.amount);
+    return [
+      {
+        key: bucket.key,
+        label: bucket.label,
+        short: bucket.short,
+        amount,
+        pct: round2((amount / total) * 100),
+        documentos: item.pagos,
+      },
+    ];
+  });
 }

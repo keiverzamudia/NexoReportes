@@ -299,7 +299,7 @@ GROUP BY YEAR(f.fec_emis), MONTH(f.fec_emis), RTRIM(f.co_cli), RTRIM(ISNULL(c.cl
 // producción compara lo vendido contra el forecast con el mismo criterio.
 // `@desde`/`@hasta` son un rango semiabierto: mes completo [1º, 1º del siguiente).
 export const PROFIT_SALES_WEEKLY_SQL = `
-SELECT
+SELECT /* nexo:sales_weekly */
   RTRIM(r.co_art) AS co_art,
   CASE
     WHEN DAY(f.fec_emis) <= 7 THEN 1
@@ -307,7 +307,8 @@ SELECT
     WHEN DAY(f.fec_emis) <= 21 THEN 3
     ELSE 4
   END AS semana,
-  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg
+  SUM(r.total_art * ISNULL(a.uni_relac, 1)) AS kg,
+  SUM(CASE WHEN f.tasa > 0 THEN r.reng_neto / f.tasa ELSE 0 END) AS usd
 FROM dbo.not_ent AS f
 INNER JOIN dbo.reng_nde AS r ON r.fact_num = f.fact_num
 INNER JOIN dbo.art AS a ON a.co_art = r.co_art
@@ -322,6 +323,18 @@ GROUP BY RTRIM(r.co_art), CASE
     WHEN DAY(f.fec_emis) <= 21 THEN 3
     ELSE 4
   END
+`;
+
+// Tipo de cambio con el que se expresa el importe en bolívares. Es la tasa
+// VIGENTE HOY (no la histórica de cada nota): el usuario lo pidió así para
+// contrastar el valor actual del despacho. El USD de la venta siempre usa la
+// tasa de su propia nota en `PROFIT_SALES_WEEKLY_SQL`.
+export const PROFIT_EXCHANGE_RATE_SQL = `
+SELECT TOP (1)
+  tasa_v AS tasa
+FROM dbo.tasas
+WHERE RTRIM(co_mone) = 'US$'
+ORDER BY fecha DESC
 `;
 
 // Zona del negocio: el corte del informe no puede depender de la hora del
@@ -396,7 +409,7 @@ interface SalesProductMeta {
 
 // Despachos del mes agrupados por artículo y semana (índice 0 = semana 1).
 interface WeeklySalesIndex {
-  byCode: Map<string, { weeks: number[]; monthKg: number }>;
+  byCode: Map<string, { weeks: number[]; weeksUsd: number[]; monthKg: number; monthUsd: number }>;
   available: boolean;
 }
 
@@ -561,6 +574,9 @@ export class ForecastService {
   // Despachos semanales del plan: misma política (5 min, tope 40) porque el
   // plan se refresca junto con el Asignador y Profit es un recurso único.
   private readonly weeklyCache = new Map<string, { at: number; data: WeeklySalesIndex }>();
+  // Tasa Bs/US$ vigente: cambia como máximo una vez al día, así que basta con
+  // guardarla unos minutos (también se limpia con «Sincronizar»).
+  private rateCache: { at: number; value: number | null } | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -574,6 +590,7 @@ export class ForecastService {
     this.customerSalesCache.clear();
     this.dayDetailCache.clear();
     this.weeklyCache.clear();
+    this.rateCache = null;
   }
 
   async list(year: number, month: number): Promise<ForecastResponse> {
@@ -680,9 +697,10 @@ export class ForecastService {
   async plan(year: number, month: number): Promise<ForecastPlanResponse> {
     const today = todayInTimeZone(BUSINESS_TIME_ZONE);
     const asOf = planCut(year, month, today);
-    const [{ response: list, demand, stock }, sold] = await Promise.all([
+    const [{ response: list, demand, stock }, sold, exchangeRate] = await Promise.all([
       this.buildList(year, month),
       this.weeklySalesIndex(year, month),
+      this.todayExchangeRate(),
     ]);
     // Un mes pasado está cerrado entero: el último bloque termina el mismo día
     // del corte, así que no basta comparar `range.to < asOf`.
@@ -707,6 +725,7 @@ export class ForecastService {
         const forecastKg = round3(r.weeks.find((w) => w.weekIndex === range.weekIndex)?.qty ?? 0);
         const dem = demand.byProductWeek.get(`${r.productCode}#${range.weekIndex}`) ?? { qty: 0, kg: 0 };
         const soldKg = round3(soldInfo?.weeks[range.weekIndex - 1] ?? 0);
+        const soldUsd = roundTo(soldInfo?.weeksUsd[range.weekIndex - 1] ?? 0, 2);
         const closed = monthClosed || (asOf !== null && range.to < asOf);
         const objectiveKg = round3(Math.max(forecastKg, dem.kg));
         const attainmentPct =
@@ -731,6 +750,7 @@ export class ForecastService {
             demandKg: round3(dem.kg),
             demandQty: round3(dem.qty),
             soldKg,
+            soldUsd,
             soldSacks: sacks && kgPerUom !== null ? roundTo(soldKg / kgPerUom, 1) : null,
             stockKg: 0,
             objectiveKg,
@@ -769,6 +789,7 @@ export class ForecastService {
           demandKg: round3(dem.kg),
           demandQty: round3(dem.qty),
           soldKg,
+          soldUsd,
           soldSacks: sacks && kgPerUom !== null ? roundTo(soldKg / kgPerUom, 1) : null,
           stockKg: round3(stockStartKg),
           objectiveKg,
@@ -799,6 +820,7 @@ export class ForecastService {
         // Ventas del mes: demanda de pedidos y despachos reales, ambos en kg.
         demandMonthKg: round3(demandMonth.kg),
         soldMonthKg: round3(soldInfo?.monthKg ?? 0),
+        soldMonthUsd: roundTo(soldInfo?.monthUsd ?? 0, 2),
         productionMonthKg,
         productionMonthSacks:
           sacks && kgPerUom !== null ? roundTo(productionMonthKg / kgPerUom, 1) : null,
@@ -813,10 +835,15 @@ export class ForecastService {
       asOf,
       currentWeekIndex,
       salesAvailable: sold.available,
+      exchangeRate,
       rows,
       totals: {
         forecastKg: round3(rows.reduce((acc, r) => acc + r.forecastMonthKg, 0)),
         soldKg: round3(rows.reduce((acc, r) => acc + r.soldMonthKg, 0)),
+        soldUsd: roundTo(
+          rows.reduce((acc, r) => acc + r.soldMonthUsd, 0),
+          2,
+        ),
         demandKg: round3(rows.reduce((acc, r) => acc + r.demandMonthKg, 0)),
         productionKg: round3(rows.reduce((acc, r) => acc + r.productionMonthKg, 0)),
       },
@@ -2267,19 +2294,32 @@ export class ForecastService {
     const hasta = new Date(Date.UTC(year, month, 1));
     try {
       const rows = await this.profit.selectQuery(PROFIT_SALES_WEEKLY_SQL, 20000, { desde, hasta });
-      const byCode = new Map<string, { weeks: number[]; monthKg: number }>();
+      const byCode = new Map<
+        string,
+        { weeks: number[]; weeksUsd: number[]; monthKg: number; monthUsd: number }
+      >();
       for (const raw of rows) {
         const code = String(raw.co_art ?? '').trim();
         if (!code) continue;
         const week = Math.trunc(num(raw.semana));
         if (week < 1 || week > WEEK_BOUNDS.length) continue;
-        const entry = byCode.get(code) ?? { weeks: [0, 0, 0, 0], monthKg: 0 };
+        const entry = byCode.get(code) ?? {
+          weeks: [0, 0, 0, 0],
+          weeksUsd: [0, 0, 0, 0],
+          monthKg: 0,
+          monthUsd: 0,
+        };
         entry.weeks[week - 1] = round3((entry.weeks[week - 1] ?? 0) + num(raw.kg));
+        entry.weeksUsd[week - 1] = roundTo((entry.weeksUsd[week - 1] ?? 0) + num(raw.usd), 2);
         byCode.set(code, entry);
       }
       // El total del mes es la suma de las 4 semanas (un solo redondeo final).
       for (const entry of byCode.values()) {
         entry.monthKg = round3(entry.weeks.reduce((acc, kg) => acc + kg, 0));
+        entry.monthUsd = roundTo(
+          entry.weeksUsd.reduce((acc, usd) => acc + usd, 0),
+          2,
+        );
       }
       const data: WeeklySalesIndex = { byCode, available: true };
       this.rememberWeekly(key, data);
@@ -2291,6 +2331,29 @@ export class ForecastService {
         }`,
       );
       return { byCode: new Map(), available: false };
+    }
+  }
+
+  // Tasa Bs/US$ vigente hoy (`dbo.tasas`, última fila US$). Solo se usa para
+  // expresar el importe vendido en bolívares; el USD de cada nota conserva su
+  // propia tasa. Si Profit falla se devuelve null y la UI se queda en USD.
+  private async todayExchangeRate(): Promise<number | null> {
+    const cached = this.rateCache;
+    if (cached && Date.now() - cached.at < SALES_CACHE_TTL_MS) return cached.value;
+    try {
+      const rows = await this.profit.selectQuery(PROFIT_EXCHANGE_RATE_SQL, 1);
+      const tasa = num(rows[0]?.tasa);
+      const value = tasa > 0 ? tasa : null;
+      this.rateCache = { at: Date.now(), value };
+      return value;
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo leer el tipo de cambio de Profit (tasas): ${
+          error instanceof Error ? error.message : 'error desconocido'
+        }`,
+      );
+      this.rateCache = { at: Date.now(), value: null };
+      return null;
     }
   }
 

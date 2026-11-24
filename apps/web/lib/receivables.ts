@@ -2,11 +2,13 @@
 
 import {
   RECEIVABLES_BUCKETS,
+  ReceivablesBucket,
   ReceivablesBucketKey,
   ReceivablesClientRow,
   ReceivablesCurrency,
   ReceivablesDocumentRow,
   ReceivablesResponse,
+  ReceivablesTotals,
 } from '@nexo/contracts';
 import { formatStatementDate, formatStatementMoney } from './statement';
 
@@ -27,7 +29,8 @@ export const BUCKET_COLORS: Record<ReceivablesBucketKey, string> = {
   D61_90: '#f97316',
   D91_120: '#ef4444',
   D121_150: '#dc2626',
-  D150_MAS: '#991b1b',
+  D150_DESDE_2025: '#991b1b',
+  D150_HASTA_2025: '#6b21a8',
 };
 
 export const BUCKET_TEXT_COLORS: Record<ReceivablesBucketKey, string> = {
@@ -37,7 +40,8 @@ export const BUCKET_TEXT_COLORS: Record<ReceivablesBucketKey, string> = {
   D61_90: '#c2410c',
   D91_120: '#b91c1c',
   D121_150: '#991b1b',
-  D150_MAS: '#7f1d1d',
+  D150_DESDE_2025: '#7f1d1d',
+  D150_HASTA_2025: '#581c87',
 };
 
 export const BUCKET_TONES: Record<ReceivablesBucketKey, ReceivablesTone> = {
@@ -47,8 +51,87 @@ export const BUCKET_TONES: Record<ReceivablesBucketKey, ReceivablesTone> = {
   D61_90: 'danger',
   D91_120: 'danger',
   D121_150: 'danger',
-  D150_MAS: 'danger',
+  D150_DESDE_2025: 'danger',
+  D150_HASTA_2025: 'danger',
 };
+
+// Contraste para las etiquetas que van DENTRO de la barra apilada. Los
+// tramos claros (verde, amarillo, ámbar) llevan tinta oscura; los rojos, blanca.
+export const BUCKET_LABEL_COLORS: Record<ReceivablesBucketKey, string> = {
+  POR_VENCER: '#052e16',
+  D1_30: '#422006',
+  D31_60: '#451a03',
+  D61_90: '#431407',
+  D91_120: '#ffffff',
+  D121_150: '#ffffff',
+  D150_DESDE_2025: '#ffffff',
+  D150_HASTA_2025: '#ffffff',
+};
+
+export interface AgingSegment {
+  key: ReceivablesBucketKey;
+  short: string;
+  label: string;
+  amount: number;
+  pct: number;
+}
+
+export function agingSegments(
+  amounts: Partial<Record<ReceivablesBucketKey, number>>,
+): AgingSegment[] {
+  const total = RECEIVABLES_BUCKETS.reduce((sum, bucket) => sum + (amounts[bucket.key] ?? 0), 0);
+  if (total <= 0) return [];
+  return RECEIVABLES_BUCKETS.map((bucket) => {
+    const amount = Math.max(0, amounts[bucket.key] ?? 0);
+    return {
+      key: bucket.key,
+      short: bucket.short,
+      label: bucket.label,
+      amount: round2(amount),
+      pct: round2((amount / total) * 100),
+    };
+  }).filter((segment) => segment.amount > 0);
+}
+
+/** Mezcla de antigüedad de una fila de cliente, en orden cronológico. */
+export function clientAging(row: ReceivablesClientRow): AgingSegment[] {
+  const amounts: Partial<Record<ReceivablesBucketKey, number>> = {};
+  for (const bucket of RECEIVABLES_BUCKETS) {
+    amounts[bucket.key] = bucketAmount(row, bucket.key);
+  }
+  return agingSegments(amounts);
+}
+
+/** Mezcla global a partir de los buckets del reporte. */
+export function segmentsFromBuckets(buckets: ReceivablesBucket[]): AgingSegment[] {
+  const byKey = new Map(buckets.map((bucket) => [bucket.key, bucket]));
+  return RECEIVABLES_BUCKETS.map((bucket) => {
+    const source = byKey.get(bucket.key);
+    return {
+      key: bucket.key,
+      short: bucket.short,
+      label: bucket.label,
+      amount: round2(source?.amount ?? 0),
+      pct: round2(source?.pct ?? 0),
+    };
+  }).filter((segment) => segment.amount > 0);
+}
+
+/**
+ * Segmentos de la barra de cobranza. Conserva las etiquetas que devuelve el
+ * API («A tiempo», «1–30», …) en lugar de los tramos de la cartera.
+ */
+export function segmentsFromPaymentBuckets(buckets: ReceivablesBucket[]): AgingSegment[] {
+  return buckets
+    .filter((bucket) => bucket.amount > 0)
+    .map((bucket) => ({
+      key: bucket.key,
+      short: bucket.short,
+      label: bucket.label,
+      amount: bucket.amount,
+      pct: bucket.pct,
+    }));
+}
 
 export function bucketMeta(key: ReceivablesBucketKey) {
   return RECEIVABLES_BUCKETS.find((bucket) => bucket.key === key) ?? RECEIVABLES_BUCKETS[0]!;
@@ -68,8 +151,32 @@ export function bucketAmount(row: ReceivablesClientRow, key: ReceivablesBucketKe
       return row.d91_120;
     case 'D121_150':
       return row.d121_150;
-    case 'D150_MAS':
-      return row.d150Mas;
+    case 'D150_DESDE_2025':
+      return row.d150Desde2025;
+    case 'D150_HASTA_2025':
+      return row.d150Hasta2025;
+  }
+}
+
+/** Mismo mapeo que `bucketAmount`, sobre los totales del reporte. */
+export function bucketTotalAmount(totals: ReceivablesTotals, key: ReceivablesBucketKey): number {
+  switch (key) {
+    case 'POR_VENCER':
+      return totals.porVencer;
+    case 'D1_30':
+      return totals.d1_30;
+    case 'D31_60':
+      return totals.d31_60;
+    case 'D61_90':
+      return totals.d61_90;
+    case 'D91_120':
+      return totals.d91_120;
+    case 'D121_150':
+      return totals.d121_150;
+    case 'D150_DESDE_2025':
+      return totals.d150Desde2025;
+    case 'D150_HASTA_2025':
+      return totals.d150Hasta2025;
   }
 }
 
@@ -111,6 +218,12 @@ export function formatPct(value: number | null | undefined): string {
   return `${new Intl.NumberFormat('es-VE', { maximumFractionDigits: 1 }).format(value)} %`;
 }
 
+/** Porcentaje sin espacio, para etiquetas y chips estrechos: 96,1%. */
+export function formatPctCompact(value: number | null | undefined): string {
+  const formatted = formatPct(value);
+  return formatted === '—' ? formatted : formatted.replace(' %', '%');
+}
+
 /** Conteos con separador de miles: 4.388 pagos, 2.393 a tiempo. */
 export function formatCount(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—';
@@ -136,6 +249,14 @@ export interface VendorBucketRow {
   vencido: number;
   pctVencido: number;
   clientes: number;
+  buckets: Record<ReceivablesBucketKey, number>;
+  aging: AgingSegment[];
+}
+
+function emptyBucketAmounts(): Record<ReceivablesBucketKey, number> {
+  return Object.fromEntries(
+    RECEIVABLES_BUCKETS.map((bucket) => [bucket.key, 0]),
+  ) as Record<ReceivablesBucketKey, number>;
 }
 
 /** Ranking de vendedores a partir de las filas de clientes ya filtradas. */
@@ -153,19 +274,31 @@ export function vendorRows(clients: ReceivablesClientRow[]): VendorBucketRow[] {
         vencido: 0,
         pctVencido: 0,
         clientes: 0,
+        buckets: emptyBucketAmounts(),
+        aging: [],
       };
     current.cartera += row.cartera;
     current.vencido += row.vencido;
     current.clientes += 1;
+    for (const bucket of RECEIVABLES_BUCKETS) {
+      current.buckets[bucket.key] += bucketAmount(row, bucket.key);
+    }
     map.set(key, current);
   }
   return [...map.values()]
-    .map((row) => ({
-      ...row,
-      cartera: round2(row.cartera),
-      vencido: round2(row.vencido),
-      pctVencido: row.cartera > 0 ? round2((row.vencido / row.cartera) * 100) : 0,
-    }))
+    .map((row) => {
+      const buckets = Object.fromEntries(
+        RECEIVABLES_BUCKETS.map((bucket) => [bucket.key, round2(row.buckets[bucket.key])]),
+      ) as Record<ReceivablesBucketKey, number>;
+      return {
+        ...row,
+        cartera: round2(row.cartera),
+        vencido: round2(row.vencido),
+        pctVencido: row.cartera > 0 ? round2((row.vencido / row.cartera) * 100) : 0,
+        buckets,
+        aging: agingSegments(buckets),
+      };
+    })
     .sort((a, b) => b.cartera - a.cartera);
 }
 
@@ -206,7 +339,8 @@ export function buildSummaryCsv(report: ReceivablesResponse): string {
     '61 a 90',
     '91 a 120',
     '121 a 150',
-    'Más de 150',
+    'Más de 150 · 2025+',
+    'Más de 150 · ≤ 2024',
     'Vencido',
     '% vencido',
     'Documentos',
@@ -234,7 +368,8 @@ export function buildSummaryCsv(report: ReceivablesResponse): string {
       row.d61_90,
       row.d91_120,
       row.d121_150,
-      row.d150Mas,
+      row.d150Desde2025,
+      row.d150Hasta2025,
       row.vencido,
       row.pctVencido,
       row.documentos,
@@ -267,7 +402,8 @@ export function buildDocumentsCsv(report: ReceivablesResponse): string {
     '61 a 90',
     '91 a 120',
     '121 a 150',
-    'Más de 150',
+    'Más de 150 · 2025+',
+    'Más de 150 · ≤ 2024',
     'Vencido',
     'Vendedor',
   ]);
@@ -289,7 +425,8 @@ export function buildDocumentsCsv(report: ReceivablesResponse): string {
       amountFor(row, 'D61_90'),
       amountFor(row, 'D91_120'),
       amountFor(row, 'D121_150'),
-      amountFor(row, 'D150_MAS'),
+      amountFor(row, 'D150_DESDE_2025'),
+      amountFor(row, 'D150_HASTA_2025'),
       row.esCredito || row.diasVencimiento <= 0 ? '' : row.saldo,
       row.vendedor,
     ]),

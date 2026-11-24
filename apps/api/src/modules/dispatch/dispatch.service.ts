@@ -171,7 +171,6 @@ interface CustomerGroupBucket {
 const SIN_CLIENTE = 'SIN_CLIENTE';
 
 const OPEN_STATUSES = ['ENVIADO', 'RECIBIDO', 'EN_PROCESO'];
-const OPERATOR_ROLES = ['ALMACEN', 'ADMIN'];
 const PLANNER_ROLES = ['PLANIFICADOR', 'GERENCIA', 'ADMIN'];
 // Estos roles ven toda la bandeja, incluido el historial cerrado por otros.
 const FULL_VISIBILITY_ROLES = ['ADMIN', 'GERENCIA', 'ALMACEN'];
@@ -1500,8 +1499,8 @@ export class DispatchService {
       });
     }
 
-    // El primer operador que inicia una carga toma la hoja, igual que antes
-    // ocurría al marcar el primer renglón.
+    // El primer operador que inicia una carga deja registrado quién arrancó
+    // los relojes T1; cualquier otro almacén con el permiso puede seguir.
     const starting = sheet.status === 'ENVIADO' || sheet.status === 'RECIBIDO';
     if (starting || !sheet.claimedById || !sheet.startedAt) {
       await this.prisma.dispatchSheet.update({
@@ -2470,9 +2469,8 @@ export class DispatchService {
       viewer.canDelete === true ||
       ['ADMIN', 'GERENCIA', 'ALMACEN'].includes(viewer.role);
     if (!allowed) return false;
-    // La factura la puede entregar cualquier operador de almacén con
-    // `despacho:update`, aunque otro haya tomado la hoja. La carga sigue
-    // siendo exclusiva del operador que la tomó (`canOperate`).
+    // Cualquier operador de almacén con `despacho:update` entrega facturas de
+    // cualquier hoja abierta. La carga ya no tiene dueño exclusivo.
     if (viewer.role === 'ALMACEN' && viewer.canUpdate) return true;
     if (!['ADMIN', 'GERENCIA'].includes(viewer.role)) {
       if (sheet.assignedToId && sheet.assignedToId !== viewer.id) return false;
@@ -2584,12 +2582,12 @@ export class DispatchService {
     return false;
   }
 
+  // La carga la opera cualquier almacén con el permiso, sin candado por
+  // asignación ni por toma: `claimedById` solo registra quién arrancó los
+  // relojes T1 y `assignedToId` es informativo (destino planificado).
   private canOperate(sheet: DispatchSheet, viewer: DispatchViewer): boolean {
     if (['DESPACHADO', 'CANCELADO'].includes(sheet.status)) return false;
-    if (!viewer.canUpdate && !OPERATOR_ROLES.includes(viewer.role)) return false;
-    if (sheet.assignedToId && sheet.assignedToId !== viewer.id && viewer.role !== 'ADMIN') return false;
-    if (sheet.claimedById && sheet.claimedById !== viewer.id && viewer.role !== 'ADMIN') return false;
-    return true;
+    return viewer.canUpdate === true;
   }
 
   private canCancel(sheet: DispatchSheet, viewer: DispatchViewer): boolean {
@@ -2603,18 +2601,13 @@ export class DispatchService {
     if (['DESPACHADO', 'CANCELADO'].includes(sheet.status)) {
       throw new ConflictException('El despacho ya está cerrado.');
     }
-    if (!viewer.canUpdate && !OPERATOR_ROLES.includes(viewer.role)) {
-      throw new ForbiddenException('Solo el personal de almacén opera los despachos.');
-    }
-    if (sheet.assignedToId && sheet.assignedToId !== viewer.id && viewer.role !== 'ADMIN') {
-      throw new ForbiddenException('Este despacho está asignado a otro operador.');
-    }
-    if (sheet.claimedById && sheet.claimedById !== viewer.id && viewer.role !== 'ADMIN') {
-      throw new ConflictException(`Este despacho ya lo tomó ${sheet.claimedByName ?? 'otro operador'}.`);
+    if (!viewer.canUpdate) {
+      throw new ForbiddenException('No tienes el permiso «Abrir y cargar» en Despacho.');
     }
   }
 
-  // El primer operador que abre una hoja de la bandeja compartida la reclama.
+  // El primer operador que abre una hoja deja registrado quién arrancó los
+  // relojes T1. No es un candado: el resto del almacén también puede cargar.
   private claimPatch(sheet: DispatchSheet, actor: ViewerInfo) {
     if (sheet.claimedById) return {};
     return { claimedById: actor.id, claimedByCode: actor.code, claimedByName: actor.name, claimedAt: new Date() };

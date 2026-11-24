@@ -118,8 +118,9 @@ controlador.
   `completedAt`, `canceledAt`, cada uno con quién lo hizo (nombres
   desnormalizados: la bitácora es histórica y sobrevive a bajas de usuario).
 - **Bandeja compartida**: si el despacho no se asigna a una persona, lo ve todo
-  `ALMACEN` y el primero que lo abre lo reclama (`claimedById`); el resto lo ve
-  pero no puede cargarlo.
+  `ALMACEN`. Cualquier operador con `despacho:update` puede cargarlo: el primero
+  que inicia la carga queda registrado en `claimedById` (solo como autor de los
+  relojes T1), no como dueño exclusivo de la hoja.
 - **Carga con diferencias**: el almacén digita la cantidad real en el input
   «Cargado» de cada renglón. Si iguala el plan queda `CARGADO`; si baja, se
   marca `PARCIAL` (X unidades; los kg se derivan del ratio de la unidad); si
@@ -162,9 +163,9 @@ controlador.
   `DispatchSheetLine.checkedAt` conserva la hora de la **primera** resolución:
   editar una nota o cantidad no mueve el reloj; reabrir a `PENDIENTE` lo limpia.
   Las hojas históricas se backfillean con `startedAt`/`completedAt`; el tiempo
-  de factura solo existe desde que se usa el hito. La factura la puede entregar
-  cualquier operador de almacén con `despacho:update`, aunque otro haya tomado
-  la hoja; la carga sigue siendo exclusiva del operador que la tomó.
+  de factura solo existe desde que se usa el hito. La factura y la carga las
+  puede operar cualquier usuario de almacén con `despacho:update`; la toma de
+  la hoja solo registra quién inició la carga.
 - **Bitácora solo ADMIN**: el detalle entrega `events` únicamente al rol ADMIN;
   el resto sigue el avance por los relojes y el reporte de cierre. El drawer
   ordena la lectura en tres capas: **Actividad** (hitos y mensajes), **Clientes**
@@ -228,6 +229,34 @@ próxima del cliente en el plan).
   shell, refresco cada 15 s).
 - **Nada escribe en Profit**: es la bitácora operativa de portería.
 
+### Romana (báscula)
+
+Romana reutiliza la **misma** `CustomerArrival` de PCP (no duplica filas). Las
+llegadas creadas desde la publicación de este módulo llevan
+`romanaRequired = true`; el histórico anterior queda en `false` y no aparece
+como «faltan fotos».
+
+- **Dos fotos por pedido** (`ArrivalOrderDocument`): `CEDULA` del chofer y
+  `CARNET` de circulación. La subida es individual (`PUT …/documents/:kind`) y
+  exige el pedido dentro de la llegada.
+- **El archivo no vive en la base**: `RomanaStorageService` lo recompone con
+  `sharp` (máx. 1440 px, WebP q72, metadata fuera) y lo escribe en
+  `ROMANA_UPLOAD_DIR`. La tabla guarda ruta, bytes, dimensiones y hash.
+- **Bloquean el marcado**: `POST /romana/arrivals/:id/check-in` verifica en
+  servidor que cada pedido tenga cédula y carnet. Sella `romanaArrivedAt` y, si
+  PCP no había marcado, también `arrivedAt`.
+- **Validar borra**: `POST /romana/arrivals/:id/validate` sella
+  `romanaValidatedAt`, elimina los archivos de la carpeta de la llegada y vacía
+  las claves; solo quedan metadatos y bitácora.
+- **Barrido periódico**: `RomanaCleanupScheduler` reintenta purgas, expira fotos
+  de llegadas nunca validadas (`ROMANA_RETENTION_HOURS`, 7 días), purga
+  despachos cancelados y elimina carpetas huérfanas.
+- **Permisos**: `romana:read|create|update|validate|delete`. Por defecto
+  gerencia valida; planificación/almacén marcan. La matriz permite un rol
+  `ROMANA` dedicado.
+- **Privacidad**: las fotos solo se sirven por stream autenticado con
+  `romana:read` (sin estáticos públicos), con `Cache-Control: no-store`.
+
 ### Sincronización: cadencia y sostenibilidad
 
 `SyncScheduler` (API) admite dos modos combinables, ambos **apagados por
@@ -262,7 +291,7 @@ El acceso se define con una matriz **módulo × acción** (`read`, `create`,
 
 - `Role` = rol efectivo (`ADMIN`, `GERENCIA`… o uno creado desde Usuarios).
   Cada rol guarda una **plantilla** (`baseRole`) que conserva la semántica fina
-  de Despacho (bandeja, reclamo y propiedad).
+  de Despacho (bandeja y visibilidad).
 - `RolePermission` = acciones concedidas por el rol.
 - `UserPermission` = excepción puntual del usuario (`allowed=true/false`) que
   gana sobre el rol. Permite «este usuario sí/este usuario no» sin duplicar

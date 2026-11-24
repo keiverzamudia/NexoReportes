@@ -37,21 +37,21 @@ export class ArrivalsController {
   constructor(private readonly arrivals: ArrivalsService) {}
 
   @Get()
-  @RequirePermission('llegadas:read')
+  @RequirePermission('pcp:read')
   @ApiOperation({ summary: 'Clientes esperados en planta (bandeja de PCP)' })
   list(@Query(new ZodValidationPipe(zArrivalQuery)) query: ArrivalQuery, @Req() request: AuthenticatedRequest) {
     return this.arrivals.list(this.viewer(request), query);
   }
 
   @Get(':id')
-  @RequirePermission('llegadas:read')
+  @RequirePermission('pcp:read')
   @ApiOperation({ summary: 'Detalle con incidencias y bitácora' })
   detail(@Param('id') id: string, @Req() request: AuthenticatedRequest) {
     return this.arrivals.detail(this.viewer(request), id);
   }
 
   @Post(':id/check-in')
-  @RequirePermission('llegadas:create')
+  @RequirePermission('pcp:create')
   @ApiOperation({ summary: 'Marca la llegada del cliente (hora del servidor)' })
   checkIn(
     @Param('id') id: string,
@@ -62,7 +62,7 @@ export class ArrivalsController {
   }
 
   @Post(':id/close')
-  @RequirePermission('llegadas:update')
+  @RequirePermission('pcp:update')
   @ApiOperation({ summary: 'Cierra la atención: atendido o no presentado' })
   close(
     @Param('id') id: string,
@@ -73,7 +73,7 @@ export class ArrivalsController {
   }
 
   @Patch(':id')
-  @RequirePermission('llegadas:delete')
+  @RequirePermission('pcp:delete')
   @ApiOperation({ summary: 'Corrige un registro ya hecho (exige motivo y deja rastro)' })
   update(
     @Param('id') id: string,
@@ -84,7 +84,7 @@ export class ArrivalsController {
   }
 
   @Post(':id/incidents')
-  @RequirePermission('llegadas:create')
+  @RequirePermission('pcp:create')
   @ApiOperation({ summary: 'Reporta una incidencia del cliente' })
   addIncident(
     @Param('id') id: string,
@@ -95,7 +95,7 @@ export class ArrivalsController {
   }
 
   @Patch(':id/incidents/:incidentId')
-  @RequirePermission('llegadas:update')
+  @RequirePermission('pcp:update')
   @ApiOperation({ summary: 'Resuelve una incidencia con su explicación' })
   resolveIncident(
     @Param('id') id: string,
@@ -107,7 +107,7 @@ export class ArrivalsController {
   }
 
   @Post(':id/messages')
-  @RequirePermission('llegadas:read')
+  @RequirePermission('pcp:read')
   @ApiOperation({ summary: 'Nota libre en la bitácora del cliente' })
   message(
     @Param('id') id: string,

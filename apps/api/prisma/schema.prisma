@@ -820,13 +820,63 @@ model CustomerArrival {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  incidents ArrivalIncident[]
-  events    ArrivalEvent[]
+  // Romana (báscula): solo las llegadas nacidas después de habilitar el
+  // módulo piden documentos. El histórico de PCP queda en false.
+  romanaRequired        Boolean   @default(false)
+  romanaArrivedAt       DateTime?
+  romanaArrivedById     String?
+  romanaArrivedByName   String?
+  romanaValidatedAt     DateTime?
+  romanaValidatedById   String?
+  romanaValidatedByName String?
+  romanaPhotosPurgedAt  DateTime?
+
+  incidents        ArrivalIncident[]
+  events           ArrivalEvent[]
+  romanaDocuments  ArrivalOrderDocument[]
 
   @@unique([sheetId, customerCode])
   @@index([status, expectedDate])
   @@index([arrivedAt])
+  @@index([romanaRequired, expectedDate])
+  @@index([romanaValidatedAt])
 }
+
+// Foto de un documento de Romana, ligada a un pedido de la llegada.
+// El archivo vive en el volumen (storageKey); la fila guarda solo metadatos.
+// Al validar se borran los archivos y se vacían las referencias.
+model ArrivalOrderDocument {
+  id        String          @id @default(cuid())
+  arrivalId String
+  arrival   CustomerArrival @relation(fields: [arrivalId], references: [id], onDelete: Cascade)
+
+  orderNumber String
+  // CEDULA | CARNET
+  kind        String
+
+  storageKey  String?
+  thumbKey    String?
+  mimeType    String?
+  bytes       Int     @default(0)
+  width       Int?
+  height      Int?
+  sha256      String?
+
+  uploadedById   String?
+  uploadedByName String?
+  purgedAt       DateTime?
+  purgedById     String?
+  purgedByName   String?
+  // VALIDACION | EXPIRACION | CANCELACION | REEMPLAZO
+  purgeReason    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([arrivalId, orderNumber, kind])
+  @@index([arrivalId])
+}
+
 
 model ArrivalIncident {
   id         String          @id @default(cuid())

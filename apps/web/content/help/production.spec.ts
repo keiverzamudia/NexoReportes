@@ -41,7 +41,16 @@ const MATERIAL_KEYS = [
   'supplier',
 ];
 
-const FORMULA_KEYS = ['formula', 'batch', 'costKg', 'costSack', 'count', 'packaging', 'alerts'];
+const FORMULA_KEYS = [
+  'formula',
+  'batch',
+  'costKg',
+  'costSack',
+  'replacement',
+  'count',
+  'packaging',
+  'alerts',
+];
 const SELECTION_KEYS = ['pending', 'stock', 'coverage', 'dispatch', 'risk'];
 const NUTRITION_KEYS = ['coverage', 'status', 'nutrient'];
 const SUMMARY_KEYS = ['forecast', 'sold', 'orders', 'demand', 'production', 'overproduction', 'cost', 'materials', 'riskLines'];

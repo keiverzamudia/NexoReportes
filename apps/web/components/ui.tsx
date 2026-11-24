@@ -95,6 +95,8 @@ export function Kpi({
   value,
   suffix,
   hint,
+  hintTitle,
+  secondary,
   tone = 'primary',
   icon: Icon,
   trend,
@@ -107,6 +109,13 @@ export function Kpi({
   value: string;
   suffix?: string;
   hint?: string;
+  /** Detalle extra al pasar el cursor por el `hint` (p. ej. el mismo importe en Bs). */
+  hintTitle?: string;
+  /**
+   * Segunda cifra destacada dentro de la tarjeta (p. ej. el vendido en $).
+   * `hint` queda como línea pequeña bajo el importe.
+   */
+  secondary?: { value: string; hint?: string; title?: string };
   tone?: Tone;
   icon?: LucideIcon;
   /** Variación mostrada en una píldora (p. ej. «+6%»). */
@@ -139,10 +148,22 @@ export function Kpi({
           {value}
           {suffix && <span className="text-label-sm font-semibold text-white/60">{suffix}</span>}
         </div>
+        {secondary && (
+          <div className="relative mt-space-xs border-t border-white/15 pt-space-xs">
+            <div title={secondary.title} className="tabular-nums text-headline-md font-black text-white">
+              {secondary.value}
+            </div>
+            {secondary.hint && <div className="mt-0.5 text-label-sm text-white/60">{secondary.hint}</div>}
+          </div>
+        )}
         {(trend || hint) && (
           <div className="relative mt-space-xs flex flex-wrap items-center gap-space-xs">
             {trend && <TrendPill value={trend} tone={trendTone} />}
-            {hint && <span className="text-label-sm text-white/60">{hint}</span>}
+            {hint && (
+              <span title={hintTitle} className={cx('text-label-sm text-white/60', hintTitle && 'cursor-help')}>
+                {hint}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -171,10 +192,22 @@ export function Kpi({
         {value}
         {suffix && <span className="ml-space-2xs text-label-sm font-medium text-outline">{suffix}</span>}
       </div>
+      {secondary && (
+        <div className="mt-space-xs border-t border-outline-variant/30 pt-space-xs">
+          <div title={secondary.title} className="tabular-nums text-headline-md font-black text-primary">
+            {secondary.value}
+          </div>
+          {secondary.hint && <div className="mt-0.5 text-label-sm text-on-surface-variant">{secondary.hint}</div>}
+        </div>
+      )}
       {(trend || hint) && (
         <div className="mt-space-2xs flex flex-wrap items-center gap-space-xs">
           {trend && <TrendPill value={trend} tone={trendTone} />}
-          {hint && <span className="text-label-sm text-on-surface-variant">{hint}</span>}
+          {hint && (
+            <span title={hintTitle} className={cx('text-label-sm text-on-surface-variant', hintTitle && 'cursor-help')}>
+              {hint}
+            </span>
+          )}
         </div>
       )}
     </div>
@@ -437,6 +470,16 @@ export function CoverageBar({ ratio, className }: { ratio: number; className?: s
 export function fmtQty(value: number | null | undefined, decimals = 2): string {
   if (value === null || value === undefined) return '—';
   return new Intl.NumberFormat('es-VE', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(value);
+}
+
+/** Importe en dólares con separador de miles es-VE: `$ 6.742`. */
+export function fmtUsd(value: number | null | undefined, decimals = 0): string {
+  if (value === null || value === undefined) return '—';
+  const amount = new Intl.NumberFormat('es-VE', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  }).format(value);
+  return `$ ${amount}`;
 }
 
 export function fmtDate(iso: string | null | undefined): string {

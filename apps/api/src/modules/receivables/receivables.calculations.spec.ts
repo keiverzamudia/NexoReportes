@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   aggregate,
   bucketOfDays,
+  bucketOfDoc,
   documentsForOutput,
   filterDocs,
+  mapPaymentAging,
   mapPayments,
   mapRawDoc,
   optionsFromDocs,
@@ -66,7 +68,22 @@ describe('bucketOfDays', () => {
     expect(bucketOfDays(120)).toBe('D91_120');
     expect(bucketOfDays(121)).toBe('D121_150');
     expect(bucketOfDays(150)).toBe('D121_150');
-    expect(bucketOfDays(151)).toBe('D150_MAS');
+    expect(bucketOfDays(151)).toBe('D150_DESDE_2025');
+  });
+});
+
+describe('bucketOfDoc', () => {
+  it('parte la mora extrema en dos según la fecha de vencimiento', () => {
+    expect(bucketOfDoc(200, '2026-05-01T00:00:00.000Z')).toBe('D150_DESDE_2025');
+    expect(bucketOfDoc(200, '2024-03-01T00:00:00.000Z')).toBe('D150_HASTA_2025');
+    // El 01/01/2025 entra en el tramo viejo.
+    expect(bucketOfDoc(700, '2025-01-01T00:00:00.000Z')).toBe('D150_HASTA_2025');
+    expect(bucketOfDoc(699, '2025-01-02T00:00:00.000Z')).toBe('D150_DESDE_2025');
+  });
+
+  it('no toca los tramos anteriores ni los documentos sin vencimiento', () => {
+    expect(bucketOfDoc(10, '2024-01-01T00:00:00.000Z')).toBe('D1_30');
+    expect(bucketOfDoc(null, null)).toBe('POR_VENCER');
   });
 });
 
@@ -107,7 +124,15 @@ describe('aggregate', () => {
   const docs: ReceivablesDoc[] = [
     doc({ nroDoc: 1, tipoDoc: 'FACT', diasVencimiento: 10, tramo: 'D1_30', saldoUsd: 100, saldoBs: 100 }),
     doc({ nroDoc: 2, tipoDoc: 'FACT', diasVencimiento: 45, tramo: 'D31_60', saldoUsd: 200, saldoBs: 200 }),
-    doc({ nroDoc: 3, tipoDoc: 'FACT', diasVencimiento: 200, tramo: 'D150_MAS', saldoUsd: 300, saldoBs: 300 }),
+    doc({
+      nroDoc: 3,
+      tipoDoc: 'FACT',
+      diasVencimiento: 200,
+      tramo: 'D150_DESDE_2025',
+      fechaVencimiento: '2026-05-01T00:00:00.000Z',
+      saldoUsd: 300,
+      saldoBs: 300,
+    }),
     doc({ nroDoc: 4, tipoDoc: 'FACT', diasVencimiento: 0, tramo: 'POR_VENCER', saldoUsd: 50, saldoBs: 50 }),
     doc({
       nroDoc: 5,
@@ -147,7 +172,8 @@ describe('aggregate', () => {
     expect(row.porVencer).toBe(50);
     expect(row.d1_30).toBe(100);
     expect(row.d31_60).toBe(200);
-    expect(row.d150Mas).toBe(300);
+    expect(row.d150Desde2025).toBe(300);
+    expect(row.d150Hasta2025).toBe(0);
     expect(row.vencido).toBe(600);
     expect(row.documentos).toBe(4);
     expect(row.vencidos).toBe(3);
@@ -185,8 +211,12 @@ describe('aggregate', () => {
     expect(totals.pctCobranzaATiempo).toBe(65);
     expect(totals.pagos12m).toBe(5);
     expect(totals.pagos12mATiempo).toBe(3);
-    expect(result.buckets.map((bucket) => bucket.amount)).toEqual([50, 100, 200, 0, 0, 0, 300]);
-    expect(result.buckets.map((bucket) => bucket.documentos)).toEqual([1, 1, 1, 0, 0, 0, 1]);
+    expect(result.buckets.map((bucket) => bucket.amount)).toEqual([
+      50, 100, 200, 0, 0, 0, 300, 0,
+    ]);
+    expect(result.buckets.map((bucket) => bucket.documentos)).toEqual([
+      1, 1, 1, 0, 0, 0, 1, 0,
+    ]);
   });
 
   it('calcula concentración y riesgo de mora', () => {
@@ -294,7 +324,7 @@ describe('documentsForOutput', () => {
   const docs = [
     doc({ nroDoc: 1, diasVencimiento: 10, tramo: 'D1_30', saldoUsd: 100 }),
     doc({ nroDoc: 2, esCredito: true, tramo: null, diasVencimiento: 0, saldoUsd: 20 }),
-    doc({ nroDoc: 3, diasVencimiento: 200, tramo: 'D150_MAS', saldoUsd: 300 }),
+    doc({ nroDoc: 3, diasVencimiento: 200, tramo: 'D150_DESDE_2025', saldoUsd: 300 }),
   ];
 
   it('excluye créditos por defecto y los incluye cuando se piden', () => {
@@ -322,5 +352,36 @@ describe('optionsFromDocs', () => {
     expect(options.tipos.map((option) => option.value)).toContain('L2');
     expect(options.zonas[0]?.label).toContain('LARA');
     expect(options.tiposDoc.map((option) => option.value)).toEqual(['ADEL', 'FACT']);
+  });
+});
+
+describe('mapPaymentAging', () => {
+  const rows = [
+    { tramo: 'POR_VENCER', monto_bs: 52800, monto_usd: 60, pagos: 4 },
+    { tramo: 'D1_30', monto_bs: 17600, monto_usd: 20, pagos: 2 },
+    { tramo: 'D150_DESDE_2025', monto_bs: 8800, monto_usd: 10, pagos: 1 },
+    // El tramo heredado no existe en cobranza: se ignora.
+    { tramo: 'D150_HASTA_2025', monto_bs: 999, monto_usd: 9, pagos: 9 },
+  ];
+
+  it('reparte lo cobrado en USD por atraso al pagar', () => {
+    const buckets = mapPaymentAging(rows, 'USD');
+    expect(buckets.map((bucket) => bucket.key)).toEqual([
+      'POR_VENCER',
+      'D1_30',
+      'D150_DESDE_2025',
+    ]);
+    expect(buckets[0]?.short).toBe('A tiempo');
+    expect(buckets[0]?.amount).toBe(60);
+    expect(buckets[1]?.pct).toBe(22.22);
+    expect(buckets[2]?.documentos).toBe(1);
+    expect(buckets.reduce((sum, bucket) => sum + bucket.amount, 0)).toBe(90);
+  });
+
+  it('usa el monto nativo en Bs y devuelve vacío sin pagos', () => {
+    const buckets = mapPaymentAging(rows, 'BS');
+    expect(buckets[0]?.amount).toBe(52800);
+    expect(buckets.reduce((sum, bucket) => sum + bucket.amount, 0)).toBe(79200);
+    expect(mapPaymentAging([], 'USD')).toEqual([]);
   });
 });

@@ -8,7 +8,9 @@ import {
   ProductionFormulaDetailResponse,
   ProductionFormulaListResponse,
   ProductionFormulaSummary,
+  ProductionFormulaSummaryLine,
   ProductionMaterialRow,
+  ProductionMissingReplacement,
   ProductionNutritionCatalogResponse,
   ProductionNutritionUpdate,
   ProductionOrdersQuery,
@@ -47,14 +49,20 @@ import { ProductionOrdersService } from './production.orders.service';
 import { ProfitProductionData, ProductionProfit } from './production.profit';
 import {
   componentCost,
-  convertCost,
+  componentReplacementCost,
   computeDemand,
+  displayCost,
   explode,
   Formula,
   formulaCostPerKg,
   formulaCostPerSack,
+  formulaMissingReplacement,
+  formulaReplacementCostPerKg,
+  formulaReplacementCostPerSack,
+  isBulkPresentation,
   resolveBatches,
   round,
+  sackCostFromKg,
 } from './production.types';
 
 export interface ProductionActor {
@@ -67,6 +75,9 @@ interface PackagingInfo {
   description: string;
   lastCost: number | null;
   avgCost: number | null;
+  lastCostUsd: number | null;
+  avgCostUsd: number | null;
+  replacementCost: number | null;
   qtyPerUnit: number;
 }
 
@@ -207,28 +218,44 @@ export class ProductionService implements OnModuleInit {
     const packagingByProduct = this.buildPackagingMap(profit, packagingRules);
     const products = new Set(catalog.all.map((formula) => formula.appliesToProductCode));
     const rows: ProductionFormulaSummary[] = [];
+    // Materias primas sin la fila «Reposición» de Profit. Se deduplican por
+    // código y se muestran como aviso arriba de la tabla.
+    const missingByCode = new Map<string, ProductionMissingReplacement>();
 
     for (const productCode of products) {
       const candidates = catalog.byProduct.get(productCode) ?? [];
       if (candidates.length === 0) continue;
       const main = resolveMainFormula(candidates, preferenceByProduct.get(productCode));
       const batchKg = resolveBatchKg(candidates, main);
-      let costPerKg = main ? formulaCostPerKg(main, main.appliesToKgPerUom, 'LAST') : null;
-      let costPerSack = main ? formulaCostPerSack(main, main.appliesToKgPerUom, 'LAST') : null;
       const packaging = packagingByProduct.get(productCode) ?? null;
+      const ordered = sortFormulas(candidates);
+      const formulas = ordered.map((formula) =>
+        this.formulaCostLine(formula, packaging, currency, profit.exchangeRate, canViewCosts),
+      );
+      const mainLine = main ? formulas.find((line) => line.id === main.id && line.kind === main.kind) ?? formulas[0] : null;
       const hasEmpaq = main?.components.some((component) => component.type === 'EMPAQ') ?? false;
-      if (main && packaging && main.appliesToUom === 'SAC' && !hasEmpaq) {
-        const packagingCost = this.packagingUnitCost(packaging, 'LAST');
-        if (costPerSack !== null && packagingCost !== null) {
-          costPerSack = round(costPerSack + packagingCost * packaging.qtyPerUnit);
-          if (main.appliesToKgPerUom !== null && main.appliesToKgPerUom > 0) {
-            costPerKg = round(costPerSack / main.appliesToKgPerUom);
-          }
+
+      for (const formula of ordered) {
+        for (const component of formulaMissingReplacement(formula, profit.exchangeRate)) {
+          const key = component.code.toUpperCase();
+          if (missingByCode.has(key)) continue;
+          const { cost } = componentReplacementCost(component, profit.exchangeRate);
+          missingByCode.set(key, {
+            code: component.code,
+            description: component.description,
+            fallback: cost === null ? 'NONE' : 'LAST',
+          });
         }
       }
+
       const alerts: string[] = [];
       if (!main) alerts.push('Sin cédula vinculada');
-      if (main && costPerKg === null && costPerSack === null) alerts.push('Sin costo de componentes');
+      if (
+        main &&
+        !main.components.some((component) => componentCost(component, 'LAST', profit.exchangeRate) !== null)
+      ) {
+        alerts.push('Sin costo de componentes');
+      }
       if (main && batchKg === null) alerts.push('Sin lote configurado');
       if (main && main.appliesToUom === 'SAC' && !hasEmpaq && !packaging) alerts.push('Sin empaque configurado');
 
@@ -237,26 +264,29 @@ export class ProductionService implements OnModuleInit {
         description: main?.appliesToDescription || candidates[0]?.appliesToDescription || productCode,
         uom: main?.appliesToUom || candidates[0]?.appliesToUom || 'KG',
         kgPerUom: main?.appliesToKgPerUom ?? candidates[0]?.appliesToKgPerUom ?? null,
-        formulaCount: new Set(candidates.map((formula) => formula.id)).size,
+        formulaCount: formulas.length,
         mainFormulaId: main?.id ?? null,
         mainFormulaName: main?.name ?? null,
         formulaKind: main?.kind ?? null,
         baseProductCode: main?.baseProductCode ?? null,
         batchKg,
-        costPerKg: canViewCosts ? convertCost(costPerKg, currency, profit.exchangeRate) : null,
-        costPerSack:
-          canViewCosts && main?.appliesToUom === 'SAC'
-            ? convertCost(costPerSack, currency, profit.exchangeRate)
-            : null,
+        costPerKg: mainLine?.costPerKg ?? null,
+        costPerSack: mainLine?.costPerSack ?? null,
+        presentationKg: mainLine?.presentationKg ?? main?.appliesToKgPerUom ?? null,
+        isBulk:
+          mainLine?.isBulk ?? isBulkPresentation(main?.appliesToUom, main?.appliesToKgPerUom ?? null),
+        replacementCostPerKg: mainLine?.replacementCostPerKg ?? null,
         isStandard: main?.isStandard ?? false,
         lastBatchAt: main?.updatedAt ?? null,
         packagingCode: packaging?.code ?? null,
+        formulas,
         alerts,
       });
     }
 
     rows.sort((a, b) => a.productCode.localeCompare(b.productCode));
-    return { rows, available: profit.available, alerts: profit.alerts };
+    const missingReplacement = Array.from(missingByCode.values()).sort((a, b) => a.code.localeCompare(b.code));
+    return { rows, available: profit.available, alerts: profit.alerts, missingReplacement };
   }
 
   async formulaDetail(
@@ -332,27 +362,47 @@ export class ProductionService implements OnModuleInit {
 
     const mapped: ProductionFormula[] = formulas.map((formula) => {
       const hasEmpaq = formula.components.some((component) => component.type === 'EMPAQ');
-      const packagingForProduct = formula.appliesToUom === 'SAC' && !hasEmpaq ? packaging : null;
-      let costPerKgBs = formulaCostPerKg(formula, formula.appliesToKgPerUom, 'LAST');
-      let costPerSackBs = formulaCostPerSack(formula, formula.appliesToKgPerUom, 'LAST');
-      if (packagingForProduct) {
-        const packagingCost = this.packagingUnitCost(packagingForProduct, 'LAST');
-        if (costPerSackBs !== null && packagingCost !== null) {
-          costPerSackBs = round(costPerSackBs + packagingCost * packagingForProduct.qtyPerUnit);
-          if (formula.appliesToKgPerUom !== null && formula.appliesToKgPerUom > 0) {
-            costPerKgBs = round(costPerSackBs / formula.appliesToKgPerUom);
-          }
+      const presentationKg = formula.appliesToKgPerUom;
+      const isBulk = isBulkPresentation(formula.appliesToUom, presentationKg);
+      const packagingForProduct = !isBulk && formula.appliesToUom === 'SAC' && !hasEmpaq ? packaging : null;
+      const ingredientPerKgUsd = formulaCostPerKg(formula, presentationKg, 'LAST', profit.exchangeRate);
+      let costPerKgUsd = ingredientPerKgUsd;
+      let replacementPerKgUsd = formulaReplacementCostPerKg(formula, presentationKg, profit.exchangeRate);
+      let packagingPerKgUsd = 0;
+      let packagingPerSackUsd = 0;
+      let hasPackagingCost = false;
+      if (packagingForProduct && presentationKg !== null && presentationKg > 1) {
+        const packagingCost = this.packagingUnitCost(packagingForProduct, 'LAST', profit.exchangeRate);
+        const packagingReplacement = this.packagingReplacementCost(packagingForProduct, profit.exchangeRate);
+        if (packagingCost !== null) {
+          hasPackagingCost = true;
+          packagingPerKgUsd = (packagingCost * packagingForProduct.qtyPerUnit) / presentationKg;
+          packagingPerSackUsd = packagingCost * packagingForProduct.qtyPerUnit;
+        }
+        if (costPerKgUsd !== null && packagingCost !== null) {
+          costPerKgUsd = round(costPerKgUsd + packagingPerKgUsd, 6);
+        }
+        if (replacementPerKgUsd !== null && packagingReplacement !== null) {
+          replacementPerKgUsd = round(
+            replacementPerKgUsd + (packagingReplacement * packagingForProduct.qtyPerUnit) / presentationKg,
+            6,
+          );
         }
       }
+      const costPerSackUsd = isBulk ? null : sackCostFromKg(costPerKgUsd, presentationKg);
+      const replacementPerSackUsd = isBulk ? null : sackCostFromKg(replacementPerKgUsd, presentationKg);
 
-      const formulaTotalCostBs = formula.components.reduce((acc, component) => {
-        const unit = componentCost(component, 'LAST');
+      const formulaTotalCostUsd = formula.components.reduce((acc, component) => {
+        const unit = componentCost(component, 'LAST', profit.exchangeRate);
         return unit === null ? acc : acc + component.qty * unit;
       }, 0);
 
       const components = formula.components.map((component) => {
-        const unit = componentCost(component, 'LAST');
-        const total = unit === null ? null : round(component.qty * unit);
+        const unit = componentCost(component, 'LAST', profit.exchangeRate);
+        const total = unit === null ? null : round(component.qty * unit, 6);
+        const replacement = componentReplacementCost(component, profit.exchangeRate);
+        const replacementTotal =
+          replacement.cost === null ? null : round(component.qty * replacement.cost, 6);
         return {
           line: component.line,
           code: component.code,
@@ -360,13 +410,28 @@ export class ProductionService implements OnModuleInit {
           type: component.type,
           uom: component.uom,
           qty: component.qty,
-          unitCost: canViewCosts ? convertCost(unit, currency, profit.exchangeRate) : null,
-          totalCost: canViewCosts ? convertCost(total, currency, profit.exchangeRate) : null,
-          costSharePct: total !== null && formulaTotalCostBs > 0 ? round((total / formulaTotalCostBs) * 100, 1) : null,
+          unitCost: canViewCosts ? displayCost(unit, currency, profit.exchangeRate) : null,
+          totalCost: canViewCosts ? displayCost(total, currency, profit.exchangeRate) : null,
+          costSharePct:
+            total !== null && formulaTotalCostUsd > 0 ? round((total / formulaTotalCostUsd) * 100, 1) : null,
           stockQty: round(stockByArticle.get(component.code) ?? 0),
           incomingQty: round(incomingByArticle.get(component.code)?.qty ?? 0),
+          replacementUnitCost: canViewCosts
+            ? displayCost(replacement.cost, currency, profit.exchangeRate)
+            : null,
+          replacementTotalCost: canViewCosts
+            ? displayCost(replacementTotal, currency, profit.exchangeRate)
+            : null,
+          replacementFallback: replacement.cost === null ? true : replacement.fallback,
         };
       });
+
+      const outputKg =
+        formula.outputUom === 'SAC'
+          ? formula.outputQty * (presentationKg ?? 0)
+          : formula.outputUom === 'KG'
+            ? formula.outputQty
+            : presentationKg ?? formula.outputQty;
 
       return {
         id: formula.id,
@@ -384,22 +449,33 @@ export class ProductionService implements OnModuleInit {
         isStandard: formula.isStandard,
         updatedAt: formula.updatedAt,
         components,
-        costPerKg: canViewCosts ? convertCost(costPerKgBs, currency, profit.exchangeRate) : null,
-        costPerSack:
-          canViewCosts && formula.appliesToUom === 'SAC'
-            ? convertCost(costPerSackBs, currency, profit.exchangeRate)
-            : null,
-        totalCost: canViewCosts
-          ? formula.outputUom === 'SAC' && costPerSackBs !== null
-            ? convertCost(round(costPerSackBs * formula.outputQty), currency, profit.exchangeRate)
-            : costPerKgBs !== null
-              ? convertCost(
-                  round(costPerKgBs * (formula.outputUom === 'KG' ? formula.outputQty : formula.appliesToKgPerUom ?? formula.outputQty)),
-                  currency,
-                  profit.exchangeRate,
-                )
-              : null
+        costPerKg: canViewCosts ? displayCost(costPerKgUsd, currency, profit.exchangeRate) : null,
+        costPerSack: canViewCosts ? displayCost(costPerSackUsd, currency, profit.exchangeRate) : null,
+        ingredientCostPerKg: canViewCosts
+          ? displayCost(ingredientPerKgUsd, currency, profit.exchangeRate)
           : null,
+        packagingCostPerKg:
+          canViewCosts && hasPackagingCost
+            ? displayCost(packagingPerKgUsd, currency, profit.exchangeRate)
+            : null,
+        packagingCostPerSack:
+          canViewCosts && hasPackagingCost
+            ? displayCost(packagingPerSackUsd, currency, profit.exchangeRate)
+            : null,
+        totalCost:
+          canViewCosts && costPerKgUsd !== null
+            ? displayCost(round(costPerKgUsd * outputKg, 6), currency, profit.exchangeRate)
+            : null,
+        replacementCostPerKg: canViewCosts
+          ? displayCost(replacementPerKgUsd, currency, profit.exchangeRate)
+          : null,
+        replacementCostPerSack: canViewCosts
+          ? displayCost(replacementPerSackUsd, currency, profit.exchangeRate)
+          : null,
+        replacementTotalCost:
+          canViewCosts && replacementPerKgUsd !== null
+            ? displayCost(round(replacementPerKgUsd * outputKg, 6), currency, profit.exchangeRate)
+            : null,
         nutrition: computeFormulaNutrition(
           formula,
           formula.appliesToKgPerUom,
@@ -823,22 +899,24 @@ export class ProductionService implements OnModuleInit {
       const packaging = packagingByProduct.get(forecastRow.productCode) ?? null;
       const hasEmpaq = formula?.components.some((component) => component.type === 'EMPAQ') ?? false;
       const packagingForProduct = forecastRow.uom === 'SAC' && !hasEmpaq ? packaging : null;
-      let costPerKgBs = formula ? formulaCostPerKg(formula, forecastRow.kgPerUom, query.costBasis) : null;
-      let costPerSackBs =
+      let costPerKgUsd = formula
+        ? formulaCostPerKg(formula, forecastRow.kgPerUom, query.costBasis, exchangeRate)
+        : null;
+      let costPerSackUsd =
         formula && forecastRow.uom === 'SAC'
-          ? formulaCostPerSack(formula, forecastRow.kgPerUom, query.costBasis)
+          ? formulaCostPerSack(formula, forecastRow.kgPerUom, query.costBasis, exchangeRate)
           : null;
       if (packagingForProduct) {
-        const packagingCost = this.packagingUnitCost(packagingForProduct, query.costBasis);
-        if (costPerSackBs !== null && packagingCost !== null) {
-          costPerSackBs = round(costPerSackBs + packagingCost * packagingForProduct.qtyPerUnit);
+        const packagingCost = this.packagingUnitCost(packagingForProduct, query.costBasis, exchangeRate);
+        if (costPerSackUsd !== null && packagingCost !== null) {
+          costPerSackUsd = round(costPerSackUsd + packagingCost * packagingForProduct.qtyPerUnit, 6);
           if (forecastRow.kgPerUom !== null && forecastRow.kgPerUom > 0) {
-            costPerKgBs = round(costPerSackBs / forecastRow.kgPerUom);
+            costPerKgUsd = round(costPerSackUsd / forecastRow.kgPerUom, 6);
           }
         }
       }
-      const costPerKg = canViewCosts ? convertCost(costPerKgBs, query.currency, exchangeRate) : null;
-      const costPerSack = canViewCosts ? convertCost(costPerSackBs, query.currency, exchangeRate) : null;
+      const costPerKg = canViewCosts ? displayCost(costPerKgUsd, query.currency, exchangeRate) : null;
+      const costPerSack = canViewCosts ? displayCost(costPerSackUsd, query.currency, exchangeRate) : null;
       const totalCost =
         canViewCosts && costPerKg !== null
           ? round(costPerKg * batchResult.productionKg)
@@ -851,7 +929,8 @@ export class ProductionService implements OnModuleInit {
         alerts.push('Ajuste por debajo del faltante: hay riesgo de stockout');
       }
       if (requiredKg > 0 && !formula) alerts.push('Sin cédula vinculada');
-      if (requiredKg > 0 && formula && costPerKgBs === null && costPerSackBs === null) alerts.push('Sin costo de componentes');
+      if (requiredKg > 0 && formula && costPerKgUsd === null && costPerSackUsd === null)
+        alerts.push('Sin costo de componentes');
       if (requiredKg > 0 && formula && batchKg === null) alerts.push('Sin lote configurado');
       if (requiredKg > 0 && forecastRow.uom === 'SAC' && !hasEmpaq && !packaging) alerts.push('Sin empaque configurado');
       if (closed) alerts.push('Semana cerrada: no sugiere producción');
@@ -983,8 +1062,8 @@ export class ProductionService implements OnModuleInit {
         type: string;
         uom: string;
         requiredQty: number;
-        unitCostBs: number | null;
-        requiredCostBs: number;
+        unitCostUsd: number | null;
+        requiredCostUsd: number;
         isReprocess: boolean;
         products: Map<string, { productCode: string; description: string; qty: number }>;
       }
@@ -996,7 +1075,7 @@ export class ProductionService implements OnModuleInit {
       type: string,
       uom: string,
       requiredQty: number,
-      unitCostBs: number | null,
+      unitCostUsd: number | null,
       productCode: string,
       productDescription: string,
     ) => {
@@ -1009,15 +1088,15 @@ export class ProductionService implements OnModuleInit {
         type,
         uom,
         requiredQty: 0,
-        unitCostBs: null,
-        requiredCostBs: 0,
+        unitCostUsd: null,
+        requiredCostUsd: 0,
         isReprocess,
         products: new Map(),
       };
       current.isReprocess = current.isReprocess || isReprocess;
       current.requiredQty += requiredQty;
-      if (current.unitCostBs === null && unitCostBs !== null) current.unitCostBs = unitCostBs;
-      if (unitCostBs !== null) current.requiredCostBs += requiredQty * unitCostBs;
+      if (current.unitCostUsd === null && unitCostUsd !== null) current.unitCostUsd = unitCostUsd;
+      if (unitCostUsd !== null) current.requiredCostUsd += requiredQty * unitCostUsd;
       const product = current.products.get(productCode) ?? {
         productCode,
         description: productDescription,
@@ -1032,7 +1111,14 @@ export class ProductionService implements OnModuleInit {
 
     for (const row of context.rows) {
       if (!row.formula || row.productionKg <= 0) continue;
-      const exploded = explode(row.formula, row.productionKg, row.productionSacks, row.kgPerUom, query.costBasis);
+      const exploded = explode(
+        row.formula,
+        row.productionKg,
+        row.productionSacks,
+        row.kgPerUom,
+        query.costBasis,
+        context.exchangeRate,
+      );
       for (const component of exploded) {
         addMaterial(
           component.component.code,
@@ -1055,7 +1141,7 @@ export class ProductionService implements OnModuleInit {
           'EMPAQ',
           'SAC',
           row.productionSacks * packaging.qtyPerUnit,
-          this.packagingUnitCost(packaging, query.costBasis),
+          this.packagingUnitCost(packaging, query.costBasis, context.exchangeRate),
           row.productCode,
           row.description,
         );
@@ -1089,7 +1175,9 @@ export class ProductionService implements OnModuleInit {
       // Los reprocesos (REP...) no se compran: se generan en planta. Se
       // muestran con su requerimiento y una alerta, pero sin orden de compra.
       const purchaseQty = material.isReprocess ? 0 : rawPurchaseQty;
-      const unitCost = canViewCosts ? convertCost(material.unitCostBs, query.currency, context.exchangeRate) : null;
+      const unitCost = canViewCosts
+        ? displayCost(material.unitCostUsd, query.currency, context.exchangeRate)
+        : null;
       const requiredCost = canViewCosts && unitCost !== null ? round(material.requiredQty * unitCost) : null;
       const purchaseCost = canViewCosts && unitCost !== null ? round(purchaseQty * unitCost) : null;
       const dailyUsage = days > 0 ? material.requiredQty / days : 0;
@@ -1103,7 +1191,7 @@ export class ProductionService implements OnModuleInit {
           alerts.push('OC pendiente con fecha vencida');
         }
       }
-      if (canViewCosts && material.unitCostBs === null) alerts.push('Sin costo unitario');
+      if (canViewCosts && material.unitCostUsd === null) alerts.push('Sin costo unitario');
 
       rows.push({
         code: material.code,
@@ -1172,8 +1260,30 @@ export class ProductionService implements OnModuleInit {
     profit: ProfitProductionData,
     rules: Array<{ productCode: string; materialCode: string; qtyPerUnit: Prisma.Decimal; source: string }>,
   ): Map<string, PackagingInfo> {
-    const historyByProduct = new Map<string, { code: string; description: string; lastCost: number | null; avgCost: number | null; uses: number }>();
-    const costByCode = new Map<string, { lastCost: number | null; avgCost: number | null; description: string }>();
+    const historyByProduct = new Map<
+      string,
+      {
+        code: string;
+        description: string;
+        lastCost: number | null;
+        avgCost: number | null;
+        lastCostUsd: number | null;
+        avgCostUsd: number | null;
+        replacementCost: number | null;
+        uses: number;
+      }
+    >();
+    const costByCode = new Map<
+      string,
+      {
+        lastCost: number | null;
+        avgCost: number | null;
+        lastCostUsd: number | null;
+        avgCostUsd: number | null;
+        replacementCost: number | null;
+        description: string;
+      }
+    >();
     for (const row of profit.packaging) {
       const key = row.productCode.toUpperCase();
       const current = historyByProduct.get(key);
@@ -1183,6 +1293,9 @@ export class ProductionService implements OnModuleInit {
           description: row.packagingDescription,
           lastCost: row.lastCost,
           avgCost: row.avgCost,
+          lastCostUsd: row.lastCostUsd,
+          avgCostUsd: row.avgCostUsd,
+          replacementCost: row.replacementCost,
           uses: row.uses,
         });
       }
@@ -1190,6 +1303,9 @@ export class ProductionService implements OnModuleInit {
         costByCode.set(row.packagingCode.toUpperCase(), {
           lastCost: row.lastCost,
           avgCost: row.avgCost,
+          lastCostUsd: row.lastCostUsd,
+          avgCostUsd: row.avgCostUsd,
+          replacementCost: row.replacementCost,
           description: row.packagingDescription,
         });
       }
@@ -1202,6 +1318,9 @@ export class ProductionService implements OnModuleInit {
         description: history.description,
         lastCost: history.lastCost,
         avgCost: history.avgCost,
+        lastCostUsd: history.lastCostUsd,
+        avgCostUsd: history.avgCostUsd,
+        replacementCost: history.replacementCost,
         qtyPerUnit: 1,
       });
     }
@@ -1213,6 +1332,9 @@ export class ProductionService implements OnModuleInit {
         description: cost?.description ?? '',
         lastCost: cost?.lastCost ?? null,
         avgCost: cost?.avgCost ?? null,
+        lastCostUsd: cost?.lastCostUsd ?? null,
+        avgCostUsd: cost?.avgCostUsd ?? null,
+        replacementCost: cost?.replacementCost ?? null,
         qtyPerUnit: numOrZero(rule.qtyPerUnit) || 1,
       });
     }
@@ -1238,6 +1360,9 @@ export class ProductionService implements OnModuleInit {
         description: cost?.description ?? '',
         lastCost: cost?.lastCost ?? null,
         avgCost: cost?.avgCost ?? null,
+        lastCostUsd: cost?.lastCostUsd ?? null,
+        avgCostUsd: cost?.avgCostUsd ?? null,
+        replacementCost: cost?.replacementCost ?? null,
         qtyPerUnit: 1,
       });
     }
@@ -1282,9 +1407,82 @@ export class ProductionService implements OnModuleInit {
     return map;
   }
 
-  private packagingUnitCost(packaging: PackagingInfo, basis: ProductionCostBasis): number | null {
-    const cost = basis === 'AVG' ? packaging.avgCost : packaging.lastCost;
-    return cost !== null && Number.isFinite(cost) && cost > 0 ? cost : null;
+  /** Costo y costo de reposición de una cédula, con empaque y por saco. */
+  private formulaCostLine(
+    formula: Formula,
+    packaging: PackagingInfo | null,
+    currency: 'BS' | 'USD',
+    exchangeRate: number | null,
+    canViewCosts: boolean,
+  ): ProductionFormulaSummaryLine {
+    const presentationKg = formula.appliesToKgPerUom;
+    const isBulk = isBulkPresentation(formula.appliesToUom, presentationKg);
+    const hasEmpaq = formula.components.some((component) => component.type === 'EMPAQ');
+    let costPerKgUsd = formulaCostPerKg(formula, presentationKg, 'LAST', exchangeRate);
+    let replacementPerKgUsd = formulaReplacementCostPerKg(formula, presentationKg, exchangeRate);
+
+    if (!isBulk && formula.appliesToUom === 'SAC' && !hasEmpaq && packaging) {
+      const lastPackUsd = this.packagingUnitCost(packaging, 'LAST', exchangeRate);
+      const replacementPackUsd = this.packagingReplacementCost(packaging, exchangeRate);
+      const sackKg = presentationKg ?? 0;
+      if (costPerKgUsd !== null && lastPackUsd !== null && sackKg > 1) {
+        costPerKgUsd = round(costPerKgUsd + (lastPackUsd * packaging.qtyPerUnit) / sackKg, 6);
+      }
+      if (replacementPerKgUsd !== null && replacementPackUsd !== null && sackKg > 1) {
+        replacementPerKgUsd = round(
+          replacementPerKgUsd + (replacementPackUsd * packaging.qtyPerUnit) / sackKg,
+          6,
+        );
+      }
+    }
+
+    const costPerSackUsd = isBulk ? null : sackCostFromKg(costPerKgUsd, presentationKg);
+    const replacementPerSackUsd = isBulk ? null : sackCostFromKg(replacementPerKgUsd, presentationKg);
+
+    return {
+      id: formula.id,
+      kind: formula.kind,
+      name: formula.name,
+      isStandard: formula.isStandard,
+      batchKg: formula.batchKg,
+      outputQty: formula.outputQty,
+      outputUom: formula.outputUom,
+      presentationKg,
+      isBulk,
+      costPerKg: canViewCosts ? displayCost(costPerKgUsd, currency, exchangeRate) : null,
+      costPerSack: canViewCosts ? displayCost(costPerSackUsd, currency, exchangeRate) : null,
+      replacementCostPerKg: canViewCosts
+        ? displayCost(replacementPerKgUsd, currency, exchangeRate)
+        : null,
+      replacementCostPerSack: canViewCosts
+        ? displayCost(replacementPerSackUsd, currency, exchangeRate)
+        : null,
+      missingReplacement: formulaMissingReplacement(formula, exchangeRate).length,
+      updatedAt: formula.updatedAt,
+    };
+  }
+
+  private packagingUnitCost(
+    packaging: PackagingInfo,
+    basis: ProductionCostBasis,
+    exchangeRate: number | null,
+  ): number | null {
+    const usd = basis === 'AVG' ? packaging.avgCostUsd : packaging.lastCostUsd;
+    if (usd !== null && Number.isFinite(usd) && usd > 0) return usd;
+    const bs = basis === 'AVG' ? packaging.avgCost : packaging.lastCost;
+    if (bs !== null && Number.isFinite(bs) && bs > 0 && exchangeRate !== null && exchangeRate > 0) {
+      return bs / exchangeRate;
+    }
+    return null;
+  }
+
+  /** Empaque con reposición de Profit y fallback al último costo. */
+  private packagingReplacementCost(packaging: PackagingInfo, exchangeRate: number | null): number | null {
+    const cost = packaging.replacementCost;
+    if (cost !== null && Number.isFinite(cost) && cost > 0 && exchangeRate !== null && exchangeRate > 0) {
+      return cost / exchangeRate;
+    }
+    return this.packagingUnitCost(packaging, 'LAST', exchangeRate);
   }
 
   private safetyFor(

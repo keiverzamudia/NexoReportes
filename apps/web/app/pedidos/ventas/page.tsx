@@ -70,6 +70,7 @@ import {
   ANALYTICS_COLORS as C,
   ANALYTICS_TOOLTIP,
   buildCustomersCsv,
+  buildMonthlySalesOption,
   downloadCsv,
   fmtMoney,
   fmtPct,
@@ -188,78 +189,10 @@ export default function PedidosVentasPage() {
     ];
   }, [report?.vendors]);
 
-  const currentIndex = report?.monthly.findIndex((entry) => entry.isCurrent) ?? -1;
-
-  const monthlyOption = useMemo(() => {
-    if (!report) return {};
-    const money = unit !== 'kg';
-    const values = report.monthly.map((entry) => (money ? entry.billed ?? 0 : entry.kg));
-    const previous = report.monthly.map((entry) => (money ? entry.prevYearBilled ?? 0 : entry.prevYearKg ?? 0));
-    const formatter = (raw: unknown) => {
-      const params = raw as Array<{ axisValue: string; seriesName: string; value: number; marker: string }>;
-      const first = params[0];
-      if (!first) return '';
-      const lines = params.map(
-        (entry) =>
-          `${entry.marker}${entry.seriesName}: <b>${money ? fmtMoney(entry.value, currency) : fmtTonnes(entry.value)}</b>`,
-      );
-      return `<div style="font-weight:700;margin-bottom:4px">${first.axisValue}</div>${lines.join('<br/>')}`;
-    };
-    return {
-      animationDuration: 420,
-      tooltip: { trigger: 'axis', ...ANALYTICS_TOOLTIP, formatter },
-      legend: {
-        top: 0,
-        right: 0,
-        icon: 'roundRect',
-        itemWidth: 10,
-        itemHeight: 10,
-        textStyle: { color: C.ink, fontSize: 11 },
-        data: [String(report.year), String(report.year - 1)],
-      },
-      grid: { left: 8, right: 8, top: 38, bottom: 6, containLabel: true },
-      xAxis: {
-        type: 'category',
-        data: report.monthly.map((entry) => entry.label),
-        axisTick: { show: false },
-        axisLine: { lineStyle: { color: C.grid } },
-        axisLabel: { color: C.outline, fontSize: 10 },
-      },
-      yAxis: {
-        type: 'value',
-        axisLabel: {
-          color: C.outline,
-          fontSize: 10,
-          formatter: (value: number) => (money ? `$${Math.round(value / 1000)}k` : `${Math.round(value / 1000)}t`),
-        },
-        splitLine: { lineStyle: { color: C.grid } },
-      },
-      series: [
-        {
-          name: String(report.year),
-          type: 'bar',
-          barMaxWidth: 26,
-          data: values.map((value, index) => ({
-            value,
-            itemStyle: {
-              color: index === currentIndex ? C.lime : C.navy,
-              borderRadius: [4, 4, 0, 0],
-            },
-          })),
-        },
-        {
-          name: String(report.year - 1),
-          type: 'line',
-          data: previous,
-          smooth: true,
-          symbol: 'circle',
-          symbolSize: 5,
-          lineStyle: { width: 2, color: C.lime, type: 'dashed' },
-          itemStyle: { color: C.lime },
-        },
-      ],
-    };
-  }, [report, unit, currency, currentIndex]);
+  const monthlyOption = useMemo(
+    () => (report ? buildMonthlySalesOption(report, unit, currency) : {}),
+    [report, unit, currency],
+  );
 
   const topCustomersOption = useMemo(() => {
     const rows = report?.topCustomers ?? [];

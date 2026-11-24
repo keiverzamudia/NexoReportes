@@ -29,6 +29,8 @@ const ACTION_HINT: Record<PermissionAction, string> = {
   read: 'Entrar al módulo y consultar la información.',
   create: 'Crear registros nuevos.',
   update: 'Modificar registros existentes.',
+  upload: 'Subir o reemplazar las fotos de los documentos y marcar la llegada en Romana.',
+  validate: 'Validar documentos y borrar las fotos de la llegada.',
   change_date: 'Mover la fecha de entrega. Escribe en Profit.',
   delete: 'Eliminar o anular registros.',
   view_all:

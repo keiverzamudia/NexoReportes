@@ -317,7 +317,7 @@ const planner = { id: 'u-plan', role: 'PLANIFICADOR', code: 'KZ' };
 // escenario sembrado (`seedScenario`), y tiene el permiso de publicar.
 const publisher = { id: 'u-plan', role: 'GERENCIA', code: 'KZ', canPublish: true };
 const almacenPublisher = { id: 'u-alm1', role: 'ALMACEN', code: 'ARIV', canPublish: true };
-const operator1 = { id: 'u-alm1', role: 'ALMACEN', code: 'ARIV' };
+const operator1 = { id: 'u-alm1', role: 'ALMACEN', code: 'ARIV', canUpdate: true };
 const operator2 = { id: 'u-alm2', role: 'ALMACEN', code: 'AALV', canUpdate: true };
 const manager = { id: 'u-ger', role: 'GERENCIA', code: 'JGER' };
 const admin = { id: 'u-admin', role: 'ADMIN', isAdmin: true, code: 'ADM' };
@@ -697,33 +697,35 @@ describe('DispatchService — toma al empezar la carga', () => {
     expect(prisma.state.notifications.some((row) => row.recipientId === 'u-plan')).toBe(false);
   });
 
-  it('la bandeja compartida la toma el primero: el segundo no puede operar', async () => {
+  it('la bandeja compartida la inicia el primero y el segundo también puede cargar', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
     const service = new DispatchService(prisma as never, audit, arrivals);
 
     await service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' });
-    await expect(service.updateLine(operator2, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' })).rejects.toThrow(
-      /ya lo tomó/i,
-    );
+    // La toma queda registrada para los relojes T1, pero no bloquea al resto.
+    await expect(
+      service.updateLine(operator2, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' }),
+    ).resolves.toMatchObject({ status: 'EN_PROCESO' });
   });
 
-  it('un despacho asignado a otro operador se ve en la bandeja pero no se puede operar', async () => {
+  it('un despacho asignado a otro operador lo carga cualquier almacén que lo vea', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma, 'u-alm1');
     const service = new DispatchService(prisma as never, audit, arrivals);
 
-    // Todo almacén ve todo lo publicado; solo el asignado puede operarlo.
-    const inbox = await service.list(operator2, { scope: 'all' });
-    expect(inbox.items).toHaveLength(1);
-    await expect(service.updateLine(operator2, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' })).rejects.toThrow(
-      /asignado a otro operador/i,
-    );
-    // El asignado sí lo ve y lo puede tomar.
-    expect((await service.list(operator1, { scope: 'all' })).items).toHaveLength(1);
+    // El asignado lo ve y lo opera.
     await expect(service.updateLine(operator1, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' })).resolves.toMatchObject({
       status: 'EN_PROCESO',
     });
+    // Con «Ver todos» el otro operador también lo ve y lo carga: la asignación
+    // no es un candado, solo el destino planificado.
+    const granted = { ...operator2, canViewAll: true };
+    const inbox = await service.list(granted, { scope: 'all' });
+    expect(inbox.items).toHaveLength(1);
+    await expect(
+      service.updateLine(granted, sheet.id, sheet.lines[1]!.id, { status: 'CARGADO' }),
+    ).resolves.toMatchObject({ status: 'EN_PROCESO' });
   });
 
   it('sin «Ver todos» no se ve lo ajeno; con el permiso se ve pero no se opera', async () => {
@@ -737,7 +739,7 @@ describe('DispatchService — toma al empezar la carga', () => {
     const granted = { ...outsider, canViewAll: true };
     await expect(service.detail(granted, sheet.id)).resolves.toMatchObject({ id: sheet.id });
     await expect(service.updateLine(granted, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' })).rejects.toThrow(
-      /Solo el personal de almacén/i,
+      /permiso/i,
     );
     await expect(service.detail(manager, sheet.id)).resolves.toMatchObject({ id: sheet.id });
   });
@@ -1141,7 +1143,7 @@ describe('DispatchService — tiempos por cliente', () => {
     ).rejects.toThrow(/cerrad|factura/i);
   });
 
-  it('otro operador de almacén puede facturar aunque la hoja esté tomada', async () => {
+  it('otro operador de almacén carga y factura aunque la hoja esté tomada', async () => {
     const prisma = createFakePrisma();
     const sheet = await publish(prisma);
     const service = new DispatchService(prisma as never, audit, arrivals);
@@ -1150,10 +1152,10 @@ describe('DispatchService — tiempos por cliente', () => {
     const started = await service.startLoad(operator1, sheet.id, { customerKey });
     expect(started.claimedById).toBe('u-alm1');
 
-    // La carga sigue siendo exclusiva de quien tomó la hoja.
+    // La toma no es un candado: el otro operador también carga.
     await expect(
       service.updateLine(operator2, sheet.id, sheet.lines[0]!.id, { status: 'CARGADO' }),
-    ).rejects.toThrow(/ya lo tomó/i);
+    ).resolves.toMatchObject({ status: 'EN_PROCESO' });
 
     // El dueño cierra todos los productos y el otro operador entrega la factura.
     for (const line of sheet.lines) {
