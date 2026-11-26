@@ -90,6 +90,23 @@ export function formatBusinessDate(value: string | null | undefined): string {
   return new Intl.DateTimeFormat('es-VE', { day: '2-digit', month: '2-digit', year: '2-digit', timeZone: 'UTC' }).format(date);
 }
 
+/**
+ * Aviso de los pedidos que no se enviaron porque ya viven en un despacho.
+ * Compartido por el simulador y el diálogo de simulaciones guardadas.
+ */
+export function skippedDispatchNotice(
+  skipped?: Array<{ orderNumber: string; sheetNumber: string }>,
+): string | null {
+  if (!skipped || skipped.length === 0) return null;
+  const list = skipped
+    .slice(0, 4)
+    .map((item) => `${item.orderNumber} (${item.sheetNumber})`)
+    .join(', ');
+  return `${skipped.length} pedido(s) ya estaban en despacho y se omitieron: ${list}${
+    skipped.length > 4 ? '…' : ''
+  }. Puedes cambiar su fecha mientras la carga no haya iniciado.`;
+}
+
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—';
   const date = new Date(iso);

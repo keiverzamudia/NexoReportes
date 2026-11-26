@@ -647,7 +647,7 @@ export class SyncService {
     for (const line of lines) {
       if (!byNumber.has(line.nroSolicitud)) byNumber.set(line.nroSolicitud, line);
     }
-    const terminal = ['NOTA_ENTREGA', 'CERRADO', 'CANCELADO'];
+    const terminal = ['NOTA_ENTREGA', 'NOTA_PARCIAL', 'CERRADO', 'CANCELADO'];
     let count = 0;
     for (const [number, line] of byNumber) {
       const externalNumber = String(number);

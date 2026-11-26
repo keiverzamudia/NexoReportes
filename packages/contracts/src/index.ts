@@ -1432,7 +1432,79 @@ export const zCustomerNotesResponse = z.object({
 });
 export type CustomerNotesResponse = z.infer<typeof zCustomerNotesResponse>;
 
-export const ORDER_STATUSES = ['ABIERTO', 'NOTA_ENTREGA', 'CERRADO', 'CANCELADO', 'DESCONOCIDO'] as const;
+// ---------- Documento de nota de entrega de un pedido ----------
+// Se usa en el panel de cierres y en la ficha del pedido para mostrar el
+// documento que Profit generó. Los importes se normalizan a la moneda de
+// presentación: si la nota está en US$ y hay tasa, se convierten desde Bs.
+export const zDeliveryNoteLine = z.object({
+  line: z.number().int(),
+  productCode: z.string(),
+  description: z.string(),
+  warehouse: z.string().nullable(),
+  unit: z.string().nullable(),
+  quantity: z.number(),
+  // Precio y neto en la moneda de presentación (USD o VES).
+  price: z.number().nullable(),
+  discountPct: z.number().nullable(),
+  net: z.number().nullable(),
+  kg: z.number().nullable(),
+  // Nº de solicitud (`T`) o de pedido de Profit (`P`) que originó el renglón.
+  origin: z.string().nullable(),
+  originType: z.string().nullable(),
+});
+export type DeliveryNoteLine = z.infer<typeof zDeliveryNoteLine>;
+
+export const zDeliveryNoteDocument = z.object({
+  number: z.string(),
+  date: z.string().nullable(),
+  dueDate: z.string().nullable(),
+  status: z.string().nullable(),
+  annulled: z.boolean(),
+  customerCode: z.string(),
+  customerName: z.string(),
+  customerRif: z.string().nullable(),
+  customerAddress: z.string().nullable(),
+  customerPhone: z.string().nullable(),
+  vendor: z.string().nullable(),
+  // 'USD' | 'VES' (o el texto crudo si Profit no informa una conocida).
+  currency: z.string(),
+  exchangeRate: z.number().nullable(),
+  // true = los importes se convirtieron de Bs a US$ con `exchangeRate`.
+  amountsConverted: z.boolean(),
+  paymentTerms: z.string().nullable(),
+  comments: z.string().nullable(),
+  subtotal: z.number(),
+  discount: z.number(),
+  tax: z.number(),
+  total: z.number(),
+  // Total original en Bs cuando `amountsConverted` está activo.
+  totalLocal: z.number().nullable(),
+  lines: z.array(zDeliveryNoteLine),
+  orders: z.array(z.string()),
+  source: z.enum(['profit', 'fixtures']),
+});
+export type DeliveryNoteDocument = z.infer<typeof zDeliveryNoteDocument>;
+
+export const zDeliveryNotesResponse = z.object({
+  orderId: z.string(),
+  orderNumber: z.string(),
+  notes: z.array(zDeliveryNoteDocument),
+  // false = no se pudo leer Profit; true con `notes: []` = no hay nota vinculada.
+  available: z.boolean(),
+  source: z.enum(['profit', 'fixtures']),
+});
+export type DeliveryNotesResponse = z.infer<typeof zDeliveryNotesResponse>;
+
+export const ORDER_STATUSES = [
+  'ABIERTO',
+  'NOTA_ENTREGA',
+  // Nota emitida con menos cantidad que el pedido: el pedido sale de la
+  // cartera, pero se conserva la diferencia para auditoría.
+  'NOTA_PARCIAL',
+  'CERRADO',
+  'CANCELADO',
+  'DESCONOCIDO',
+] as const;
 export const zOrderStatus = z.enum(ORDER_STATUSES);
 export type OrderStatus = z.infer<typeof zOrderStatus>;
 
@@ -1580,13 +1652,17 @@ export const zOrderGroupLine = z.object({
   uom: z.string().nullable(),
   quantity: z.number().nullable(),
   pendingQty: z.number(),
+  // Lo que este sistema todavía puede planificar. Se recorta cuando un despacho
+  // ya cerrado dejó un saldo sin cargar (parcial): Profit sigue mostrando el
+  // pendiente completo, pero solo el saldo puede volver a despacharse.
+  plannableQty: z.number(),
   pendingKg: z.number().nullable(),
   warehouseCode: z.string().nullable(),
   stock03: z.number().nullable(),
   stock9999: z.number().nullable(),
   stock68: z.number().nullable(),
-  // Despacho donde ya vive el pedido (null = libre). Bloquea volver a enviarlo
-  // y, si la carga ya inició, también el cambio de fecha de entrega.
+  // Despacho ABIERTO donde sigue vivo este renglón (null = libre). Bloquea
+  // volver a enviarlo y, si la carga ya inició, también el cambio de fecha.
   dispatchSheetNumber: z.string().nullable(),
   dispatchStarted: z.boolean(),
 });
@@ -1931,13 +2007,19 @@ export type ProfitDeliveryDateApplyResponse = z.infer<typeof zProfitDeliveryDate
 // ============================================================
 // Ciclo de vida del pedido (cierre por nota de entrega).
 //
-// El sync trae cotizaciones pendientes. Cuando Profit las convierte en nota
-// de entrega (`cotiz_c.status = '2'` y no anulada), el pedido sale de la
-// cartera y se registra un evento inmutable. Es una capa LOCAL: nunca se
-// escribe en Profit.
+// El sync trae cotizaciones pendientes. Cuando Profit emite una nota de
+// entrega real (`not_ent` + `reng_nde`) que cubre el pedido, este sale de la
+// cartera. `cotiz_c.status = '2'` por sí solo NO prueba el despacho: puede ser
+// una solicitud procesada sin nota (se clasifica como SIN_NOTA). Si la nota
+// cubre solo parte de las cantidades, el pedido se cierra como NOTA_PARCIAL.
+// Es una capa LOCAL: nunca se escribe en Profit.
 // ============================================================
 export const ORDER_CLOSE_REASONS = [
   'NOTA_ENTREGA',
+  // La nota existe pero no cubre todas las líneas/cantidades del pedido.
+  'NOTA_PARCIAL',
+  // Profit marcó la solicitud como procesada pero no hay ninguna nota.
+  'SIN_NOTA',
   'CANCELADO',
   'SIN_PENDIENTE',
   'MANUAL',
@@ -1991,6 +2073,8 @@ export const zOrderLifecycleStatus = z.object({
   review: z.array(zOrderSummary),
   // Totales de la cartera viva vs cerrada (para el panel).
   closedToday: z.number().int(),
+  // Cierres de hoy con nota parcial (se muestran aparte de las completas).
+  partialToday: z.number().int(),
   pendingReview: z.number().int(),
 });
 export type OrderLifecycleStatus = z.infer<typeof zOrderLifecycleStatus>;
@@ -1998,6 +2082,9 @@ export type OrderLifecycleStatus = z.infer<typeof zOrderLifecycleStatus>;
 export const zOrderReconcileInput = z.object({
   // Si se omite, usa ORDER_RECONCILE_DRY_RUN del servidor.
   dryRun: z.boolean().optional(),
+  // Revalida también los pedidos ya cerrados (nota completa o parcial) para
+  // corregir clasificaciones históricas. No reabre pedidos.
+  includeClosed: z.boolean().optional(),
   // Opcional: limitar a pedidos concretos (pruebas o corrección puntual).
   orderNumbers: z.array(z.string().trim().min(1).max(40)).max(2000).optional(),
 });
@@ -2349,6 +2436,17 @@ export const zDraftActiveSheet = z.object({
 });
 export type DraftActiveSheet = z.infer<typeof zDraftActiveSheet>;
 
+// Renglones del plan que ya viven en una hoja de despacho abierta. El
+// simulador los pinta igual que lo marcado (verde) pero con camión y sin
+// permitir volver a seleccionarlos. `started` bloquea la fecha de entrega.
+export const zDraftDispatchLine = z.object({
+  orderNumber: z.string(),
+  productCode: z.string(),
+  sheetNumber: z.string(),
+  started: z.boolean(),
+});
+export type DraftDispatchLine = z.infer<typeof zDraftDispatchLine>;
+
 // Efecto de un guardado/liberación sobre las hojas de despacho abiertas.
 // El web lo usa para avisar sin que el usuario tenga que abrir el despacho.
 export const zDraftDispatchImpact = z.object({
@@ -2369,6 +2467,9 @@ export const zScenarioDraftResponse = z.object({
   assignments: z.array(zDraftAssignment).default([]),
   freeByProduct: z.array(zDraftFreeStock).default([]),
   activeSheet: zDraftActiveSheet.nullable().default(null),
+  // Renglones del plan que ya están en despacho: el web los marca con camión
+  // y los excluye de "falta por enviar".
+  inDispatch: z.array(zDraftDispatchLine).default([]),
   dispatchImpact: zDraftDispatchImpact.nullable().default(null),
 });
 export type ScenarioDraftResponse = z.infer<typeof zScenarioDraftResponse>;
@@ -2564,6 +2665,8 @@ export const zDispatchCustomerRow = z.object({
   // Pedidos distintos del cliente y cuántos todavía tienen algo por cargar.
   plannedOrders: z.number().int(),
   pendingOrders: z.number().int(),
+  // Pedidos (nº de Profit) con al menos un renglón activo del cliente.
+  orderNumbers: z.array(z.string()),
   plannedLines: z.number().int(),
   linesDone: z.number().int(),
   // Renglones con diferencia: parciales y no cargados (incluye NOVEDAD histórica).
@@ -3182,6 +3285,12 @@ export const zArrivalQuery = z.object({
     .enum(['0', '1', 'true', 'false'])
     .optional()
     .transform((value) => value === '1' || value === 'true'),
+  // Pestaña «Vencido»: sólo lo anterior a `date` que sigue abierto, sin sumar
+  // el propio día (así lo vencido no se mezcla con la bandeja de hoy).
+  onlyOverdue: z
+    .enum(['0', '1', 'true', 'false'])
+    .optional()
+    .transform((value) => value === '1' || value === 'true'),
   status: zArrivalStatus.optional(),
   q: z.string().trim().max(80).optional(),
   // Tope para el histórico (evita traer años de registros).
@@ -3365,6 +3474,20 @@ export const zRomanaDocumentResponse = z.object({
   document: zRomanaDocument,
 });
 export type RomanaDocumentResponse = z.infer<typeof zRomanaDocumentResponse>;
+
+// Reutilizar una foto en otros pedidos de la misma llegada: la cédula del
+// chofer y el carnet de circulación son los mismos para todo el cliente.
+export const zRomanaDocApplyInput = z.object({
+  orderNumbers: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
+});
+export type RomanaDocApplyInput = z.infer<typeof zRomanaDocApplyInput>;
+
+export const zRomanaDocApplyResponse = z.object({
+  detail: zRomanaArrivalDetail,
+  applied: z.array(z.string()),
+  skipped: z.array(z.string()),
+});
+export type RomanaDocApplyResponse = z.infer<typeof zRomanaDocApplyResponse>;
 
 
 // ---------- Notificaciones (campana + acuses) ----------
@@ -4607,8 +4730,22 @@ export const AUDIT_ACTIONS: Record<string, AuditActionDefinition> = {
   SCENARIO_UNLOCK: { module: 'scenarios', label: 'Liberó el control del plan global', severity: 'INFO' },
   SCENARIO_TAKEOVER: { module: 'scenarios', label: 'Arrebató el control del plan global', severity: 'WARN' },
   SCENARIO_RELEASE: { module: 'scenarios', label: 'Liberó renglones de la simulación del equipo', severity: 'INFO' },
-  ORDER_LIFECYCLE_CLOSE: { module: 'orders', label: 'Cerró un pedido por nota de entrega', severity: 'INFO' },
+  ORDER_LIFECYCLE_CLOSE: {
+    module: 'orders',
+    label: 'Cerró un pedido por nota de entrega completa',
+    severity: 'INFO',
+  },
+  ORDER_LIFECYCLE_PARTIAL: {
+    module: 'orders',
+    label: 'Cerró un pedido con nota de entrega parcial',
+    severity: 'WARN',
+  },
   ORDER_LIFECYCLE_CANCEL: { module: 'orders', label: 'Anuló un pedido desde Profit', severity: 'WARN' },
+  ORDER_LIFECYCLE_RECLASSIFY: {
+    module: 'orders',
+    label: 'Reclasificó un cierre histórico de pedido',
+    severity: 'WARN',
+  },
   ORDER_LIFECYCLE_REVIEW: { module: 'orders', label: 'Marcó un pedido para revisión', severity: 'WARN' },
   ORDER_REOPEN: { module: 'orders', label: 'Reabrió un pedido cerrado', severity: 'WARN' },
   ORDER_RECONCILE_RUN: { module: 'orders', label: 'Ejecutó la reconciliación de pedidos', severity: 'INFO' },

@@ -11,7 +11,8 @@ import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, ArrowLeft, FileText } from 'lucide-react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
+import { DeliveryNoteDialog } from '../../../components/DeliveryNoteDialog';
 import { AppNav, LoginScreen } from '../../../components/shell';
 import { Badge, Card, Kpi, PageHeader, Td, Th, fmtDate, fmtQty } from '../../../components/ui';
 import { AuthRequiredError, apiFetch } from '../../../lib/api';
@@ -19,14 +20,16 @@ import { AuthRequiredError, apiFetch } from '../../../lib/api';
 const STATUS_LABEL: Record<OrderStatus, string> = {
   ABIERTO: 'Abierto',
   NOTA_ENTREGA: 'Nota de entrega',
+  NOTA_PARCIAL: 'Nota parcial',
   CERRADO: 'Cerrado',
   CANCELADO: 'Cancelado',
   DESCONOCIDO: 'Desconocido',
 };
 
-const STATUS_TONE: Record<OrderStatus, 'success' | 'muted' | 'danger' | 'default'> = {
+const STATUS_TONE: Record<OrderStatus, 'success' | 'warning' | 'muted' | 'danger' | 'default'> = {
   ABIERTO: 'success',
   NOTA_ENTREGA: 'muted',
+  NOTA_PARCIAL: 'warning',
   CERRADO: 'muted',
   CANCELADO: 'danger',
   DESCONOCIDO: 'default',
@@ -36,6 +39,8 @@ export default function PedidoDetallePage() {
   const params = useParams<{ id: string }>();
   const id = params?.id ?? '';
   const [tick, setTick] = useState(0);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const closeNote = useCallback(() => setNoteOpen(false), []);
 
   const { data, isLoading, error } = useQuery<OrderDetail>({
     queryKey: ['order', id, tick],
@@ -87,6 +92,25 @@ export default function PedidoDetallePage() {
               <Kpi label="Vendedor" value={order.vendor ?? '—'} tone="muted" />
               <Kpi label="Tipo de cliente" value={order.customerType ?? '—'} tone="muted" />
             </div>
+
+            {(order.status === 'NOTA_ENTREGA' || order.status === 'NOTA_PARCIAL') && (
+              <div className="flex flex-wrap items-center gap-space-sm">
+                {(order.notaEntregaRefs?.length ?? 0) > 0 && (
+                  <p className="text-body-md text-on-surface-variant">
+                    Nota{order.notaEntregaRefs!.length > 1 ? 's' : ''} de entrega en Profit:{' '}
+                    <span className="font-semibold text-primary">{order.notaEntregaRefs!.join(', ')}</span>
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setNoteOpen(true)}
+                  className="inline-flex h-8 items-center gap-space-xs rounded-pill border border-primary-container/40 px-space-sm font-semibold text-label-md text-primary transition-colors hover:bg-primary-container/10"
+                >
+                  <FileText aria-hidden className="size-3.5" />
+                  Ver documento
+                </button>
+              </div>
+            )}
 
             <Card className="overflow-hidden">
               <div className="overflow-x-auto">
@@ -143,6 +167,12 @@ export default function PedidoDetallePage() {
           </>
         )}
       </main>
+      <DeliveryNoteDialog
+        open={noteOpen}
+        orderId={order?.id ?? null}
+        orderNumber={order?.externalNumber ?? ''}
+        onClose={closeNote}
+      />
     </>
   );
 }

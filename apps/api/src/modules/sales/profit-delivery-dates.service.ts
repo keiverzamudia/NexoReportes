@@ -34,7 +34,13 @@ import { CustomerInsightsService } from './customer-insights.service';
 //   pantalla de Pedidos no muestra ese dato.
 // ============================================================
 
-const CLOSED_STATUSES = new Set(['NOTA_ENTREGA', 'CERRADO', 'CANCELADO', 'DESCONOCIDO']);
+const CLOSED_STATUSES = new Set([
+  'NOTA_ENTREGA',
+  'NOTA_PARCIAL',
+  'CERRADO',
+  'CANCELADO',
+  'DESCONOCIDO',
+]);
 
 function dateOnly(value: Date | null | undefined): string | null {
   return value ? value.toISOString().slice(0, 10) : null;

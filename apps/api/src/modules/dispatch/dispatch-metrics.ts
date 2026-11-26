@@ -210,9 +210,11 @@ function buildGroups(sheets: MetricSheet[], query: DispatchMetricsQuery): GroupM
         .sort((a, b) => a.getTime() - b.getTime());
       const lastChecked = checked.length > 0 ? checked[checked.length - 1] : null;
       // T2: arranca cuando el almacén pulsa «Iniciar carga» para ese cliente.
-      // En hojas históricas sin ese hito se usa el arranque de la hoja y, en
-      // último caso, el primer artículo marcado.
-      const loadStart = progress?.loadStartedAt ?? sheet.startedAt ?? checked[0] ?? null;
+      // Solo las hojas históricas sin filas por cliente usan el arranque de la
+      // hoja; con filas, un cliente sin iniciar no debe heredar el reloj ajeno.
+      const legacySheet = sheet.customerProgress.length === 0;
+      const loadStart =
+        progress?.loadStartedAt ?? (legacySheet ? sheet.startedAt : null) ?? checked[0] ?? null;
       const loadClose =
         progress?.loadClosedAt ?? (pending === 0 ? lastChecked ?? sheet.completedAt : null);
       const invoiceAt = progress?.invoiceDeliveredAt ?? null;

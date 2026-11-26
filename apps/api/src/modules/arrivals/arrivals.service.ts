@@ -201,7 +201,7 @@ export class ArrivalsService {
 
   async list(viewer: ArrivalViewer, query: ArrivalQuery): Promise<ArrivalListResponse> {
     const rows = await this.prisma.customerArrival.findMany({
-      where: arrivalDateFilter(query.date, query.overdue),
+      where: arrivalDateFilter(query.date, query.overdue, query.onlyOverdue),
       include: { incidents: { select: { status: true } } },
       orderBy: [{ expectedDate: 'asc' }, { customerName: 'asc' }],
       take: query.limit,
@@ -759,7 +759,8 @@ export class ArrivalsService {
       number: row.number,
       customerCode: row.customerCode,
       customerName: row.customerName,
-      expectedDate: row.expectedDate,
+      // Ver RomanaService.toSummary: fechas siempre `yyyy-MM-dd`.
+      expectedDate: row.expectedDate ? row.expectedDate.slice(0, 10) : null,
       sheetId: row.sheetId,
       sheetNumber: row.sheetNumber,
       sheetTitle: row.sheetTitle,

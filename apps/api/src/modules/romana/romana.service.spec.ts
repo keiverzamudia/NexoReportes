@@ -49,6 +49,12 @@ function createHarness() {
         sha256: 'abc',
       };
     },
+    async duplicate({ orderNumber, kind }: Row) {
+      return {
+        storageKey: `2026/11/a1/${orderNumber}__${kind}.webp`,
+        thumbKey: `2026/11/a1/${orderNumber}__${kind}.thumb.webp`,
+      };
+    },
     async read() {
       return { stream: null, bytes: 0 };
     },
@@ -317,6 +323,50 @@ describe('RomanaService', () => {
         Buffer.from('fake'),
       ),
     ).rejects.toThrow(/no pertenece/);
+  });
+
+  it('reutiliza una cédula en los demás pedidos de la misma llegada', async () => {
+    const { service, state, audit } = createHarness();
+    state.arrivals.push(arrival());
+    // Solo PED-1 tiene las dos fotos; PED-2 está vacío.
+    state.documents.push(...documents().filter((document) => !document.id.startsWith('PED-2')));
+
+    const result = await service.applyDocument(
+      { id: 'u1', permissions: ['pcp:read', 'pcp:upload'] },
+      'a1',
+      'PED-1',
+      'CEDULA',
+      {},
+    );
+
+    expect(result.applied).toEqual(['PED-2']);
+    expect(result.skipped).toEqual([]);
+    expect(result.detail.romana.uploadedDocs).toBe(3);
+    expect(result.detail.romana.pendingDocs).toBe(1);
+    const copied = state.documents.find(
+      (document) => document.orderNumber === 'PED-2' && document.kind === 'CEDULA',
+    );
+    expect(copied?.storageKey).toContain('PED-2');
+    expect(copied?.uploadedByName).toBe('OPERADOR ROMANA');
+    expect(audit.some((entry) => entry.action === 'ROMANA_DOC_REUSE')).toBe(true);
+  });
+
+  it('reutilizar no pisa la foto propia del otro pedido', async () => {
+    const { service, state } = createHarness();
+    state.arrivals.push(arrival());
+    state.documents.push(...documents());
+
+    const result = await service.applyDocument(
+      { id: 'u1', permissions: ['pcp:read', 'pcp:upload'] },
+      'a1',
+      'PED-1',
+      'CEDULA',
+      {},
+    );
+
+    expect(result.applied).toEqual([]);
+    expect(result.skipped).toEqual(['PED-2']);
+    expect(state.documents).toHaveLength(4);
   });
 
   it('una foto nueva limpia el estado de expiración', async () => {

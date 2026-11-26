@@ -41,6 +41,7 @@ import {
   minutesBetween,
 } from '../lib/dispatch-sheet';
 import { DispatchCustomerTimeline } from './DispatchCustomerTimeline';
+import { CustomerPdfButton } from './CustomerPdfButton';
 import { LineStatusBadge, SheetStatusBadge } from './DispatchSheetParts';
 import { Badge, Card, cx } from './ui';
 
@@ -74,6 +75,8 @@ interface DispatchMobileViewProps {
   onOpenBitacora: () => void;
   onOpenCancel: () => void;
   onExport: () => void;
+  /** Aviso al generar el PDF del cliente. */
+  onNotify: (message: string) => void;
 }
 
 export function DispatchMobileView({
@@ -104,6 +107,7 @@ export function DispatchMobileView({
   onOpenBitacora,
   onOpenCancel,
   onExport,
+  onNotify,
 }: DispatchMobileViewProps) {
   const activeLines = sheet.lines.filter((line) => line.status !== 'ANULADO');
   const resolved = activeLines.filter((line) => line.status !== 'PENDIENTE').length;
@@ -262,6 +266,13 @@ export function DispatchMobileView({
               </button>
 
               <div className="flex flex-wrap gap-space-xs px-space-md pb-space-md">
+                <CustomerPdfButton
+                  sheet={sheet}
+                  group={group}
+                  progress={progress}
+                  onNotify={onNotify}
+                  variant="mobile"
+                />
                 {editable && !started && (
                   <button
                     type="button"

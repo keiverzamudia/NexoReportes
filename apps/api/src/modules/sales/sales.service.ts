@@ -13,7 +13,11 @@ import {
   OrderSummary,
 } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
-import { loadOrderDispatchStates } from '../dispatch/dispatch-order-state';
+import {
+  dispatchLineKey,
+  loadDispatchStates,
+  plannableQtyFor,
+} from '../dispatch/dispatch-order-state';
 import { CustomerSalesService } from './customer-sales.service';
 import { DeliveryDatesService, deliveryDateKey } from './delivery-dates.service';
 
@@ -332,8 +336,9 @@ export class SalesService {
     const tentativeByLine = await this.deliveryDates.resolveForLines(
       rawLines.map((line) => ({ orderNumber: line.order.externalNumber, productCode: line.productCode })),
     );
-    // Despacho donde ya vive cada pedido: el simulador lo muestra y lo bloquea.
-    const dispatchStates = await loadOrderDispatchStates(
+    // Despacho donde ya vive cada renglón: el simulador lo muestra y lo bloquea.
+    // El estado es por `pedido#artículo`: un pedido puede despacharse en tandas.
+    const dispatchStates = await loadDispatchStates(
       this.prisma,
       rawLines.map((line) => line.order.externalNumber),
     );
@@ -382,11 +387,24 @@ export class SalesService {
       }
       const pendingQty = toNumber(line.pendingQty);
       const pendingKg = toNumberOrNull(line.pendingKg);
+      const quantity = toQuantityOrNull(line.quantity);
+      const lineState = dispatchStates.lines.get(
+        dispatchLineKey({ orderNumber: line.order.externalNumber, productCode: line.productCode }),
+      );
+      // Saldo que este sistema todavía puede planificar (recorta parciales ya
+      // despachados sin perder el pendiente real de Profit).
+      const plannableQty = plannableQtyFor(lineState, { pendingQty, quantity });
+      const plannableKg =
+        pendingKg === null
+          ? 0
+          : pendingQty > 0
+            ? Math.round(pendingKg * (plannableQty / pendingQty) * 1000) / 1000
+            : pendingKg;
       group.orders.add(line.order.externalNumber);
       group.products.add(line.productCode);
       if (line.order.customerCode) group.clients.add(line.order.customerCode);
-      group.totalPendingQty += pendingQty;
-      group.totalPendingKg += pendingKg ?? 0;
+      group.totalPendingQty += plannableQty;
+      group.totalPendingKg += plannableKg;
       group.lines.push({
         orderId: line.orderId,
         orderNumber: line.order.externalNumber,
@@ -399,15 +417,17 @@ export class SalesService {
         productCode: line.productCode,
         description: line.description,
         uom: line.uom,
-        quantity: toQuantityOrNull(line.quantity),
+        quantity,
         pendingQty,
+        plannableQty,
         pendingKg,
         warehouseCode: line.warehouses,
         stock03: stock.get(line.productCode)?.s03 ?? null,
         stock9999: stock.get(line.productCode)?.s9999 ?? null,
         stock68: stock.get(line.productCode)?.s68 ?? null,
-        dispatchSheetNumber: dispatchStates.get(line.order.externalNumber)?.sheetNumber ?? null,
-        dispatchStarted: dispatchStates.get(line.order.externalNumber)?.started ?? false,
+        // Solo una hoja abierta bloquea; una cerrada deja libre su saldo.
+        dispatchSheetNumber: lineState?.openSheetNumber ?? null,
+        dispatchStarted: dispatchStates.orders.get(line.order.externalNumber)?.started ?? false,
       });
     }
 

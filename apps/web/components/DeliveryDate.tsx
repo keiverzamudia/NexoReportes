@@ -4,8 +4,8 @@
 // Fecha de entrega del pedido en Profit.
 //
 // Se muestra la fecha real (dbo.cotiz_c.fec_venc). Si la sesión tiene el
-// permiso «Cambiar fecha de entrega», un doble clic (o un toque en móvil)
-// abre el editor, que escribe en Profit. La emisión nunca se edita aquí.
+// permiso «Cambiar fecha de entrega», un clic (o un toque en móvil) abre el
+// editor, que escribe en Profit. La emisión nunca se edita aquí.
 // ============================================================
 
 import { useEffect, useRef, useState } from 'react';
@@ -30,10 +30,9 @@ export function DeliveryDateButton({
   className?: string;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const pointerType = useRef<string | null>(null);
   const [tip, setTip] = useState<{ x: number; y: number; below: boolean } | null>(null);
 
-  const action = canEdit ? 'Doble clic para cambiar la entrega en Profit' : null;
+  const action = canEdit ? 'Clic para cambiar la entrega en Profit' : null;
 
   const showTip = () => {
     const rect = buttonRef.current?.getBoundingClientRect();
@@ -63,15 +62,7 @@ export function DeliveryDateButton({
         aria-label={`${label}. Entrega Profit ${fmtDate(date)}.${action ? ` ${action}.` : ''}`}
         aria-disabled={!canEdit}
         tabIndex={canEdit ? 0 : -1}
-        onPointerDown={(event) => {
-          pointerType.current = event.pointerType;
-        }}
         onClick={(event) => {
-          if (!canEdit) return;
-          // Teclado (detail 0) y touch abren directo; mouse espera el doble clic.
-          if (event.detail === 0 || pointerType.current !== 'mouse') onEdit();
-        }}
-        onDoubleClick={(event) => {
           if (!canEdit) return;
           event.preventDefault();
           onEdit();

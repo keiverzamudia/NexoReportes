@@ -108,6 +108,7 @@ function DispatchClientLoad({
         onEditNote={load.editNote}
         onOpenInvoice={() => load.openInvoice(group.key, group.name)}
         onReopenInvoice={() => void load.reopenInvoice(group.key, group.name)}
+        onNotify={setToast}
       />
 
       {load.noteTarget && (

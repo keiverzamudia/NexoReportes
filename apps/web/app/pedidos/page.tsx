@@ -62,6 +62,7 @@ import { AppNav, LoginScreen } from '../../components/shell';
 import { Badge, Card, CoverageBar, DateInput, HeroCard, Kpi, PageHeader, Select, Segmented, Skeleton, Td, TextInput, Th, fmtDate, fmtQty, useGreeting } from '../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../lib/api';
 import { buildCoverageRows, coverageChartHeight, type CoverageCommitted } from '../../lib/coverage';
+import { skippedDispatchNotice } from '../../lib/dispatch-sheet';
 import { DispatchInput, DispatchMode, DispatchSort, CommittedEntry, QueueEntry, buildDispatchQueue, summarizeQueue } from '../../lib/dispatch';
 import { hasPermission } from '../../lib/permissions';
 import {
@@ -109,14 +110,16 @@ const SORT_OPTIONS: { value: DispatchSort; label: string }[] = [
 const STATUS_LABEL: Record<OrderStatus, string> = {
   ABIERTO: 'Abierto',
   NOTA_ENTREGA: 'Nota de entrega',
+  NOTA_PARCIAL: 'Nota parcial',
   CERRADO: 'Cerrado',
   CANCELADO: 'Cancelado',
   DESCONOCIDO: 'Desconocido',
 };
 
-const STATUS_TONE: Record<OrderStatus, 'success' | 'muted' | 'danger' | 'default'> = {
+const STATUS_TONE: Record<OrderStatus, 'success' | 'warning' | 'muted' | 'danger' | 'default'> = {
   ABIERTO: 'success',
   NOTA_ENTREGA: 'muted',
+  NOTA_PARCIAL: 'warning',
   CERRADO: 'muted',
   CANCELADO: 'danger',
   DESCONOCIDO: 'default',
@@ -298,6 +301,9 @@ export default function PedidosPage() {
   const { data, isLoading, error } = useQuery<OrderGroupedResponse>({
     queryKey: ['orders-grouped', tick, by, q, status, authorized, customerCode, emisionDesde, emisionHasta, entregaDesde, entregaHasta],
     queryFn: () => apiFetch<OrderGroupedResponse>(`/orders/grouped?${params.toString()}`),
+    // La cartera también refleja despachos nacidos en otras pestañas o de
+    // simulaciones guardadas: un refresco suave mantiene el verde/camión al día.
+    refetchInterval: 60_000,
     retry: (count, err) => !(err instanceof AuthRequiredError) && count < 2,
   });
 
@@ -350,7 +356,8 @@ export default function PedidosPage() {
   const groups = useMemo(() => data?.groups ?? [], [data]);
 
   // --- Modelo de datos para la simulación ---
-  const dispatchInputs: DispatchInput[] = useMemo(() => toDispatchInputs(groups), [groups]);
+  // (La cola excluye los renglones que ya están en despacho; se arma más abajo,
+  // cuando el plan vivo ya conoce ese estado.)
 
   const lineByKey = useMemo(() => {
     const map = new Map<string, { line: OrderGroupLine; group: OrderGroup }>();
@@ -377,6 +384,44 @@ export default function PedidosPage() {
     refetchIntervalInBackground: true,
   });
 
+  // Renglones que ya viven en una hoja de despacho abierta: se pintan con el
+  // mismo verde de la simulación, pero con camión y sin poder marcarse otra vez.
+  // Se combina el plan vivo (refresca cada 3 s y ve lo que enviaron otras
+  // pestañas) con la cartera (hojas nacidas de simulaciones guardadas).
+  const dispatchByKey = useMemo(() => {
+    const map = new Map<string, { sheetNumber: string; started: boolean }>();
+    for (const item of draftQuery.data?.inDispatch ?? []) {
+      map.set(scenarioRefKey(item.orderNumber, item.productCode), {
+        sheetNumber: item.sheetNumber,
+        started: item.started,
+      });
+    }
+    for (const group of groups) {
+      for (const line of group.lines) {
+        if (!line.dispatchSheetNumber) continue;
+        const key = scenarioRefKey(line.orderNumber, line.productCode);
+        const previous = map.get(key);
+        map.set(key, {
+          sheetNumber: previous?.sheetNumber ?? line.dispatchSheetNumber,
+          started: previous?.started || line.dispatchStarted,
+        });
+      }
+    }
+    return map;
+  }, [draftQuery.data, groups]);
+
+  const dispatchInfoFor = (line: Pick<OrderGroupLine, 'orderNumber' | 'productCode'>) =>
+    dispatchByKey.get(scenarioRefKey(line.orderNumber, line.productCode)) ?? null;
+
+  // Un renglón en despacho no consume existencia del plan ni se reenvía.
+  const dispatchInputs: DispatchInput[] = useMemo(
+    () =>
+      toDispatchInputs(groups).filter(
+        (input) => !dispatchByKey.has(scenarioRefKey(input.orderNumber, input.productCode)),
+      ),
+    [groups, dispatchByKey],
+  );
+
   // Renglones seleccionados que quedan FUERA de los filtros de esta pantalla.
   const externalLineByKey = useMemo(() => {
     const map = new Map<string, { line: OrderGroupLine; group: OrderGroup }>();
@@ -391,7 +436,7 @@ export default function PedidosPage() {
           label: line.customerName ?? line.customerCode ?? line.orderNumber,
           ordersCount: 1,
           linesCount: 1,
-          totalPendingQty: line.pendingQty,
+          totalPendingQty: line.plannableQty ?? line.pendingQty,
           totalPendingKg: line.pendingKg ?? 0,
           itemsCount: 1,
           lines: [line],
@@ -413,16 +458,24 @@ export default function PedidosPage() {
 
   const externalInputs: DispatchInput[] = useMemo(
     () =>
-      [...externalLineByKey.values()].map(({ line }) => ({
-        key: lineKey(line),
-        productCode: line.productCode,
-        pendingQty: line.pendingQty,
-        pendingKg: line.pendingKg,
-        requestedDate: line.tentativeDate ?? line.requestedDate,
-        orderNumber: line.orderNumber,
-        customerName: line.customerName,
-        stockTotal: (line.stock03 ?? 0) + (line.stock9999 ?? 0) + (line.stock68 ?? 0),
-      })),
+      [...externalLineByKey.values()].map(({ line }) => {
+        const qty = line.plannableQty ?? line.pendingQty;
+        return {
+          key: lineKey(line),
+          productCode: line.productCode,
+          pendingQty: qty,
+          pendingKg:
+            line.pendingKg === null
+              ? null
+              : line.pendingQty > 0
+                ? (line.pendingKg * qty) / line.pendingQty
+                : line.pendingKg,
+          requestedDate: line.tentativeDate ?? line.requestedDate,
+          orderNumber: line.orderNumber,
+          customerName: line.customerName,
+          stockTotal: (line.stock03 ?? 0) + (line.stock9999 ?? 0) + (line.stock68 ?? 0),
+        };
+      }),
     [externalLineByKey],
   );
   const allDispatchInputs = useMemo(
@@ -449,10 +502,15 @@ export default function PedidosPage() {
   }, [draftQuery.data]);
 
   // Personas que tienen renglones reservados (para la sala de simulación).
+  // Lo que ya se envió a despacho no cuenta como reserva pendiente.
   const participants = useMemo(() => {
+    const inDispatchRefs = new Set(
+      (draftQuery.data?.inDispatch ?? []).map((item) => scenarioRefKey(item.orderNumber, item.productCode)),
+    );
     const map = new Map<string, { id: string; name: string; count: number }>();
     for (const ref of draftQuery.data?.scenario?.payload.selected ?? []) {
       if (!ref.selectedById) continue;
+      if (inDispatchRefs.has(scenarioRefKey(ref.orderNumber, ref.productCode))) continue;
       const entry = map.get(ref.selectedById) ?? {
         id: ref.selectedById,
         name: ref.selectedByName ?? 'Sin nombre',
@@ -492,6 +550,13 @@ export default function PedidosPage() {
     [draftQuery.data],
   );
   const activeSheet = draftQuery.data?.activeSheet ?? null;
+  // Cuando el plan vivo estrena hoja (la envió este usuario u otro), la
+  // cartera debe refrescarse ya para marcar esos renglones con el camión.
+  const activeSheetNumber = activeSheet?.number ?? null;
+  useEffect(() => {
+    if (!activeSheetNumber) return;
+    void queryClient.invalidateQueries({ queryKey: ['orders-grouped'] });
+  }, [activeSheetNumber, queryClient]);
 
   // Cambios locales sin confirmar: evita que el polling pise una selección
   // recién marcada antes de que el autoguardado llegue al servidor.
@@ -688,8 +753,17 @@ export default function PedidosPage() {
         e = { units: (l.stock03 ?? 0) + (l.stock9999 ?? 0) + (l.stock68 ?? 0), demandUnits: 0, demandKg: 0, kgPerUnit: null, description: l.description ?? l.productCode };
         map.set(l.productCode, e);
       }
-      e.demandUnits += l.pendingQty;
-      e.demandKg += l.pendingKg ?? 0;
+      // La demanda se mide sobre el saldo planificable (un parcial ya
+      // despachado no debe volver a exigir existencia).
+      const qty = l.plannableQty ?? l.pendingQty;
+      const kg =
+        l.pendingKg === null
+          ? 0
+          : l.pendingQty > 0
+            ? (l.pendingKg * qty) / l.pendingQty
+            : l.pendingKg;
+      e.demandUnits += qty;
+      e.demandKg += kg;
     };
     for (const g of groups) for (const l of g.lines) addLine(l);
     for (const { line } of externalLineByKey.values()) addLine(line);
@@ -963,16 +1037,18 @@ export default function PedidosPage() {
   }
 
   // Cobertura de cada grupo = asignado / pendiente. Es EXACTAMENTE el % que
-  // muestra la columna «Cobertura» (en unidades) de la tabla.
+  // muestra la columna «Cobertura» (en unidades) de la tabla. Lo que ya está
+  // en despacho no se vuelve a prometer: no entra en la cobertura pendiente.
   const groupCoverage = useMemo(() => {
     const map = new Map<string, number>();
     for (const g of groups) {
-      const pendingQty = g.lines.reduce((a, l) => a + l.pendingQty, 0);
-      const assignedQty = g.lines.reduce((a, l) => a + (queueByKey.get(lineKey(l))?.assignedQty ?? 0), 0);
+      const freeLines = g.lines.filter((line) => !dispatchInfoFor(line));
+      const pendingQty = freeLines.reduce((a, l) => a + (l.plannableQty ?? l.pendingQty), 0);
+      const assignedQty = freeLines.reduce((a, l) => a + (queueByKey.get(lineKey(l))?.assignedQty ?? 0), 0);
       map.set(g.key, pendingQty > 0 ? assignedQty / pendingQty : 1);
     }
     return map;
-  }, [groups, queueByKey]);
+  }, [groups, queueByKey, dispatchByKey]);
 
   // Orden de grupos:
   //  · 'prioridad' → por la posición de su mejor renglón en la cola.
@@ -1402,6 +1478,8 @@ export default function PedidosPage() {
   // Lo ya tomado por otro vendedor nunca entra en la selección masiva.
   function dispatchableKeys(group: OrderGroup): string[] {
     return group.lines
+      // Un renglón que sigue en un despacho abierto nunca entra a la selección.
+      .filter((line) => !line.dispatchSheetNumber && !dispatchInfoFor(line))
       .map(lineKey)
       .filter(
         (key) =>
@@ -1415,8 +1493,9 @@ export default function PedidosPage() {
       setToast('No tienes permiso para modificar la simulación.');
       return;
     }
-    if (line.dispatchSheetNumber) {
-      setToast(`El pedido ${line.orderNumber} ya está en el despacho ${line.dispatchSheetNumber}.`);
+    const dispatchInfo = dispatchInfoFor(line);
+    if (dispatchInfo) {
+      setToast(`El pedido ${line.orderNumber} ya está en el despacho ${dispatchInfo.sheetNumber}.`);
       return;
     }
     const key = lineKey(line);
@@ -1586,7 +1665,9 @@ export default function PedidosPage() {
             <span className="font-semibold">Simulación compartida</span>
             <span aria-hidden className="text-outline">·</span>
             {participants.length === 0 ? (
-              <span className="text-on-surface-variant">Nadie ha marcado renglones todavía.</span>
+              <span className="text-on-surface-variant">
+                {activeSheet ? 'Sin renglones pendientes por enviar.' : 'Nadie ha marcado renglones todavía.'}
+              </span>
             ) : (
               participants.map((person) => (
                 <span
@@ -1603,9 +1684,14 @@ export default function PedidosPage() {
               ))
             )}
             {activeSheet && (
-              <Badge tone="success" dot>
+              <a
+                href={`/despacho/${activeSheet.id}`}
+                title="Abrir la hoja del almacén que sigue esta simulación"
+                className="inline-flex items-center gap-1 rounded-pill bg-success-container px-2 py-0.5 font-semibold text-label-sm text-secondary transition-colors hover:brightness-95"
+              >
+                <Truck aria-hidden className="size-3" />
                 Despacho {activeSheet.number} · se actualiza solo
-              </Badge>
+              </a>
             )}
           </div>
           <div className="flex items-center gap-space-xs">
@@ -2301,13 +2387,14 @@ export default function PedidosPage() {
                         isOpen={isOpen}
                         allSelected={allSelected}
                         selectable={candidates.length > 0}
-                        selectedCount={group.lines.filter((l) => selection.includes(lineKey(l))).length}
+                        selectedCount={group.lines.filter((l) => selection.includes(lineKey(l)) && !dispatchInfoFor(l)).length}
                         coverage={coverage}
                         selection={selection}
                         mode={mode}
                         queueByKey={queueByKey}
                         liveStock={liveStock}
                         ownerByKey={ownerByKey}
+                        dispatchByKey={dispatchByKey}
                         currentUserId={sessionUser?.id}
                         canOverride={canOverride}
                         canEditDates={canEditDates}
@@ -2754,16 +2841,7 @@ function PortfolioBalance({ summary, loading }: { summary?: CustomerStatementSum
 }
 
 // Aviso de los pedidos que no se enviaron porque ya viven en un despacho.
-function skippedDispatchNotice(skipped?: { orderNumber: string; sheetNumber: string }[]): string | null {
-  if (!skipped || skipped.length === 0) return null;
-  const list = skipped
-    .slice(0, 4)
-    .map((item) => `${item.orderNumber} (${item.sheetNumber})`)
-    .join(', ');
-  return `${skipped.length} pedido(s) ya estaban en despacho y se omitieron: ${list}${
-    skipped.length > 4 ? '…' : ''
-  }. Puedes cambiar su fecha mientras la carga no haya iniciado.`;
-}
+// Vive en `lib/dispatch-sheet` para compartirlo con el diálogo de simulaciones.
 
 function GroupRow({
   group,
@@ -2782,6 +2860,7 @@ function GroupRow({
   queueByKey,
   liveStock,
   ownerByKey,
+  dispatchByKey,
   currentUserId,
   canOverride,
   canEditDates,
@@ -2815,6 +2894,8 @@ function GroupRow({
   liveStock: Map<string, number>;
   /** Dueño de cada renglón seleccionado (id + nombre). */
   ownerByKey: Map<string, { id: string; name: string }>;
+  /** Renglones que ya están en una hoja de despacho abierta (clave pedido#artículo). */
+  dispatchByKey: Map<string, { sheetNumber: string; started: boolean }>;
   currentUserId?: string;
   canOverride: boolean;
   canEditDates: boolean;
@@ -2830,6 +2911,25 @@ function GroupRow({
 }) {
   const coveragePct = Math.round(coverage * 100);
   const tone = coveragePct >= 100 ? 'success' : coveragePct > 0 ? 'warning' : 'danger';
+  // Renglones del grupo que ya viven en una hoja abierta: mismo verde que la
+  // simulación + camión, y no se pueden volver a marcar.
+  const dispatchInfoOf = (line: OrderGroupLine) =>
+    dispatchByKey.get(scenarioRefKey(line.orderNumber, line.productCode)) ?? null;
+  const inDispatchLines = group.lines.filter((line) => dispatchInfoOf(line));
+  const inDispatchCount = inDispatchLines.length;
+  const inDispatchSheets = [
+    ...new Set(
+      inDispatchLines
+        .map((line) => dispatchInfoOf(line)?.sheetNumber)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
+  const inDispatchHint =
+    inDispatchSheets.length === 0
+      ? undefined
+      : inDispatchSheets.length === 1
+        ? `En el despacho ${inDispatchSheets[0]}`
+        : `En los despachos ${inDispatchSheets.join(', ')}`;
   // Cuando el grupo no tiene renglones marcables puede ser por dos motivos:
   // no hay existencia o los renglones ya los reservó otro vendedor. El badge
   // debe decir cuál es para no confundir una reserva ajena con falta de stock.
@@ -2850,6 +2950,10 @@ function GroupRow({
       // real es la reserva, no la existencia.
       return mode === 'total' || (queueByKey.get(lineKey(line))?.dispatchable ?? false);
     });
+  // El grupo puede quedar sin renglones marcables porque siguen en un despacho
+  // abierto (total o parcialmente). El badge no debe decir «sin existencia».
+  const allInDispatch = inDispatchCount > 0 && inDispatchCount === group.lines.length;
+  const partlyInDispatch = inDispatchCount > 0 && !allInDispatch;
   // Fechas del grupo: se muestran SIEMPRE las dos de Profit (emisión y
   // entrega). La entrega se edita por pedido; si hay varias, el rango y el
   // tooltip avisan cuántos pedidos difieren.
@@ -2873,17 +2977,26 @@ function GroupRow({
   const orderCount = new Set(group.lines.map((line) => line.orderNumber)).size;
   return (
     <>
-      <tr className={`transition-colors ${selectedCount > 0 ? 'bg-secondary-container/15' : 'hover:bg-surface-container-low/70'}`}>
+      <tr className={`transition-colors ${selectedCount > 0 || inDispatchCount > 0 ? 'bg-secondary-container/15' : 'hover:bg-surface-container-low/70'}`}>
         <Td>
-          <input
-            type="checkbox"
-            checked={allSelected}
-            disabled={!selectable}
-            onChange={onToggleGroup}
-            aria-label={selectable ? 'Seleccionar los renglones con existencia' : 'Sin existencia para despachar en este grupo'}
-            title={selectable ? undefined : 'No hay existencia para despachar en este grupo'}
-            className="size-4 accent-[var(--color-primary-container)] disabled:cursor-not-allowed"
-          />
+          {selectable || inDispatchCount === 0 ? (
+            <input
+              type="checkbox"
+              checked={allSelected}
+              disabled={!selectable}
+              onChange={onToggleGroup}
+              aria-label={selectable ? 'Seleccionar los renglones con existencia' : 'Sin existencia para despachar en este grupo'}
+              title={selectable ? undefined : 'No hay existencia para despachar en este grupo'}
+              className="size-4 accent-[var(--color-primary-container)] disabled:cursor-not-allowed"
+            />
+          ) : (
+            <span
+              className="inline-flex items-center justify-center text-primary"
+              title={`${inDispatchHint ?? 'En despacho'} · no se puede volver a marcar`}
+            >
+              <Truck aria-hidden className="size-4" />
+            </span>
+          )}
         </Td>
         <Td>
           <div className="flex min-w-0 flex-col">
@@ -2898,6 +3011,15 @@ function GroupRow({
                       title="Renglones marcados para despacho en este grupo"
                     >
                       {selectedCount}
+                    </span>
+                  )}
+                  {inDispatchCount > 0 && (
+                    <span
+                      className="inline-flex shrink-0 items-center gap-1 rounded-pill bg-secondary-container px-2 py-0.5 text-label-sm font-bold text-primary"
+                      title={`${inDispatchHint ?? 'En despacho'} · ${inDispatchCount} de ${group.lines.length} renglón(es) ya enviados. No se pueden volver a marcar.`}
+                    >
+                      <Truck aria-hidden className="size-3" />
+                      {inDispatchCount}/{group.lines.length}
                     </span>
                   )}
                 </span>
@@ -2945,10 +3067,10 @@ function GroupRow({
                 <DeliveryDateButton
                   date={earliestDelivery}
                   onEdit={onEditGroupDate}
-                  canEdit={canEditDates && !group.lines.every((line) => line.dispatchStarted)}
+                  canEdit={canEditDates && !group.lines.every((line) => line.dispatchStarted || dispatchInfoOf(line)?.started)}
                   label={`Entrega en Profit de ${group.label}`}
                   hint={
-                    group.lines.every((line) => line.dispatchStarted)
+                    group.lines.every((line) => line.dispatchStarted || dispatchInfoOf(line)?.started)
                       ? 'La carga ya inició: fecha bloqueada'
                       : deliveryHint ?? `${orderCount} pedido(s)`
                   }
@@ -2969,6 +3091,14 @@ function GroupRow({
                     {reservedByOthers.length === 1
                       ? reservedByOthers[0]
                       : `${reservedByOthers.length} vendedores`}
+                  </span>
+                ) : allInDispatch ? (
+                  <span className="font-bold uppercase text-critical" title="Todos sus renglones siguen en un despacho abierto">
+                    en despacho
+                  </span>
+                ) : partlyInDispatch ? (
+                  <span className="font-bold uppercase text-critical" title="Parte del grupo sigue en un despacho abierto">
+                    parcialmente en despacho
                   </span>
                 ) : (
                   <span className="font-bold uppercase text-critical">sin existencia</span>
@@ -3033,44 +3163,82 @@ function GroupRow({
                     const owner = ownerByKey.get(key);
                     const takenByOther = Boolean(owner && owner.id !== currentUserId);
                     const blockedByOwner = takenByOther && !canOverride;
-                    const blocked = (mode === 'disponible' && !selected && !dispatchable) || blockedByOwner;
-                    // Ya vive en un despacho: no se puede volver a marcar.
-                    const inDispatch = Boolean(line.dispatchSheetNumber);
-                    const dateLocked = line.dispatchStarted;
+                    // Ya vive en un despacho abierto: mismo verde que la
+                    // simulación, camión y sin poder volver a marcarse.
+                    const dispatchInfo = dispatchInfoOf(line);
+                    const inDispatch = Boolean(dispatchInfo);
+                    const inDispatchSheet = dispatchInfo?.sheetNumber ?? line.dispatchSheetNumber;
+                    // Saldo ya cubierto por un despacho cerrado: Profit todavía
+                    // no registra la nota de entrega, pero aquí no hay nada que
+                    // volver a despachar.
+                    const plannable = line.plannableQty ?? line.pendingQty;
+                    // Kg congruentes con el saldo planificable (mismo kg/unidad).
+                    const plannableKg =
+                      line.pendingKg === null
+                        ? null
+                        : line.pendingQty > 0
+                          ? (line.pendingKg * plannable) / line.pendingQty
+                          : line.pendingKg;
+                    const covered = !inDispatch && plannable <= 0 && line.pendingQty > 0;
+                    const outOfStock = mode === 'disponible' && !selected && !dispatchable;
+                    const blocked = outOfStock || blockedByOwner;
+                    const dateLocked = line.dispatchStarted || Boolean(dispatchInfo?.started);
                     return (
                       <tr
                         key={key}
                         className={`transition-colors ${
-                          selected ? 'bg-success-container' : blocked || inDispatch ? 'opacity-55' : 'hover:bg-surface-container-low'
+                          inDispatch || selected
+                            ? 'bg-success-container'
+                            : blocked
+                              ? 'opacity-55'
+                              : 'hover:bg-surface-container-low'
                         }`}
                       >
                         <Td>
-                          <input
-                            type="checkbox"
-                            checked={selected}
-                            disabled={blocked || inDispatch}
-                            onChange={() => onToggleLine(line)}
-                            aria-label="Seleccionar renglón para despacho"
-                            title={
-                              inDispatch
-                                ? `Ya está en el despacho ${line.dispatchSheetNumber}`
-                                : blockedByOwner
+                          {inDispatch ? (
+                            <span
+                              className="inline-flex items-center justify-center text-primary"
+                              title={`${
+                                dateLocked
+                                  ? `En despacho ${inDispatchSheet ?? ''} · carga iniciada: fecha bloqueada`
+                                  : `En despacho ${inDispatchSheet ?? ''} · puedes cambiar la entrega hasta iniciar la carga`
+                              }. No se puede volver a marcar.`}
+                            >
+                              <Truck aria-hidden className="size-4" />
+                            </span>
+                          ) : (
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              disabled={blocked}
+                              onChange={() => onToggleLine(line)}
+                              aria-label="Seleccionar renglón para despacho"
+                              title={
+                                blockedByOwner
                                   ? `Lo reservó ${owner?.name ?? 'otro vendedor'}`
-                                  : blocked
-                                    ? 'Sin existencia para despachar'
-                                    : undefined
-                            }
-                            className="size-4 accent-[var(--color-primary-container)] disabled:cursor-not-allowed"
-                          />
+                                  : covered
+                                    ? 'Un despacho cerrado ya cubrió este renglón; Profit aún no registra la nota de entrega'
+                                    : blocked
+                                      ? 'Sin existencia para despachar'
+                                      : undefined
+                              }
+                              className="size-4 accent-[var(--color-primary-container)] disabled:cursor-not-allowed"
+                            />
+                          )}
                         </Td>
                         <Td className="font-bold tabular-nums text-primary">
                           {line.orderNumber}
-                          {inDispatch && (
+                          {inDispatch && inDispatchSheet && (
                             <span
-                              className="ml-1 rounded-pill bg-surface-container-high px-1.5 py-0.5 text-[10px] font-bold uppercase text-on-surface-variant"
-                              title={`Pedido en el despacho ${line.dispatchSheetNumber}`}
+                              className="ml-1 inline-flex items-center gap-1 rounded-pill bg-secondary-container px-1.5 py-0.5 text-[10px] font-bold uppercase text-primary"
+                              title={
+                                dateLocked
+                                  ? `En despacho ${inDispatchSheet} · carga iniciada: fecha bloqueada`
+                                  : `En despacho ${inDispatchSheet} · puedes cambiar la entrega hasta iniciar la carga`
+                              }
                             >
-                              {line.dispatchSheetNumber}
+                              <Truck aria-hidden className="size-3" />
+                              {inDispatchSheet}
                             </span>
                           )}
                           {by === 'producto' && owner && (
@@ -3093,7 +3261,13 @@ function GroupRow({
                             onEdit={() => onEditLineDate(line)}
                             canEdit={canEditDates && !dateLocked}
                             label={`Entrega en Profit de ${line.productCode}`}
-                            hint={dateLocked ? 'La carga ya inició: fecha bloqueada' : undefined}
+                            hint={
+                              dateLocked
+                                ? 'La carga ya inició: fecha bloqueada'
+                                : inDispatch
+                                  ? 'Puedes cambiar la entrega hasta iniciar la carga'
+                                  : undefined
+                            }
                           />
                           {line.tentativeDate && (
                             <span
@@ -3117,7 +3291,19 @@ function GroupRow({
                           </Td>
                         )}
                         <Td align="right" className="tabular-nums font-bold">
-                          {selected && (r?.assignedQty ?? 0) < line.pendingQty ? (
+                          {plannable < line.pendingQty ? (
+                            <>
+                              <span className="text-outline line-through" title={`Pendiente en Profit: ${fmtQty(line.pendingQty, 0)}`}>
+                                {fmtQty(line.pendingQty, 0)}
+                              </span>{' '}
+                              <span
+                                className="text-secondary"
+                                title="Saldo que quedó sin cargar en un despacho cerrado"
+                              >
+                                {fmtQty(plannable, 0)}
+                              </span>
+                            </>
+                          ) : selected && (r?.assignedQty ?? 0) < line.pendingQty ? (
                             <>
                               <span className="text-outline line-through">{fmtQty(line.pendingQty, 0)}</span>{' '}
                               <span className="text-secondary">{fmtQty(r?.assignedQty ?? 0, 0)}</span>
@@ -3126,7 +3312,9 @@ function GroupRow({
                             <span className={line.pendingQty < 0 ? 'text-error' : 'text-on-surface'}>{fmtQty(line.pendingQty, 0)}</span>
                           )}
                         </Td>
-                        <Td align="right" className="tabular-nums text-on-surface-variant">{fmtQty(line.pendingKg, 0)}</Td>
+                        <Td align="right" className="tabular-nums text-on-surface-variant">
+                          {fmtQty(plannableKg ?? line.pendingKg, 0)}
+                        </Td>
                         <Td className="tabular-nums text-on-surface-variant">{line.warehouseCode ?? '—'}</Td>
                         <Td align="right" className="tabular-nums">
                           {fmtQty((line.stock03 ?? 0) + (line.stock9999 ?? 0) + (line.stock68 ?? 0), 0)}
@@ -3137,10 +3325,15 @@ function GroupRow({
                             if (live === undefined || live === total) return null;
                             return <span className="ml-space-xs text-label-sm font-semibold text-primary">· quedan {fmtQty(live, 0)}</span>;
                           })()}
-                          {blocked && !inDispatch && <span className="ml-space-xs font-bold uppercase text-label-sm text-critical">sin existencia</span>}
+                          {blocked && !inDispatch && !covered && <span className="ml-space-xs font-bold uppercase text-label-sm text-critical">sin existencia</span>}
+                          {covered && <span className="ml-space-xs font-bold uppercase text-label-sm text-critical">ya despachado</span>}
                         </Td>
-                        <Td align="right" className="tabular-nums font-bold text-secondary">{fmtQty(r?.assignedQty ?? 0, 0)}</Td>
-                        <Td align="right" className={`tabular-nums ${(r?.missingQty ?? 0) > 0 ? 'font-bold text-error' : 'text-outline'}`}>{fmtQty(r?.missingQty ?? 0, 0)}</Td>
+                        <Td align="right" className="tabular-nums font-bold text-secondary">
+                          {inDispatch ? <span className="text-outline">—</span> : fmtQty(r?.assignedQty ?? 0, 0)}
+                        </Td>
+                        <Td align="right" className={`tabular-nums ${(r?.missingQty ?? 0) > 0 ? 'font-bold text-error' : 'text-outline'}`}>
+                          {inDispatch ? '—' : fmtQty(r?.missingQty ?? 0, 0)}
+                        </Td>
                         <Td align="center">
                           {line.authorized === null ? <span className="text-outline">—</span> : <Badge tone={line.authorized ? 'success' : 'muted'}>{line.authorized ? 'SÍ' : 'NO'}</Badge>}
                         </Td>

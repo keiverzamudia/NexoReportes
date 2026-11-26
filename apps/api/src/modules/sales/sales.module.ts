@@ -8,6 +8,7 @@ import { CustomerNotesService } from './customer-notes.service';
 import { CustomerSalesService } from './customer-sales.service';
 import { DeliveryDateReputationService } from './delivery-date-reputation.service';
 import { DeliveryDatesService } from './delivery-dates.service';
+import { DeliveryNoteService } from './delivery-note.service';
 import { OrderLifecycleScheduler } from './order-lifecycle.scheduler';
 import { OrderLifecycleService } from './order-lifecycle.service';
 import { ProfitDeliveryDatesService } from './profit-delivery-dates.service';
@@ -31,6 +32,7 @@ import { SalesService } from './sales.service';
     CustomerSalesService,
     CustomerInsightsService,
     CustomerNotesService,
+    DeliveryNoteService,
     SalesAnalyticsService,
     OrderLifecycleService,
     OrderLifecycleScheduler,

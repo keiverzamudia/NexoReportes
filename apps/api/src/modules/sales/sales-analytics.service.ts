@@ -858,7 +858,7 @@ export class SalesAnalyticsService {
     const [closedOrders, pendingOrders] = await Promise.all([
       this.prisma.salesOrder.findMany({
         where: {
-          status: { in: ['NOTA_ENTREGA', 'CERRADO', 'CANCELADO'] },
+          status: { in: ['NOTA_ENTREGA', 'NOTA_PARCIAL', 'CERRADO', 'CANCELADO'] },
           ...filters,
           OR: [
             { closedAt: { gte: from, lt: to } },

@@ -47,7 +47,7 @@ Monorepo TypeScript (pnpm workspaces + Turborepo) con tres aplicaciones y un paq
 | `scenarios` | 6 | Simulador: plan global compartido (borrador único con lock) + escenarios guardados con nombre; versionado optimista |
 | `dispatch` | 6 | Despacho de almacén: hoja de trabajo, acuses, bitácora y notificaciones |
 | `arrivals` | 6c | Llegadas de clientes (PCP): se crean al publicar el despacho; hora de llegada, incidencias y correcciones con rastro |
-| `orders` (lifecycle) | 6d | Cierre automático de pedidos por nota de entrega de Profit; panel de cierres solo ADMIN |
+| `orders` (lifecycle) | 6d | Cierre automático de pedidos por nota real de Profit (completa o parcial) y anulación sin nota; panel de cierres solo ADMIN |
 | `production` | 7 | Planes de producción, lotes, merma, capacidad |
 | `reports` | 8 | Reportes modulares y exportación |
 
@@ -85,24 +85,39 @@ guardado/restauración/borrado deja traza en `AuditEvent`.
 ### Cierre de pedidos por nota de entrega (Fase 6d)
 
 El sync trae las **cotizaciones pendientes** de Profit (`cotiz_c`). Cuando
-Profit las convierte en nota de entrega, la cotización sale de esa vista y
-`cotiz_c.status` pasa a `'2'`. `OrderLifecycleService` reconcilia los pedidos
-abiertos contra Profit (solo `SELECT`) y aplica esta regla:
+Profit las procesa, la cotización sale de esa vista y `cotiz_c.status` pasa a
+`'2'`; eso **no** prueba que exista una nota de entrega. `OrderLifecycleService`
+reconcilia los pedidos contra Profit (solo `SELECT`) y aplica esta regla:
 
-- `anulada = 1` → `CANCELADO`.
-- `status = '2'` y pendiente total `0` → `NOTA_ENTREGA` +
+- `cotiz_c.anulada = 1` → `CANCELADO`.
+- Hay notas reales (`not_ent.anulada = 0`, líneas `reng_nde.anulado = 0`) y
+  cubren todas las cantidades pedidas por artículo → `NOTA_ENTREGA` +
   `billingStatus = FACTURADO_ASUMIDO`.
-- `status = '2'` con pendiente `> 0` → **revisión** (no se cierra).
-- `status 0/1` pero desapareció de la vista → **revisión** (no se cierra por
-  ausencia sola).
+- Hay notas pero falta alguna cantidad → `NOTA_PARCIAL` +
+  `billingStatus = PENDIENTE`.
+- `status = '2'` sin ninguna nota y pendiente total `0` → `CANCELADO` con
+  motivo `SIN_NOTA`.
+- `status = '2'` sin nota y pendiente `> 0` → **revisión** (no se cierra).
+- `status 0/1` sin nota y que desapareció de la vista → **revisión** (no se
+  cierra por ausencia sola).
+
+El origen de la nota se resuelve por `reng_nde.tipo_doc`: `'T'` apunta a la
+solicitud y `'P'` a un pedido de Profit (cadena `reng_ped.tipo_doc = 'T'`). En
+pedidos de Profit compartidos por varias solicitudes la validación es
+conservadora a nivel del pedido: si el pedido no está cubierto por completo,
+sus solicitudes no se declaran completas.
 
 Los pedidos cerrados se ocultan de la cartera (`isActive = false`) pero
-conservan sus renglones y un `OrderLifecycleEvent` inmutable con la evidencia.
-`OrderReconciliationRun` registra cada corrida. El panel «Cierres recientes»
-es solo para ADMIN y permite reabrir con motivo. El scheduler corre cada
+conservan sus renglones, los números de nota (`notaEntregaRefs`) y un
+`OrderLifecycleEvent` inmutable con la evidencia. `OrderReconciliationRun`
+registra cada corrida. El panel «Cierres recientes» es solo para ADMIN y permite
+reabrir con motivo, **revalidar cierres anteriores** (`includeClosed`) o abrir el
+**documento de la nota** (`GET /orders/:id/delivery-notes`), que se previsualiza
+y se descarga en PDF desde el navegador. La revalidación vuelve a leer Profit y
+corrige la clasificación histórica sin reabrir pedidos. El scheduler corre cada
 `ORDER_RECONCILE_SECONDS` (300 s por defecto) y `ORDER_RECONCILE_DRY_RUN=true`
-calcula sin escribir. Al cerrar, se podan los renglones cerrados del plan
-global si no está siendo editado.
+calcula sin escribir. Al cerrar, se podan los renglones cerrados del plan global
+si no está siendo editado.
 
 ### Despacho de almacén y túnel de acuses (Fase 6b)
 

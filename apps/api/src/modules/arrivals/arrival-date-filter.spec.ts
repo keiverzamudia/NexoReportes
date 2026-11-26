@@ -27,4 +27,12 @@ describe('arrivalDateFilter', () => {
       ],
     });
   });
+
+  it('sólo vencidos: lo anterior al día, sin sumar el propio día', () => {
+    expect(arrivalDateFilter('2026-11-23', false, true)).toEqual({
+      expectedDate: { lt: '2026-11-23' },
+      status: { notIn: ['ATENDIDO', 'AUSENTE', 'CANCELADO'] },
+    });
+    expect(arrivalDateFilter(undefined, false, true)).toEqual({});
+  });
 });

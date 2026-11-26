@@ -10,10 +10,11 @@
 
 import type { OrderLifecycleEvent, OrderLifecycleStatus } from '@nexo/contracts';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { AlertTriangle, CheckCircle2, FileText, Loader2, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
-import { Badge, Skeleton, fmtDate } from './ui';
+import { DeliveryNoteDialog } from './DeliveryNoteDialog';
+import { Badge, Skeleton, fmtDate, fmtQty } from './ui';
 
 function messageOf(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
@@ -27,18 +28,55 @@ function fmtDateTime(iso: string | null): string {
 }
 
 function reasonLabel(event: OrderLifecycleEvent): string {
-  if (event.reason === 'NOTA_ENTREGA') return 'Nota de entrega';
+  if (event.reason === 'NOTA_ENTREGA') return 'Nota de entrega completa';
+  if (event.reason === 'NOTA_PARCIAL') return 'Nota parcial';
+  if (event.reason === 'SIN_NOTA') return 'Sin nota (anulado)';
   if (event.reason === 'CANCELADO') return 'Anulado en Profit';
   return event.reason;
+}
+
+function reasonTone(event: OrderLifecycleEvent): 'success' | 'warning' | 'danger' {
+  if (event.reason === 'NOTA_ENTREGA') return 'success';
+  if (event.reason === 'NOTA_PARCIAL') return 'warning';
+  return 'danger';
 }
 
 function evidenceText(event: OrderLifecycleEvent): string {
   const evidence = event.evidence;
   if (!evidence) return 'Sin evidencia adicional';
+  const notesKnown = Array.isArray(evidence.notes);
+  const notes = notesKnown ? (evidence.notes as unknown[]).map(String).filter(Boolean) : [];
+  const ordered = Number(evidence.orderedQty ?? 0);
+  const delivered = Number(evidence.deliveredQty ?? 0);
+  const missing = Number(evidence.missingQty ?? 0);
   const status = evidence.cotizStatus ?? '—';
   const pending = evidence.pendingQty ?? '—';
   const anulada = evidence.anulada ? 'sí' : 'no';
-  return `Profit: estado ${status} · pendiente ${pending} · anulada ${anulada}`;
+  const parts: string[] = [];
+  if (!notesKnown) {
+    parts.push('Cierre anterior sin detalle de nota');
+  } else {
+    parts.push(notes.length > 0 ? `Nota${notes.length > 1 ? 's' : ''} ${notes.join(', ')}` : 'Sin nota de entrega');
+  }
+  if (ordered > 0) {
+    parts.push(
+      `${fmtQty(delivered, 0)} de ${fmtQty(ordered, 0)}${missing > 0 ? ` · faltan ${fmtQty(missing, 0)}` : ''}`,
+    );
+  }
+  const incompletePedidos = (Array.isArray(evidence.pedidos) ? evidence.pedidos : [])
+    .filter((pedido): pedido is Record<string, unknown> => Boolean(pedido) && typeof pedido === 'object')
+    .filter((pedido) => pedido.hasNotes !== false && pedido.complete === false)
+    .map((pedido) => String(pedido.number ?? ''))
+    .filter(Boolean);
+  if (incompletePedidos.length > 0) {
+    parts.push(
+      `pedido${incompletePedidos.length > 1 ? 's' : ''} ${incompletePedidos.join(', ')} incompleto${
+        incompletePedidos.length > 1 ? 's' : ''
+      }`,
+    );
+  }
+  parts.push(`Profit: estado ${String(status)} · pendiente ${String(pending)} · anulada ${anulada}`);
+  return parts.join(' · ');
 }
 
 export interface OrderLifecycleDialogProps {
@@ -54,6 +92,10 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
   const [actionError, setActionError] = useState<string | null>(null);
   const [reopenId, setReopenId] = useState<string | null>(null);
   const [reason, setReason] = useState('');
+  const [includeClosed, setIncludeClosed] = useState(false);
+  const [noteTarget, setNoteTarget] = useState<{ id: string; number: string } | null>(null);
+  const noteOpenRef = useRef(false);
+  const closeNote = useCallback(() => setNoteTarget(null), []);
 
   const { data, isLoading, error } = useQuery<OrderLifecycleStatus>({
     queryKey: ['order-lifecycle'],
@@ -64,12 +106,19 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
   });
 
   useEffect(() => {
+    noteOpenRef.current = Boolean(noteTarget);
+  }, [noteTarget]);
+
+  useEffect(() => {
     if (!open) return;
     setActionError(null);
     setReopenId(null);
     setReason('');
+    setIncludeClosed(false);
+    setNoteTarget(null);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      // El modal de la nota tiene su propio Escape: no cerrar el panel debajo.
+      if (event.key === 'Escape' && !noteOpenRef.current) onClose();
     };
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -89,12 +138,13 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
     try {
       await apiFetch('/orders/lifecycle/reconcile', {
         method: 'POST',
-        body: JSON.stringify({ dryRun }),
+        body: JSON.stringify({ dryRun, includeClosed }),
       });
       await queryClient.invalidateQueries({ queryKey: ['order-lifecycle'] });
       await queryClient.invalidateQueries({ queryKey: ['orders-grouped'] });
       await queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
       await queryClient.invalidateQueries({ queryKey: ['scenarios'] });
+      await queryClient.invalidateQueries({ queryKey: ['delivery-notes'] });
       onChanged?.();
     } catch (error) {
       setActionError(messageOf(error, 'No se pudo ejecutar la reconciliación'));
@@ -118,6 +168,7 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
       await queryClient.invalidateQueries({ queryKey: ['orders-grouped'] });
       await queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
       await queryClient.invalidateQueries({ queryKey: ['scenarios'] });
+      await queryClient.invalidateQueries({ queryKey: ['delivery-notes'] });
       onChanged?.();
     } catch (error) {
       setActionError(messageOf(error, 'No se pudo reabrir el pedido'));
@@ -131,6 +182,7 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
   const review = data?.review ?? [];
 
   return (
+    <>
     <div
       role="presentation"
       onMouseDown={(event) => {
@@ -155,8 +207,9 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
               Cierres por nota de entrega
             </h2>
             <p className="text-body-md text-on-surface-variant">
-              Pedidos que salieron de la cartera porque Profit los convirtió en nota de entrega. Si uno se cerró por error,
-              puedes reabrirlo con un motivo.
+              Pedidos que salieron de la cartera porque una nota de entrega real de Profit cubrió el pedido. Las notas
+              parciales y los procesados sin nota se marcan aparte. Si uno se cerró por error, puedes reabrirlo con un
+              motivo.
             </p>
           </div>
           <button
@@ -189,7 +242,10 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
                 <div className="rounded-xl border border-outline-variant/35 bg-surface-container-low/50 p-space-sm">
                   <p className="text-label-sm font-semibold uppercase tracking-wider text-outline">Cerrados hoy</p>
                   <p className="text-data-tabular-lg font-bold text-primary">{data?.closedToday ?? 0}</p>
-                  <p className="text-label-sm text-on-surface-variant">por nota de entrega</p>
+                  <p className="text-label-sm text-on-surface-variant">
+                    por nota completa
+                    {data?.partialToday ? ` · ${data.partialToday} parciales` : ''}
+                  </p>
                 </div>
                 <div className="rounded-xl border border-outline-variant/35 bg-surface-container-low/50 p-space-sm">
                   <p className="text-label-sm font-semibold uppercase tracking-wider text-outline">Requieren revisión</p>
@@ -215,7 +271,7 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
                   className="flex h-9 items-center gap-space-xs rounded-pill bg-primary-container px-space-md font-semibold text-on-primary shadow-soft transition-all hover:-translate-y-0.5 hover:bg-primary disabled:translate-y-0 disabled:opacity-40"
                 >
                   {busy === 'run' ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <RefreshCw aria-hidden className="size-4" />}
-                  Revisar ahora
+                  {includeClosed ? 'Revalidar cierres' : 'Revisar ahora'}
                 </button>
                 <button
                   type="button"
@@ -227,6 +283,18 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
                   {busy === 'dry' ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <CheckCircle2 aria-hidden className="size-4" />}
                   Simular sin escribir
                 </button>
+                <label
+                  className="flex h-9 cursor-pointer items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-md font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-low"
+                  title="Vuelve a leer Profit y corrige los cierres guardados (nota completa, parcial o sin nota). No reabre pedidos."
+                >
+                  <input
+                    type="checkbox"
+                    checked={includeClosed}
+                    onChange={(input) => setIncludeClosed(input.target.checked)}
+                    className="size-4 accent-[var(--color-primary-container)]"
+                  />
+                  Revalidar cierres anteriores
+                </label>
                 {lastRun?.dryRun && <Badge tone="warning" dot>última fue simulacro</Badge>}
               </div>
 
@@ -240,7 +308,7 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
                 <h3 className="mb-space-sm text-title-md font-semibold text-primary">Cierres recientes</h3>
                 {recent.length === 0 ? (
                   <p className="rounded-xl border border-dashed border-outline-variant/50 p-space-md text-body-md text-on-surface-variant">
-                    Todavía no hay cierres automáticos. Cuando un pedido pase a nota de entrega aparecerá aquí.
+                    Todavía no hay cierres automáticos. Cuando una nota de entrega real cubra un pedido aparecerá aquí.
                   </p>
                 ) : (
                   <ul className="flex flex-col gap-space-xs">
@@ -250,29 +318,46 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-space-xs">
                               <span className="font-semibold text-primary">Pedido {event.orderNumber}</span>
-                              <Badge tone={event.reason === 'NOTA_ENTREGA' ? 'success' : 'danger'} dot>
+                              <Badge tone={reasonTone(event)} dot>
                                 {reasonLabel(event)}
                               </Badge>
                               <span className="text-label-sm text-on-surface-variant">{fmtDateTime(event.detectedAt)}</span>
+                              {event.source === 'REVALIDACION' && (
+                                <span className="text-label-sm font-semibold text-warning">· revalidado</span>
+                              )}
                             </div>
                             <p className="text-body-md text-on-surface">
                               {event.customerName ?? event.customerCode ?? 'Cliente sin nombre'}
                             </p>
                             <p className="text-label-sm text-on-surface-variant">{evidenceText(event)}</p>
                           </div>
-                          {event.orderId && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setReopenId(reopenId === event.orderId ? null : event.orderId);
-                                setReason('');
-                              }}
-                              disabled={Boolean(busy)}
-                              className="flex h-8 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-sm font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
-                            >
-                              <RotateCcw aria-hidden className="size-3.5" /> Reabrir
-                            </button>
-                          )}
+                          <div className="flex flex-wrap items-center gap-space-xs">
+                            {event.orderId &&
+                              (event.reason === 'NOTA_ENTREGA' || event.reason === 'NOTA_PARCIAL') && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setNoteTarget({ id: event.orderId as string, number: event.orderNumber })
+                                  }
+                                  className="flex h-8 items-center gap-space-xs rounded-pill border border-primary-container/40 px-space-sm font-semibold text-label-md text-primary transition-colors hover:bg-primary-container/10"
+                                >
+                                  <FileText aria-hidden className="size-3.5" /> Ver nota
+                                </button>
+                              )}
+                            {event.orderId && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReopenId(reopenId === event.orderId ? null : event.orderId);
+                                  setReason('');
+                                }}
+                                disabled={Boolean(busy)}
+                                className="flex h-8 items-center gap-space-xs rounded-pill border border-outline-variant/50 px-space-sm font-semibold text-label-md text-on-surface-variant transition-colors hover:bg-surface-container-low disabled:opacity-40"
+                              >
+                                <RotateCcw aria-hidden className="size-3.5" /> Reabrir
+                              </button>
+                            )}
+                          </div>
                         </div>
                         {reopenId === event.orderId && (
                           <form
@@ -345,5 +430,12 @@ export function OrderLifecycleDialog({ open, onClose, onChanged }: OrderLifecycl
         </footer>
       </div>
     </div>
+      <DeliveryNoteDialog
+        open={Boolean(noteTarget)}
+        orderId={noteTarget?.id ?? null}
+        orderNumber={noteTarget?.number ?? ''}
+        onClose={closeNote}
+      />
+    </>
   );
 }

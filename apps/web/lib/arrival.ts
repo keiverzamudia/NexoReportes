@@ -86,9 +86,37 @@ export function clockLabel(iso: string | null | undefined): string {
 /** 2026-10-22 → «22 oct» (fecha de negocio, sin desfase de zona). */
 export function businessDayLabel(value: string | null | undefined): string {
   if (!value) return 'sin fecha';
-  const [year, month, day] = value.split('-').map(Number);
+  // Algunas llegadas antiguas guardan la fecha como ISO completo
+  // (`2026-11-13T00:00:00.000Z`): se recorta antes de parsear para no mostrar
+  // la cadena cruda.
+  const [year, month, day] = value.slice(0, 10).split('-').map(Number);
   if (!year || !month || !day) return value;
-  return new Date(year, month - 1, day).toLocaleDateString('es-VE', { day: '2-digit', month: 'short' });
+  return new Date(year, month - 1, day).toLocaleDateString('es', { day: '2-digit', month: 'short' });
+}
+
+/** 2026-10-22 → «jue 22 oct» (día de la semana incluido, sin desfase de zona). */
+export function businessDateLabel(value: string | null | undefined): string {
+  if (!value) return 'sin fecha';
+  const [year, month, day] = value.slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return value;
+  return new Date(year, month - 1, day)
+    .toLocaleDateString('es', { weekday: 'short', day: '2-digit', month: 'short' })
+    .replace(',', '');
+}
+
+/** «Hoy», «Mañana» o «Atrasado N días» para una fecha de negocio. */
+export function businessDateHint(value: string | null | undefined, now: Date = new Date()): string | null {
+  const date = value?.slice(0, 10);
+  if (!date) return null;
+  const today = businessToday(now);
+  if (date === today) return 'Hoy';
+  if (date === businessTomorrow(now)) return 'Mañana';
+  if (date < today) {
+    const days = Math.round((Date.parse(today) - Date.parse(date)) / 86_400_000);
+    if (!Number.isFinite(days) || days <= 0) return null;
+    return days === 1 ? 'Atrasado 1 día' : `Atrasado ${days} días`;
+  }
+  return null;
 }
 
 /** Hoy en formato de negocio (la misma fecha que usa el plan de despacho). */

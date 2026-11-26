@@ -213,7 +213,7 @@ export class ScenariosService implements OnModuleInit {
     const viewer = asViewer(viewerInput);
     const row = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
     if (!row) {
-      return { scenario: null, lines: [], assignments: [], freeByProduct: [], activeSheet: null, dispatchImpact: null };
+      return { scenario: null, lines: [], assignments: [], freeByProduct: [], activeSheet: null, inDispatch: [], dispatchImpact: null };
     }
     const dataVersion = await this.currentDataVersion();
     return this.buildDraftResponse(row, viewer, dataVersion);
@@ -226,14 +226,20 @@ export class ScenariosService implements OnModuleInit {
     dispatchImpact: DraftDispatchImpact | null = null,
   ): Promise<ScenarioDraftResponse> {
     const payload = this.parseDraftPayload(row);
-    // Los pedidos que ya viven en un despacho no consumen existencia del plan
-    // compartido: el envío los omite y aquí tampoco deben aparecer asignados.
-    const inDispatch = await this.dispatch.inDispatchOrders(
-      payload.selected.map((ref) => ref.orderNumber),
+    // Los renglones que ya viven en un despacho abierto no consumen existencia
+    // del plan compartido: el envío los omite y aquí tampoco deben aparecer
+    // asignados. El bloqueo es por renglón: el resto del pedido sigue libre.
+    const dispatchState = await this.dispatch.openDispatchStates(
+      payload.selected.map((ref) => ({ orderNumber: ref.orderNumber, productCode: ref.productCode })),
     );
-    const plan = await buildDraftPlan(
-      this.prisma,
-      payload.selected.filter((ref) => !inDispatch.has(ref.orderNumber)),
+    // El plan se calcula con TODO lo seleccionado (incluido lo ya enviado) para
+    // que la existencia libre descuente el compromiso real del despacho. A la
+    // pantalla solo vuelven los renglones que faltan por enviar.
+    const plan = await buildDraftPlan(this.prisma, payload.selected);
+    const freeKeys = new Set(
+      payload.selected
+        .filter((ref) => !dispatchState.has(draftLineKey(ref)))
+        .map((ref) => draftLineKey(ref)),
     );
     const activeSheet = await this.prisma.dispatchSheet.findFirst({
       where: { draftId: 'GLOBAL', status: { notIn: ['DESPACHADO', 'CANCELADO'] } },
@@ -242,10 +248,21 @@ export class ScenariosService implements OnModuleInit {
     });
     return {
       scenario: this.toDraftDetail(row, viewer, dataVersion),
-      lines: plan.lines,
-      assignments: plan.assignments,
+      lines: plan.lines.filter((line) => freeKeys.has(draftLineKey(line))),
+      assignments: plan.assignments.filter((item) => freeKeys.has(draftLineKey(item))),
       freeByProduct: plan.freeByProduct,
       activeSheet,
+      inDispatch: payload.selected.flatMap((ref) => {
+        const state = dispatchState.get(draftLineKey(ref));
+        return state
+          ? [{
+              orderNumber: ref.orderNumber,
+              productCode: ref.productCode,
+              sheetNumber: state.sheetNumber,
+              started: state.started,
+            }]
+          : [];
+      }),
       dispatchImpact,
     };
   }
@@ -394,10 +411,20 @@ export class ScenariosService implements OnModuleInit {
     const currentByKey = new Map(current.map((ref) => [draftLineKey(ref), ref]));
     const now = new Date().toISOString();
 
+    // Lo que ya está en una hoja abierta nunca sale del plan por autoguardado:
+    // el simulador no puede anular un despacho enviado. Se conserva tal cual.
+    const inDispatch = await this.dispatch.inDispatchLines(
+      current.map((ref) => ({ orderNumber: ref.orderNumber, productCode: ref.productCode })),
+    );
+
     // Lo que sigue en el plan conserva dueño y orden de marcado.
     const kept: typeof current = [];
     for (const ref of current) {
       if (incomingKeys.has(draftLineKey(ref))) {
+        kept.push(ref);
+        continue;
+      }
+      if (inDispatch.has(draftLineKey(ref))) {
         kept.push(ref);
         continue;
       }
@@ -466,7 +493,7 @@ export class ScenariosService implements OnModuleInit {
 
     const existing = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
     if (!existing) {
-      return { scenario: null, lines: [], assignments: [], freeByProduct: [], activeSheet: null, dispatchImpact: null };
+      return { scenario: null, lines: [], assignments: [], freeByProduct: [], activeSheet: null, inDispatch: [], dispatchImpact: null };
     }
     if (input.all && !canOverride) {
       throw new ForbiddenException(
@@ -475,8 +502,15 @@ export class ScenariosService implements OnModuleInit {
     }
 
     const payload = this.parseDraftPayload(existing);
+    // Un renglón que ya está en una hoja abierta no se libera desde el
+    // simulador: sacarlo del plan anularía el despacho. Su fecha (mientras la
+    // carga no inicie) se corrige desde Pedidos o desde la hoja.
+    const inDispatch = await this.dispatch.inDispatchLines(
+      payload.selected.map((ref) => ({ orderNumber: ref.orderNumber, productCode: ref.productCode })),
+    );
     const keys = new Set((input.lines ?? []).map(draftLineKey));
     const selected = payload.selected.filter((ref) => {
+      if (inDispatch.has(draftLineKey(ref))) return true;
       if (input.all) return false;
       if (keys.size > 0 && !keys.has(draftLineKey(ref))) return true;
       if (ref.selectedById === actorId) return false;
@@ -551,26 +585,35 @@ export class ScenariosService implements OnModuleInit {
       throw new ConflictException('Marca al menos un renglón antes de enviar la simulación.');
     }
 
-    // Un pedido que ya vive en un despacho no se vuelve a enviar. Se filtra
-    // ANTES de repartir existencia para que no consuma stock del plan.
-    const inDispatch = await this.dispatch.inDispatchOrders(
-      payload.selected.map((ref) => ref.orderNumber),
+    // Un renglón que ya vive en un despacho abierto no se vuelve a enviar. Se
+    // filtra ANTES de repartir existencia para que no consuma stock del plan.
+    const inDispatch = await this.dispatch.inDispatchLines(
+      payload.selected.map((ref) => ({ orderNumber: ref.orderNumber, productCode: ref.productCode })),
     );
     if (inDispatch.size > 0) {
-      const availableSelected = payload.selected.filter((ref) => !inDispatch.has(ref.orderNumber));
+      const availableSelected = payload.selected.filter((ref) => !inDispatch.has(draftLineKey(ref)));
       if (availableSelected.length === 0) {
         const list = [...inDispatch.entries()]
           .slice(0, 5)
-          .map(([orderNumber, sheetNumber]) => `${orderNumber} (${sheetNumber})`)
+          .map(([key, sheetNumber]) => `${key.replace('#', ' · ')} (${sheetNumber})`)
           .join(', ');
         throw new ConflictException(
-          `Todos los pedidos marcados ya están en despacho: ${list}. Si necesitas cambiar su fecha, hazlo mientras la carga no haya iniciado.`,
+          `Todos los renglones marcados ya están en despacho: ${list}. Si necesitas cambiar su fecha, hazlo mientras la carga no haya iniciado.`,
         );
       }
     }
 
-    const availableRefs = payload.selected.filter((ref) => !inDispatch.has(ref.orderNumber));
-    const plan = await buildDraftPlan(this.prisma, availableRefs);
+    const availableRefs = payload.selected.filter((ref) => !inDispatch.has(draftLineKey(ref)));
+    // El reparto se calcula con TODO el plan (incluido lo que ya está en una
+    // hoja abierta) para no prometer dos veces la misma existencia. A la hoja
+    // nueva solo entran los renglones que aún no están en despacho.
+    const fullPlan = await buildDraftPlan(this.prisma, payload.selected);
+    const availableKeys = new Set(availableRefs.map(draftLineKey));
+    const plan = {
+      lines: fullPlan.lines.filter((line) => availableKeys.has(draftLineKey(line))),
+      assignments: fullPlan.assignments.filter((item) => availableKeys.has(draftLineKey(item))),
+      freeByProduct: fullPlan.freeByProduct,
+    };
     if (plan.lines.length === 0) {
       throw new ConflictException('Los renglones marcados ya no están en la cartera. Actualiza y vuelve a intentar.');
     }
@@ -630,9 +673,9 @@ export class ScenariosService implements OnModuleInit {
       row.version,
       actor,
     );
-    // Los pedidos que ya estaban en despacho se informan a la pantalla.
-    const skippedOrders = [...inDispatch.entries()].map(([orderNumber, sheetNumber]) => ({
-      orderNumber,
+    // Los renglones que ya estaban en despacho se informan a la pantalla.
+    const skippedOrders = [...inDispatch.entries()].map(([key, sheetNumber]) => ({
+      orderNumber: key.split('#')[0] ?? key,
       sheetNumber,
     }));
     const detailSkipped = detail.skippedOrders ?? [];
@@ -939,7 +982,9 @@ export class ScenariosService implements OnModuleInit {
     const reasonByOrder = new Map(
       items.map((item) => [
         item.orderNumber,
-        item.reason === 'CANCELADO' ? 'PEDIDO_ANULADO_EN_PROFIT' : 'PEDIDO_CERRADO_EN_PROFIT',
+        item.reason === 'CANCELADO' || item.reason === 'SIN_NOTA'
+          ? 'PEDIDO_ANULADO_EN_PROFIT'
+          : 'PEDIDO_CERRADO_EN_PROFIT',
       ]),
     );
     const draft = await this.prisma.dispatchDraft.findUnique({ where: { id: 'GLOBAL' } });
@@ -1067,7 +1112,10 @@ export class ScenariosService implements OnModuleInit {
         select: { externalNumber: true, status: true, isActive: true },
       });
       for (const order of orders) {
-        if (!order.isActive || ['NOTA_ENTREGA', 'CERRADO', 'CANCELADO'].includes(order.status)) {
+        if (
+          !order.isActive ||
+          ['NOTA_ENTREGA', 'NOTA_PARCIAL', 'CERRADO', 'CANCELADO'].includes(order.status)
+        ) {
           closed.add(order.externalNumber);
         }
       }

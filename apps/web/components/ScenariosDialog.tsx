@@ -36,7 +36,7 @@ import { useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import type { ScenarioDrift } from '../lib/scenario';
 import { restoreLogParts } from '../lib/scenario';
-import { relativeTime } from '../lib/dispatch-sheet';
+import { relativeTime, skippedDispatchNotice } from '../lib/dispatch-sheet';
 import { useLoadingOverlay } from './loading/LoadingOverlayProvider';
 import { Badge, Skeleton, fmtDate, fmtQty } from './ui';
 
@@ -226,9 +226,13 @@ export function ScenariosDialog({
           body: JSON.stringify({ title: item.name }),
         }),
       );
-      setNotice(`«${item.name}» enviada a despacho ${sheet.number}.`);
+      const skipped = skippedDispatchNotice(sheet.skippedOrders);
+      setNotice([`«${item.name}» enviada a despacho ${sheet.number}.`, skipped].filter(Boolean).join(' '));
       await refreshList();
       await queryClient.invalidateQueries({ queryKey: ['dispatch-sheets'] });
+      // El simulador debe pintar ya el camión sobre los renglones enviados.
+      await queryClient.invalidateQueries({ queryKey: ['orders-grouped'] });
+      await queryClient.invalidateQueries({ queryKey: ['scenario-draft'] });
     } catch (err) {
       setActionError(messageOf(err, 'No se pudo enviar la simulación a despacho'));
     } finally {

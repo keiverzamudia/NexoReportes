@@ -30,6 +30,7 @@ import {
 import { ArrivalStamp, ArrivalStatusBadge, ArrivalTimeline, IncidentKindBadge } from '../../../components/ArrivalParts';
 import { RomanaCheckInDialog, RomanaValidateDialog } from '../../../components/romana/RomanaDialogs';
 import { RomanaDocuments } from '../../../components/romana/RomanaDocuments';
+import { PcpArrivalMobile } from '../../../components/pcp/PcpArrivalMobile';
 import { AppNav, LoginScreen } from '../../../components/shell';
 import { Badge, Card, EmptyState, PageHeader, Skeleton, cx } from '../../../components/ui';
 import { AuthRequiredError, apiFetch, currentUser } from '../../../lib/api';
@@ -37,13 +38,20 @@ import { INCIDENT_KIND_META, INCIDENT_SEVERITY_META, arrivalStatusMeta } from '.
 import { formatNumber, relativeTime } from '../../../lib/dispatch-sheet';
 import { hasPermission } from '../../../lib/permissions';
 import { ROMANA_STATUS_META, formatBytes } from '../../../lib/romana';
+import { useIsMobile } from '../../../lib/use-is-mobile';
 
 // ============================================================
 // Detalle de una llegada en PCP.
 //
+// Móvil primero: `PcpArrivalMobile` reemplaza esta vista en teléfonos con un
+// flujo de cámara (avance de fotos, tomas grandes y barra inferior fija). En
+// escritorio se mantienen dos columnas (ficha/acciones a la izquierda,
+// documentos/bitácora a la derecha).
+//
 // Izquierda: ficha del cliente, hora de planta y hora de Romana. Derecha:
 // documentos por pedido (cédula + carnet), incidencias y bitácora. Las fotos
-// se comprimen al subir y se borran cuando Romana valida.
+// se comprimen al subir y se borran cuando Romana valida; una misma foto se
+// puede reutilizar en los demás pedidos del cliente.
 // ============================================================
 
 function RomanaStamp({ arrival }: { arrival: RomanaArrivalDetail }) {
@@ -115,6 +123,7 @@ export default function PcpDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id ?? '';
   const queryClient = useQueryClient();
+  const isMobile = useIsMobile();
 
   const [checkInPcpOpen, setCheckInPcpOpen] = useState(false);
   const [checkInRomanaOpen, setCheckInRomanaOpen] = useState(false);
@@ -255,6 +264,20 @@ export default function PcpDetailPage() {
   return (
     <>
       <AppNav />
+      {isMobile ? (
+        <PcpArrivalMobile
+          arrival={arrival}
+          canResolve={canResolve}
+          onSaved={(detail) => apply(detail)}
+          onNotify={setToast}
+          onOpenPlantArrival={() => setCheckInPcpOpen(true)}
+          onOpenRomanaArrival={() => setCheckInRomanaOpen(true)}
+          onOpenValidate={() => setValidateOpen(true)}
+          onOpenIncident={() => setIncidentOpen(true)}
+          onOpenEdit={() => setEditOpen(true)}
+          onOpenClose={(mode) => setCloseMode(mode)}
+        />
+      ) : (
       <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg pb-space-2xl md:p-space-xl">
         <div className="flex flex-wrap items-center justify-between gap-space-sm">
           <Link
@@ -299,7 +322,7 @@ export default function PcpDetailPage() {
 
         <div className="grid gap-space-md lg:grid-cols-12">
           {/* ---------- Ficha del cliente + acciones ---------- */}
-          <div className="flex flex-col gap-space-md lg:col-span-4">
+          <div className="order-2 flex flex-col gap-space-md lg:order-1 lg:col-span-4 lg:row-span-2">
             <Card className="flex flex-col gap-space-md p-space-md">
               <ArrivalStamp
                 arrivedAt={arrival.arrivedAt}
@@ -451,8 +474,8 @@ export default function PcpDetailPage() {
             </Card>
           </div>
 
-          {/* ---------- Documentos + incidencias + bitácora ---------- */}
-          <div className="flex flex-col gap-space-md lg:col-span-8">
+          {/* ---------- Documentos ---------- */}
+          <div className="order-1 flex flex-col gap-space-md lg:order-2 lg:col-span-8">
             <Card className="p-space-md">
               <div className="mb-space-sm flex flex-wrap items-center justify-between gap-space-sm">
                 <div>
@@ -467,9 +490,12 @@ export default function PcpDetailPage() {
                   </Badge>
                 )}
               </div>
-              <RomanaDocuments arrival={arrival} onSaved={(detail) => apply(detail)} />
+              <RomanaDocuments arrival={arrival} onSaved={(detail) => apply(detail)} onNotify={setToast} />
             </Card>
+          </div>
 
+          {/* ---------- Incidencias + bitácora ---------- */}
+          <div className="order-3 flex flex-col gap-space-md lg:order-3 lg:col-span-8">
             <Card className="p-space-md">
               <div className="mb-space-sm flex flex-wrap items-center justify-between gap-space-sm">
                 <div>
@@ -581,11 +607,12 @@ export default function PcpDetailPage() {
           </div>
         </div>
       </main>
+      )}
 
       {toast && (
         <div
           role="status"
-          className="animate-rise fixed bottom-space-lg left-1/2 z-50 flex max-w-[92vw] -translate-x-1/2 items-center gap-space-sm rounded-pill bg-primary px-space-lg py-space-sm text-body-md font-semibold text-on-primary shadow-hero"
+          className="animate-rise fixed bottom-24 left-1/2 z-50 flex max-w-[92vw] -translate-x-1/2 items-center gap-space-sm rounded-pill bg-primary px-space-lg py-space-sm text-body-md font-semibold text-on-primary shadow-hero lg:bottom-space-lg"
         >
           <MessageSquare aria-hidden className="size-4" /> {toast}
         </div>

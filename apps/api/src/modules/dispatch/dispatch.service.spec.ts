@@ -409,6 +409,49 @@ async function publish(prisma: ReturnType<typeof createFakePrisma>, assignedToId
   });
 }
 
+/** Publica un despacho con dos clientes para probar los relojes por separado. */
+async function publishTwoCustomers(prisma: ReturnType<typeof createFakePrisma>) {
+  const service = new DispatchService(prisma as never, audit, arrivals);
+  const lines = [
+    snapshotLine({ orderNumber: '408251710' }),
+    snapshotLine({
+      orderNumber: '408251799',
+      productCode: 'ABABOV85',
+      customerCode: '500123456',
+      customerName: 'DISTRIBUIDORA EL CAMPO',
+      description: 'BOVINO 85',
+      priority: 2,
+    }),
+  ];
+  prisma.state.scenarios.push({
+    id: 'sc-2',
+    ownerId: 'u-plan',
+    name: 'Despacho dos clientes',
+    kind: 'SAVED',
+    payload: JSON.stringify({
+      recipe: { by: 'cliente', mode: 'disponible', sort: 'cobertura', filters: {} },
+      selected: lines.map((line) => ({ orderNumber: line.orderNumber, productCode: line.productCode })),
+      snapshot: {
+        takenAt: '2026-10-18T13:12:00.000Z',
+        carteraLines: lines.length,
+        totals: {
+          lines: lines.length,
+          sacks: 120,
+          pendingQty: 120,
+          pendingKg: 4800,
+          assignedQty: 120,
+          assignedKg: 4800,
+          missingQty: 0,
+          missingKg: 0,
+          coverage: 1,
+        },
+        lines,
+      },
+    }),
+  });
+  return service.create(publisher, { scenarioId: 'sc-2', title: 'Despacho dos clientes' });
+}
+
 /**
  * Cierra como en producción: resuelve los artículos, inicia la carga de cada
  * cliente y entrega su factura. La última factura cierra el despacho sola.
@@ -1141,6 +1184,30 @@ describe('DispatchService — tiempos por cliente', () => {
     await expect(
       service.updateLine(operator1, sheet.id, invoiced.lines[0]!.id, { status: 'PENDIENTE' }),
     ).rejects.toThrow(/cerrad|factura/i);
+  });
+
+  it('iniciar la carga de un cliente no arranca el reloj de los demás', async () => {
+    const prisma = createFakePrisma();
+    const sheet = await publishTwoCustomers(prisma);
+    const service = new DispatchService(prisma as never, audit, arrivals);
+
+    const started = await service.startLoad(operator1, sheet.id, { customerKey: '294201237' });
+    const own = started.customerProgress.find((row) => row.customerKey === '294201237')!;
+    const other = started.customerProgress.find((row) => row.customerKey === '500123456')!;
+    expect(own.loadStartedAt).not.toBeNull();
+    // El sello global de la hoja (quien la tomó) no debe heredarse al otro cliente.
+    expect(other.loadStartedAt).toBeNull();
+    expect(other.loadStartedByName).toBeNull();
+
+    // La bandeja muestra el estado real por cliente.
+    const tray = await service.list(admin, { scope: 'pending' });
+    const rows = tray.items.find((item) => item.id === sheet.id)!.customerRows;
+    expect(rows.find((row) => row.customerKey === '294201237')!.status).toBe('EN_CARGA');
+    expect(rows.find((row) => row.customerKey === '500123456')!.status).toBe('PENDIENTE');
+
+    // El otro cliente conserva su propio botón/reloj y puede iniciarse después.
+    const later = await service.startLoad(operator1, sheet.id, { customerKey: '500123456' });
+    expect(later.customerProgress.find((row) => row.customerKey === '500123456')!.loadStartedAt).not.toBeNull();
   });
 
   it('otro operador de almacén carga y factura aunque la hoja esté tomada', async () => {

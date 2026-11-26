@@ -167,6 +167,60 @@ WHERE f.anulada = 0 AND f.status <> '2' AND r.pendiente > 0;
 
 ---
 
+## Cierre de pedidos por nota real (25/11/2026)
+
+`cotiz_c.status = '2'` significa **procesada**, no despachada. Para cerrar un
+pedido como `NOTA_ENTREGA`, `OrderLifecycleService` consulta las notas reales y
+compara cantidades por artículo:
+
+| Tabla | Columnas | Uso |
+|---|---|---|
+| `dbo.cotiz_c` | `fact_num`, `status`, `anulada`, `fec_emis` | Encabezado de la solicitud. |
+| `dbo.reng_cac` | `fact_num`, `co_art`, `total_art`, `anulado` | Cantidad pedida original por artículo. |
+| `dbo.reng_nde` | `fact_num`, `tipo_doc`, `num_doc`, `co_art`, `total_art`, `anulado` | Líneas de nota. `tipo_doc='T'`: origen solicitud; `'P'`: origen pedido de Profit. |
+| `dbo.not_ent` | `fact_num`, `anulada` | Solo notas no anuladas. |
+| `dbo.pedidos` / `dbo.reng_ped` | `fact_num`, `num_doc`, `co_art`, `total_art`, `anulada`, `anulado` | Cadena pedido → solicitud y cantidades del pedido. |
+
+Reglas:
+
+- **Completa**: cada artículo pedido tiene entregado ≥ pedido (tolerancia
+  `0.0001`). Suma todas las notas no anuladas.
+- **Parcial**: existe al menos una nota, pero algún artículo queda por debajo.
+- **Sin nota**: `status='2'`, `pendiente=0` y ninguna línea de nota → se
+  clasifica `CANCELADO` / `SIN_NOTA`.
+- **Anulada**: `cotiz_c.anulada=1` → `CANCELADO`.
+- En pedidos de Profit compartidos por varias solicitudes, la nota se valida
+  contra el pedido completo; si el pedido no está cubierto, sus solicitudes no
+  se declaran completas.
+
+La lectura es por lotes (`IN (@o0, @o1, …)`) y solo `SELECT`. La revalidación
+del histórico usa el mismo circuito con `includeClosed=true`.
+
+### Documento de la nota (`GET /api/orders/:id/delivery-notes`)
+
+El panel de cierres y la ficha del pedido muestran el documento real de la nota:
+
+| Tabla | Columnas | Uso |
+|---|---|---|
+| `dbo.not_ent` | `fact_num`, `fec_emis`, `fec_venc`, `status`, `anulada`, `co_cli`, `co_ven`, `moneda`, `tasa`, `tot_bruto`, `glob_desc`, `iva`, `tot_neto`, `dir_ent`, `comentario` | Cabecera y totales. |
+| `dbo.reng_nde` | `fact_num`, `reng_num`, `co_art`, `co_alma`, `uni_venta`, `total_art`, `prec_vta`, `porc_desc`, `reng_neto`, `anulado`, `tipo_doc`, `num_doc`, `des_art` | Renglones, origen y precios. |
+| `dbo.clientes` | `cli_des`, `rif`, `direc1`, `telefonos`, `plaz_pag` | Datos fiscales y condición de pago. |
+| `dbo.vendedor` | `ven_des` | Vendedor de la nota. |
+| `dbo.art` | `art_des`, `uni_relac` | Descripción y kg por unidad. |
+
+Reglas:
+
+- Se usan las notas de `notaEntregaRefs`; si el cierre es antiguo y no las
+  guardó, se resuelven por `reng_nde.tipo_doc='T'` o por la cadena `P` de
+  `reng_ped`.
+- Solo se muestran líneas no anuladas (`reng_nde.anulado=0`).
+- Si la nota está en `US$` y `nota.tasa > 0`, los importes se convierten de Bs
+  a US$ para mostrarlos como en Profit; se conserva `totalLocal` en Bs.
+- El PDF se genera en el navegador (jsPDF + autotable); la API solo devuelve
+  datos de lectura.
+
+---
+
 ## Forecast mensual (02/11/2026) — `dbo.forecast`
 
 El módulo **Forecast** ya no captura el mensual en Nexo: lo lee de Profit con una

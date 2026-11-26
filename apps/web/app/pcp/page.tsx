@@ -25,6 +25,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CheckInDialog } from '../../components/ArrivalDialogs';
 import { ArrivalStatusBadge } from '../../components/ArrivalParts';
 import { RomanaCheckInDialog, RomanaValidateDialog } from '../../components/romana/RomanaDialogs';
+import { PcpListCard } from '../../components/pcp/PcpListCard';
 import { AppNav, LoginScreen } from '../../components/shell';
 import {
   Badge,
@@ -62,9 +63,10 @@ import { formatBytes, romanaProgress, romanaStatusMeta, sortRomanaArrivals } fro
 // fotos). La pestaña Hoy arrastra lo atrasado que sigue sin atenderse.
 // ============================================================
 
-type Range = 'today' | 'tomorrow' | 'all';
+type Range = 'overdue' | 'today' | 'tomorrow' | 'all';
 
 const RANGE_OPTIONS: { value: Range; label: string }[] = [
+  { value: 'overdue', label: 'Vencido' },
   { value: 'today', label: 'Hoy' },
   { value: 'tomorrow', label: 'Mañana' },
   { value: 'all', label: 'Histórico' },
@@ -97,6 +99,8 @@ export default function PcpPage() {
   const [status, setStatus] = useState<ArrivalStatus | ''>('');
   const [romanaStatus, setRomanaStatus] = useState<RomanaStatus | ''>('');
   const [q, setQ] = useState('');
+  /** Día concreto dentro de la pestaña «Vencido» ('' = todos). */
+  const [overdueDate, setOverdueDate] = useState('');
   const [checkInPcp, setCheckInPcp] = useState<RomanaArrivalSummary | null>(null);
   const [checkInRomana, setCheckInRomana] = useState<RomanaArrivalSummary | null>(null);
   const [validate, setValidate] = useState<RomanaArrivalSummary | null>(null);
@@ -108,11 +112,16 @@ export default function PcpPage() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const date = range === 'today' ? businessToday() : range === 'tomorrow' ? businessTomorrow() : undefined;
+  const date =
+    range === 'today' || range === 'overdue'
+      ? businessToday()
+      : range === 'tomorrow'
+        ? businessTomorrow()
+        : undefined;
   const params = new URLSearchParams();
   if (date) params.set('date', date);
-  // La bandeja de hoy también muestra lo atrasado que nadie atendió.
-  if (range === 'today') params.set('overdue', '1');
+  // «Vencido» pide sólo lo anterior a hoy y que siga abierto; «Hoy» es sólo hoy.
+  if (range === 'overdue') params.set('onlyOverdue', '1');
   if (status) params.set('status', status);
   if (romanaStatus) params.set('romanaStatus', romanaStatus);
   if (q.trim()) params.set('q', q.trim());
@@ -126,20 +135,51 @@ export default function PcpPage() {
   });
 
   const items = useMemo(() => sortRomanaArrivals(data?.items ?? []), [data?.items]);
+
+  // Vencido = días anteriores a hoy que siguen abiertos. Se refuerza en el
+  // cliente para no mostrar nunca lo de hoy aunque la API venga rezagada.
+  const overdueItems = useMemo(() => {
+    if (range !== 'overdue') return items;
+    const today = businessToday();
+    return items.filter((item) => {
+      const day = (item.expectedDate ?? '').slice(0, 10);
+      return day.length === 10 && day < today && !['ATENDIDO', 'AUSENTE', 'CANCELADO'].includes(item.status);
+    });
+  }, [items, range]);
+
+  // Días con clientes vencidos (para el selector de la pestaña «Vencido»).
+  const overdueDates = useMemo(() => {
+    if (range !== 'overdue') return [] as [string, number][];
+    const counts = new Map<string, number>();
+    for (const item of overdueItems) {
+      const day = (item.expectedDate ?? '').slice(0, 10);
+      if (!day) continue;
+      counts.set(day, (counts.get(day) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [overdueItems, range]);
+
+  // El día elegido filtra en el cliente: la lista ya trae sólo vencidos.
+  const visibleItems = useMemo(() => {
+    if (range !== 'overdue') return items;
+    if (!overdueDate) return overdueItems;
+    return overdueItems.filter((item) => (item.expectedDate ?? '').slice(0, 10) === overdueDate);
+  }, [items, overdueItems, range, overdueDate]);
+
   const pulse = useMemo(() => {
     return {
-      waiting: items.filter((item) => item.status === 'ESPERADO' || item.status === 'CON_INCIDENCIA').length,
-      onSite: items.filter((item) => item.status === 'EN_PLANTA').length,
-      docsPending: items.filter((item) => item.romana.pendingDocs > 0).length,
-      inRomana: items.filter((item) => item.romana.status === 'EN_ROMANA').length,
-      validated: items.filter((item) => item.romana.status === 'VALIDADO').length,
-      kgExpected: items
+      waiting: visibleItems.filter((item) => item.status === 'ESPERADO' || item.status === 'CON_INCIDENCIA').length,
+      onSite: visibleItems.filter((item) => item.status === 'EN_PLANTA').length,
+      docsPending: visibleItems.filter((item) => item.romana.pendingDocs > 0).length,
+      inRomana: visibleItems.filter((item) => item.romana.status === 'EN_ROMANA').length,
+      validated: visibleItems.filter((item) => item.romana.status === 'VALIDADO').length,
+      kgExpected: visibleItems
         .filter((item) => !['ATENDIDO', 'AUSENTE', 'CANCELADO'].includes(item.status))
         .reduce((sum, item) => sum + item.plannedKg, 0),
     };
-  }, [items]);
+  }, [visibleItems]);
 
-  const total = items.length;
+  const total = visibleItems.length;
   const validatedPct = total > 0 ? Math.round((pulse.validated / total) * 100) : 0;
   const heroHint =
     total > 0
@@ -162,7 +202,7 @@ export default function PcpPage() {
       sortValue: (row) => row.customerName,
       render: (row) => (
         <Link href={`/pcp/${row.id}`} className="group flex min-w-0 flex-col">
-          <span className="truncate font-semibold text-on-surface group-hover:text-primary">{row.customerName}</span>
+          <span className="font-semibold text-on-surface group-hover:text-primary max-md:line-clamp-2 md:truncate">{row.customerName}</span>
           <span className="text-label-sm normal-case text-on-surface-variant">
             {row.customerCode} · {row.sheetNumber}
           </span>
@@ -181,11 +221,12 @@ export default function PcpPage() {
             <span className={cx('tabular-nums', row.arrivedAt ? 'font-bold text-primary' : 'text-on-surface-variant')}>
               {arrivalTimeLabel(row)}
             </span>
-            <span className="text-label-sm normal-case text-on-surface-variant">
-              {row.arrivedByName
-                ? `${row.arrivedByName}${onSite !== null && onSite > 0 ? ` · ${onSite} min` : ''}`
-                : businessDayLabel(row.expectedDate)}
-            </span>
+            {row.arrivedByName && (
+              <span className="text-label-sm normal-case text-on-surface-variant">
+                {row.arrivedByName}
+                {onSite !== null && onSite > 0 ? ` · ${onSite} min` : ''}
+              </span>
+            )}
           </span>
         );
       },
@@ -371,11 +412,13 @@ export default function PcpPage() {
           <div className="flex flex-col gap-space-md xl:col-span-4">
             <HeroCard
               label={
-                range === 'today'
-                  ? 'Clientes por llegar hoy'
-                  : range === 'tomorrow'
-                    ? 'Clientes esperados mañana'
-                    : 'Clientes en el histórico'
+                range === 'overdue'
+                  ? 'Clientes vencidos sin atender'
+                  : range === 'today'
+                    ? 'Clientes por llegar hoy'
+                    : range === 'tomorrow'
+                      ? 'Clientes esperados mañana'
+                      : 'Clientes en el histórico'
               }
               value={formatNumber(pulse.waiting)}
               suffix="clientes"
@@ -409,25 +452,47 @@ export default function PcpPage() {
                 <Segmented
                   ariaLabel="Día de la bandeja"
                   value={range}
-                  onChange={(value) => setRange(value)}
+                  onChange={(value) => {
+                    setRange(value);
+                    if (value !== 'overdue') setOverdueDate('');
+                  }}
                   options={RANGE_OPTIONS}
                 />
-                <Select
-                  className="w-44"
-                  value={status}
-                  onChange={(value) => setStatus(value as ArrivalStatus | '')}
-                  options={STATUS_OPTIONS}
-                  ariaLabel="Estado de la llegada"
-                />
-                <Select
-                  className="w-48"
-                  value={romanaStatus}
-                  onChange={(value) => setRomanaStatus(value as RomanaStatus | '')}
-                  options={ROMANA_OPTIONS}
-                  ariaLabel="Estado de los documentos"
-                />
+                {range === 'overdue' && (
+                  <Select
+                    className="w-full min-w-0 sm:w-56"
+                    value={overdueDate}
+                    onChange={setOverdueDate}
+                    options={[
+                      { value: '', label: 'Día vencido: Todos' },
+                      ...overdueDates.map(([day, count]) => ({
+                        value: day,
+                        label: `${businessDayLabel(day)} · ${count} cliente${count === 1 ? '' : 's'}`,
+                      })),
+                    ]}
+                    ariaLabel="Día vencido"
+                  />
+                )}
+                {/* En el teléfono los dos selectores comparten fila y la
+                    búsqueda ocupa el ancho completo; en escritorio van inline. */}
+                <div className="flex w-full min-w-0 gap-space-sm sm:contents">
+                  <Select
+                    className="w-full min-w-0 sm:w-44"
+                    value={status}
+                    onChange={(value) => setStatus(value as ArrivalStatus | '')}
+                    options={STATUS_OPTIONS}
+                    ariaLabel="Estado de la llegada"
+                  />
+                  <Select
+                    className="w-full min-w-0 sm:w-48"
+                    value={romanaStatus}
+                    onChange={(value) => setRomanaStatus(value as RomanaStatus | '')}
+                    options={ROMANA_OPTIONS}
+                    ariaLabel="Estado de los documentos"
+                  />
+                </div>
                 <TextInput
-                  className="w-56"
+                  className="w-full sm:w-56"
                   icon={Search}
                   value={q}
                   onChange={setQ}
@@ -441,18 +506,26 @@ export default function PcpPage() {
                   {dataUpdatedAt ? `actualizado ${relativeTime(new Date(dataUpdatedAt).toISOString())}` : 'sincronizando…'}
                 </span>
                 <Badge tone={romanaStatus || status || q ? 'primary' : 'muted'} dot>
-                  {items.length} cliente{items.length === 1 ? '' : 's'}
+                  {visibleItems.length} cliente{visibleItems.length === 1 ? '' : 's'}
                 </Badge>
               </div>
             </div>
 
             <DataTable
               columns={columns}
-              rows={items}
+              rows={visibleItems}
               rowKey={(row) => row.id}
               loading={isLoading}
               defaultSortKey="time"
               maxHeightClass="md:max-h-[min(64vh,820px)]"
+              renderMobileCard={(row) => (
+                <PcpListCard
+                  arrival={row}
+                  onCheckIn={() => setCheckInPcp(row)}
+                  onRomana={() => setCheckInRomana(row)}
+                  onValidate={() => setValidate(row)}
+                />
+              )}
               mobileSummary={
                 <span>
                   {pulse.docsPending} con fotos pendientes · {pulse.onSite} en planta · {pulse.validated} validados
@@ -464,14 +537,24 @@ export default function PcpPage() {
                   title={
                     romanaStatus || status || q
                       ? 'Sin clientes para este filtro'
-                      : range === 'tomorrow'
-                        ? 'Mañana no hay clientes esperados'
-                        : 'Todavía no hay clientes esperados'
+                      : range === 'overdue'
+                        ? overdueDate
+                          ? 'Sin vencidos para ese día'
+                          : 'No hay clientes vencidos'
+                        : range === 'tomorrow'
+                          ? 'Mañana no hay clientes esperados'
+                          : range === 'today'
+                            ? 'Hoy no hay clientes esperados'
+                            : 'Todavía no hay clientes esperados'
                   }
                   description={
                     romanaStatus || status || q
                       ? 'Prueba con otro estado o limpia la búsqueda.'
-                      : 'Aparecen automáticamente cuando planificación envía un despacho: no hay que hacer nada más aquí.'
+                      : range === 'overdue'
+                        ? overdueDate
+                          ? 'Elige otro día o vuelve a «Todos» para ver lo pendiente de días anteriores.'
+                          : 'Todo lo de días anteriores ya se atendió o se cerró.'
+                        : 'Aparecen automáticamente cuando planificación envía un despacho: no hay que hacer nada más aquí.'
                   }
                 />
               }
@@ -480,7 +563,15 @@ export default function PcpPage() {
         </section>
 
         <p className="text-label-sm normal-case text-on-surface-variant">
-          {range === 'today' ? `Bandeja de hoy · ${businessDayLabel(businessToday())}` : ''}
+          {range === 'today'
+            ? `Bandeja de hoy · ${businessDayLabel(businessToday())}`
+            : range === 'tomorrow'
+              ? `Bandeja de mañana · ${businessDayLabel(businessTomorrow())}`
+              : range === 'overdue'
+                ? `Vencido hasta antes de hoy · ${businessDayLabel(businessToday())}${
+                    overdueDate ? ` · ${businessDayLabel(overdueDate)}` : ''
+                  }`
+                : `Histórico · últimos ${items.length} registros`}
         </p>
       </main>
 

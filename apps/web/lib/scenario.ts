@@ -96,19 +96,31 @@ export function scenarioQueryString(recipe: ScenarioRecipe): string {
 export function toDispatchInputs(groups: OrderGroup[]): DispatchInput[] {
   return groups.flatMap((group) =>
     group.lines
-      // Un pedido que ya vive en un despacho no entra al plan ni consume stock.
+      // Un renglón que sigue en un despacho abierto no entra al plan ni
+      // consume stock. Su saldo (si el despacho ya cerró) sí vuelve a la cola.
       .filter((line) => !line.dispatchSheetNumber)
-      .map((line) => ({
-        key: lineKeyOf(line),
-        productCode: line.productCode,
-        pendingQty: line.pendingQty,
-        pendingKg: line.pendingKg,
-        // La fecha efectiva manda: tentativa si existe, original si no.
-        requestedDate: line.tentativeDate ?? line.requestedDate,
-        orderNumber: line.orderNumber,
-        customerName: line.customerName,
-        stockTotal: (line.stock03 ?? 0) + (line.stock9999 ?? 0) + (line.stock68 ?? 0),
-      })),
+      .map((line) => {
+        // Se reparte solo lo planificable; los kg se mantienen proporcionales
+        // para que el peso por unidad no se infle en los parciales.
+        const qty = line.plannableQty;
+        const kg =
+          line.pendingKg === null
+            ? null
+            : line.pendingQty > 0
+              ? (line.pendingKg * qty) / line.pendingQty
+              : line.pendingKg;
+        return {
+          key: lineKeyOf(line),
+          productCode: line.productCode,
+          pendingQty: qty,
+          pendingKg: kg,
+          // La fecha efectiva manda: tentativa si existe, original si no.
+          requestedDate: line.tentativeDate ?? line.requestedDate,
+          orderNumber: line.orderNumber,
+          customerName: line.customerName,
+          stockTotal: (line.stock03 ?? 0) + (line.stock9999 ?? 0) + (line.stock68 ?? 0),
+        };
+      }),
   );
 }
 

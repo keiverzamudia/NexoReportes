@@ -222,7 +222,13 @@ export function Card({
   return (
     <section
       {...rest}
-      className={cx('rounded-card border border-outline-variant/35 bg-surface-container-lowest shadow-soft', className ?? '')}
+      className={cx(
+        // `min-w-0`: una tarjeta dentro de grid/flex no debe ensancharse por un
+        // texto largo (nombres, pedidos). Sin esto, la tarjeta crece más que el
+        // teléfono y recorta todo lo alineado a la derecha.
+        'min-w-0 rounded-card border border-outline-variant/35 bg-surface-container-lowest shadow-soft',
+        className ?? '',
+      )}
     >
       {children}
     </section>
@@ -576,6 +582,7 @@ export function DataTable<T>({
   defaultSortDir = 'asc',
   expandedKey,
   renderExpanded,
+  renderMobileCard,
   sticky = true,
   showHelpRow = false,
   onRowDoubleClick,
@@ -599,6 +606,12 @@ export function DataTable<T>({
   expandedKey?: string | null;
   /** Contenido que se despliega **dentro de la fila** (escritorio) o de la tarjeta (teléfono). */
   renderExpanded?: (row: T) => ReactNode;
+  /**
+   * Tarjeta propia para el teléfono. Si se omite, la tarjeta genérica resume
+   * las columnas; las páginas que necesitan una lectura más limpia (PCP) pasan
+   * aquí su propia tarjeta. En escritorio la tabla no cambia.
+   */
+  renderMobileCard?: (row: T) => ReactNode;
   /** Encabezado anclado al hacer scroll. Desactivar en tablas anidadas. */
   sticky?: boolean;
   /** Muestra bajo cada encabezado la descripción corta de `help.short`. */
@@ -812,7 +825,14 @@ export function DataTable<T>({
       </div>
 
       {/* ---------- Teléfono: tarjetas ---------- */}
-      <ul className="flex flex-col divide-y divide-outline-variant/20 md:hidden">
+      <ul
+        className={cx(
+          'md:hidden',
+          renderMobileCard
+            ? 'flex flex-col gap-space-md p-space-md'
+            : 'flex flex-col divide-y divide-outline-variant/20',
+        )}
+      >
         {sorted.map((row) => {
           const key = rowKey(row);
           const isOpen = expandedKey != null && expandedKey === key;
@@ -826,11 +846,16 @@ export function DataTable<T>({
               onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row) : undefined}
               onClick={rowClickHandler(row)}
               className={cx(
-                'flex flex-col gap-space-sm px-space-lg py-space-md transition-colors',
+                !renderMobileCard && 'flex flex-col gap-space-sm px-space-lg py-space-md transition-colors',
+                renderMobileCard && 'min-w-0',
                 isOpen && 'bg-surface-container-low',
                 (onRowDoubleClick || onRowClick) && 'cursor-pointer',
               )}
             >
+              {renderMobileCard ? (
+                renderMobileCard(row)
+              ) : (
+              <>
               <div className="flex items-start justify-between gap-space-sm">
                 <div className="flex min-w-0 flex-col gap-space-2xs">
                   {idCols.map((c) => (
@@ -903,6 +928,8 @@ export function DataTable<T>({
                     </div>
                   ))}
                 </div>
+              )}
+              </>
               )}
 
               {isOpen && renderExpanded && (

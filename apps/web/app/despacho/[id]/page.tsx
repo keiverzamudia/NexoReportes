@@ -67,6 +67,7 @@ import { DispatchInvoiceDialog } from '../../../components/DispatchInvoiceDialog
 import { DispatchLineDialog } from '../../../components/DispatchLineDialog';
 import { DispatchMobileView } from '../../../components/DispatchMobileView';
 import { DispatchReportDialog } from '../../../components/DispatchReportDialog';
+import { CustomerPdfButton } from '../../../components/CustomerPdfButton';
 import { LineStatusBadge, SheetStatusBadge } from '../../../components/DispatchSheetParts';
 import { TruckLoadPlan } from '../../../components/TruckLoadPlan';
 import type { LoadPlanLine } from '../../../components/TruckLoadPlan';
@@ -351,19 +352,23 @@ export default function DispatchSheetPage() {
   }
 
   /** La fecha es del pedido, no del renglón: el diálogo deduplica por pedido. */
-  function openDateEditor(line: DispatchSheetLine) {
+  function openDateEditor(input: DispatchSheetLine | DispatchSheetLine[]) {
+    const lines = Array.isArray(input) ? input : [input];
+    const first = lines[0];
+    if (!first) return;
     setDateTarget({
-      title: `Entrega del pedido ${line.orderNumber}`,
-      customerName: line.customerName ?? 'Cliente',
-      customerCode: line.customerCode,
-      items: [
-        {
-          orderNumber: line.orderNumber,
-          productCode: line.productCode,
-          orderDate: null,
-          requestedDate: line.effectiveDate,
-        },
-      ],
+      title:
+        lines.length > 1
+          ? `Entrega de ${first.customerName ?? 'Cliente'}`
+          : `Entrega del pedido ${first.orderNumber}`,
+      customerName: first.customerName ?? 'Cliente',
+      customerCode: first.customerCode,
+      items: lines.map((line) => ({
+        orderNumber: line.orderNumber,
+        productCode: line.productCode,
+        orderDate: null,
+        requestedDate: line.effectiveDate,
+      })),
     });
   }
 
@@ -531,6 +536,7 @@ export default function DispatchSheetPage() {
           onOpenBitacora={() => setBitacoraOpen(true)}
           onOpenCancel={() => setCancelOpen(true)}
           onExport={() => void exportSheet()}
+          onNotify={setToast}
         />
       ) : (
       <main className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg p-space-lg pb-space-2xl md:p-space-xl">
@@ -704,6 +710,11 @@ export default function DispatchSheetPage() {
               const invoiced = Boolean(customerProgress?.invoiceDeliveredAt);
               const closedGroup = groupClosed(group);
               const timeline = customerTimeline(sheet.sentAt, customerProgress, group.lines);
+              const groupDelivery =
+                [...new Set(group.lines.map((line) => line.effectiveDate).filter((value): value is string => Boolean(value)))]
+                  .sort()[0] ?? null;
+              // La entrega solo se mueve mientras ningún renglón se haya cargado.
+              const groupAllPending = group.lines.every((line) => line.status === 'PENDIENTE');
               return (
                 <section key={group.key}>
                   <div className="flex flex-wrap items-center justify-between gap-x-space-sm gap-y-2 bg-surface-container-low/60 px-space-md py-space-sm">
@@ -754,6 +765,22 @@ export default function DispatchSheetPage() {
                           carga cerrada
                         </Badge>
                       )}
+                      {canEditDates && !started && groupAllPending && group.pendingLines > 0 && (
+                        <DeliveryDateButton
+                          date={groupDelivery}
+                          onEdit={() => openDateEditor(group.lines)}
+                          label={`Entrega de ${group.name}`}
+                          hint={`${
+                            new Set(group.lines.map((line) => line.orderNumber)).size
+                          } pedido(s) · editable hasta iniciar la carga`}
+                        />
+                      )}
+                      <CustomerPdfButton
+                        sheet={sheet}
+                        group={group}
+                        progress={customerProgress}
+                        onNotify={setToast}
+                      />
                       {editable && !started && (
                         <button
                           type="button"

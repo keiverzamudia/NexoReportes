@@ -17,6 +17,8 @@
     "@tanstack/react-query": "^5.62.0",
     "driver.js": "^1.14.0",
     "echarts": "^5.5.1",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.9",
     "lucide-react": "^0.469.0",
     "next": "^15.1.0",
     "react": "^19.0.0",

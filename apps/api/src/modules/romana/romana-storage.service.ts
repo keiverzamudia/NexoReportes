@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { ROMANA_LIMITS } from '@nexo/contracts';
 import { createHash } from 'node:crypto';
 import { createReadStream, type ReadStream } from 'node:fs';
-import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp, { type OutputInfo } from 'sharp';
 
@@ -89,17 +89,12 @@ export class RomanaStorageService implements OnModuleInit {
       .webp({ quality: 60, effort: 4 })
       .toBuffer();
 
-    const folder = [String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0'), input.arrivalId];
-    const safeOrder = input.orderNumber.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 40) || 'pedido';
-    const suffix = createHash('sha1').update(input.orderNumber).digest('hex').slice(0, 8);
-    // Versión única: reemplazar una foto escribe un archivo nuevo y solo
-    // después se borra el anterior. Así una falla de BD no deja la fila
-    // apuntando a un archivo pisado.
-    const version = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    const baseName = `${safeOrder}-${suffix}-${version}__${input.kind}`;
-
-    const storageKey = [...folder, `${baseName}.webp`].join('/');
-    const thumbKey = [...folder, `${baseName}.thumb.webp`].join('/');
+    const { storageKey, thumbKey } = this.keysFor(
+      input.arrivalId,
+      input.orderNumber,
+      input.kind,
+      now,
+    );
 
     await this.write(storageKey, full.buffer);
     try {
@@ -118,6 +113,38 @@ export class RomanaStorageService implements OnModuleInit {
       height: full.height,
       sha256: createHash('sha256').update(full.buffer).digest('hex'),
     };
+  }
+
+  /**
+   * Copia física de una foto ya guardada a otro pedido de la misma llegada.
+   * Se duplican los archivos (no se comparten claves) para que el borrado de
+   * una llegada validada no deje filas apuntando a archivos ya eliminados.
+   */
+  async duplicate(input: {
+    arrivalId: string;
+    orderNumber: string;
+    kind: 'CEDULA' | 'CARNET';
+    storageKey: string | null;
+    thumbKey: string | null;
+    now?: Date;
+  }): Promise<{ storageKey: string; thumbKey: string }> {
+    if (!input.storageKey || !input.thumbKey) {
+      throw new NotFoundException('La foto ya no está disponible.');
+    }
+    const keys = this.keysFor(
+      input.arrivalId,
+      input.orderNumber,
+      input.kind,
+      input.now ?? new Date(),
+    );
+    await this.copy(input.storageKey, keys.storageKey);
+    try {
+      await this.copy(input.thumbKey, keys.thumbKey);
+    } catch (error) {
+      await this.removeKeys([keys.storageKey]);
+      throw error;
+    }
+    return keys;
   }
 
   async read(storageKey: string): Promise<StoredStream> {
@@ -243,6 +270,42 @@ export class RomanaStorageService implements OnModuleInit {
       await rm(temporary, { force: true }).catch(() => undefined);
       throw error;
     }
+  }
+
+  /** Copia un archivo con el mismo patrón de escritura atómica que `write`. */
+  private async copy(fromKey: string, toKey: string): Promise<void> {
+    const from = this.resolveKey(fromKey);
+    const absolute = this.resolveKey(toKey);
+    await mkdir(path.dirname(absolute), { recursive: true });
+    const temporary = `${absolute}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      await copyFile(from, temporary);
+      await rename(temporary, absolute);
+    } catch {
+      await rm(temporary, { force: true }).catch(() => undefined);
+      throw new NotFoundException('La foto ya no está disponible.');
+    }
+  }
+
+  /** Claves únicas de una foto (versión nueva en cada escritura). */
+  private keysFor(
+    arrivalId: string,
+    orderNumber: string,
+    kind: 'CEDULA' | 'CARNET',
+    now: Date,
+  ): { storageKey: string; thumbKey: string } {
+    const folder = [String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0'), arrivalId];
+    const safeOrder = orderNumber.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 40) || 'pedido';
+    const suffix = createHash('sha1').update(orderNumber).digest('hex').slice(0, 8);
+    // Versión única: reemplazar una foto escribe un archivo nuevo y solo
+    // después se borra el anterior. Así una falla de BD no deja la fila
+    // apuntando a un archivo pisado.
+    const version = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const baseName = `${safeOrder}-${suffix}-${version}__${kind}`;
+    return {
+      storageKey: [...folder, `${baseName}.webp`].join('/'),
+      thumbKey: [...folder, `${baseName}.thumb.webp`].join('/'),
+    };
   }
 
   private resolveKey(key: string): string {

@@ -12,6 +12,8 @@ import {
   RomanaArrivalDetail,
   RomanaArrivalSummary,
   RomanaCheckInInput,
+  RomanaDocApplyInput,
+  RomanaDocApplyResponse,
   RomanaDocKind,
   RomanaDocument,
   RomanaListResponse,
@@ -103,7 +105,7 @@ export class RomanaService {
 
   async list(viewer: RomanaViewer, query: RomanaQuery): Promise<RomanaListResponse> {
     const rows = await this.prisma.customerArrival.findMany({
-      where: arrivalDateFilter(query.date, query.overdue),
+      where: arrivalDateFilter(query.date, query.overdue, query.onlyOverdue),
       include: {
         incidents: { select: { status: true } },
         romanaDocuments: true,
@@ -308,6 +310,157 @@ export class RomanaService {
     });
 
     return this.detail(viewer, id);
+  }
+
+  /**
+   * Reutiliza una foto ya subida en otro pedido de la misma llegada.
+   * La cédula del chofer y el carnet de circulación son iguales para todo el
+   * cliente: el operador toma una sola foto y la aplica a los demás pedidos.
+   */
+  async applyDocument(
+    viewer: RomanaViewer,
+    id: string,
+    orderNumber: string,
+    kind: RomanaDocKind,
+    input: RomanaDocApplyInput = {},
+  ): Promise<RomanaDocApplyResponse> {
+    const row = await this.findRow(id);
+    const order = orderNumber.trim();
+    const orders = splitOrders(row.orderNumbers);
+    if (!orders.includes(order)) {
+      throw new BadRequestException('Ese pedido no pertenece a esta llegada.');
+    }
+    if (row.status === 'CANCELADO') {
+      throw new BadRequestException('La llegada está cancelada: no admite documentos.');
+    }
+    if (row.romanaValidatedAt) {
+      throw new ConflictException('Los documentos ya se validaron y se borraron.');
+    }
+    if (!ROMANA_DOC_KINDS.includes(kind)) {
+      throw new BadRequestException('Tipo de documento inválido.');
+    }
+
+    const source = row.romanaDocuments.find(
+      (document) => document.orderNumber === order && document.kind === kind && document.storageKey,
+    );
+    if (!source) {
+      throw new NotFoundException('Primero sube la foto que quieres reutilizar.');
+    }
+
+    const requested =
+      input.orderNumbers && input.orderNumbers.length > 0 ? input.orderNumbers : orders;
+    const targets = [...new Set(requested.map((item) => item.trim()))].filter(
+      (item) => item !== order && orders.includes(item),
+    );
+
+    const applied: string[] = [];
+    const skipped: string[] = [];
+    const actor = await this.viewerInfo(viewer);
+
+    for (const target of targets) {
+      const existing = row.romanaDocuments.find(
+        (document) => document.orderNumber === target && document.kind === kind,
+      );
+      if (existing?.storageKey) {
+        // Ese pedido ya tiene su propia foto: no se pisa.
+        skipped.push(target);
+        continue;
+      }
+      if (!existing && row.romanaDocuments.length + applied.length >= ROMANA_LIMITS.maxDocsPerArrival) {
+        throw new BadRequestException('La llegada supera el máximo de documentos permitido.');
+      }
+
+      const copied = await this.storage.duplicate({
+        arrivalId: row.id,
+        orderNumber: target,
+        kind,
+        storageKey: source.storageKey,
+        thumbKey: source.thumbKey,
+      });
+
+      try {
+        if (existing) {
+          await this.prisma.arrivalOrderDocument.update({
+            where: { id: existing.id },
+            data: {
+              storageKey: copied.storageKey,
+              thumbKey: copied.thumbKey,
+              mimeType: source.mimeType,
+              bytes: source.bytes,
+              width: source.width,
+              height: source.height,
+              sha256: source.sha256,
+              uploadedById: actor.id,
+              uploadedByName: actor.name,
+              purgedAt: null,
+              purgedById: null,
+              purgedByName: null,
+              purgeReason: null,
+            },
+          });
+          await this.storage.removeKeys([existing.storageKey, existing.thumbKey]);
+        } else {
+          await this.prisma.arrivalOrderDocument.create({
+            data: {
+              arrivalId: row.id,
+              orderNumber: target,
+              kind,
+              storageKey: copied.storageKey,
+              thumbKey: copied.thumbKey,
+              mimeType: source.mimeType,
+              bytes: source.bytes,
+              width: source.width,
+              height: source.height,
+              sha256: source.sha256,
+              uploadedById: actor.id,
+              uploadedByName: actor.name,
+            },
+          });
+        }
+      } catch (error) {
+        await this.storage.removeKeys([copied.storageKey, copied.thumbKey]);
+        throw error;
+      }
+
+      applied.push(target);
+    }
+
+    if (applied.length > 0) {
+      if (row.romanaPhotosPurgedAt && !row.romanaValidatedAt) {
+        await this.prisma.customerArrival.update({
+          where: { id: row.id },
+          data: { romanaPhotosPurgedAt: null },
+        });
+      }
+      const label = kind === 'CEDULA' ? 'la cédula' : 'el carnet';
+      await this.prisma.arrivalEvent.create({
+        data: {
+          arrivalId: row.id,
+          kind: 'SYSTEM',
+          type: 'ROMANA_DOC_REUSE',
+          body: `${actor.name ?? actor.code ?? 'Romana'} reutilizó ${label} del pedido ${order} en ${applied.join(
+            ', ',
+          )}.`,
+          authorId: actor.id,
+          authorCode: actor.code,
+          authorName: actor.name,
+        },
+      });
+      await this.audit.record({
+        actorId: actor.id,
+        actorEmail: actor.code,
+        action: 'ROMANA_DOC_REUSE',
+        entityType: 'RomanaArrival',
+        entityId: row.id,
+        context: { number: row.number, from: order, kind, to: applied },
+      });
+    }
+
+    return {
+      detail: await this.detail(viewer, id),
+      applied,
+      skipped,
+    };
   }
 
   // ---------- Operación en planta ----------
@@ -965,7 +1118,9 @@ export class RomanaService {
       number: row.number,
       customerCode: row.customerCode,
       customerName: row.customerName,
-      expectedDate: row.expectedDate,
+      // Llegadas antiguas guardan la fecha como ISO completo; la API entrega
+      // siempre `yyyy-MM-dd` para que ningún cliente muestre la cadena cruda.
+      expectedDate: row.expectedDate ? row.expectedDate.slice(0, 10) : null,
       sheetId: row.sheetId,
       sheetNumber: row.sheetNumber,
       sheetTitle: row.sheetTitle,

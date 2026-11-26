@@ -55,7 +55,7 @@ import {
 import { buildDispatchMetrics } from './dispatch-metrics';
 import { buildDispatchPulse } from './dispatch-pulse';
 import { buildDispatchRemovals } from './dispatch-removals';
-import { loadOrderDispatchStates, loadOrdersInDispatch } from './dispatch-order-state';
+import { loadLineDispatchStates, plannableQtyFor } from './dispatch-order-state';
 import { ProfitLockService } from '../sync/profit-lock.service';
 import { enqueueProfitLock } from '../sync/profit-lock-queue';
 import { PrismaService } from '../../common/prisma.module';
@@ -109,8 +109,9 @@ export interface SyncActor {
 
 export interface DispatchSyncContext {
   actor?: SyncActor | null;
-  // Motivo por pedido (Profit): CANCELADO → PEDIDO_ANULADO_EN_PROFIT,
-  // NOTA_ENTREGA → PEDIDO_CERRADO_EN_PROFIT.
+  // Motivo por pedido (Profit): CANCELADO / SIN_NOTA →
+  // PEDIDO_ANULADO_EN_PROFIT, NOTA_ENTREGA / NOTA_PARCIAL →
+  // PEDIDO_CERRADO_EN_PROFIT.
   reasonByOrder?: Map<string, string> | null;
   // Motivo por defecto para los renglones retirados del plan.
   defaultReason?: string;
@@ -261,32 +262,54 @@ export class DispatchService {
   ) {}
 
   /**
-   * Pedidos que ya viven en un despacho (hoja no anulada). Se usan para
-   * excluirlos del simulador y avisar antes de publicar.
+   * Estado de apertura por renglón (`pedido#artículo`): hoja abierta donde
+   * sigue vivo y si la carga ya arrancó. El simulador lo usa para pintar el
+   * camión y bloquear el renglón, aunque su cartera aún no se haya refrescado.
    */
-  async inDispatchOrders(orderNumbers: string[]): Promise<Map<string, string>> {
-    return loadOrdersInDispatch(this.prisma, orderNumbers);
+  async openDispatchStates(
+    refs: Array<{ orderNumber: string; productCode: string }>,
+  ): Promise<Map<string, { sheetNumber: string; started: boolean }>> {
+    const states = await loadLineDispatchStates(this.prisma, refs);
+    const out = new Map<string, { sheetNumber: string; started: boolean }>();
+    for (const ref of refs) {
+      const key = `${ref.orderNumber}#${ref.productCode}`;
+      const state = states.get(key);
+      if (!state?.openSheetNumber) continue;
+      out.set(key, { sheetNumber: state.openSheetNumber, started: state.started });
+    }
+    return out;
   }
 
   /**
-   * Deja solo los renglones que pueden entrar a un despacho nuevo. Si un
-   * pedido ya está en otro despacho, se omiten TODOS sus renglones (la fecha
-   * y el bloqueo viven en el encabezado, no en el artículo).
+   * Renglones (`pedido#artículo`) que ya viven en un despacho abierto. Se usan
+   * para excluirlos del simulador y avisar antes de publicar.
    */
-  private async availableForDispatch<T extends { orderNumber: string }>(
+  async inDispatchLines(
+    refs: Array<{ orderNumber: string; productCode: string }>,
+  ): Promise<Map<string, string>> {
+    const states = await this.openDispatchStates(refs);
+    return new Map([...states].map(([key, state]) => [key, state.sheetNumber]));
+  }
+
+  /**
+   * Deja solo los renglones que pueden entrar a un despacho nuevo. El bloqueo
+   * es por renglón: si el pedido se despachó en tandas, sus artículos libres
+   * siguen pudiendo enviarse.
+   */
+  private async availableForDispatch<T extends { orderNumber: string; productCode: string }>(
     lines: T[],
   ): Promise<{ lines: T[]; skipped: Array<{ orderNumber: string; sheetNumber: string }> }> {
-    const states = await loadOrderDispatchStates(
-      this.prisma,
-      lines.map((line) => line.orderNumber),
-    );
+    const states = await loadLineDispatchStates(this.prisma, lines);
     const skipped = new Map<string, string>();
-    for (const [orderNumber, state] of states) {
-      if (state.inDispatch) skipped.set(orderNumber, state.sheetNumber);
-    }
+    const available = lines.filter((line) => {
+      const state = states.get(`${line.orderNumber}#${line.productCode}`);
+      if (!state?.openSheetNumber) return true;
+      skipped.set(line.orderNumber, state.openSheetNumber);
+      return false;
+    });
     if (skipped.size === 0) return { lines, skipped: [] };
     return {
-      lines: lines.filter((line) => !skipped.has(line.orderNumber)),
+      lines: available,
       skipped: [...skipped.entries()].map(([orderNumber, sheetNumber]) => ({ orderNumber, sheetNumber })),
     };
   }
@@ -296,9 +319,79 @@ export class DispatchService {
       .slice(0, 5)
       .map((item) => `${item.orderNumber} (${item.sheetNumber})`)
       .join(', ');
-    return `Estos pedidos ya están en despacho y no se enviaron: ${list}${
+    return `Estos renglones ya están en despacho y no se enviaron: ${list}${
       skipped.length > 5 ? '…' : ''
     }. Si necesitas cambiar su fecha, hazlo mientras la carga no haya iniciado.`;
+  }
+
+  /**
+   * Recorta una foto de escenario guardado al saldo planificable de hoy. Una
+   * foto vieja puede traer cantidades que ya se cargaron o que pertenecen a un
+   * despacho abierto; al publicar se respeta lo que queda realmente por cargar.
+   */
+  private async capToPlannable<
+    T extends {
+      orderNumber: string;
+      productCode: string;
+      pendingQty: number;
+      pendingKg: number | null;
+      assignedQty: number;
+      assignedKg: number;
+      missingQty: number;
+      missingKg: number;
+    },
+  >(lines: T[]): Promise<T[]> {
+    if (lines.length === 0) return lines;
+    const orderNumbers = [...new Set(lines.map((line) => line.orderNumber))];
+    const productCodes = [...new Set(lines.map((line) => line.productCode))];
+    const [rows, states] = await Promise.all([
+      this.prisma.salesOrderLine.findMany({
+        where: {
+          order: { externalNumber: { in: orderNumbers } },
+          productCode: { in: productCodes },
+        },
+        select: {
+          productCode: true,
+          pendingQty: true,
+          quantity: true,
+          order: { select: { externalNumber: true } },
+        },
+      }),
+      loadLineDispatchStates(this.prisma, lines),
+    ]);
+    const byKey = new Map(
+      rows.map((row) => [`${row.order.externalNumber}#${row.productCode}`, row]),
+    );
+    const out: T[] = [];
+    for (const line of lines) {
+      const key = `${line.orderNumber}#${line.productCode}`;
+      const row = byKey.get(key);
+      // Sin datos sincronizados no se recorta: manda la foto del escenario.
+      if (!row) {
+        out.push(line);
+        continue;
+      }
+      const pendingQty = toNumber(row.pendingQty);
+      const quantityRaw = row.quantity === null || row.quantity === undefined ? null : toNumber(row.quantity);
+      const plannable = plannableQtyFor(states.get(key), { pendingQty, quantity: quantityRaw });
+      if (plannable <= 0) continue;
+      if (line.assignedQty <= plannable) {
+        out.push(line);
+        continue;
+      }
+      const kgPerUnit =
+        line.pendingKg !== null && line.pendingQty > 0 ? line.pendingKg / line.pendingQty : null;
+      const assignedQty = round2(plannable);
+      const assignedKg = kgPerUnit === null ? 0 : round2(assignedQty * kgPerUnit);
+      out.push({
+        ...line,
+        assignedQty,
+        assignedKg,
+        missingQty: round2(Math.max(0, pendingQty - assignedQty)),
+        missingKg: kgPerUnit === null ? 0 : round2(Math.max(0, pendingQty - assignedQty) * kgPerUnit),
+      });
+    }
+    return out;
   }
 
   /** Encola el bloqueo/desbloqueo de fecha en Profit sin frenar la operación. */
@@ -513,19 +606,23 @@ export class DispatchService {
     }
 
     const lines = [...snapshot.lines].sort((a, b) => a.priority - b.priority);
-    const available = await this.availableForDispatch(lines);
-    if (available.lines.length === 0) {
+    const availableRaw = await this.availableForDispatch(lines);
+    // Una foto guardada puede traer cantidades ya cargadas o comprometidas:
+    // se recorta al saldo planificable de hoy antes de publicar.
+    const publishable = await this.capToPlannable(availableRaw.lines);
+    const available = { lines: publishable, skipped: availableRaw.skipped };
+    if (publishable.length === 0) {
       throw new ConflictException(
-        `Todos los pedidos del plan ya están en despacho. ${this.skippedMessage(available.skipped)}`,
+        `Todos los renglones del plan ya están en despacho o sin saldo por cargar. ${this.skippedMessage(available.skipped)}`,
       );
     }
     const plannedSacks = round2(
-      available.lines.reduce((sum, line) => sum + (line.uom === 'SAC' ? line.assignedQty : 0), 0),
+      publishable.reduce((sum, line) => sum + (line.uom === 'SAC' ? line.assignedQty : 0), 0),
     );
-    const plannedKg = round2(available.lines.reduce((sum, line) => sum + line.assignedKg, 0));
+    const plannedKg = round2(publishable.reduce((sum, line) => sum + line.assignedKg, 0));
     const destination = assignee ? assignee.displayName : 'todo el almacén';
 
-    const arrivalLines: ArrivalSourceLine[] = available.lines.map((line) => ({
+    const arrivalLines: ArrivalSourceLine[] = publishable.map((line) => ({
       orderNumber: line.orderNumber,
       customerCode: line.customerCode ?? null,
       customerName: line.customerName ?? null,
@@ -565,11 +662,11 @@ export class DispatchService {
           createdByCode: actor.code,
           createdByName: actor.name,
           sentAt: new Date(),
-          plannedLines: available.lines.length,
+          plannedLines: publishable.length,
           plannedSacks,
           plannedKg,
           lines: {
-            create: available.lines.map((line, index) => ({
+            create: publishable.map((line, index) => ({
               position: index + 1,
               orderNumber: line.orderNumber,
               productCode: line.productCode,
@@ -597,7 +694,7 @@ export class DispatchService {
             },
           },
           arrivals: { create: arrivalRows },
-          customerProgress: { create: this.progressSeed(available.lines) },
+          customerProgress: { create: this.progressSeed(publishable) },
         },
         include: {
           lines: { orderBy: { position: 'asc' } },
@@ -670,10 +767,13 @@ export class DispatchService {
     if (lines.length === 0) {
       throw new BadRequestException('Ningún renglón seleccionado tiene existencia para despachar.');
     }
-    const available = await this.availableForDispatch(lines);
+    const availableRaw = await this.availableForDispatch(lines);
+    // El plan vivo ya viene recortado, pero entre marcar y publicar puede
+    // aparecer un despacho cerrado: se vuelve a validar contra el saldo de hoy.
+    const available = { lines: await this.capToPlannable(availableRaw.lines), skipped: availableRaw.skipped };
     if (available.lines.length === 0) {
       throw new ConflictException(
-        `Todos los pedidos de la simulación ya están en despacho. ${this.skippedMessage(available.skipped)}`,
+        `Todos los renglones de la simulación ya están en despacho o sin saldo por cargar. ${this.skippedMessage(available.skipped)}`,
       );
     }
 
@@ -2273,6 +2373,11 @@ export class DispatchService {
   private toProgressList(sheet: SheetWithLines): DispatchCustomerProgress[] {
     const buckets = this.customerBuckets(sheet.lines);
     const rows = new Map((sheet.customerProgress ?? []).map((row) => [row.customerKey, row]));
+    // Desde que se publica, la hoja trae una fila por cliente (aunque esté
+    // vacía). El sello global `sheet.startedAt` solo sirve de respaldo para
+    // hojas históricas sin filas: usarlo con filas presentes haría que
+    // «Iniciar carga» de un cliente arrancara el reloj de todos los demás.
+    const legacySheet = (sheet.customerProgress ?? []).length === 0;
     return buckets.map((bucket) => {
       const row = rows.get(bucket.key);
       const checked = bucket.lines
@@ -2280,11 +2385,12 @@ export class DispatchService {
         .filter((value): value is Date => value instanceof Date)
         .sort((a, b) => a.getTime() - b.getTime());
       const pending = bucket.lines.filter((line) => line.status === 'PENDIENTE').length;
-      // Fallback para hojas históricas sin fila: los sellos globales y las
-      // horas de los renglones alcanzan para mostrar el tiempo de carga.
-      const startedAt = row?.loadStartedAt ?? sheet.startedAt ?? checked[0] ?? null;
+      const startedAt = row?.loadStartedAt ?? (legacySheet ? sheet.startedAt ?? checked[0] : null);
       const closedAt =
-        row?.loadClosedAt ?? (pending === 0 ? checked[checked.length - 1] ?? sheet.completedAt : null);
+        row?.loadClosedAt ??
+        (pending === 0 && startedAt
+          ? checked[checked.length - 1] ?? (legacySheet ? sheet.completedAt : null)
+          : null);
       return {
         customerKey: bucket.key,
         customerCode: bucket.code,
@@ -2845,6 +2951,10 @@ export class DispatchService {
         status,
         plannedOrders: plannedOrderKeys.size,
         pendingOrders: pendingOrderKeys.size,
+        // Pedidos del cliente para poder buscarlos desde la bandeja.
+        orderNumbers: [...plannedOrderKeys]
+          .filter((key) => !key.startsWith('__line-'))
+          .sort((a, b) => a.localeCompare(b, 'es')),
         plannedLines: bucket.lines.length,
         linesDone,
         partialLines,
@@ -2861,7 +2971,12 @@ export class DispatchService {
   private toLine(line: LineRow, sheet?: SheetWithLines): DispatchSheetLine {
     const active = line.status !== 'ANULADO';
     const progress = sheet?.customerProgress?.find((row) => row.customerKey === customerKey(line));
-    const startedAt = active ? progress?.loadStartedAt ?? sheet?.startedAt ?? line.checkedAt ?? null : null;
+    // Mismo criterio que `toProgressList`: el sello global solo respalda hojas
+    // históricas sin filas por cliente.
+    const legacySheet = (sheet?.customerProgress?.length ?? 0) === 0;
+    const startedAt = active
+      ? progress?.loadStartedAt ?? (legacySheet ? sheet?.startedAt : null) ?? line.checkedAt ?? null
+      : null;
     return {
       id: line.id,
       position: line.position,

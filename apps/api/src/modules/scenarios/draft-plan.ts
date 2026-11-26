@@ -5,7 +5,7 @@ import {
   ScenarioLineRef,
 } from '@nexo/contracts';
 import { PrismaService } from '../../common/prisma.module';
-import { loadOrderDispatchStates } from '../dispatch/dispatch-order-state';
+import { loadDispatchStates, plannableQtyFor } from '../dispatch/dispatch-order-state';
 
 // ============================================================
 // Plan vivo compartido: resuelve los renglones marcados por el equipo contra
@@ -98,7 +98,7 @@ export async function buildDraftPlan(
       },
       select: { orderNumber: true, productCode: true, tentativeDate: true },
     }),
-    loadOrderDispatchStates(prisma, orderNumbers),
+    loadDispatchStates(prisma, orderNumbers),
   ]);
 
   const tentativeByKey = new Map<string, string>();
@@ -139,15 +139,20 @@ export async function buildDraftPlan(
 
     const pendingQty = round3(toNumber(row.pendingQty));
     const pendingKg = toNumberOrNull(row.pendingKg);
+    const quantity = toNumberOrNull(row.quantity);
+    const state = dispatchStates.lines.get(draftLineKey(ref));
+    // Saldo planificable: si el renglón ya se despachó (aunque sea parcial) solo
+    // vuelve a la cartera lo que no se cargó. Nunca más que el pendiente de Profit.
+    const plannableQty = round3(plannableQtyFor(state, { pendingQty, quantity }));
     const kgPerUnit = pendingKg === null || pendingQty === 0 ? null : pendingKg / pendingQty;
     const stockTotal = round3(stock.get(ref.productCode) ?? 0);
     const free = remaining.get(ref.productCode) ?? stockTotal;
     // El plan del equipo SIEMPRE reserva en modo disponible: nunca promete
     // existencia que no existe. El modo «solicitado total» es solo análisis.
-    const assignedQty = round3(Math.max(0, Math.min(free, pendingQty)));
+    const assignedQty = round3(Math.max(0, Math.min(free, plannableQty)));
     const freeAfter = round3(free - assignedQty);
     remaining.set(ref.productCode, freeAfter);
-    const missingQty = round3(pendingQty - assignedQty);
+    const missingQty = round3(plannableQty - assignedQty);
 
     lines.push({
       orderId: row.orderId,
@@ -161,15 +166,17 @@ export async function buildDraftPlan(
       productCode: row.productCode,
       description: row.description,
       uom: row.uom,
-      quantity: toNumberOrNull(row.quantity),
+      quantity,
       pendingQty,
+      plannableQty,
       pendingKg,
       warehouseCode: row.warehouses,
       stock03: null,
       stock9999: null,
       stock68: null,
-      dispatchSheetNumber: dispatchStates.get(row.order.externalNumber)?.sheetNumber ?? null,
-      dispatchStarted: dispatchStates.get(row.order.externalNumber)?.started ?? false,
+      // Solo bloquea la hoja abierta; el saldo de una cerrada vuelve a la cartera.
+      dispatchSheetNumber: state?.openSheetNumber ?? null,
+      dispatchStarted: dispatchStates.orders.get(row.order.externalNumber)?.started ?? false,
     });
 
     assignments.push({

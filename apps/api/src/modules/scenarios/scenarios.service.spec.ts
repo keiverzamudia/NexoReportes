@@ -180,7 +180,8 @@ const audit = { record: async () => undefined } as never;
 const dispatch = {
   syncFromDraft: async () => undefined,
   createFromDraft: async () => ({}),
-  inDispatchOrders: async () => new Map<string, string>(),
+  inDispatchLines: async () => new Map<string, string>(),
+  openDispatchStates: async () => new Map<string, { sheetNumber: string; started: boolean }>(),
 } as never;
 
 function snapshotLine(overrides: Row = {}) {

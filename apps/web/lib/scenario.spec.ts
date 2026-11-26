@@ -35,6 +35,7 @@ function line(overrides: Partial<OrderGroupLine> = {}): OrderGroupLine {
     uom: 'SAC',
     quantity: 10,
     pendingQty: 10,
+    plannableQty: 10,
     pendingKg: 350,
     warehouseCode: 'Stock 03',
     stock03: 500,

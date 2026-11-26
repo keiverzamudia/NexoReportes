@@ -1712,6 +1712,30 @@ function lifecyclePending(params: Record<string, unknown>, limit: number): Recor
   }));
 }
 
+// Cantidad pedida por artículo para la reconciliación (equivalente a
+// `reng_cac.total_art` agrupado por solicitud).
+function lifecycleLines(params: Record<string, unknown>, limit: number): Record<string, unknown>[] {
+  const wanted = new Set(
+    Object.keys(params)
+      .filter((key) => /^o\d+$/.test(key))
+      .map((key) => String(params[key])),
+  );
+  const byOrder = new Map<string, Map<string, number>>();
+  for (const row of SOLICITUDES) {
+    const nro = String(row.nro_solicitud);
+    if (!wanted.has(nro)) continue;
+    const art = String(row.co_art);
+    const bucket = byOrder.get(nro) ?? new Map<string, number>();
+    bucket.set(art, (bucket.get(art) ?? 0) + Number(row.cantidad ?? 0));
+    byOrder.set(nro, bucket);
+  }
+  const rows: Record<string, unknown>[] = [];
+  for (const [solicitud, products] of byOrder) {
+    for (const [co_art, qty] of products) rows.push({ solicitud, co_art, qty });
+  }
+  return rows.slice(0, limit);
+}
+
 // Usuarios de desarrollo: mismo papel que `MasterProfit.dbo.VUSUARIOS`.
 // La contraseña de todos es `nexo` (modo fixtures, nunca producción).
 const FIXTURE_PASSWORD = 'nexo';
@@ -1833,6 +1857,15 @@ export class FixturesProfitAdapter implements ProfitAdapter {
     // Reconciliación de pedidos: se detecta por el marcador del SELECT.
     if (lower.includes('order_lifecycle_header')) return lifecycleHeaders(params, limit);
     if (lower.includes('order_lifecycle_pending')) return lifecyclePending(params, limit);
+    if (lower.includes('order_lifecycle_lines')) return lifecycleLines(params, limit);
+    // En fixtures no hay pedidos de Profit ni notas de entrega: las consultas
+    // devuelven vacío para que el modo desarrollo no cierre pedidos por error.
+    if (lower.includes('order_lifecycle_pedidos')) return [];
+    if (lower.includes('order_lifecycle_notes')) return [];
+    // Documento de nota de entrega: en fixtures no hay notas reales.
+    if (lower.includes('nexo:delivery_note_numbers')) return [];
+    if (lower.includes('nexo:delivery_note_header')) return [];
+    if (lower.includes('nexo:delivery_note_lines')) return [];
     if (lower.includes('reng_nde')) {
       // Desglose por cliente × artículo de un día (modal «Desglose del día»).
       if (lower.includes('nexo:daily_customer_products')) return dailyCustomerProducts(params, limit);

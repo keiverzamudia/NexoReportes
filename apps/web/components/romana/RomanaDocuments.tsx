@@ -3,6 +3,7 @@
 import type {
   RomanaArrivalDetail,
   RomanaArrivalSummary,
+  RomanaDocApplyResponse,
   RomanaDocKind,
   RomanaDocument,
   RomanaDocumentResponse,
@@ -10,6 +11,7 @@ import type {
 import {
   AlertTriangle,
   Camera,
+  CopyPlus,
   Eye,
   Loader2,
   ShieldCheck,
@@ -23,6 +25,8 @@ import { Badge, cx } from '../ui';
 
 // ============================================================
 // Documentos de Romana por pedido: una cédula y un carnet por pedido.
+// Como la cédula del chofer y el carnet son del mismo cliente, una foto ya
+// subida se puede copiar a los demás pedidos de la llegada («En los demás»).
 // La subida es inmediata (sobrevive cerrar el diálogo) y la miniatura se
 // sirve por un endpoint autenticado.
 // ============================================================
@@ -33,6 +37,9 @@ function DocSlot({
   kind,
   document,
   editable,
+  reuseTargets,
+  reusing,
+  onReuse,
   onSaved,
   onPreview,
 }: {
@@ -41,6 +48,10 @@ function DocSlot({
   kind: RomanaDocKind;
   document?: RomanaDocument;
   editable: boolean;
+  /** Otros pedidos que aún no tienen este documento (para reutilizarlo). */
+  reuseTargets: string[];
+  reusing: boolean;
+  onReuse: () => void;
   onSaved: (detail: RomanaArrivalDetail) => void;
   onPreview: (url: string, label: string) => void;
 }) {
@@ -191,6 +202,23 @@ function DocSlot({
         )}
       </div>
 
+      {hasLive && editable && reuseTargets.length > 0 && (
+        <button
+          type="button"
+          onClick={onReuse}
+          disabled={reusing || busy}
+          title={`Copiar ${meta.label} a ${reuseTargets.length} pedido(s) de este cliente`}
+          className="inline-flex h-9 w-full items-center justify-center gap-space-xs rounded-pill border border-primary/30 bg-primary-fixed/40 px-space-xs font-semibold text-label-sm text-primary transition-colors hover:bg-primary-fixed disabled:opacity-50"
+        >
+          {reusing ? (
+            <Loader2 aria-hidden className="size-3.5 animate-spin" />
+          ) : (
+            <CopyPlus aria-hidden className="size-3.5" />
+          )}
+          {reusing ? 'Copiando…' : `En los demás (${reuseTargets.length})`}
+        </button>
+      )}
+
       {error && (
         <p role="alert" className="flex items-start gap-1 text-label-sm normal-case text-error">
           <AlertTriangle aria-hidden className="mt-0.5 size-3 shrink-0" /> {error}
@@ -216,18 +244,49 @@ function DocSlot({
 export function RomanaDocuments({
   arrival,
   onSaved,
+  onNotify,
 }: {
   arrival: RomanaArrivalSummary;
   onSaved: (detail: RomanaArrivalDetail) => void;
+  onNotify?: (message: string) => void;
 }) {
   const [preview, setPreview] = useState<{ url: string; label: string } | null>(null);
+  const [reusing, setReusing] = useState<string | null>(null);
   const editable = arrival.romana.canUploadDocs;
+
+  /** Copia la foto a los pedidos indicados de la misma llegada. */
+  async function reuse(
+    orderNumber: string,
+    kind: RomanaDocKind,
+    targets: string[],
+  ) {
+    const key = `${orderNumber}:${kind}`;
+    if (reusing || targets.length === 0) return;
+    setReusing(key);
+    try {
+      const response = await apiFetch<RomanaDocApplyResponse>(
+        `/romana/arrivals/${arrival.id}/orders/${encodeURIComponent(orderNumber)}/documents/${kind}/apply`,
+        { method: 'POST', body: JSON.stringify({ orderNumbers: targets }) },
+      );
+      onSaved(response.detail);
+      onNotify?.(
+        response.applied.length > 0
+          ? `${ROMANA_DOC_META[kind].short} copiada a ${response.applied.length} pedido(s).`
+          : 'Los demás pedidos ya tienen su propio documento.',
+      );
+    } catch (err) {
+      onNotify?.(err instanceof Error ? err.message : 'No se pudo reutilizar la foto.');
+    } finally {
+      setReusing(null);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-space-md">
       <div className="flex flex-wrap items-center justify-between gap-space-sm">
-        <p className="text-label-sm normal-case text-on-surface-variant">
-          Una cédula y un carnet por cada pedido. Se comprimen al subir y se borran al validar.
+        <p className="max-w-xl text-label-sm normal-case text-on-surface-variant">
+          Una cédula y un carnet por cada pedido. Sube una vez y usa <strong>«En los demás»</strong> para
+          los otros pedidos del mismo cliente. Se comprimen al subir y se borran al validar.
         </p>
         <div className="flex items-center gap-space-xs">
           <Badge tone={arrival.romana.pendingDocs > 0 ? 'warning' : 'success'} dot>
@@ -244,7 +303,7 @@ export function RomanaDocuments({
           Esta llegada no tiene pedidos; no se pueden pedir documentos.
         </div>
       ) : (
-        <div className="grid gap-space-md md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-space-sm md:grid-cols-2 xl:grid-cols-3">
           {arrival.romana.orders.map((order) => (
             <div
               key={order.orderNumber}
@@ -278,18 +337,32 @@ export function RomanaDocuments({
               </div>
 
               <div className="grid grid-cols-2 gap-space-sm">
-                {(['CEDULA', 'CARNET'] as RomanaDocKind[]).map((kind) => (
-                  <DocSlot
-                    key={kind}
-                    arrivalId={arrival.id}
-                    orderNumber={order.orderNumber}
-                    kind={kind}
-                    document={order.documents.find((document) => document.kind === kind)}
-                    editable={editable}
-                    onSaved={onSaved}
-                    onPreview={(url, label) => setPreview({ url, label })}
-                  />
-                ))}
+                {(['CEDULA', 'CARNET'] as RomanaDocKind[]).map((kind) => {
+                  const reuseTargets = arrival.romana.orders
+                    .filter((other) => other.orderNumber !== order.orderNumber)
+                    .filter(
+                      (other) =>
+                        !other.documents.some(
+                          (document) => document.kind === kind && document.url,
+                        ),
+                    )
+                    .map((other) => other.orderNumber);
+                  return (
+                    <DocSlot
+                      key={kind}
+                      arrivalId={arrival.id}
+                      orderNumber={order.orderNumber}
+                      kind={kind}
+                      document={order.documents.find((document) => document.kind === kind)}
+                      editable={editable}
+                      reuseTargets={reuseTargets}
+                      reusing={reusing === `${order.orderNumber}:${kind}`}
+                      onReuse={() => void reuse(order.orderNumber, kind, reuseTargets)}
+                      onSaved={onSaved}
+                      onPreview={(url, label) => setPreview({ url, label })}
+                    />
+                  );
+                })}
               </div>
             </div>
           ))}

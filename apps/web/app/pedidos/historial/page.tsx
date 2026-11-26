@@ -49,7 +49,8 @@ import { fmtTonnes } from '../../../lib/sales-analytics';
 const PAGE_SIZE = 50;
 
 const STATUS_OPTIONS = [
-  { value: 'NOTA_ENTREGA', label: 'Procesados' },
+  { value: 'NOTA_ENTREGA', label: 'Completos' },
+  { value: 'NOTA_PARCIAL', label: 'Parciales' },
   { value: 'ABIERTO', label: 'Abiertos' },
   { value: 'CANCELADO', label: 'Cancelados' },
   { value: '', label: 'Todos' },
@@ -64,15 +65,17 @@ const BILLING_OPTIONS: Array<{ value: '' | OrderBillingStatus; label: string }> 
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
   ABIERTO: 'Abierto',
-  NOTA_ENTREGA: 'Procesado',
+  NOTA_ENTREGA: 'Nota completa',
+  NOTA_PARCIAL: 'Nota parcial',
   CERRADO: 'Cerrado',
   CANCELADO: 'Cancelado',
   DESCONOCIDO: 'Desconocido',
 };
 
-const STATUS_TONE: Record<OrderStatus, 'success' | 'muted' | 'danger' | 'default'> = {
+const STATUS_TONE: Record<OrderStatus, 'success' | 'warning' | 'muted' | 'danger' | 'default'> = {
   ABIERTO: 'success',
   NOTA_ENTREGA: 'muted',
+  NOTA_PARCIAL: 'warning',
   CERRADO: 'muted',
   CANCELADO: 'danger',
   DESCONOCIDO: 'default',
@@ -316,7 +319,7 @@ export default function PedidosHistorialPage() {
           icon={History}
           greeting={greeting}
           title="Historial de pedidos"
-          subtitle="Todo lo que pasó por Pedidos: abiertos, procesados por nota de entrega y cancelados. Aquí sí aparecen los pedidos facturados que el simulador oculta."
+          subtitle="Todo lo que pasó por Pedidos: abiertos, cerrados por nota completa o parcial y cancelados. Aquí sí aparecen los pedidos facturados que el simulador oculta."
           actions={
             <div className="flex flex-wrap items-center gap-space-sm">
               <Badge tone="muted" dot>
@@ -414,10 +417,12 @@ export default function PedidosHistorialPage() {
                 icon={PackageCheck}
               />
               <Kpi
-                label="Procesados"
-                value={status === 'NOTA_ENTREGA' && data ? String(data.total) : '—'}
-                hint="cerrados por nota de entrega"
-                tone="success"
+                label={status === 'NOTA_PARCIAL' ? 'Parciales' : 'Procesados'}
+                value={
+                  (status === 'NOTA_ENTREGA' || status === 'NOTA_PARCIAL') && data ? String(data.total) : '—'
+                }
+                hint={status === 'NOTA_PARCIAL' ? 'nota emitida con faltantes' : 'cerrados por nota completa'}
+                tone={status === 'NOTA_PARCIAL' ? 'warning' : 'success'}
                 icon={Receipt}
               />
               <Kpi
@@ -443,7 +448,8 @@ export default function PedidosHistorialPage() {
                 <div>
                   <p className="text-title-md font-semibold text-primary">Pedidos procesados</p>
                   <p className="text-label-sm text-on-surface-variant">
-                    «Facturado asumido» es la regla del cierre por nota de entrega; la factura real vive en CxC.
+                    «Facturado asumido» aplica solo a la nota completa; la parcial queda pendiente. La factura real
+                    vive en CxC.
                   </p>
                 </div>
                 <Badge tone="muted" dot>

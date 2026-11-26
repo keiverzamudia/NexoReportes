@@ -13,8 +13,15 @@ const CLOSED_STATUSES = ['ATENDIDO', 'AUSENTE', 'CANCELADO'];
 export function arrivalDateFilter(
   date: string | undefined,
   overdue: boolean | undefined,
+  onlyOverdue: boolean | undefined = false,
 ): Prisma.CustomerArrivalWhereInput {
   if (!date) return {};
+  if (onlyOverdue) {
+    return {
+      expectedDate: { lt: date },
+      status: { notIn: CLOSED_STATUSES },
+    };
+  }
   if (!overdue) return { expectedDate: date };
   return {
     OR: [

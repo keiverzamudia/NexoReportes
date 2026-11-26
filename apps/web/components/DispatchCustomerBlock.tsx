@@ -40,6 +40,7 @@ import {
 } from '../lib/dispatch-sheet';
 import { DispatchCustomerTimeline } from './DispatchCustomerTimeline';
 import { LineStatusBadge } from './DispatchSheetParts';
+import { CustomerPdfButton } from './CustomerPdfButton';
 import { Badge, cx } from './ui';
 
 export interface DispatchCustomerBlockProps {
@@ -63,6 +64,8 @@ export interface DispatchCustomerBlockProps {
   onEditNote: (line: DispatchSheetLine) => void;
   onOpenInvoice: () => void;
   onReopenInvoice: () => void;
+  /** Aviso al generar el PDF (ventana bloqueada o error). */
+  onNotify?: (message: string) => void;
 }
 
 /** Sello de cierre de un producto: hora real y tiempo desde el envío. */
@@ -122,6 +125,7 @@ export function DispatchCustomerBlock({
   onEditNote,
   onOpenInvoice,
   onReopenInvoice,
+  onNotify,
 }: DispatchCustomerBlockProps) {
   const started = Boolean(progress?.loadStartedAt);
   const loadClosed = Boolean(progress?.loadClosedAt);
@@ -183,6 +187,7 @@ export function DispatchCustomerBlock({
               en carga
             </Badge>
           )}
+          <CustomerPdfButton sheet={sheet} group={group} progress={progress} onNotify={onNotify} />
           {editable && !started && (
             <button
               type="button"

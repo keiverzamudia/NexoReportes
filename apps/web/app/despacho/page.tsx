@@ -20,6 +20,7 @@
 import type {
   DispatchCustomerRowStatus,
   DispatchPulse,
+  DispatchSheetDetail,
   DispatchSheetListResponse,
 } from '@nexo/contracts';
 import { useQuery } from '@tanstack/react-query';
@@ -36,6 +37,9 @@ import {
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { DespachoSubNav } from '../../components/DespachoSubNav';
+import { DeliveryDateButton } from '../../components/DeliveryDate';
+import { DeliveryDateDialog } from '../../components/DeliveryDateDialog';
+import type { DeliveryDateTarget } from '../../components/DeliveryDateDialog';
 import { DispatchClientExpansion } from '../../components/DispatchClientExpansion';
 import { DispatchPulseStrip } from '../../components/DispatchPulseStrip';
 import { CustomerStatusBadge } from '../../components/DispatchSheetParts';
@@ -47,6 +51,7 @@ import {
   formatBusinessDate,
   formatDateTime,
   formatNumber,
+  groupByCustomer,
   relativeTime,
   type DispatchClientRow,
 } from '../../lib/dispatch-sheet';
@@ -76,6 +81,10 @@ export default function DespachoPage() {
   const [q, setQ] = useState('');
   // Cliente abierto dentro de la bandeja (`sheetId:customerKey`).
   const [openRow, setOpenRow] = useState<string | null>(null);
+  // Editor rápido de entrega: se abre desde la columna «Entrega».
+  const [dateTarget, setDateTarget] = useState<DeliveryDateTarget | null>(null);
+  const [dateBusy, setDateBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const { data: sessionUser } = useQuery({
     queryKey: ['me'],
@@ -93,6 +102,8 @@ export default function DespachoPage() {
   // solo lo tiene ADMIN (la matriz lo concede después, sin tocar el código).
   const canSeePulse = hasPermission(permissions, 'despacho', 'view_summary');
   const canSeeTimes = hasPermission(permissions, 'despacho', 'view_history');
+  // Mover la entrega en Profit exige el permiso propio de Pedidos.
+  const canEditDates = hasPermission(permissions, 'pedidos', 'change_date');
 
   // La bandeja siempre arranca en lo que hay por cargar.
   useEffect(() => {
@@ -131,6 +142,42 @@ export default function DespachoPage() {
 
   const clientRows = useMemo(() => clientRowsFrom(data?.items ?? []), [data]);
   const rowKey = (row: DispatchClientRow) => `${row.sheet.id}:${row.customerKey}`;
+
+  // La bandeja no trae los renglones: se resuelven bajo demanda al tocar la
+  // fecha. Solo se ofrece mientras el cliente no haya iniciado la carga.
+  async function openCustomerDate(row: DispatchClientRow) {
+    if (dateBusy) return;
+    setDateBusy(rowKey(row));
+    setNotice(null);
+    try {
+      const detail = await apiFetch<DispatchSheetDetail>(`/dispatch-sheets/${row.sheet.id}`);
+      const group = groupByCustomer(detail.lines).find((item) => item.key === row.customerKey);
+      if (!group || group.lines.length === 0) {
+        setNotice('Ese cliente ya no tiene renglones activos para mover la entrega.');
+        return;
+      }
+      // Regla: la entrega solo se mueve mientras no haya empezado la carga.
+      if (!group.lines.every((line) => line.status === 'PENDIENTE')) {
+        setNotice('La carga de este cliente ya inició: la fecha de entrega quedó bloqueada.');
+        return;
+      }
+      setDateTarget({
+        title: `Entrega de ${row.customerName}`,
+        customerName: row.customerName,
+        customerCode: row.customerCode,
+        items: group.lines.map((line) => ({
+          orderNumber: line.orderNumber,
+          productCode: line.productCode,
+          orderDate: null,
+          requestedDate: line.effectiveDate,
+        })),
+      });
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : 'No se pudo abrir la entrega del cliente.');
+    } finally {
+      setDateBusy(null);
+    }
+  }
   // Filas que cumplen tab, estado y búsqueda. El filtro de fecha se aplica
   // después para poder listar solo las fechas que hoy tienen pedidos.
   const baseRows = useMemo(() => {
@@ -142,9 +189,13 @@ export default function DespachoPage() {
       if (scope === 'pending' && status !== 'FACTURADA' && row.status === 'FACTURADA') return false;
       if (status && row.status !== status) return false;
       if (!needle) return true;
-      return [row.customerName, row.customerCode ?? '', row.sheet.number, row.sheet.title].some((value) =>
-        value.toLowerCase().includes(needle),
-      );
+      return [
+        row.customerName,
+        row.customerCode ?? '',
+        row.sheet.number,
+        row.sheet.title,
+        ...(row.orderNumbers ?? []),
+      ].some((value) => value.toLowerCase().includes(needle));
     });
   }, [clientRows, scope, status, q]);
 
@@ -179,7 +230,34 @@ export default function DespachoPage() {
       header: 'Entrega',
       kind: 'field',
       sortValue: (row) => row.nextDeliveryDate ?? '9999-12-31',
-      render: (row) => <span className="tabular-nums text-on-surface-variant">{formatBusinessDate(row.nextDeliveryDate)}</span>,
+      render: (row) => {
+        // Cambiar la entrega solo mientras la carga del cliente no haya
+        // iniciado (`PENDIENTE`) y la hoja siga viva.
+        const editable =
+          canEditDates &&
+          row.status === 'PENDIENTE' &&
+          row.sheet.status !== 'CANCELADO' &&
+          row.sheet.status !== 'DESPACHADO';
+        if (!editable) {
+          return (
+            <span className="tabular-nums text-on-surface-variant">{formatBusinessDate(row.nextDeliveryDate)}</span>
+          );
+        }
+        return (
+          <span className="inline-flex" onClick={(event) => event.stopPropagation()}>
+            <DeliveryDateButton
+              date={row.nextDeliveryDate}
+              onEdit={() => void openCustomerDate(row)}
+              label={`Entrega de ${row.customerName}`}
+              hint={
+                dateBusy === rowKey(row)
+                  ? 'Abriendo el editor de entrega…'
+                  : 'Editable hasta iniciar la carga'
+              }
+            />
+          </span>
+        );
+      },
     },
     {
       key: 'customer',
@@ -207,7 +285,20 @@ export default function DespachoPage() {
                 </span>
               )}
             </span>
-            {row.customerCode && <span className="text-label-sm tabular-nums text-outline">{row.customerCode}</span>}
+            {(row.customerCode || (row.orderNumbers?.length ?? 0) > 0) && (
+              <span className="flex flex-wrap items-center gap-x-space-xs text-label-sm tabular-nums text-outline">
+                {row.customerCode && <span>{row.customerCode}</span>}
+                {(row.orderNumbers?.length ?? 0) > 0 && (
+                  <span
+                    className="max-w-[20rem] truncate"
+                    title={`Pedidos: ${row.orderNumbers.join(', ')}`}
+                  >
+                    {row.customerCode ? '· ' : ''}Ped. {row.orderNumbers.slice(0, 3).join(' · ')}
+                    {row.orderNumbers.length > 3 ? ` +${row.orderNumbers.length - 3}` : ''}
+                  </span>
+                )}
+              </span>
+            )}
           </span>
         );
       },
@@ -439,7 +530,7 @@ export default function DespachoPage() {
                   disabled={deliveryDates.length === 0}
                 />
               </div>
-              <TextInput className="w-56" icon={Search} value={q} onChange={setQ} placeholder="Buscar cliente, N° o título…" ariaLabel="Buscar cliente o despacho" />
+              <TextInput className="w-64" icon={Search} value={q} onChange={setQ} placeholder="Buscar cliente, pedido, N° o título…" ariaLabel="Buscar cliente, pedido o despacho" />
             </div>
             <div className="flex items-center gap-space-sm">
               {isFetching && <RefreshCw aria-hidden className="size-3.5 animate-spin text-outline" />}
@@ -508,6 +599,12 @@ export default function DespachoPage() {
           </p>
         )}
 
+        {notice && (
+          <p role="status" className="flex items-center gap-space-sm text-body-md text-secondary">
+            <Truck aria-hidden className="size-4" /> {notice}
+          </p>
+        )}
+
         <p className="flex flex-wrap items-center gap-space-xs text-label-sm normal-case text-on-surface-variant">
           <Users aria-hidden className="size-3.5" />
           {isOperator
@@ -515,6 +612,27 @@ export default function DespachoPage() {
             : 'Ves todo lo pendiente del almacén. La carga la realizan los operadores con permiso «Abrir».'}
         </p>
       </main>
+
+      <DeliveryDateDialog
+        open={dateTarget !== null}
+        target={dateTarget}
+        onClose={() => setDateTarget(null)}
+        onSaved={(result) => {
+          setDateTarget(null);
+          const parts: string[] = [];
+          if (result.applied > 0) parts.push(`${result.applied} pedido(s) movido(s)`);
+          if (result.skipped > 0) parts.push(`${result.skipped} omitido(s)`);
+          if (result.failed > 0) parts.push(`${result.failed} con error`);
+          setNotice(
+            result.dryRun
+              ? `Simulación: ${result.applied} pedido(s) cambiarían de entrega.`
+              : parts.length > 0
+                ? `Entrega: ${parts.join(' · ')}.`
+                : 'La entrega no cambió.',
+          );
+          window.setTimeout(() => setNotice(null), 6000);
+        }}
+      />
     </>
   );
 }

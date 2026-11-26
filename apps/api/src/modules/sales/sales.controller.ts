@@ -44,6 +44,7 @@ import { PermissionsGuard } from '../permissions/permissions.guard';
 import { CustomerStatementService } from './customer-statement.service';
 import { CustomerInsightsService } from './customer-insights.service';
 import { CustomerNotesService } from './customer-notes.service';
+import { DeliveryNoteService } from './delivery-note.service';
 import { OrderLifecycleService } from './order-lifecycle.service';
 import { ProfitDeliveryDatesService } from './profit-delivery-dates.service';
 import { SalesAnalyticsService } from './sales-analytics.service';
@@ -62,6 +63,7 @@ export class SalesController {
     private readonly customerStatements: CustomerStatementService,
     private readonly customerInsights: CustomerInsightsService,
     private readonly customerNotes: CustomerNotesService,
+    private readonly deliveryNoteService: DeliveryNoteService,
     private readonly lifecycle: OrderLifecycleService,
     private readonly analytics: SalesAnalyticsService,
   ) {}
@@ -185,6 +187,16 @@ export class SalesController {
   ) {
     this.requireAdmin(request);
     return this.lifecycle.reopen({ id: request.user?.sub, code: request.user?.code }, id, body);
+  }
+
+  // Documento real de la nota de entrega que Profit generó para el pedido.
+  // Devuelve todas las notas vinculadas (normalmente una) con cabecera,
+  // renglones y totales. Si el cierre es antiguo y no guardó refs, las busca
+  // por origen T/P.
+  @Get('orders/:id/delivery-notes')
+  @RequireAnyPermission('pedidos:read', 'pedidos:view_history')
+  deliveryNotes(@Param('id') id: string) {
+    return this.deliveryNoteService.getByOrder(id);
   }
 
   @Get('orders/:id')

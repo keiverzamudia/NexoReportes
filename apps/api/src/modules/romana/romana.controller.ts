@@ -26,6 +26,7 @@ import {
   ArrivalIncidentResolveInput,
   ArrivalMessageInput,
   RomanaCheckInInput,
+  RomanaDocApplyInput,
   RomanaDocKind,
   RomanaQuery,
   RomanaValidateInput,
@@ -34,6 +35,7 @@ import {
   zArrivalIncidentResolveInput,
   zArrivalMessageInput,
   zRomanaCheckInInput,
+  zRomanaDocApplyInput,
   zRomanaDocKind,
   zRomanaQuery,
   zRomanaValidateInput,
@@ -91,6 +93,19 @@ export class RomanaController {
       throw new BadRequestException('Adjunta una foto en el campo «file».');
     }
     return this.romana.saveDocument(this.viewer(request), id, orderNumber, kind, file.buffer);
+  }
+
+  @Post('arrivals/:id/orders/:orderNumber/documents/:kind/apply')
+  @RequirePermission('pcp:upload')
+  @ApiOperation({ summary: 'Reutiliza una foto en los demás pedidos de la llegada' })
+  applyDocument(
+    @Param('id') id: string,
+    @Param('orderNumber') orderNumber: string,
+    @Param('kind', new ZodValidationPipe(zRomanaDocKind)) kind: RomanaDocKind,
+    @Body(new ZodValidationPipe(zRomanaDocApplyInput)) body: RomanaDocApplyInput,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.romana.applyDocument(this.viewer(request), id, orderNumber, kind, body);
   }
 
   @Delete('arrivals/:id/orders/:orderNumber/documents/:kind')

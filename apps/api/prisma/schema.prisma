@@ -236,9 +236,10 @@ model SalesOrder {
   vendor           String?
   orderDate        DateTime?
   requestedDate    DateTime?
-  // ABIERTO | NOTA_ENTREGA | CERRADO | CANCELADO | DESCONOCIDO
-  // `NOTA_ENTREGA` es terminal: el pedido salió de la cartera porque Profit
-  // lo convirtió en nota de entrega (despacho).
+  // ABIERTO | NOTA_ENTREGA | NOTA_PARCIAL | CERRADO | CANCELADO | DESCONOCIDO
+  // `NOTA_ENTREGA` es terminal: el pedido salió de la cartera porque una nota
+  // real de Profit cubrió todas sus cantidades. `NOTA_PARCIAL` indica que la
+  // nota existe pero dejó líneas/cantidades sin cubrir.
   status           String    @default("ABIERTO")
   statusRaw        String?
   authorized       Boolean?
@@ -246,7 +247,8 @@ model SalesOrder {
   removedAt        DateTime?
   // Ciclo de vida local (auditoría del cierre automático).
   closedAt         DateTime?
-  // NOTA_ENTREGA | CANCELADO | SIN_PENDIENTE | MANUAL | FUERA_DE_VISTA
+  // NOTA_ENTREGA | NOTA_PARCIAL | SIN_NOTA | CANCELADO | SIN_PENDIENTE |
+  // MANUAL | FUERA_DE_VISTA
   closedReason     String?
   // PENDIENTE | FACTURADO_ASUMIDO | FACTURADO
   // Se separa del estado comercial: una nota de entrega no es una factura.
@@ -962,9 +964,10 @@ model OrderLifecycleEvent {
   customerName String?
   fromStatus   String
   toStatus     String
-  // NOTA_ENTREGA | CANCELADO | SIN_PENDIENTE | MANUAL | REAPERTURA
+  // NOTA_ENTREGA | NOTA_PARCIAL | SIN_NOTA | CANCELADO | SIN_PENDIENTE |
+  // MANUAL | REAPERTURA
   reason       String
-  // PROFIT | MANUAL | SYSTEM
+  // PROFIT | MANUAL | SYSTEM | REVALIDACION
   source       String   @default("PROFIT")
   // JSON serializado: status/anulada/pendiente/notas detectadas.
   evidence     String?
